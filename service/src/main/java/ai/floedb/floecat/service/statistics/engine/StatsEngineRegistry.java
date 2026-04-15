@@ -27,10 +27,12 @@ import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /** Registry and routing layer for available stats capture engines. */
@@ -103,22 +105,96 @@ public class StatsEngineRegistry {
    * {@link #capture(StatsCaptureRequest)}.
    */
   public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
-    return StatsCaptureBatchResult.of(
-        batchRequest.requests().stream()
-            .map(this::captureOneBatchItem)
-            .collect(Collectors.toList()));
-  }
-
-  private StatsCaptureBatchItemResult captureOneBatchItem(StatsCaptureRequest request) {
-    try {
-      return capture(request)
-          .map(result -> StatsCaptureBatchItemResult.captured(request, result))
-          .orElseGet(() -> StatsCaptureBatchItemResult.uncapturable(request, "no capture result"));
-    } catch (StatsUnsupportedTargetException e) {
-      return StatsCaptureBatchItemResult.uncapturable(request, "target unsupported");
-    } catch (RuntimeException e) {
-      return StatsCaptureBatchItemResult.degraded(
-          request, "capture failed: " + e.getClass().getSimpleName());
+    List<StatsCaptureRequest> requests = batchRequest.requests();
+    List<StatsCaptureBatchItemResult> finalResults = new ArrayList<>(requests.size());
+    for (int i = 0; i < requests.size(); i++) {
+      finalResults.add(null);
     }
+
+    List<List<StatsCaptureEngine>> candidateLists = new ArrayList<>(requests.size());
+    Map<Integer, Integer> pending = new LinkedHashMap<>();
+    for (int i = 0; i < requests.size(); i++) {
+      StatsCaptureRequest request = requests.get(i);
+      List<StatsCaptureEngine> candidates = candidates(request);
+      candidateLists.add(candidates);
+      if (candidates.isEmpty()) {
+        finalResults.set(
+            i, StatsCaptureBatchItemResult.uncapturable(request, "target unsupported"));
+      } else {
+        pending.put(i, 0);
+      }
+    }
+
+    while (!pending.isEmpty()) {
+      Map<StatsCaptureEngine, List<Integer>> stageGroups = new LinkedHashMap<>();
+      List<Integer> exhausted = new ArrayList<>();
+      for (Map.Entry<Integer, Integer> entry : pending.entrySet()) {
+        int requestIndex = entry.getKey();
+        int stage = entry.getValue();
+        List<StatsCaptureEngine> candidates = candidateLists.get(requestIndex);
+        if (stage >= candidates.size()) {
+          exhausted.add(requestIndex);
+          continue;
+        }
+        stageGroups
+            .computeIfAbsent(candidates.get(stage), ignored -> new ArrayList<>())
+            .add(requestIndex);
+      }
+
+      for (Integer requestIndex : exhausted) {
+        StatsCaptureRequest request = requests.get(requestIndex);
+        finalResults.set(
+            requestIndex, StatsCaptureBatchItemResult.uncapturable(request, "no capture result"));
+        pending.remove(requestIndex);
+      }
+
+      for (Map.Entry<StatsCaptureEngine, List<Integer>> group : stageGroups.entrySet()) {
+        StatsCaptureEngine engine = group.getKey();
+        List<Integer> indexes = group.getValue();
+        StatsCaptureBatchRequest engineBatch =
+            StatsCaptureBatchRequest.of(indexes.stream().map(requests::get).toList());
+        StatsCaptureBatchResult engineResult;
+        try {
+          engineResult = engine.captureBatch(engineBatch);
+        } catch (RuntimeException e) {
+          for (Integer requestIndex : indexes) {
+            StatsCaptureRequest request = requests.get(requestIndex);
+            finalResults.set(
+                requestIndex,
+                StatsCaptureBatchItemResult.degraded(
+                    request, "capture failed: " + e.getClass().getSimpleName()));
+            pending.remove(requestIndex);
+          }
+          continue;
+        }
+
+        List<StatsCaptureBatchItemResult> items = engineResult.results();
+        if (items.size() != indexes.size()) {
+          for (Integer requestIndex : indexes) {
+            StatsCaptureRequest request = requests.get(requestIndex);
+            finalResults.set(
+                requestIndex, StatsCaptureBatchItemResult.degraded(request, "batch size mismatch"));
+            pending.remove(requestIndex);
+          }
+          continue;
+        }
+
+        for (int i = 0; i < indexes.size(); i++) {
+          int requestIndex = indexes.get(i);
+          StatsCaptureBatchItemResult item = items.get(i);
+          switch (item.outcome()) {
+            case CAPTURED, QUEUED, DEGRADED -> {
+              finalResults.set(requestIndex, item);
+              pending.remove(requestIndex);
+            }
+            case UNCAPTURABLE -> {
+              pending.computeIfPresent(requestIndex, (ignored, stage) -> stage + 1);
+            }
+          }
+        }
+      }
+    }
+
+    return StatsCaptureBatchResult.of(finalResults);
   }
 }

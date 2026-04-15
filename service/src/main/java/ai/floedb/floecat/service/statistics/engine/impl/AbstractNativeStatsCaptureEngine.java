@@ -37,12 +37,17 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.util.Timestamps;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -87,87 +92,120 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
 
   @Override
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    // Delta tables can legitimately use snapshot id 0.
-    if (request.snapshotId() < 0L) {
-      return Optional.empty();
+    StatsCaptureBatchItemResult item =
+        captureBatch(StatsCaptureBatchRequest.of(request)).results().getFirst();
+    return item.captureResult();
+  }
+
+  @Override
+  public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+    List<StatsCaptureRequest> requests = batchRequest.requests();
+    List<StatsCaptureBatchItemResult> results = new ArrayList<>(requests.size());
+    for (int i = 0; i < requests.size(); i++) {
+      results.add(null);
     }
-    try {
-      Optional<Table> table = tableRepository.getById(request.tableId());
-      if (table.isEmpty() || !table.get().hasUpstream()) {
-        return Optional.empty();
+
+    Map<CaptureGroupKey, List<Integer>> grouped = new LinkedHashMap<>();
+    for (int i = 0; i < requests.size(); i++) {
+      StatsCaptureRequest request = requests.get(i);
+      if (request.snapshotId() < 0L) {
+        results.set(i, StatsCaptureBatchItemResult.uncapturable(request, "invalid snapshot id"));
+        continue;
       }
-      UpstreamRef upstream = table.get().getUpstream();
-      if (!upstream.hasConnectorId()
-          || upstream.getNamespacePathCount() == 0
-          || upstream.getTableDisplayName().isBlank()) {
-        return Optional.empty();
+      grouped
+          .computeIfAbsent(
+              new CaptureGroupKey(request.tableId(), request.snapshotId(), request.executionMode()),
+              ignored -> new ArrayList<>())
+          .add(i);
+    }
+
+    for (Map.Entry<CaptureGroupKey, List<Integer>> entry : grouped.entrySet()) {
+      List<Integer> indexes = entry.getValue();
+      StatsCaptureRequest representative = requests.get(indexes.getFirst());
+      Optional<CaptureContext> captureContext = resolveContext(representative);
+      if (captureContext.isEmpty()) {
+        for (int idx : indexes) {
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.uncapturable(requests.get(idx), "no capture context"));
+        }
+        continue;
       }
 
-      Optional<Connector> connector = connectorRepository.getById(upstream.getConnectorId());
-      if (connector.isEmpty()) {
-        return Optional.empty();
-      }
-
-      ConnectorConfig baseConfig = ConnectorConfigMapper.fromProto(connector.get());
-      if (!supportsKind(baseConfig.kind())) {
-        return Optional.empty();
-      }
-      ConnectorConfig resolved =
-          resolveCredentials(
-              decorateConnectorConfig(baseConfig),
-              connector.get().hasAuth()
-                  ? connector.get().getAuth()
-                  : AuthConfig.getDefaultInstance(),
-              upstream.getConnectorId());
-
-      try (FloecatConnector floecatConnector = connectorOpener.open(resolved)) {
-        String namespaceFq = String.join(".", upstream.getNamespacePathList());
+      try (FloecatConnector floecatConnector =
+          connectorOpener.open(captureContext.get().resolvedConfig())) {
+        Set<String> selectors = unionSelectors(requests, indexes);
         List<TargetStatsRecord> capturedRecords =
             floecatConnector.captureSnapshotTargetStats(
-                namespaceFq,
-                upstream.getTableDisplayName(),
-                request.tableId(),
-                request.snapshotId(),
-                request.columnSelectors());
+                captureContext.get().namespaceFq(),
+                captureContext.get().tableDisplayName(),
+                representative.tableId(),
+                representative.snapshotId(),
+                selectors);
         if (capturedRecords == null || capturedRecords.isEmpty()) {
-          return Optional.empty();
-        }
-        Optional<TargetStatsRecord> record = findMatchingRecord(capturedRecords, request);
-        if (record.isEmpty()) {
-          return Optional.empty();
-        }
-        TargetStatsRecord canonicalRecord = withCanonicalMetadata(record.get(), request);
-        if (request.target().hasTable()) {
-          // Table-target capture persists the full snapshot capture so later column/file lookups
-          // hit store without additional capture. Replace the table entry with the matched
-          // canonical record.
-          Set<String> seenTargets = new LinkedHashSet<>();
-          for (TargetStatsRecord bundleRecord : capturedRecords) {
-            TargetStatsRecord toPersist =
-                bundleRecord.hasTable()
-                    ? canonicalRecord
-                    : withCanonicalMetadata(bundleRecord, request);
-            String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
-            if (seenTargets.add(storageId)) {
-              persistRecord(toPersist);
-            }
+          for (int idx : indexes) {
+            results.set(
+                idx,
+                StatsCaptureBatchItemResult.uncapturable(requests.get(idx), "no capture result"));
           }
-        } else {
-          persistRecord(canonicalRecord);
+          continue;
         }
-        return Optional.of(
-            StatsCaptureResult.forRecord(
-                id(), canonicalRecord, Map.of("source", "native_connector")));
+
+        Optional<Integer> tableRequestIndex =
+            indexes.stream()
+                .filter(idx -> requests.get(idx).target().hasTable())
+                .filter(idx -> findMatchingRecord(capturedRecords, requests.get(idx)).isPresent())
+                .findFirst();
+
+        Set<String> persisted = new HashSet<>();
+        if (tableRequestIndex.isPresent()) {
+          StatsCaptureRequest tableRequest = requests.get(tableRequestIndex.get());
+          Optional<TargetStatsRecord> matchedTable =
+              findMatchingRecord(capturedRecords, tableRequest);
+          if (matchedTable.isPresent()) {
+            TargetStatsRecord canonicalTable =
+                withCanonicalMetadata(matchedTable.get(), tableRequest);
+            persistBundleOnce(capturedRecords, tableRequest, canonicalTable, persisted);
+          }
+        }
+
+        for (int idx : indexes) {
+          StatsCaptureRequest request = requests.get(idx);
+          Optional<TargetStatsRecord> matched = findMatchingRecord(capturedRecords, request);
+          if (matched.isEmpty()) {
+            results.set(
+                idx, StatsCaptureBatchItemResult.uncapturable(request, "no capture result"));
+            continue;
+          }
+          TargetStatsRecord canonical = withCanonicalMetadata(matched.get(), request);
+          if (!request.target().hasTable()) {
+            persistOnce(canonical, persisted);
+          }
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.captured(
+                  request,
+                  StatsCaptureResult.forRecord(
+                      id(), canonical, Map.of("source", "native_connector"))));
+        }
+      } catch (RuntimeException e) {
+        log.warnf(
+            e,
+            "Native stats batch capture failed engine=%s table=%s snapshot=%s batch_size=%d",
+            id(),
+            representative.tableId(),
+            representative.snapshotId(),
+            indexes.size());
+        for (int idx : indexes) {
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.degraded(
+                  requests.get(idx), "capture failed: " + e.getClass().getSimpleName()));
+        }
       }
-    } catch (RuntimeException e) {
-      log.warnf(
-          e,
-          "Native stats capture failed engine=%s table=%s snapshot=%s",
-          id(),
-          request.tableId(),
-          request.snapshotId());
-      return Optional.empty();
     }
+
+    return StatsCaptureBatchResult.of(results);
   }
 
   protected ConnectorConfig decorateConnectorConfig(ConnectorConfig baseConfig) {
@@ -220,6 +258,77 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
       case TARGET_NOT_SET, EXPRESSION -> Optional.empty();
     };
   }
+
+  private void persistBundleOnce(
+      List<TargetStatsRecord> records,
+      StatsCaptureRequest tableRequest,
+      TargetStatsRecord canonicalTable,
+      Set<String> persisted) {
+    for (TargetStatsRecord record : records) {
+      TargetStatsRecord toPersist =
+          record.hasTable() ? canonicalTable : withCanonicalMetadata(record, tableRequest);
+      persistOnce(toPersist, persisted);
+    }
+  }
+
+  private void persistOnce(TargetStatsRecord record, Set<String> persisted) {
+    String storageId = StatsTargetIdentity.storageId(record.getTarget());
+    if (persisted.add(storageId)) {
+      persistRecord(record);
+    }
+  }
+
+  private Set<String> unionSelectors(List<StatsCaptureRequest> requests, List<Integer> indexes) {
+    Set<String> selectors = new LinkedHashSet<>();
+    for (int idx : indexes) {
+      StatsCaptureRequest request = requests.get(idx);
+      selectors.addAll(request.columnSelectors());
+      if (request.target().hasColumn()) {
+        selectors.add("#" + request.target().getColumn().getColumnId());
+      }
+    }
+    return selectors;
+  }
+
+  private Optional<CaptureContext> resolveContext(StatsCaptureRequest request) {
+    Optional<Table> table = tableRepository.getById(request.tableId());
+    if (table.isEmpty() || !table.get().hasUpstream()) {
+      return Optional.empty();
+    }
+    UpstreamRef upstream = table.get().getUpstream();
+    if (!upstream.hasConnectorId()
+        || upstream.getNamespacePathCount() == 0
+        || upstream.getTableDisplayName().isBlank()) {
+      return Optional.empty();
+    }
+
+    Optional<Connector> connector = connectorRepository.getById(upstream.getConnectorId());
+    if (connector.isEmpty()) {
+      return Optional.empty();
+    }
+    ConnectorConfig baseConfig = ConnectorConfigMapper.fromProto(connector.get());
+    if (!supportsKind(baseConfig.kind())) {
+      return Optional.empty();
+    }
+    ConnectorConfig resolved =
+        resolveCredentials(
+            decorateConnectorConfig(baseConfig),
+            connector.get().hasAuth() ? connector.get().getAuth() : AuthConfig.getDefaultInstance(),
+            upstream.getConnectorId());
+    return Optional.of(
+        new CaptureContext(
+            String.join(".", upstream.getNamespacePathList()),
+            upstream.getTableDisplayName(),
+            resolved));
+  }
+
+  private record CaptureContext(
+      String namespaceFq, String tableDisplayName, ConnectorConfig resolvedConfig) {}
+
+  private record CaptureGroupKey(
+      ai.floedb.floecat.common.rpc.ResourceId tableId,
+      long snapshotId,
+      StatsExecutionMode executionMode) {}
 
   private void persistRecord(TargetStatsRecord record) {
     try {

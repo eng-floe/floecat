@@ -44,13 +44,17 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -289,5 +293,108 @@ class IcebergNativeStatsCaptureEngineTest {
     assertThat(engine.capture(request)).isEmpty();
     verify(floecatConnector).captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
     verify(statsStore, never()).putTargetStats(any());
+  }
+
+  @Test
+  void captureBatchOpensConnectorOncePerTableSnapshotAndCapturesMultipleTargets() {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    CredentialResolver credentialResolver = Mockito.mock(CredentialResolver.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    FloecatConnector floecatConnector = Mockito.mock(FloecatConnector.class);
+
+    IcebergNativeStatsCaptureEngine engine =
+        new IcebergNativeStatsCaptureEngine(
+            tableRepository, connectorRepository, credentialResolver, statsStore);
+    AtomicInteger openCount = new AtomicInteger();
+    engine.connectorOpener =
+        config -> {
+          openCount.incrementAndGet();
+          return floecatConnector;
+        };
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
+    when(tableRepository.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(connectorId)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+    when(connectorRepository.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("iceberg-main")
+                    .setKind(ConnectorKind.CK_ICEBERG)
+                    .setUri("s3://warehouse")
+                    .build()));
+
+    StatsTarget tableTarget =
+        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
+    StatsTarget col7 =
+        StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(7L)).build();
+    StatsTarget col9 =
+        StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(9L)).build();
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(
+            List.of(
+                TargetStatsRecord.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(101L)
+                    .setTarget(tableTarget)
+                    .setTable(TableValueStats.newBuilder().setRowCount(11L).build())
+                    .build(),
+                TargetStatsRecord.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(101L)
+                    .setTarget(col7)
+                    .setScalar(
+                        ScalarStats.newBuilder().setDisplayName("c7").setLogicalType("BIGINT"))
+                    .build(),
+                TargetStatsRecord.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(101L)
+                    .setTarget(col9)
+                    .setScalar(
+                        ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
+                    .build()));
+
+    StatsCaptureRequest tableReq =
+        StatsCaptureRequest.builder(tableId, 101L, tableTarget)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+    StatsCaptureRequest col7Req =
+        StatsCaptureRequest.builder(tableId, 101L, col7)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+    StatsCaptureRequest col9Req =
+        StatsCaptureRequest.builder(tableId, 101L, col9)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+
+    StatsCaptureBatchResult out =
+        engine.captureBatch(StatsCaptureBatchRequest.of(List.of(tableReq, col7Req, col9Req)));
+
+    assertThat(out.results()).hasSize(3);
+    assertThat(out.results()).allMatch(item -> item.outcome() == StatsTriggerOutcome.CAPTURED);
+    assertThat(openCount.get()).isEqualTo(1);
+    verify(floecatConnector, times(1))
+        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+    verify(statsStore, times(3)).putTargetStats(any(TargetStatsRecord.class));
   }
 }
