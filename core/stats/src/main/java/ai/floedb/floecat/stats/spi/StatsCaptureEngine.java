@@ -17,7 +17,6 @@
 package ai.floedb.floecat.stats.spi;
 
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 /**
  * Service Provider Interface for pluggable statistics capture.
@@ -59,42 +58,14 @@ public interface StatsCaptureEngine {
     return capabilities().supports(request);
   }
 
-  /**
-   * Attempts to capture stats for the request.
-   *
-   * <p>Return {@link Optional#empty()} when the engine has no data for this request. Throw a
-   * runtime exception when the engine encounters a processing error.
-   */
+  /** Attempts to capture stats for the request. */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
 
   /**
    * Attempts to capture stats for multiple requests.
    *
-   * <p>The default implementation evaluates requests one by one through {@link #capture} so
-   * existing engines remain compatible. Engines can override this method to execute efficiently in
-   * bulk (for example by reading shared metadata/files once for multiple targets).
+   * <p>Implementations must preserve request order in returned item results. The result at index
+   * {@code i} must correspond to {@code batchRequest.requests().get(i)}.
    */
-  default StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
-    return StatsCaptureBatchResult.of(
-        batchRequest.requests().stream()
-            .map(
-                request -> {
-                  if (!supports(request)) {
-                    return StatsCaptureBatchItemResult.uncapturable(
-                        request, "unsupported by engine");
-                  }
-                  try {
-                    return capture(request)
-                        .map(result -> StatsCaptureBatchItemResult.captured(request, result))
-                        .orElseGet(
-                            () ->
-                                StatsCaptureBatchItemResult.uncapturable(
-                                    request, "no capture result"));
-                  } catch (RuntimeException e) {
-                    return StatsCaptureBatchItemResult.degraded(
-                        request, "capture failed: " + e.getClass().getSimpleName());
-                  }
-                })
-            .collect(Collectors.toList()));
-  }
+  StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest);
 }

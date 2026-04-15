@@ -17,12 +17,16 @@
 package ai.floedb.floecat.stats.spi.testing;
 
 import ai.floedb.floecat.stats.spi.StatsCapabilities;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Minimal test helper for stats engine routing tests and examples.
@@ -69,6 +73,32 @@ public final class TestStatsCaptureEngine implements StatsCaptureEngine {
   @Override
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
     return captureFn.apply(request);
+  }
+
+  @Override
+  public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+    return StatsCaptureBatchResult.of(
+        batchRequest.requests().stream()
+            .map(
+                request -> {
+                  if (!supports(request)) {
+                    return StatsCaptureBatchItemResult.uncapturable(
+                        request, "unsupported by engine");
+                  }
+                  try {
+                    return captureFn
+                        .apply(request)
+                        .map(result -> StatsCaptureBatchItemResult.captured(request, result))
+                        .orElseGet(
+                            () ->
+                                StatsCaptureBatchItemResult.uncapturable(
+                                    request, "no capture result"));
+                  } catch (RuntimeException e) {
+                    return StatsCaptureBatchItemResult.degraded(
+                        request, "capture failed: " + e.getClass().getSimpleName());
+                  }
+                })
+            .collect(Collectors.toList()));
   }
 
   public static final class Builder {
