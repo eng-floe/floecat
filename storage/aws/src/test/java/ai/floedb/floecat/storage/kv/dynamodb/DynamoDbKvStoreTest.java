@@ -447,9 +447,45 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
-  void txnWriteCas_returns_false_with_mixed_cancellation_reasons() {
+  void txnWriteCas_rethrows_when_mixed_with_non_retryable_reason() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     handler.setCancellationReasonCodes(List.of("Other", "ConditionalCheckFailed"));
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertThrows(RuntimeException.class, () -> store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
+  void txnWriteCas_returns_false_on_transaction_conflict() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setCancellationReasonCodes(List.of("TransactionConflict"));
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertFalse(store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
+  void txnWriteCas_returns_false_with_none_and_retryable_reasons() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setCancellationReasonCodes(List.of("None", "ConditionalCheckFailed"));
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertFalse(store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
+  void txnWriteCas_returns_false_with_mixed_retryable_reasons() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setCancellationReasonCodes(List.of("TransactionConflict", "ConditionalCheckFailed"));
     DynamoDbKvStore store = newStore(handler);
 
     var ops =
