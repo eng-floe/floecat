@@ -151,9 +151,9 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
           boolean grpcPlainText,
       @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile,
-      @ConfigProperty(name = "floedb.catalog.bundle.slow-log-ms", defaultValue = "1000")
+      @ConfigProperty(name = "floecat.catalog.bundle.slow-log-ms", defaultValue = "1000")
           long slowLogMs,
-      @ConfigProperty(name = "floedb.catalog.bundle.log-timings", defaultValue = "false")
+      @ConfigProperty(name = "floecat.catalog.bundle.log-timings", defaultValue = "false")
           boolean logTimingBreakdown) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
