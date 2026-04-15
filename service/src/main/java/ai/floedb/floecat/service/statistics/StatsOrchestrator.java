@@ -189,6 +189,10 @@ public class StatsOrchestrator {
     Map<AsyncCandidateKey, Boolean> asyncCandidateCache = new LinkedHashMap<>();
     for (StatsCaptureRequest request : requests) {
       if (request.snapshotId() < 0L) {
+        recordAsyncSkip(
+            request,
+            "invalid_snapshot_id",
+            "Skipping async enqueue because snapshot id is invalid");
         continue;
       }
       StatsCaptureRequest asyncRequest = toAsyncRequest(request);
@@ -197,6 +201,10 @@ public class StatsOrchestrator {
           asyncCandidateCache.computeIfAbsent(
               candidateKey, ignored -> hasAsyncCandidates(asyncRequest));
       if (!hasCandidates) {
+        recordAsyncSkip(
+            asyncRequest,
+            "no_async_candidates",
+            "Skipping async enqueue because no ASYNC candidate engine supports the request");
         continue;
       }
       groupedByTable
@@ -215,10 +223,28 @@ public class StatsOrchestrator {
     StatsCaptureRequest first = groupedRequests.getFirst();
     try {
       Optional<Table> table = tableRepository.getById(first.tableId());
-      if (table.isEmpty()
-          || !table.get().hasUpstream()
-          || !table.get().getUpstream().hasConnectorId()
-          || table.get().getUpstream().getConnectorId().getId().isBlank()) {
+      if (table.isEmpty()) {
+        recordAsyncSkip(
+            first, "missing_table", "Skipping async enqueue because table lookup failed");
+        return;
+      }
+      if (!table.get().hasUpstream()) {
+        recordAsyncSkip(
+            first, "missing_upstream", "Skipping async enqueue because table has no upstream");
+        return;
+      }
+      if (!table.get().getUpstream().hasConnectorId()) {
+        recordAsyncSkip(
+            first,
+            "missing_connector_id",
+            "Skipping async enqueue because upstream connector id is missing");
+        return;
+      }
+      if (table.get().getUpstream().getConnectorId().getId().isBlank()) {
+        recordAsyncSkip(
+            first,
+            "blank_connector_id",
+            "Skipping async enqueue because upstream connector id is blank");
         return;
       }
       List<List<String>> namespaceScope =
@@ -262,7 +288,25 @@ public class StatsOrchestrator {
           "Failed enqueuing async stats capture table=%s requests=%d",
           first.tableId(),
           groupedRequests.size());
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "async_skip"),
+          Tag.of(TagKey.REASON, "enqueue_failure"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
     }
+  }
+
+  private void recordAsyncSkip(StatsCaptureRequest request, String reason, String message) {
+    LOG.warnf(
+        "%s table=%s snapshot=%d reason=%s",
+        message, request.tableId(), request.snapshotId(), reason);
+    incrementCounter(
+        ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+        1,
+        Tag.of(TagKey.TRIGGER, "async_skip"),
+        Tag.of(TagKey.REASON, reason),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
   }
 
   private static TableKey tableKey(StatsCaptureRequest request) {

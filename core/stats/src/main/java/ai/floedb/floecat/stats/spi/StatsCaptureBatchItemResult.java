@@ -31,6 +31,9 @@ public record StatsCaptureBatchItemResult(
     outcome = Objects.requireNonNull(outcome, "outcome");
     captureResult = Objects.requireNonNull(captureResult, "captureResult");
     detail = detail == null ? "" : detail;
+    if (outcome == StatsTriggerOutcome.CAPTURED && captureResult.isEmpty()) {
+      throw new IllegalArgumentException("CAPTURED outcome requires a non-empty captureResult");
+    }
   }
 
   public static StatsCaptureBatchItemResult captured(

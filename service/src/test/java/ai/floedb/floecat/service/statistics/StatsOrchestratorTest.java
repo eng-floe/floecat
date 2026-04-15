@@ -631,6 +631,55 @@ class StatsOrchestratorTest {
             StatsTargetScopeCodec.encode(req2.target()));
   }
 
+  @Test
+  void resolveBatchMultiTableEnqueuesPerTable() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    ResourceId tableA = ResourceId.newBuilder().setAccountId("acct").setId("table-a").build();
+    ResourceId tableB = ResourceId.newBuilder().setAccountId("acct").setId("table-b").build();
+    StatsTarget target =
+        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
+    StatsCaptureRequest reqA =
+        StatsCaptureRequest.builder(tableA, 42L, target)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr-a")
+            .build();
+    StatsCaptureRequest reqB =
+        StatsCaptureRequest.builder(tableB, 43L, target)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr-b")
+            .build();
+
+    when(statsStore.getTargetStats(reqA.tableId(), reqA.snapshotId(), reqA.target()))
+        .thenReturn(Optional.empty());
+    when(statsStore.getTargetStats(reqB.tableId(), reqB.snapshotId(), reqB.target()))
+        .thenReturn(Optional.empty());
+    when(registry.candidates(any())).thenReturn(List.of(Mockito.mock(StatsCaptureEngine.class)));
+    when(tableRepository.getById(tableA)).thenReturn(Optional.of(tableWithUpstream(tableA)));
+    when(tableRepository.getById(tableB)).thenReturn(Optional.of(tableWithUpstream(tableB)));
+
+    List<Optional<TargetStatsRecord>> out =
+        orchestrator.resolveBatch(StatsCaptureBatchRequest.of(List.of(reqA, reqB)));
+
+    assertThat(out).hasSize(2);
+    assertThat(out.get(0)).isEmpty();
+    assertThat(out.get(1)).isEmpty();
+    verify(jobStore, Mockito.times(2))
+        .enqueue(
+            Mockito.eq("acct"),
+            Mockito.eq("conn-1"),
+            Mockito.eq(false),
+            Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
+            any());
+  }
+
   private static StatsCaptureRequest request(StatsExecutionMode mode) {
     return request(
         mode,

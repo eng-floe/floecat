@@ -263,6 +263,94 @@ class StatsEngineRegistryTest {
     assertThat(result.results().get(1).detail()).contains("order mismatch");
   }
 
+  @Test
+  void captureBatchFallsBackToNextEngineOnUncapturable() {
+    StatsCaptureRequest req = sampleRequest();
+    TargetStatsRecord capturedRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(req.tableId())
+            .setSnapshotId(req.snapshotId())
+            .setTarget(req.target())
+            .setTable(TableValueStats.newBuilder().setRowCount(7L).build())
+            .build();
+
+    StatsCaptureEngine p1Uncapturable =
+        new StatsCaptureEngine() {
+          @Override
+          public String id() {
+            return "engine-p1";
+          }
+
+          @Override
+          public int priority() {
+            return 1;
+          }
+
+          @Override
+          public StatsCapabilities capabilities() {
+            return tableOnlyCaps();
+          }
+
+          @Override
+          public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+            return Optional.empty();
+          }
+
+          @Override
+          public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+            return StatsCaptureBatchResult.of(
+                batchRequest.requests().stream()
+                    .map(r -> StatsCaptureBatchItemResult.uncapturable(r, "unsupported"))
+                    .toList());
+          }
+        };
+
+    StatsCaptureEngine p2Captured =
+        new StatsCaptureEngine() {
+          @Override
+          public String id() {
+            return "engine-p2";
+          }
+
+          @Override
+          public int priority() {
+            return 2;
+          }
+
+          @Override
+          public StatsCapabilities capabilities() {
+            return tableOnlyCaps();
+          }
+
+          @Override
+          public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+            return Optional.empty();
+          }
+
+          @Override
+          public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+            return StatsCaptureBatchResult.of(
+                batchRequest.requests().stream()
+                    .map(
+                        r ->
+                            StatsCaptureBatchItemResult.captured(
+                                r,
+                                StatsCaptureResult.forRecord(
+                                    "engine-p2", capturedRecord, Map.of())))
+                    .toList());
+          }
+        };
+
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(p2Captured, p1Uncapturable));
+    StatsCaptureBatchResult out = registry.captureBatch(StatsCaptureBatchRequest.of(List.of(req)));
+
+    assertThat(out.results()).hasSize(1);
+    assertThat(out.results().getFirst().outcome()).isEqualTo(StatsTriggerOutcome.CAPTURED);
+    assertThat(out.results().getFirst().captureResult()).isPresent();
+    assertThat(out.results().getFirst().captureResult().orElseThrow().engineId())
+        .isEqualTo("engine-p2");
+  }
+
   private static StatsCaptureRequest sampleRequest() {
     return StatsCaptureRequest.builder(
             ResourceId.newBuilder().setAccountId("a").setId("t").build(),

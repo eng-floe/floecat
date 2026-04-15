@@ -150,6 +150,18 @@ Result model:
 - Batch API is first-class (`StatsCaptureBatchRequest`) and is the primary path for reconciler/query
   orchestration so engines can process multiple targets in one pass.
 
+## Batch contract for engine implementors
+
+Implementations of `StatsCaptureEngine.captureBatch()` must:
+
+1. **Size invariant**: `results().size() == batchRequest.requests().size()` in all cases.
+2. **Order invariant**: `result[i]` must correspond to `requests.get(i)`.
+3. **No throws**: represent failures as per-item outcomes (typically `DEGRADED`) instead of
+   throwing exceptions.
+4. **Item independence**: failure for one item must not prevent attempts for remaining items.
+5. **UNCAPTURABLE semantics**: use `UNCAPTURABLE` only for capability mismatches. Registry routing
+   retries `UNCAPTURABLE` items with the next candidate engine; `DEGRADED` is final.
+
 ## How to add a new engine
 
 1. Implement `StatsCaptureEngine`.
