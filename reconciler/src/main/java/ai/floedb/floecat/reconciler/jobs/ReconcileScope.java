@@ -19,18 +19,23 @@ package ai.floedb.floecat.reconciler.jobs;
 import java.util.Collections;
 import java.util.List;
 
-/** Scope constraints for a reconcile job (namespaces, tables, optional column hints). */
+/** Scope constraints for a reconcile job (namespaces, tables, and optional stats-target hints). */
 public final class ReconcileScope {
-  private static final ReconcileScope EMPTY = new ReconcileScope(List.of(), null, List.of());
+  private static final ReconcileScope EMPTY =
+      new ReconcileScope(List.of(), null, List.of(), List.of(), List.of());
 
   private final List<List<String>> destinationNamespacePaths;
   private final String destinationTableDisplayName;
   private final List<String> destinationTableColumns;
+  private final List<Long> destinationSnapshotIds;
+  private final List<String> destinationStatsTargets;
 
   private ReconcileScope(
       List<List<String>> destinationNamespacePaths,
       String destinationTableDisplayName,
-      List<String> destinationTableColumns) {
+      List<String> destinationTableColumns,
+      List<Long> destinationSnapshotIds,
+      List<String> destinationStatsTargets) {
     if (destinationNamespacePaths == null || destinationNamespacePaths.isEmpty()) {
       this.destinationNamespacePaths = List.of();
     } else {
@@ -48,6 +53,12 @@ public final class ReconcileScope {
 
     this.destinationTableColumns =
         destinationTableColumns == null ? List.of() : List.copyOf(destinationTableColumns);
+    this.destinationSnapshotIds =
+        destinationSnapshotIds == null
+            ? List.of()
+            : destinationSnapshotIds.stream().filter(id -> id != null && id >= 0L).toList();
+    this.destinationStatsTargets =
+        destinationStatsTargets == null ? List.of() : List.copyOf(destinationStatsTargets);
   }
 
   public static ReconcileScope empty() {
@@ -58,13 +69,33 @@ public final class ReconcileScope {
       List<List<String>> destinationNamespacePaths,
       String destinationTableDisplayName,
       List<String> destinationTableColumns) {
+    return of(
+        destinationNamespacePaths,
+        destinationTableDisplayName,
+        destinationTableColumns,
+        List.of(),
+        List.of());
+  }
+
+  public static ReconcileScope of(
+      List<List<String>> destinationNamespacePaths,
+      String destinationTableDisplayName,
+      List<String> destinationTableColumns,
+      List<Long> destinationSnapshotIds,
+      List<String> destinationStatsTargets) {
     if ((destinationNamespacePaths == null || destinationNamespacePaths.isEmpty())
         && (destinationTableDisplayName == null || destinationTableDisplayName.isBlank())
-        && (destinationTableColumns == null || destinationTableColumns.isEmpty())) {
+        && (destinationTableColumns == null || destinationTableColumns.isEmpty())
+        && (destinationSnapshotIds == null || destinationSnapshotIds.isEmpty())
+        && (destinationStatsTargets == null || destinationStatsTargets.isEmpty())) {
       return EMPTY;
     }
     return new ReconcileScope(
-        destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns);
+        destinationNamespacePaths,
+        destinationTableDisplayName,
+        destinationTableColumns,
+        destinationSnapshotIds,
+        destinationStatsTargets);
   }
 
   public List<List<String>> destinationNamespacePaths() {
@@ -77,6 +108,14 @@ public final class ReconcileScope {
 
   public List<String> destinationTableColumns() {
     return destinationTableColumns;
+  }
+
+  public List<Long> destinationSnapshotIds() {
+    return destinationSnapshotIds;
+  }
+
+  public List<String> destinationStatsTargets() {
+    return destinationStatsTargets;
   }
 
   public boolean hasNamespaceFilter() {
@@ -114,6 +153,14 @@ public final class ReconcileScope {
 
   public boolean hasColumnFilter() {
     return !destinationTableColumns.isEmpty();
+  }
+
+  public boolean hasSnapshotFilter() {
+    return !destinationSnapshotIds.isEmpty();
+  }
+
+  public boolean hasStatsTargetFilter() {
+    return !destinationStatsTargets.isEmpty();
   }
 
   public List<String> columnsOrEmpty() {

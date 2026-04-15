@@ -209,7 +209,9 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
             .map(java.util.List::copyOf)
             .toList(),
         scope.getDestinationTableDisplayName(),
-        scope.getDestinationTableColumnsList());
+        scope.getDestinationTableColumnsList(),
+        scope.getDestinationSnapshotIdsList().stream().map(Long::valueOf).toList(),
+        scope.getDestinationStatsTargetsList());
   }
 
   private static ReconcileExecutionPolicy fromProtoExecutionPolicy(
