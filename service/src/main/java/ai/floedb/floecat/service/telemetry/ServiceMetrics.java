@@ -188,4 +188,34 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
   }
+
+  public static final class Stats {
+    public static final MetricId BATCH_ITEMS_TOTAL =
+        new MetricId(
+            "floecat.service.stats.batch_items.total", MetricType.COUNTER, "", CONTRACT, "service");
+    public static final MetricId BATCH_GROUPS_TOTAL =
+        new MetricId(
+            "floecat.service.stats.batch_groups.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ENGINE_BATCH_CALLS_TOTAL =
+        new MetricId(
+            "floecat.service.stats.engine_batch_calls.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId STORE_HITS_TOTAL =
+        new MetricId(
+            "floecat.service.stats.store_hits.total", MetricType.COUNTER, "", CONTRACT, "service");
+    public static final MetricId STORE_MISSES_TOTAL =
+        new MetricId(
+            "floecat.service.stats.store_misses.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+  }
 }
