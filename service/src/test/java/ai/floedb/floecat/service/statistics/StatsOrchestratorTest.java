@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.statistics;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,7 +44,10 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.ByteString;
+import jakarta.enterprise.inject.Instance;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -342,6 +346,47 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void asyncMissWithNoUpstreamRecordsAsyncSkipMetric() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    Observability observability = Mockito.mock(Observability.class);
+    @SuppressWarnings("unchecked")
+    Instance<Observability> observabilityInstance = Mockito.mock(Instance.class);
+    when(observabilityInstance.isUnsatisfied()).thenReturn(false);
+    when(observabilityInstance.get()).thenReturn(observability);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore, jobStore, tableRepository, registry, observabilityInstance);
+
+    StatsCaptureRequest request = request(StatsExecutionMode.ASYNC);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(registry.candidates(any())).thenReturn(List.of(Mockito.mock(StatsCaptureEngine.class)));
+    when(tableRepository.getById(request.tableId()))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(request.tableId())
+                    .setDisplayName("events")
+                    .build()));
+
+    orchestrator.resolve(request);
+
+    verify(observability, atLeastOnce())
+        .counter(
+            Mockito.eq(ai.floedb.floecat.service.telemetry.ServiceMetrics.Stats.BATCH_GROUPS_TOTAL),
+            Mockito.anyDouble(),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.COMPONENT, "service")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.OPERATION, "stats_orchestrator")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.TRIGGER, "async_skip")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.REASON, "missing_upstream")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.SCOPE, "orchestrator")));
+    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+  }
+
+  @Test
   void asyncMissWithBlankConnectorIdDoesNotEnqueue() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
@@ -372,6 +417,54 @@ class StatsOrchestratorTest {
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).isEmpty();
+    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+  }
+
+  @Test
+  void asyncMissWithBlankConnectorIdRecordsAsyncSkipMetric() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    Observability observability = Mockito.mock(Observability.class);
+    @SuppressWarnings("unchecked")
+    Instance<Observability> observabilityInstance = Mockito.mock(Instance.class);
+    when(observabilityInstance.isUnsatisfied()).thenReturn(false);
+    when(observabilityInstance.get()).thenReturn(observability);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore, jobStore, tableRepository, registry, observabilityInstance);
+
+    StatsCaptureRequest request = request(StatsExecutionMode.ASYNC);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(registry.candidates(any())).thenReturn(List.of(Mockito.mock(StatsCaptureEngine.class)));
+    when(tableRepository.getById(request.tableId()))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(request.tableId())
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(ResourceId.newBuilder().setAccountId("acct").setId(""))
+                            .setFormat(TableFormat.TF_ICEBERG)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+
+    orchestrator.resolve(request);
+
+    verify(observability, atLeastOnce())
+        .counter(
+            Mockito.eq(ai.floedb.floecat.service.telemetry.ServiceMetrics.Stats.BATCH_GROUPS_TOTAL),
+            Mockito.anyDouble(),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.COMPONENT, "service")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.OPERATION, "stats_orchestrator")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.TRIGGER, "async_skip")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.REASON, "blank_connector_id")),
+            Mockito.eq(ai.floedb.floecat.telemetry.Tag.of(TagKey.SCOPE, "orchestrator")));
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
   }
 

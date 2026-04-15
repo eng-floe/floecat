@@ -164,6 +164,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                 .findFirst();
 
         Set<String> persisted = new HashSet<>();
+        // If TABLE target is in this group and was returned by the connector, persist the full
+        // bundle atomically. Otherwise, fall through to per-target persistence below.
         if (tableRequestIndex.isPresent()) {
           StatsCaptureRequest tableRequest = requests.get(tableRequestIndex.get());
           Optional<TargetStatsRecord> matchedTable =
