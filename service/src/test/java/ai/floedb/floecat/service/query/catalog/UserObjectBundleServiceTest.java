@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
@@ -365,6 +366,65 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void largeRequestSpansMultipleChunksInOrder() {
+    int totalCandidates = 30;
+    List<TableReferenceCandidate> candidates = new ArrayList<>(totalCandidates);
+    for (int i = 0; i < totalCandidates; i++) {
+      candidates.add(
+          TableReferenceCandidate.newBuilder()
+              .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+              .build());
+    }
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    List<UserObjectsBundleChunk> resolutionChunks =
+        chunks.stream().filter(UserObjectsBundleChunk::hasResolutions).toList();
+    assertThat(resolutionChunks).hasSize(2);
+
+    List<Integer> actualInputIndexes = new ArrayList<>();
+    for (UserObjectsBundleChunk chunk : resolutionChunks) {
+      for (RelationResolution item : chunk.getResolutions().getItemsList()) {
+        actualInputIndexes.add(item.getInputIndex());
+      }
+    }
+    List<Integer> expectedInputIndexes = new ArrayList<>(totalCandidates);
+    for (int i = 0; i < totalCandidates; i++) {
+      expectedInputIndexes.add(i);
+    }
+    assertThat(actualInputIndexes).containsExactlyElementsOf(expectedInputIndexes);
+  }
+
+  @Test
+  void chunkSizeDoesNotExceedMax() {
+    int totalCandidates = 26;
+    List<TableReferenceCandidate> candidates = new ArrayList<>(totalCandidates);
+    for (int i = 0; i < totalCandidates; i++) {
+      candidates.add(
+          TableReferenceCandidate.newBuilder()
+              .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+              .build());
+    }
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    List<UserObjectsBundleChunk> resolutionChunks =
+        chunks.stream().filter(UserObjectsBundleChunk::hasResolutions).toList();
+    assertThat(resolutionChunks).hasSize(2);
+    assertThat(resolutionChunks)
+        .allSatisfy(
+            chunk ->
+                assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+    assertThat(
+            resolutionChunks.stream()
+                .mapToInt(chunk -> chunk.getResolutions().getItemsCount())
+                .sum())
+        .isEqualTo(totalCandidates);
+  }
+
+  @Test
   void commitSkippedWhenPinsEmpty() {
     QueryInputResolver emptyResolver =
         new QueryInputResolver() {
@@ -373,7 +433,8 @@ class UserObjectBundleServiceTest {
               String correlationId,
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId) {
+              Optional<ResourceId> defaultCatalogId,
+              Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), SnapshotSet.getDefaultInstance(), null);
           }
@@ -438,6 +499,98 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void duplicateCandidatesForSameRelation() {
+    TableReferenceCandidate first =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    TableReferenceCandidate second =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(first, second))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    List<RelationResolution> items = chunks.get(1).getResolutions().getItemsList();
+    assertThat(items).hasSize(2);
+    assertThat(items.get(0).getInputIndex()).isEqualTo(0);
+    assertThat(items.get(1).getInputIndex()).isEqualTo(1);
+    assertThat(items).allMatch(r -> r.getStatus() == ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(items).allMatch(r -> r.getRelation().getRelationId().equals(TABLE_A));
+  }
+
+  @Test
+  void sameTableWithDifferentSnapshotOverridesProducesDistinctRelationInfos() {
+    AtomicInteger relationDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateRelation(
+                      EngineContext ec,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
+                    relationDecorations.incrementAndGet();
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate first =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setTableId(TABLE_A)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(1L).build()))
+            .build();
+    TableReferenceCandidate second =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setTableId(TABLE_A)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(2L).build()))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(first, second))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    List<RelationResolution> items = chunks.get(1).getResolutions().getItemsList();
+    assertThat(items).hasSize(2);
+    assertThat(items).allMatch(r -> r.getStatus() == ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(items).allMatch(r -> r.getRelation().getRelationId().equals(TABLE_A));
+    assertThat(relationDecorations.get()).isEqualTo(2);
+  }
+
+  @Test
   void relationStillResolvesWhenStatsMissing() {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -479,7 +632,7 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void systemTableStatsAreSkippedWhenUnpinned() {
+  void systemTableStatsAreSkippedWhenUnpinned() throws Exception {
     overlay.registerTable(
         SYSTEM_TABLE,
         UserObjectBundleTestSupport.schemaFor("sys_id"),
@@ -507,6 +660,11 @@ class UserObjectBundleServiceTest {
     assertThat(relation.getRelationId()).isEqualTo(SYSTEM_TABLE);
     assertThat(relation.getOrigin()).isEqualTo(Origin.ORIGIN_BUILTIN);
     assertThat(relation.hasStats()).isFalse();
+    assertThat(queryStore.updateCount()).isEqualTo(0);
+    QueryContext updatedCtx = queryStore.get(ctx.getQueryId()).orElseThrow();
+    SnapshotSet snapshotSet = SnapshotSet.parseFrom(updatedCtx.getSnapshotSet());
+    assertThat(snapshotSet.getPinsList())
+        .noneMatch(pin -> pin.hasTableId() && pin.getTableId().equals(SYSTEM_TABLE));
   }
 
   @Test
@@ -676,6 +834,73 @@ class UserObjectBundleServiceTest {
     assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
     assertThat(resolution.getRelation().getRelationId()).isEqualTo(TABLE_A);
     assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+  }
+
+  @Test
+  void nameResolutionCachePreservesCaseSensitiveNames() {
+    ResourceId mixedCase =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("TABLE_MIXED")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ResourceId lowerCase =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("TABLE_LOWER")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    overlay.registerTable(
+        mixedCase,
+        UserObjectBundleTestSupport.schemaFor("mixed_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("TableX").build());
+    overlay.registerTable(
+        lowerCase,
+        UserObjectBundleTestSupport.schemaFor("lower_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("tablex").build());
+
+    TableReferenceCandidate mixedCandidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setName(NameRef.newBuilder().setCatalog("cat").setName("TableX").build()))
+            .build();
+    TableReferenceCandidate lowerCandidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setName(NameRef.newBuilder().setCatalog("cat").setName("tablex").build()))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(mixedCandidate, lowerCandidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    RelationResolution first = chunks.get(1).getResolutions().getItems(0);
+    RelationResolution second = chunks.get(1).getResolutions().getItems(1);
+    assertThat(first.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(second.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(first.getRelation().getRelationId()).isEqualTo(mixedCase);
+    assertThat(second.getRelation().getRelationId()).isEqualTo(lowerCase);
+  }
+
+  @Test
+  void resolveIsCachedPerUniqueTableWithinChunk() {
+    TableReferenceCandidate first =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    TableReferenceCandidate second =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    service.stream("cid", ctx, List.of(first, second)).collect().asList().await().indefinitely();
+
+    assertThat(overlay.resolveCount(TABLE_A)).isEqualTo(1);
   }
 
   @Test
@@ -1532,5 +1757,224 @@ class UserObjectBundleServiceTest {
     assertThat(basePin.hasAsOf()).isTrue();
     assertThat(basePin.getAsOf()).isEqualTo(asOf);
     assertThat(basePin.hasSnapshotId()).isFalse();
+  }
+
+  @Test
+  void viewBaseRelationWithUnresolvableNameSilentlySkipped() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_UNRESOLVED_BASE")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    NameRef missingBase = NameRef.newBuilder().setCatalog("cat").setName("missing_base").build();
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_unresolved_base",
+            "SELECT 1",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("c").setNullable(true).build()),
+            List.of(missingBase),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("c"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_unresolved_base").build());
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertThat(resolutions.getItemsCount()).isEqualTo(1);
+    RelationResolution viewRes = resolutions.getItems(0);
+    assertThat(viewRes.getInputIndex()).isEqualTo(0);
+    assertThat(viewRes.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(viewRes.getRelation().getRelationId()).isEqualTo(viewId);
+  }
+
+  @Test
+  void sharedBaseTableEmittedOnce() {
+    ResourceId view1Id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_SHARED_1")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId view2Id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_SHARED_2")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId sharedBaseId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("BASE_SHARED")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    NameRef sharedBaseName = NameRef.newBuilder().setCatalog("cat").setName("base_shared").build();
+    overlay.registerTable(
+        sharedBaseId, UserObjectBundleTestSupport.schemaFor("base_col"), sharedBaseName);
+
+    ViewNode view1 =
+        new ViewNode(
+            view1Id,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_shared_1",
+            "SELECT base_col FROM cat.base_shared",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(sharedBaseName),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    ViewNode view2 =
+        new ViewNode(
+            view2Id,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_shared_2",
+            "SELECT base_col FROM cat.base_shared",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(sharedBaseName),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        view1Id,
+        view1,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_shared_1").build());
+    overlay.registerRelation(
+        view2Id,
+        view2,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_shared_2").build());
+
+    List<TableReferenceCandidate> candidates =
+        List.of(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setViewId(view1Id))
+                .build(),
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setViewId(view2Id))
+                .build());
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    List<RelationResolution> resolutions =
+        chunks.get(1).getResolutions().getItemsList().stream().toList();
+    long sharedBaseCount =
+        resolutions.stream()
+            .filter(r -> r.getRelation().getRelationId().equals(sharedBaseId))
+            .count();
+    long syntheticSharedBaseCount =
+        resolutions.stream()
+            .filter(r -> r.getRelation().getRelationId().equals(sharedBaseId))
+            .filter(r -> r.getInputIndex() == -1)
+            .count();
+    assertThat(sharedBaseCount).isEqualTo(1);
+    assertThat(syntheticSharedBaseCount).isEqualTo(1);
+  }
+
+  @Test
+  void baseTableInjectionBoundedByChunkMax() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_BOUNDED_BASES")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    List<NameRef> baseRefs = new ArrayList<>();
+    for (int i = 0; i < 30; i++) {
+      ResourceId baseId =
+          ResourceId.newBuilder()
+              .setAccountId("acct")
+              .setId("BASE_" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      NameRef baseName = NameRef.newBuilder().setCatalog("cat").setName("base_" + i).build();
+      overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseName);
+      baseRefs.add(baseName);
+    }
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_bounded_bases",
+            "SELECT 1",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("c").setNullable(true).build()),
+            baseRefs,
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("c"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_bounded_bases").build());
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    List<UserObjectsBundleChunk> resolutionChunks =
+        chunks.stream().filter(UserObjectsBundleChunk::hasResolutions).toList();
+    assertThat(resolutionChunks).hasSize(2);
+    assertThat(resolutionChunks)
+        .allSatisfy(
+            chunk ->
+                assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+
+    List<RelationResolution> allResolutions =
+        resolutionChunks.stream().flatMap(c -> c.getResolutions().getItemsList().stream()).toList();
+    assertThat(allResolutions).hasSize(31); // 1 requested view + 30 eager bases
+    assertThat(
+            allResolutions.stream()
+                .filter(r -> r.getInputIndex() == 0 && r.getRelation().getRelationId().equals(viewId))
+                .count())
+        .isEqualTo(1);
+    assertThat(allResolutions.stream().filter(r -> r.getInputIndex() == -1).count()).isEqualTo(30);
   }
 }

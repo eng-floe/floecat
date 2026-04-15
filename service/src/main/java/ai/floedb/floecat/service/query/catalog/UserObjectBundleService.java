@@ -21,11 +21,14 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailure;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
@@ -72,7 +75,9 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -83,6 +88,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -103,6 +109,7 @@ public class UserObjectBundleService {
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
+  private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
   private final long slowLogMs;
   private final boolean logTimingBreakdown;
@@ -245,13 +252,15 @@ public class UserObjectBundleService {
   private Optional<ResolvedRelation> selectResolvedRelation(
       String correlationId,
       TableReferenceCandidate candidate,
-      List<QueryInput> normalizedCandidates) {
+      List<QueryInput> normalizedCandidates,
+      Function<NameRef, Optional<ResourceId>> nameResolver,
+      Function<ResourceId, Optional<GraphNode>> nodeResolver) {
     for (QueryInput input : normalizedCandidates) {
-      ResourceId relationId = extractResourceId(correlationId, input);
+      ResourceId relationId = extractResourceId(input, nameResolver);
       if (relationId == null) {
         continue;
       }
-      Optional<GraphNode> node = overlay.resolve(relationId);
+      Optional<GraphNode> node = nodeResolver.apply(relationId);
       if (node.isEmpty()) {
         if (input.getTargetCase() == QueryInput.TargetCase.NAME) {
           throw new GraphNodeMissingException(
@@ -270,14 +279,15 @@ public class UserObjectBundleService {
     return Optional.empty();
   }
 
-  private ResourceId extractResourceId(String correlationId, QueryInput input) {
+  private ResourceId extractResourceId(
+      QueryInput input, Function<NameRef, Optional<ResourceId>> nameResolver) {
     switch (input.getTargetCase()) {
       case TABLE_ID:
         return input.getTableId();
       case VIEW_ID:
         return input.getViewId();
       case NAME:
-        return overlay.resolveName(correlationId, input.getName()).orElse(null);
+        return nameResolver.apply(input.getName()).orElse(null);
       default:
         return null;
     }
@@ -373,6 +383,8 @@ public class UserObjectBundleService {
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
+            : relation.node() instanceof UserTableNode userTable
+                ? logicalSchemaMapper.map(userTable).getColumnsList()
             : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =
@@ -883,6 +895,10 @@ public class UserObjectBundleService {
   }
 
   private QueryInput buildCanonicalQueryInput(ResolvedRelation relation) {
+    // Built-in system relations are not version-pinned in query context snapshots.
+    if (relation.node().origin() == GraphNodeOrigin.SYSTEM) {
+      return null;
+    }
     QueryInput.Builder builder;
     GraphNodeKind kind = relation.node().kind();
     if (kind == GraphNodeKind.TABLE) {
@@ -1002,6 +1018,16 @@ public class UserObjectBundleService {
       RelationNode node,
       QueryInput selectedInput) {}
 
+  private record RelationCacheKey(
+      ResourceId relationId,
+      boolean wantsAllColumns,
+      List<String> initialColumns,
+      String engineKind,
+      String engineVersion,
+      SnapshotRef snapshotOverride) {}
+
+  private record NormalizedNameRef(String catalog, List<String> path, String name) {}
+
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
 
@@ -1023,9 +1049,16 @@ public class UserObjectBundleService {
     private final int resolutionCount;
     private final String defaultCatalog;
     private final StatsProvider statsProvider;
+    private final String engineKind;
+    private final String engineVersion;
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+    private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache = new HashMap<>();
+    private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache = new HashMap<>();
+    private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
+    private final Set<String> eagerBaseSeen = new HashSet<>();
+    private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final long streamStartNs = System.nanoTime();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
@@ -1053,6 +1086,9 @@ public class UserObjectBundleService {
       this.resolutionCount = tables.size();
       this.defaultCatalog = defaultCatalog;
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
+      EngineContext requestEngine = engineContext.engineContext();
+      this.engineKind = requestEngine.normalizedKind();
+      this.engineVersion = requestEngine.normalizedVersion();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Initialized bundle iterator query_id=%s correlation_id=%s resolution_count=%d"
@@ -1076,7 +1112,7 @@ public class UserObjectBundleService {
         return headerChunk(ctx.getQueryId(), seq++);
       }
 
-      if (pending.isEmpty() && nextInputIndex < resolutionCount) {
+      if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
         fillPending();
       }
 
@@ -1100,13 +1136,15 @@ public class UserObjectBundleService {
 
     private void fillPending() {
       List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+      drainEagerBaseTables(toPin);
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
         PendingItem item = resolveNextResolution();
         pending.add(item);
         if (item instanceof PendingFound found) {
           toPin.add(found.relation());
           if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
-            injectEagerBaseTables(view, toPin);
+            eagerBaseQueue.addLast(new EagerBaseCursor(view));
+            drainEagerBaseTables(toPin);
           }
         }
       }
@@ -1125,26 +1163,45 @@ public class UserObjectBundleService {
      * {@link NameRef}, builds a synthetic {@link ResolvedRelation}, pins its snapshot, and adds it
      * to {@code pending} with {@code inputIndex = -1} to signal it was not explicitly requested.
      * Failures to resolve a NameRef are silently skipped (base_relations is a performance hint).
-     * Duplicate base-table IDs are deduplicated.
+     * Duplicate base-table IDs are deduplicated across the entire request stream. When a view has
+     * more base relations than fit in the current chunk, remaining base relations are carried over
+     * and emitted in subsequent chunks.
      */
-    private void injectEagerBaseTables(ViewNode view, List<ResolvedRelation> toPin) {
-      Set<String> seen = new HashSet<>();
-      for (NameRef baseRef : view.baseRelations()) {
+    private void drainEagerBaseTables(List<ResolvedRelation> toPin) {
+      while (pending.size() < MAX_RESOLUTIONS_PER_CHUNK && !eagerBaseQueue.isEmpty()) {
+        EagerBaseCursor cursor = eagerBaseQueue.peekFirst();
+        if (cursor == null) {
+          break;
+        }
+        if (drainEagerBaseCursor(cursor, toPin)) {
+          eagerBaseQueue.removeFirst();
+        }
+      }
+    }
+
+    private boolean drainEagerBaseCursor(EagerBaseCursor cursor, List<ResolvedRelation> toPin) {
+      List<NameRef> baseRelations = cursor.view.baseRelations();
+      while (cursor.nextBaseIndex < baseRelations.size()
+          && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        NameRef baseRef = baseRelations.get(cursor.nextBaseIndex++);
         long resolveStartNs = System.nanoTime();
         try {
-          NameRef enriched = ViewContextUtils.enrichForViewContext(baseRef, view, defaultCatalog);
-          Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, enriched);
+          NameRef enriched =
+              ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalog);
+          Optional<ResourceId> baseIdOpt = resolveNameCached(enriched);
           if (baseIdOpt.isEmpty()) {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
-          if (!seen.add(baseId.getId())) {
+          String baseKey = pinKey(baseId);
+          if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
-          Optional<GraphNode> nodeOpt = overlay.resolve(baseId);
+          Optional<GraphNode> nodeOpt = resolveNodeCached(baseId);
           if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
             continue;
           }
+          eagerBaseSeen.add(baseKey);
           QueryInput syntheticInput = QueryInput.newBuilder().setTableId(baseId).build();
           ResolvedRelation syntheticRelation =
               new ResolvedRelation(
@@ -1157,6 +1214,7 @@ public class UserObjectBundleService {
           resolveNanos += System.nanoTime() - resolveStartNs;
         }
       }
+      return cursor.nextBaseIndex >= baseRelations.size();
     }
 
     private PendingItem resolveNextResolution() {
@@ -1173,7 +1231,12 @@ public class UserObjectBundleService {
         List<QueryInput> normalized = normalizeCandidates(correlationId, candidate, defaultCatalog);
         try {
           Optional<ResolvedRelation> resolved =
-              selectResolvedRelation(correlationId, candidate, normalized);
+              selectResolvedRelation(
+                  correlationId,
+                  candidate,
+                  normalized,
+                  this::resolveNameCached,
+                  this::resolveNodeCached);
           if (resolved.isPresent()) {
             foundCount++;
             if (LOG.isTraceEnabled()) {
@@ -1254,6 +1317,17 @@ public class UserObjectBundleService {
           continue;
         }
         PendingFound found = (PendingFound) item;
+        RelationCacheKey cacheKey = relationCacheKey(found.relation());
+        RelationInfo cachedInfo = relationInfoCache.get(cacheKey);
+        if (cachedInfo != null) {
+          resolutions.add(
+              RelationResolution.newBuilder()
+                  .setInputIndex(found.inputIndex())
+                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
+                  .setRelation(cachedInfo)
+                  .build());
+          continue;
+        }
         long statsBeforeNanos = timings.statsLookupNanos();
         long buildStartNs = System.nanoTime();
         RelationInfo info =
@@ -1261,6 +1335,7 @@ public class UserObjectBundleService {
         long buildNanos = System.nanoTime() - buildStartNs;
         long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
         relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
+        relationInfoCache.put(cacheKey, info);
         resolutions.add(
             RelationResolution.newBuilder()
                 .setInputIndex(found.inputIndex())
@@ -1320,6 +1395,53 @@ public class UserObjectBundleService {
       }
     }
 
+    private RelationCacheKey relationCacheKey(ResolvedRelation relation) {
+      TableReferenceCandidate candidate = relation.candidate();
+      List<String> initialColumns =
+          candidate.getInitialColumnsCount() == 0
+              ? List.of()
+              : List.copyOf(candidate.getInitialColumnsList());
+      SnapshotRef snapshotOverride =
+          relation.selectedInput().hasSnapshot()
+              ? relation.selectedInput().getSnapshot()
+              : SnapshotRef.getDefaultInstance();
+      return new RelationCacheKey(
+          relation.relationId(),
+          candidate.getWantsAllColumns(),
+          initialColumns,
+          engineKind,
+          engineVersion,
+          snapshotOverride);
+    }
+
+    private Optional<ResourceId> resolveNameCached(NameRef ref) {
+      NormalizedNameRef key = normalizedNameRef(ref);
+      return nameResolutionCache.computeIfAbsent(
+          key, ignored -> overlay.resolveName(correlationId, ref));
+    }
+
+    private Optional<GraphNode> resolveNodeCached(ResourceId id) {
+      return nodeResolutionCache.computeIfAbsent(id, overlay::resolve);
+    }
+
+    private NormalizedNameRef normalizedNameRef(NameRef ref) {
+      List<String> normalizedPath = new ArrayList<>(ref.getPathCount());
+      for (String segment : ref.getPathList()) {
+        normalizedPath.add(normalizeNameToken(segment));
+      }
+      return new NormalizedNameRef(
+          normalizeNameToken(ref.getCatalog()),
+          List.copyOf(normalizedPath),
+          normalizeNameToken(ref.getName()));
+    }
+
+    private String normalizeNameToken(String token) {
+      if (token == null) {
+        return "";
+      }
+      return token.trim();
+    }
+
     /**
      * Represents inputs that are ready to be emitted. Keeping items in insertion order ensures we
      * re-emit resolutions in the same order the client requested them, even after buffering pins.
@@ -1361,6 +1483,15 @@ public class UserObjectBundleService {
 
       public ResolvedRelation relation() {
         return relation;
+      }
+    }
+
+    private static final class EagerBaseCursor {
+      private final ViewNode view;
+      private int nextBaseIndex;
+
+      private EagerBaseCursor(ViewNode view) {
+        this.view = view;
       }
     }
 

@@ -18,12 +18,15 @@ package ai.floedb.floecat.service.metagraph.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.telemetry.TestObservability;
+import com.google.protobuf.Timestamp;
+import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -84,6 +87,29 @@ class GraphCacheManagerTest {
     assertThat(disabled.get(tableId, key)).isNull();
   }
 
+  @Test
+  void metaCacheStoresAndInvalidatesEntries() {
+    GraphCacheManager manager = new GraphCacheManager(true, 10, 2L, new TestObservability());
+    ResourceId tableId = rid("account", "tbl");
+    MutationMeta meta = mutationMeta(7L);
+
+    assertThat(manager.getMeta(tableId)).isNull();
+    manager.putMeta(tableId, meta);
+    assertThat(manager.getMeta(tableId)).isEqualTo(meta);
+
+    manager.invalidate(tableId);
+    assertThat(manager.getMeta(tableId)).isNull();
+  }
+
+  @Test
+  void disabledMetaCacheIgnoresWrites() {
+    GraphCacheManager manager = new GraphCacheManager(true, 10, 0L, new TestObservability());
+    ResourceId tableId = rid("account", "tbl");
+    manager.putMeta(tableId, mutationMeta(1L));
+
+    assertThat(manager.getMeta(tableId)).isNull();
+  }
+
   private UserTableNode tableNode(ResourceId tableId) {
     return TestNodes.tableNode(tableId, "{}");
   }
@@ -93,6 +119,16 @@ class GraphCacheManagerTest {
         .setAccountId(accountId)
         .setId(id)
         .setKind(ResourceKind.RK_TABLE)
+        .build();
+  }
+
+  private static MutationMeta mutationMeta(long pointerVersion) {
+    return MutationMeta.newBuilder()
+        .setPointerVersion(pointerVersion)
+        .setUpdatedAt(
+            Timestamp.newBuilder()
+                .setSeconds(Instant.parse("2024-01-01T00:00:00Z").getEpochSecond())
+                .build())
         .build();
   }
 }

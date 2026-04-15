@@ -48,6 +48,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -104,7 +105,13 @@ public final class UserGraph {
           long cacheMaxSize,
       EngineHintManager engineHints) {
 
-    this.cache = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, observability);
+    long metaCacheTtlSeconds =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.metadata.graph.meta-cache-ttl-seconds", Long.class)
+            .orElse(2L);
+    this.cache =
+        new GraphCacheManager(
+            cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -122,7 +129,7 @@ public final class UserGraph {
       ViewRepository viewRepo,
       Observability observability) {
 
-    this.cache = new GraphCacheManager(true, 1024, observability);
+    this.cache = new GraphCacheManager(true, 1024, 2L, observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -232,10 +239,15 @@ public final class UserGraph {
   public Optional<GraphNode> resolve(ResourceId id) {
 
     // ----- Regular nodes (cached in graph) ------------------------------------
-    Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
-    if (metaOpt.isEmpty()) return Optional.empty();
-
-    MutationMeta meta = metaOpt.get();
+    MutationMeta meta = cache.getMeta(id);
+    if (meta == null) {
+      Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
+      if (metaOpt.isEmpty()) {
+        return Optional.empty();
+      }
+      meta = metaOpt.get();
+      cache.putMeta(id, meta);
+    }
     GraphCacheKey key = new GraphCacheKey(id, meta.getPointerVersion());
 
     GraphNode cached = cache.get(id, key);

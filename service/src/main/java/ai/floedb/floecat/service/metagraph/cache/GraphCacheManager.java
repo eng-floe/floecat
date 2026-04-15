@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.metagraph.cache;
 
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -40,17 +41,28 @@ import java.util.concurrent.ConcurrentMap;
  */
 public class GraphCacheManager {
 
-  private final boolean cacheEnabled;
+  private final boolean graphCacheEnabled;
+  private final boolean metaCacheEnabled;
   private final long cacheMaxSize;
   private final Observability observability;
   private final CacheMetrics cacheMetrics;
   private final ConcurrentMap<String, Cache<GraphCacheKey, GraphNode>> accountCaches =
       new ConcurrentHashMap<>();
+  private final Cache<ResourceId, MutationMeta> metaCache;
 
-  public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, Observability observability) {
-    this.cacheEnabled = cacheEnabled;
+  public GraphCacheManager(
+      boolean cacheEnabled, long cacheMaxSize, long metaCacheTtlSeconds, Observability observability) {
+    this.graphCacheEnabled = cacheEnabled;
+    this.metaCacheEnabled = metaCacheTtlSeconds > 0;
     this.cacheMaxSize = cacheMaxSize;
     this.observability = Objects.requireNonNull(observability, "observability");
+    this.metaCache =
+        metaCacheEnabled
+            ? Caffeine.newBuilder()
+                .maximumSize(Math.max(1L, cacheMaxSize))
+                .expireAfterWrite(Duration.ofSeconds(metaCacheTtlSeconds))
+                .build()
+            : null;
     this.cacheMetrics =
         new CacheMetrics(this.observability, "service", "graph-cache", "graph-cache");
     registerGauges();
@@ -59,12 +71,16 @@ public class GraphCacheManager {
         "Estimated graph cache entries");
   }
 
+  public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, Observability observability) {
+    this(cacheEnabled, cacheMaxSize, 0L, observability);
+  }
+
   /**
    * Returns the cached node for the provided resource, or {@code null} when caching is disabled or
    * the entry is missing.
    */
   public GraphNode get(ResourceId id, GraphCacheKey key) {
-    if (!cacheEnabled) {
+    if (!graphCacheEnabled) {
       return null;
     }
     Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
@@ -78,7 +94,7 @@ public class GraphCacheManager {
 
   /** Stores the resolved node inside the account cache. */
   public void put(ResourceId id, GraphCacheKey key, GraphNode node) {
-    if (!cacheEnabled || node == null) {
+    if (!graphCacheEnabled || node == null) {
       return;
     }
     Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
@@ -89,16 +105,32 @@ public class GraphCacheManager {
 
   /** Evicts every cached version of the resource. */
   public void invalidate(ResourceId id) {
-    if (!cacheEnabled) {
-      return;
-    }
-    Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
-    if (cache != null) {
-      cache.asMap().keySet().removeIf(key -> key.id().equals(id));
-      if (cache.estimatedSize() == 0) {
-        accountCaches.remove(id.getAccountId(), cache);
+    if (graphCacheEnabled) {
+      Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
+      if (cache != null) {
+        cache.asMap().keySet().removeIf(key -> key.id().equals(id));
+        if (cache.estimatedSize() == 0) {
+          accountCaches.remove(id.getAccountId(), cache);
+        }
       }
     }
+    if (metaCacheEnabled && metaCache != null) {
+      metaCache.invalidate(id);
+    }
+  }
+
+  public MutationMeta getMeta(ResourceId id) {
+    if (!metaCacheEnabled || metaCache == null) {
+      return null;
+    }
+    return metaCache.getIfPresent(id);
+  }
+
+  public void putMeta(ResourceId id, MutationMeta meta) {
+    if (!metaCacheEnabled || metaCache == null || meta == null) {
+      return;
+    }
+    metaCache.put(id, meta);
   }
 
   private Cache<GraphCacheKey, GraphNode> accountCache(String accountId) {
@@ -127,9 +159,10 @@ public class GraphCacheManager {
   }
 
   private void registerGauges() {
-    cacheMetrics.trackEnabled(() -> cacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
+    cacheMetrics.trackEnabled(() -> graphCacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
     cacheMetrics.trackMaxEntries(
-        () -> cacheEnabled ? (double) cacheMaxSize : 0.0, "Graph cache configured max entries");
+        () -> graphCacheEnabled ? (double) cacheMaxSize : 0.0,
+        "Graph cache configured max entries");
     cacheMetrics.trackAccounts(() -> (double) accountCaches.size(), "Graph cache account count");
   }
 
@@ -137,14 +170,14 @@ public class GraphCacheManager {
     if (duration == null) {
       return;
     }
-    if (!cacheEnabled) {
+    if (!graphCacheEnabled) {
       return;
     }
     cacheMetrics.recordLoad(duration, true);
   }
 
   public void recordLoadFailure(Duration duration, Throwable error) {
-    if (duration == null || !cacheEnabled) {
+    if (duration == null || !graphCacheEnabled) {
       return;
     }
     cacheMetrics.recordLoadFailure(duration, error);

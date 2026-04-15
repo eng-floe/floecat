@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
@@ -69,6 +70,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, NameRef> names = new HashMap<>();
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
+    private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -76,6 +78,7 @@ public final class UserObjectBundleTestSupport {
       names.clear();
       catalogs.clear();
       hidden.clear();
+      resolveCalls.clear();
     }
 
     public void registerTable(
@@ -128,10 +131,15 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<GraphNode> resolve(ResourceId id) {
+      resolveCalls.merge(id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 1, Integer::sum);
       if (hidden.contains(id.getId())) {
         return Optional.empty();
       }
       return Optional.ofNullable(nodes.get(id.getId()));
+    }
+
+    public int resolveCount(ResourceId id) {
+      return resolveCalls.getOrDefault(id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 0);
     }
 
     @Override
@@ -353,13 +361,25 @@ public final class UserObjectBundleTestSupport {
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId) {
-      calls.add(new ArrayList<>(inputs));
-      ResourceId rid = inputs.get(0).getTableId();
-      SnapshotPin pin =
-          SnapshotPin.newBuilder().setTableId(rid).setSnapshotId(nextSnapshotId++).build();
-      return new ResolutionResult(
-          List.of(rid), SnapshotSet.newBuilder().addPins(pin).build(), null);
+        Optional<ResourceId> defaultCatalogId,
+        Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
+      List<ResourceId> resolved = new ArrayList<>(inputs.size());
+      SnapshotSet.Builder pins = SnapshotSet.newBuilder();
+      for (QueryInput input : inputs) {
+        calls.add(List.of(input));
+        switch (input.getTargetCase()) {
+          case TABLE_ID -> {
+            ResourceId rid = input.getTableId();
+            resolved.add(rid);
+            pins.addPins(
+                SnapshotPin.newBuilder().setTableId(rid).setSnapshotId(nextSnapshotId++).build());
+          }
+          case VIEW_ID -> resolved.add(input.getViewId());
+          case NAME -> {}
+          default -> {}
+        }
+      }
+      return new ResolutionResult(resolved, pins.build(), null);
     }
   }
 

@@ -142,7 +142,9 @@ public class QueryInputResolver {
     // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
     // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
     Optional<String> defaultCatalog =
-        defaultCatalogId.flatMap(id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
+        metadataGraph == null
+            ? Optional.empty()
+            : defaultCatalogId.flatMap(id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
 
     var state = new ResolutionState(correlationId, asOfDefault, defaultCatalog);
 
@@ -231,7 +233,7 @@ public class QueryInputResolver {
       ResourceId relationId,
       Optional<Timestamp> effectiveAsOf,
       Set<String> seen) {
-    String key = relationId.getKind().name() + ":" + relationId.getId();
+    String key = pinKey(relationId);
     if (!seen.add(key)) {
       return;
     }
@@ -255,6 +257,10 @@ public class QueryInputResolver {
                     .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
               }
             });
+  }
+
+  private static String pinKey(ResourceId rid) {
+    return String.join(":", rid.getAccountId(), rid.getKind().name(), rid.getId());
   }
 
   private void mergePin(Map<ResourceId, SnapshotPin> pinByTableId, SnapshotPin pin) {
