@@ -41,6 +41,7 @@ import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -306,6 +307,27 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns) {
+    return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        Set.of(
+            StatsTargetKind.TABLE,
+            StatsTargetKind.COLUMN,
+            StatsTargetKind.FILE,
+            StatsTargetKind.EXPRESSION));
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
     if (snapshotId < 0) {
       return List.of();
     }
@@ -314,11 +336,23 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (snapshot == null) {
       return List.of();
     }
-    return buildTargetStats(table, destinationTableId, snapshot, includeColumns);
+    return buildTargetStats(
+        table, destinationTableId, snapshot, includeColumns, includeTargetKinds);
   }
 
   private List<TargetStatsRecord> buildTargetStats(
-      Table table, ResourceId destinationTableId, Snapshot snapshot, Set<String> includeColumns) {
+      Table table,
+      ResourceId destinationTableId,
+      Snapshot snapshot,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
+    boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
+    boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
+    if (!emitTable && !emitColumns && !emitFiles) {
+      return List.of();
+    }
+
     long snapshotId = snapshot.snapshotId();
     long createdMs = snapshot.timestampMillis();
     Integer snapshotSchemaId = snapshot.schemaId();
@@ -365,85 +399,98 @@ public abstract class IcebergConnector implements FloecatConnector {
       snapshotRowCount = engineOutput.result().totalRowCount();
     }
 
-    var cStats =
-        ConnectorStatsViewBuilder.toColumnStatsView(
-            engineOutput.result().columns(),
-            id -> {
-              String name = columnNames.get(id);
-              if (name != null && !name.isBlank()) {
-                return name;
-              }
-              var f = schema.findField(id);
-              return f == null ? "" : f.name();
-            },
-            id -> idToPath.getOrDefault(id, ""),
-            id -> idToOrdinal.getOrDefault(id, 0),
-            id -> id,
-            id -> {
-              LogicalType lt = logicalTypes.get(id);
-              if (lt != null) {
-                return lt;
-              }
-              var f = schema.findField(id);
-              return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-            },
-            snapshotRowCount);
+    List<FloecatConnector.ColumnStatsView> cStats =
+        emitColumns
+            ? ConnectorStatsViewBuilder.toColumnStatsView(
+                engineOutput.result().columns(),
+                id -> {
+                  String name = columnNames.get(id);
+                  if (name != null && !name.isBlank()) {
+                    return name;
+                  }
+                  var f = schema.findField(id);
+                  return f == null ? "" : f.name();
+                },
+                id -> idToPath.getOrDefault(id, ""),
+                id -> idToOrdinal.getOrDefault(id, 0),
+                id -> id,
+                id -> {
+                  LogicalType lt = logicalTypes.get(id);
+                  if (lt != null) {
+                    return lt;
+                  }
+                  var f = schema.findField(id);
+                  return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+                },
+                snapshotRowCount)
+            : List.of();
 
-    var baseFiles =
-        ConnectorStatsViewBuilder.toFileColumnStatsView(
-            engineOutput.result().files(),
-            id -> {
-              String name = columnNames.get(id);
-              if (name != null && !name.isBlank()) {
-                return name;
-              }
-              var f = schema.findField(id);
-              return f == null ? "" : f.name();
-            },
-            id -> idToPath.getOrDefault(id, ""),
-            id -> idToOrdinal.getOrDefault(id, 0),
-            id -> id,
-            id -> {
-              LogicalType lt = logicalTypes.get(id);
-              if (lt != null) {
-                return lt;
-              }
-              var f = schema.findField(id);
-              return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-            });
+    List<FileColumnStatsView> allFiles = List.of();
+    if (emitFiles) {
+      var baseFiles =
+          ConnectorStatsViewBuilder.toFileColumnStatsView(
+              engineOutput.result().files(),
+              id -> {
+                String name = columnNames.get(id);
+                if (name != null && !name.isBlank()) {
+                  return name;
+                }
+                var f = schema.findField(id);
+                return f == null ? "" : f.name();
+              },
+              id -> idToPath.getOrDefault(id, ""),
+              id -> idToOrdinal.getOrDefault(id, 0),
+              id -> id,
+              id -> {
+                LogicalType lt = logicalTypes.get(id);
+                if (lt != null) {
+                  return lt;
+                }
+                var f = schema.findField(id);
+                return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+              });
 
-    List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
-    for (IcebergPlanner.DeleteFileStat deleteFile : engineOutput.deleteFiles()) {
-      FileContent fileContent =
-          deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-              ? FileContent.FC_EQUALITY_DELETES
-              : FileContent.FC_POSITION_DELETES;
-      deleteStats.add(
-          new FloecatConnector.FileColumnStatsView(
-              deleteFile.location(),
-              "", // format often unknown for deletes; leave blank
-              deleteFile.recordCount(),
-              deleteFile.fileSizeInBytes(),
-              fileContent,
-              "", // partition json not needed for deletes
-              0,
-              deleteFile.equalityFieldIds(),
-              deleteFile.fileSequenceNumber(),
-              List.of() // no per-column stats for deletes
-              ));
+      List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
+      for (IcebergPlanner.DeleteFileStat deleteFile : engineOutput.deleteFiles()) {
+        FileContent fileContent =
+            deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                ? FileContent.FC_EQUALITY_DELETES
+                : FileContent.FC_POSITION_DELETES;
+        deleteStats.add(
+            new FloecatConnector.FileColumnStatsView(
+                deleteFile.location(),
+                "", // format often unknown for deletes; leave blank
+                deleteFile.recordCount(),
+                deleteFile.fileSizeInBytes(),
+                fileContent,
+                "", // partition json not needed for deletes
+                0,
+                deleteFile.equalityFieldIds(),
+                deleteFile.fileSequenceNumber(),
+                List.of() // no per-column stats for deletes
+                ));
+      }
+
+      List<FileColumnStatsView> mutableFiles = new ArrayList<>(baseFiles);
+      mutableFiles.addAll(deleteStats);
+      allFiles = List.copyOf(mutableFiles);
     }
 
-    List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
-    allFiles.addAll(deleteStats);
     List<TargetStatsRecord> materialized = new ArrayList<>();
-    materialized.add(
-        StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
-    materialized.addAll(
-        StatsProtoEmitter.toTargetColumnStatsFromViews(
-            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cStats));
-    materialized.addAll(
-        StatsProtoEmitter.toTargetFileStatsFromViews(
-            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, allFiles));
+    if (emitTable) {
+      materialized.add(
+          StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
+    }
+    if (emitColumns) {
+      materialized.addAll(
+          StatsProtoEmitter.toTargetColumnStatsFromViews(
+              destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cStats));
+    }
+    if (emitFiles) {
+      materialized.addAll(
+          StatsProtoEmitter.toTargetFileStatsFromViews(
+              destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, allFiles));
+    }
     return List.copyOf(materialized);
   }
 
