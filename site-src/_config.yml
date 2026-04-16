@@ -1,0 +1,15 @@
+title: Floecat
+description: Floecat notes, architecture, and blog
+theme: minima
+markdown: kramdown
+
+baseurl: "/floecat"
+url: "https://eng-floe.github.io"
+
+header_pages:
+  - blog.md
+
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
