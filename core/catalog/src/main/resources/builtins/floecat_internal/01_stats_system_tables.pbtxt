@@ -1,0 +1,667 @@
+system_namespaces {
+  name {
+    name: "sys"
+  }
+  display_name: "sys"
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "stats_snapshot"
+  }
+  display_name: "stats_snapshot"
+  columns {
+    name: "account_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "snapshot_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "completeness"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 7
+  }
+  columns {
+    name: "provenance"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 8
+  }
+  columns {
+    name: "confidence"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 9
+  }
+  columns {
+    name: "capture_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 10
+  }
+  columns {
+    name: "refresh_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 11
+  }
+  columns {
+    name: "rows_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 12
+  }
+  columns {
+    name: "files_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 13
+  }
+  columns {
+    name: "row_groups_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 14
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "stats_snapshot_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "stats_table"
+  }
+  display_name: "stats_table"
+  columns {
+    name: "account_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "snapshot_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "row_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 7
+  }
+  columns {
+    name: "file_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 8
+  }
+  columns {
+    name: "total_bytes"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 9
+  }
+  columns {
+    name: "completeness"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 10
+  }
+  columns {
+    name: "provenance"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 11
+  }
+  columns {
+    name: "confidence"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 12
+  }
+  columns {
+    name: "capture_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 13
+  }
+  columns {
+    name: "refresh_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 14
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "stats_table_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "stats_column"
+  }
+  display_name: "stats_column"
+  columns {
+    name: "account_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "snapshot_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "column_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  columns {
+    name: "column"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 8
+  }
+  columns {
+    name: "data_type"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+  }
+  columns {
+    name: "ordinal"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 10
+  }
+  columns {
+    name: "value_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 11
+  }
+  columns {
+    name: "null_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 12
+  }
+  columns {
+    name: "nan_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 13
+  }
+  columns {
+    name: "distinct_count"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 14
+  }
+  columns {
+    name: "min_value"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 15
+  }
+  columns {
+    name: "max_value"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 16
+  }
+  columns {
+    name: "histogram_json"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 17
+  }
+  columns {
+    name: "avg_width_bytes"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 18
+  }
+  columns {
+    name: "most_common_values_json"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 19
+  }
+  columns {
+    name: "most_common_freqs_json"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 20
+  }
+  columns {
+    name: "completeness"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 21
+  }
+  columns {
+    name: "provenance"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 22
+  }
+  columns {
+    name: "confidence"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 23
+  }
+  columns {
+    name: "capture_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 24
+  }
+  columns {
+    name: "refresh_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 25
+  }
+  columns {
+    name: "rows_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 26
+  }
+  columns {
+    name: "files_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 27
+  }
+  columns {
+    name: "row_groups_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 28
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "stats_column_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "stats_expression"
+  }
+  display_name: "stats_expression"
+  columns {
+    name: "account_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_id"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "snapshot_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "engine_kind"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  columns {
+    name: "expression_key"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 8
+  }
+  columns {
+    name: "data_type"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+  }
+  columns {
+    name: "value_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 10
+  }
+  columns {
+    name: "null_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 11
+  }
+  columns {
+    name: "nan_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 12
+  }
+  columns {
+    name: "distinct_count"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 13
+  }
+  columns {
+    name: "min_value"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 14
+  }
+  columns {
+    name: "max_value"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 15
+  }
+  columns {
+    name: "histogram_json"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 16
+  }
+  columns {
+    name: "completeness"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 17
+  }
+  columns {
+    name: "provenance"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 18
+  }
+  columns {
+    name: "confidence"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 19
+  }
+  columns {
+    name: "capture_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 20
+  }
+  columns {
+    name: "refresh_time"
+    type {
+      name: "TIMESTAMPTZ"
+    }
+    nullable: true
+    ordinal: 21
+  }
+  columns {
+    name: "rows_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 22
+  }
+  columns {
+    name: "files_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 23
+  }
+  columns {
+    name: "row_groups_seen_count"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 24
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "stats_expression_scanner"
+  }
+}
