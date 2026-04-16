@@ -50,7 +50,6 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.runtime.StartupEvent;
-import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -90,7 +89,6 @@ public class SeedRunner {
   @Inject SnapshotRepository snapshots;
   @Inject ConnectorRepository connectorRepo;
   @Inject ReconcilerService reconciler;
-  @Inject Vertx vertx;
 
   @ConfigProperty(name = "floecat.seed.enabled", defaultValue = "true")
   boolean enabled;
@@ -127,20 +125,13 @@ public class SeedRunner {
     }
 
     LOG.infof("Starting seedData() mode=%s", seedMode);
-    var future =
-        vertx.<Void>executeBlocking(
-            promise -> {
-              try {
-                seedData();
-                promise.complete(null);
-              } catch (Throwable t) {
-                promise.fail(t);
-              }
-            },
-            true);
-    future
-        .onSuccess(v -> LOG.info("Startup seeding completed successfully"))
-        .onFailure(t -> LOG.error("Startup seeding failed", t));
+    try {
+      seedData();
+      LOG.info("Startup seeding completed successfully");
+    } catch (Throwable t) {
+      LOG.error("Startup seeding failed", t);
+      throw t;
+    }
   }
 
   public void seedData() {

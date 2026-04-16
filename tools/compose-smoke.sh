@@ -448,18 +448,7 @@ run_mode() {
 
   if [ -n "$pre_services" ]; then
     if ! eval "$compose_cmd up -d $pre_services"; then
-      if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
-        local polaris_bootstrap_logs
-        polaris_bootstrap_logs=$(eval "$compose_cmd logs --no-color polaris-bootstrap 2>&1" || true)
-        if echo "$polaris_bootstrap_logs" | grep -aq "already been bootstrapped"; then
-          echo "==> [SMOKE] polaris-bootstrap already initialized during pre-start; continuing"
-          eval "$compose_cmd up -d --no-deps polaris"
-        else
-          return 1
-        fi
-      else
-        return 1
-      fi
+      return 1
     fi
   fi
 
@@ -481,26 +470,17 @@ run_mode() {
   fi
 
   if ! eval "$compose_cmd up -d"; then
-    if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
-      local polaris_bootstrap_logs
-      polaris_bootstrap_logs=$(eval "$compose_cmd logs --no-color polaris-bootstrap 2>&1" || true)
-        if echo "$polaris_bootstrap_logs" | grep -aq "already been bootstrapped"; then
-          echo "==> [SMOKE] polaris-bootstrap already initialized; continuing"
-          eval "$compose_cmd up -d --no-deps polaris"
-        else
-          return 1
-        fi
-    else
-      return 1
-    fi
+    return 1
   fi
 
   local i
+  local service_logs
   for i in $(seq 1 180); do
-    if eval "$compose_cmd logs service 2>&1" | grep -q "Startup seeding completed successfully"; then
+    service_logs=$(eval "$compose_cmd logs service 2>&1" || true)
+    if [[ "$service_logs" == *"Startup seeding completed successfully"* ]]; then
       break
     fi
-    if eval "$compose_cmd logs service 2>&1" | grep -q "Startup seeding failed"; then
+    if [[ "$service_logs" == *"Startup seeding failed"* ]]; then
       eval "$compose_cmd logs --no-color"
       return 1
     fi
@@ -764,7 +744,7 @@ quit")
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
     local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
-    local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
+    local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (11, 'first'); SELECT 'recreate_first_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_recreate_smoke WHERE id = 11; SELECT 'recreate_after_delete=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (22, 'second'); SELECT 'recreate_second_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
 
     local duckdb_out
     if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
@@ -782,6 +762,9 @@ quit")
     assert_contains "$label duckdb dv_demo_delta count" "$duckdb_out" "dv_demo_delta=2"
     assert_contains "$label duckdb dv_demo_delta content" "$duckdb_out" "dv_content=1,3,a,c"
     assert_contains "$label duckdb ctas count" "$duckdb_out" "ctas_count=5"
+    assert_contains "$label duckdb recreate first insert" "$duckdb_out" "recreate_first_insert=1,11,first,first"
+    assert_contains "$label duckdb recreate after delete" "$duckdb_out" "recreate_after_delete=0"
+    assert_contains "$label duckdb recreate second insert" "$duckdb_out" "recreate_second_insert=1,22,second,second"
     assert_contains "$label duckdb mutation create" "$duckdb_out" "mut_after_create=0"
     assert_contains "$label duckdb mutation insert" "$duckdb_out" "mut_after_insert=3,6,a,c"
     assert_contains "$label duckdb mutation delete" "$duckdb_out" "mut_after_delete=2,4,a,c"
@@ -1035,6 +1018,34 @@ print(
     )
 )
 run_sql("DROP TABLE iceberg.trino_merge_smoke")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_recreate_smoke")
+run_sql("CREATE TABLE iceberg.trino_recreate_smoke (id INTEGER, v VARCHAR)")
+run_sql("INSERT INTO iceberg.trino_recreate_smoke VALUES (11, 'first')")
+print(
+    scalar(
+        "SELECT 'recreate_first_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+        "FROM iceberg.trino_recreate_smoke"
+    )
+)
+run_sql("DELETE FROM iceberg.trino_recreate_smoke WHERE id = 11")
+print(
+    scalar(
+        "SELECT 'recreate_after_delete=' || CAST(COUNT(*) AS VARCHAR) "
+        "FROM iceberg.trino_recreate_smoke"
+    )
+)
+run_sql("DROP TABLE iceberg.trino_recreate_smoke")
+run_sql("CREATE TABLE iceberg.trino_recreate_smoke (id INTEGER, v VARCHAR)")
+run_sql("INSERT INTO iceberg.trino_recreate_smoke VALUES (22, 'second')")
+print(
+    scalar(
+        "SELECT 'recreate_second_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+        "FROM iceberg.trino_recreate_smoke"
+    )
+)
+run_sql("DROP TABLE iceberg.trino_recreate_smoke")
 run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
 run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
 
@@ -1128,6 +1139,9 @@ PY
     assert_contains "$label trino rename row count" "$trino_out" "rename_row_count=1"
     assert_contains "$label trino metadata column update" "$trino_out" "meta_columns=3"
     assert_contains "$label trino merge mutation" "$trino_out" "merge_after=3,6,a,c"
+    assert_contains "$label trino recreate first insert" "$trino_out" "recreate_first_insert=1,11,first,first"
+    assert_contains "$label trino recreate after delete" "$trino_out" "recreate_after_delete=0"
+    assert_contains "$label trino recreate second insert" "$trino_out" "recreate_second_insert=1,22,second,second"
     assert_contains "$label trino mutation create" "$trino_out" "mut_after_create=0"
     assert_contains "$label trino mutation insert" "$trino_out" "mut_after_insert=3,6,a,c"
     assert_contains "$label trino mutation delete" "$trino_out" "mut_after_delete=2,4,a,c"
