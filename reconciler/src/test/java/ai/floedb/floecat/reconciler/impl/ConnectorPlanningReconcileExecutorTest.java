@@ -43,7 +43,11 @@ class ConnectorPlanningReconcileExecutorTest {
   void executePlansTableAndViewJobs() {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
-    var executor = new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, true);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
         new ReconcileJobStore.LeasedJob(
             "job-1",
@@ -123,7 +127,9 @@ class ConnectorPlanningReconcileExecutorTest {
   void executeFailsWhenScopedPlanMatchesNoTables() {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
-    var executor = new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, true);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var scope = ReconcileScope.of(java.util.List.of(), "missing_table", java.util.List.of());
     var lease =
         new ReconcileJobStore.LeasedJob(
@@ -167,7 +173,9 @@ class ConnectorPlanningReconcileExecutorTest {
   void executeTreatsNamespaceScopeMissAsNoopPlan() {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
-    var executor = new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, true);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var scope = ReconcileScope.of(List.of(List.of("dest", "requested_ns")), "", List.of());
     var lease =
         new ReconcileJobStore.LeasedJob(
@@ -212,5 +220,106 @@ class ConnectorPlanningReconcileExecutorTest {
     verify(jobs, org.mockito.Mockito.never())
         .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
     assertThat(progressCalled.get()).isFalse();
+  }
+
+  @Test
+  void executeFailsWhenViewTasksHaveNoExecutionExecutor() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(false);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    when(reconcilerService.planTableTasks(any(), any(), any(), any())).thenReturn(List.of());
+    when(reconcilerService.planViewTasks(any(), any(), any(), any()))
+        .thenReturn(
+            List.of(ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view")));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.message)
+        .contains("No enabled reconcile executor is available for EXEC_VIEW jobs");
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeStatsOnlySkipsViewPlanning() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.STATS_ONLY,
+            ReconcileScope.of(java.util.List.of(), "trino_test", java.util.List.of()),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    when(reconcilerService.planTableTasks(any(), any(), any(), any()))
+        .thenReturn(List.of(ReconcileTableTask.of("iceberg", "trino_test", "trino_test")));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.tablesScanned).isEqualTo(1);
+    assertThat(result.viewsScanned).isEqualTo(0);
+    verify(reconcilerService, org.mockito.Mockito.never())
+        .planViewTasks(any(), any(), any(), any());
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
   }
 }

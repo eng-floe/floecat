@@ -35,6 +35,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
   private final ReconcilerService reconcilerService;
   private final ReconcileJobStore jobs;
+  private final ReconcileExecutorRegistry executorRegistry;
   private final boolean enabled;
   private final String executionPinnedExecutorId;
 
@@ -42,10 +43,12 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
   public ConnectorPlanningReconcileExecutor(
       ReconcilerService reconcilerService,
       ReconcileJobStore jobs,
+      ReconcileExecutorRegistry executorRegistry,
       @ConfigProperty(name = "floecat.reconciler.executor.planner.enabled", defaultValue = "true")
           boolean enabled) {
     this.reconcilerService = reconcilerService;
     this.jobs = jobs;
+    this.executorRegistry = executorRegistry;
     this.enabled = enabled;
     this.executionPinnedExecutorId =
         ConfigProvider.getConfig()
@@ -119,7 +122,10 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
       List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks =
           reconcilerService.planTableTasks(principal, connectorId, lease.scope, null);
       List<ReconcileViewTask> viewTasks =
-          reconcilerService.planViewTasks(principal, connectorId, lease.scope, null);
+          lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
+              ? List.of()
+              : reconcilerService.planViewTasks(principal, connectorId, lease.scope, null);
+      ensureExecutionExecutorAvailable(tableTasks, viewTasks);
       if (tableTasks.isEmpty()
           && viewTasks.isEmpty()
           && lease.scope != null
@@ -245,6 +251,23 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
               ? "Planning failed after enqueuing " + planned + " reconcile jobs: " + message
               : "Planning failed: " + message,
           e);
+    }
+  }
+
+  private void ensureExecutionExecutorAvailable(
+      List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks,
+      List<ReconcileViewTask> viewTasks) {
+    if (!tableTasks.isEmpty()
+        && (executorRegistry == null
+            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))) {
+      throw new IllegalStateException(
+          "No enabled reconcile executor is available for EXEC_TABLE jobs");
+    }
+    if (!viewTasks.isEmpty()
+        && (executorRegistry == null
+            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))) {
+      throw new IllegalStateException(
+          "No enabled reconcile executor is available for EXEC_VIEW jobs");
     }
   }
 }

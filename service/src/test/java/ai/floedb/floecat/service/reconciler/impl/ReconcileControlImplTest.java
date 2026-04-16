@@ -83,6 +83,10 @@ class ReconcileControlImplTest {
     when(service.jobs.childJobs(anyString(), anyString())).thenReturn(java.util.List.of());
     when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR))
         .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))
+        .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))
+        .thenReturn(true);
   }
 
   @Test
@@ -214,6 +218,31 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void captureNowFailsFastWhenNoExecutionExecutorIsAvailable() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))
+        .thenReturn(false);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))
+        .thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
   void captureNowDoesNotRequestExecutorCancellationWhenJobAlreadyCancelledInStore() {
     when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
@@ -259,6 +288,45 @@ class ReconcileControlImplTest {
     assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_FAILED, response.getState());
     assertEquals("planning failed", response.getMessage());
     assertEquals(3L, response.getTablesScanned());
+  }
+
+  @Test
+  void getReconcileJobKeepsRunningPlanStateEvenWhenChildrenHaveSucceeded() {
+    when(service.jobs.get("acct", "plan-1"))
+        .thenReturn(Optional.of(job("plan-1", "JS_RUNNING", 4, 0, 0, "")));
+    when(service.jobs.childJobs("acct", "plan-1"))
+        .thenReturn(
+            java.util.List.of(
+                childJob("child-1", "JS_SUCCEEDED", 2, 1, 0, "", "plan-1"),
+                childJob("child-2", "JS_SUCCEEDED", 3, 2, 0, "", "plan-1")));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING, response.getState());
+    assertEquals(5L, response.getTablesScanned());
+    assertEquals(3L, response.getTablesChanged());
+  }
+
+  @Test
+  void getReconcileJobDoesNotDoubleCountPlannerProgress() {
+    when(service.jobs.get("acct", "plan-1"))
+        .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 7, 4, 0, "")));
+    when(service.jobs.childJobs("acct", "plan-1"))
+        .thenReturn(java.util.List.of(childJob("child-1", "JS_SUCCEEDED", 3, 2, 0, "", "plan-1")));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_SUCCEEDED, response.getState());
+    assertEquals(3L, response.getTablesScanned());
+    assertEquals(2L, response.getTablesChanged());
   }
 
   private static ResourceId connectorId() {

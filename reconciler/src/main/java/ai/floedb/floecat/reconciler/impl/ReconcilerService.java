@@ -174,7 +174,7 @@ public class ReconcilerService {
         NO_CANCEL,
         NO_PROGRESS,
         true,
-        true);
+        captureMode != CaptureMode.STATS_ONLY);
   }
 
   public Result reconcileViewsOnly(
@@ -470,7 +470,7 @@ public class ReconcilerService {
         cancelRequested,
         progress,
         true,
-        tableTask == null || tableTask.isEmpty());
+        captureMode != CaptureMode.STATS_ONLY && (tableTask == null || tableTask.isEmpty()));
   }
 
   private Result reconcileInternal(

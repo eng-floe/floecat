@@ -594,7 +594,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       CaptureMode mode,
       ReconcileScope scope,
       ReconcileExecutionPolicy executionPolicy) {
-    ensurePlannerExecutorAvailable();
+    ensureExecutorsAvailable();
     return jobs.enqueuePlan(
         connectorId.getAccountId(),
         connectorId.getId(),
@@ -605,11 +605,19 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         "");
   }
 
-  private void ensurePlannerExecutorAvailable() {
+  private void ensureExecutorsAvailable() {
     if (executorRegistry != null
         && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR)) {
       throw Status.FAILED_PRECONDITION
           .withDescription("No enabled reconcile executor is available for PLAN_CONNECTOR jobs")
+          .asRuntimeException();
+    }
+    if (executorRegistry != null
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "No enabled reconcile executor is available for EXEC_TABLE or EXEC_VIEW jobs")
           .asRuntimeException();
     }
   }
@@ -806,14 +814,10 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                 job.finishedAtMs,
                 children.stream().mapToLong(child -> child.finishedAtMs).max().orElse(0L))
             : 0L;
-    long tablesScanned =
-        job.tablesScanned + children.stream().mapToLong(child -> child.tablesScanned).sum();
-    long tablesChanged =
-        job.tablesChanged + children.stream().mapToLong(child -> child.tablesChanged).sum();
-    long viewsScanned =
-        job.viewsScanned + children.stream().mapToLong(child -> child.viewsScanned).sum();
-    long viewsChanged =
-        job.viewsChanged + children.stream().mapToLong(child -> child.viewsChanged).sum();
+    long tablesScanned = children.stream().mapToLong(child -> child.tablesScanned).sum();
+    long tablesChanged = children.stream().mapToLong(child -> child.tablesChanged).sum();
+    long viewsScanned = children.stream().mapToLong(child -> child.viewsScanned).sum();
+    long viewsChanged = children.stream().mapToLong(child -> child.viewsChanged).sum();
     long errors = job.errors + children.stream().mapToLong(child -> child.errors).sum();
     long snapshotsProcessed =
         job.snapshotsProcessed
@@ -878,6 +882,15 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       ReconcileJobStore.ReconcileJob planJob, List<ReconcileJobStore.ReconcileJob> children) {
     if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
       return planJob.state;
+    }
+    if ("JS_CANCELLING".equals(planJob.state)) {
+      return "JS_CANCELLING";
+    }
+    if ("JS_RUNNING".equals(planJob.state)) {
+      return "JS_RUNNING";
+    }
+    if ("JS_QUEUED".equals(planJob.state)) {
+      return "JS_QUEUED";
     }
     if (children.stream().anyMatch(child -> "JS_CANCELLING".equals(child.state))) {
       return "JS_CANCELLING";

@@ -329,4 +329,32 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(capturingBackend.capturedViews).hasSize(1);
     assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
   }
+
+  @Test
+  void statsOnlyReconcileSkipsViewSync() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            true,
+            ReconcileScope.empty(),
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.errors).isEqualTo(0);
+    assertThat(capturingBackend.capturedViews).isEmpty();
+  }
 }
