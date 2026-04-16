@@ -22,8 +22,11 @@ import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
@@ -68,7 +71,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String executorId = mustNonEmpty(request.getExecutorId(), "executor_id", corr);
               var leaseRequest =
                   ReconcileJobStore.LeaseRequest.of(
-                      executionClassesFrom(request), lanesFrom(request), Set.of(executorId));
+                      executionClassesFrom(request),
+                      lanesFrom(request),
+                      Set.of(executorId),
+                      jobKindsFrom(request));
               var lease = jobs.leaseNext(leaseRequest);
               if (lease.isEmpty()) {
                 return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
@@ -136,6 +142,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     leaseEpoch,
                     request.getTablesScanned(),
                     request.getTablesChanged(),
+                    request.getViewsScanned(),
+                    request.getViewsChanged(),
                     request.getErrors(),
                     request.getSnapshotsProcessed(),
                     request.getStatsProcessed(),
@@ -177,6 +185,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         finishedAtMs,
                         request.getTablesScanned(),
                         request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
                         request.getSnapshotsProcessed(),
                         request.getStatsProcessed());
                 case RCS_FAILED ->
@@ -187,6 +197,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getMessage(),
                         request.getTablesScanned(),
                         request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
                         request.getErrors(),
                         request.getSnapshotsProcessed(),
                         request.getStatsProcessed());
@@ -198,6 +210,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getMessage(),
                         request.getTablesScanned(),
                         request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
                         request.getErrors(),
                         request.getSnapshotsProcessed(),
                         request.getStatsProcessed());
@@ -255,6 +269,22 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .collect(java.util.stream.Collectors.toUnmodifiableSet());
   }
 
+  private static Set<ReconcileJobKind> jobKindsFrom(LeaseReconcileJobRequest request) {
+    EnumSet<ReconcileJobKind> jobKinds = EnumSet.noneOf(ReconcileJobKind.class);
+    if (request == null) {
+      return jobKinds;
+    }
+    for (var jobKind : request.getJobKindsList()) {
+      switch (jobKind) {
+        case RJK_PLAN_CONNECTOR -> jobKinds.add(ReconcileJobKind.PLAN_CONNECTOR);
+        case RJK_EXEC_TABLE -> jobKinds.add(ReconcileJobKind.EXEC_TABLE);
+        case RJK_EXEC_VIEW -> jobKinds.add(ReconcileJobKind.EXEC_VIEW);
+        case RJK_UNSPECIFIED, UNRECOGNIZED -> {}
+      }
+    }
+    return jobKinds;
+  }
+
   private static LeasedReconcileJob toProtoLease(ReconcileJobStore.LeasedJob lease) {
     return LeasedReconcileJob.newBuilder()
         .setJobId(lease.jobId)
@@ -271,6 +301,40 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setExecutionPolicy(toProtoExecutionPolicy(lease.executionPolicy))
         .setPinnedExecutorId(lease.pinnedExecutorId)
         .setExecutorId(lease.executorId)
+        .setKind(toProtoJobKind(lease.jobKind))
+        .setParentJobId(lease.parentJobId)
+        .setTableTask(toProtoTableTask(lease.tableTask))
+        .setViewTask(toProtoViewTask(lease.viewTask))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
+      ReconcileJobKind jobKind) {
+    return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
+      case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
+      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
+      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileTableTask toProtoTableTask(
+      ReconcileTableTask tableTask) {
+    ReconcileTableTask effective = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileTableTask.newBuilder()
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceTable(effective.sourceTable())
+        .setDestinationTableDisplayName(effective.destinationTableDisplayName())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileViewTask toProtoViewTask(
+      ReconcileViewTask viewTask) {
+    ReconcileViewTask effective = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileViewTask.newBuilder()
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceView(effective.sourceView())
+        .setDestinationNamespace(effective.destinationNamespace())
+        .setDestinationViewDisplayName(effective.destinationViewDisplayName())
         .build();
   }
 

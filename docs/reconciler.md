@@ -9,21 +9,31 @@ This component decouples connector execution from the main service so that long-
 block gRPC threads. The service submits capture jobs via `ReconcileControl.StartCapture`, which
 creates jobs in the reconciler’s store.
 
+The current job model is split:
+
+- **`PLAN_CONNECTOR`** – top-level connector job. Planning resolves the connector, enumerates the
+  table- and view-scoped work, and enqueues child jobs.
+- **`EXEC_TABLE`** – child table job. Execution performs metadata and/or stats work for exactly one
+  planned table task.
+- **`EXEC_VIEW`** – child view job. Execution materializes or updates exactly one planned view task.
+
 ## Architecture & Responsibilities
 - **`ReconcileJobStore`** – Interface abstracting job persistence and leasing. In service runtime,
   the default is the durable implementation (`DurableReconcileJobStore`) selected by
   `floecat.reconciler.job-store=durable`; in-memory (`InMemoryReconcileJobStore`) remains available
   for lightweight/local usage when `floecat.reconciler.job-store=memory`.
 - **`ReconcilerScheduler`** – Quarkus scheduled bean that polls the job store, leases a job,
-  transitions it to running, invokes `ReconcilerService` in phases, and records success/failure stats.
+  transitions it to running, invokes `ReconcilerService` or the planner executor, records
+  success/failure stats, and cancels child table/view jobs when a parent plan job terminates
+  unsuccessfully after partial enqueue.
 - **`ReconcilerService`** – Core orchestration:
   1. Resolves connector metadata via the service’s `Connectors` RPC.
-  2. Ensures destination catalogs/namespaces/tables exist (creating them if needed).
-  3. Instantiates the connector via `ConnectorFactory`.
-  4. Iterates upstream tables, ingests snapshots + stats, and updates connectors with resolved
-     destination IDs.
-  5. Handles incremental vs full-rescan logic.
-  6. Supports explicit capture modes:
+  2. Plans table-scoped work for connector jobs, preserving destination namespace/table overrides.
+  3. Ensures destination catalogs/namespaces/tables exist (creating them if needed).
+  4. Instantiates the connector via `ConnectorFactory`.
+  5. Executes table-scoped metadata/stats work and updates connectors with resolved destination IDs.
+  6. Handles incremental vs full-rescan logic.
+  7. Supports explicit capture modes:
      - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
      - `STATS_ONLY`: writes stats only.
      - `METADATA_AND_STATS`: ingests metadata/snapshots/constraints, then enqueues scoped
@@ -35,9 +45,12 @@ creates jobs in the reconciler’s store.
 ## Public API / Surface Area
 While the reconciler itself runs as an internal Quarkus app, it exposes behaviour through the
 reconcile control RPCs:
-- `ReconcileControl.StartCapture(connector_id, full_rescan)` – Enqueues a job via `ReconcileJobStore`.
-- `ReconcileControl.GetReconcileJob(job_id)` – Reads job status, mirroring the store’s fields
-  (`state`, `message`, `tables_scanned`, `tables_changed`, `errors`).
+- `ReconcileControl.StartCapture(connector_id, full_rescan)` – Enqueues a top-level
+  `PLAN_CONNECTOR` job via `ReconcileJobStore`.
+- `ReconcileControl.CaptureNow(...)` – Uses the same split path, but waits for the aggregated
+  outcome of the top-level plan job plus any child `EXEC_TABLE` / `EXEC_VIEW` jobs.
+- `ReconcileControl.GetReconcileJob(job_id)` / `ListReconcileJobs(...)` – Expose both top-level and
+  child jobs. Plan jobs aggregate child counters for user-facing status reads.
 
 Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every second).
 
@@ -59,6 +72,21 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
     order-sensitive payload hashing), not semantic normalization.
 - **Mode-aware behavior** – In `STATS_ONLY`, destination-table misses are treated as skip/no-op
   rather than job-fatal errors.
+- **Plan failure behavior** – If a `PLAN_CONNECTOR` job fails or is cancelled after it already
+  enqueued some `EXEC_TABLE` / `EXEC_VIEW` children, the scheduler cancels those children.
+  User-facing plan job reads surface the parent failure/cancel state immediately rather than waiting
+  for queued/running children to drain.
+- **Scoped plan misses** – A destination namespace scope miss is treated as “no matching table
+  tasks” rather than a planner crash. If a scoped destination table filter matches nothing, the
+  planner still returns an explicit `No tables matched scope` failure so operators get a clear
+  diagnostic instead of a silent success.
+- **Split-phase view behavior** – In split mode, view tasks are planned once per top-level
+  `PLAN_CONNECTOR` job and executed as dedicated `EXEC_VIEW` children, not as part of child
+  `EXEC_TABLE` jobs. This avoids duplicate or skipped view updates while preserving per-view retry
+  and cancellation semantics.
+- **View reconciliation semantics** – Reconcile is current-state, not history-preserving. When an
+  upstream view already exists in Floecat, reconcile updates the stored canonical definition in
+  place rather than appending a first-class backend version history.
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
   job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
   success.
@@ -73,6 +101,8 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **GC ownership** – `ReconcileJobGc` remains responsible for reconcile lifecycle cleanup (terminal-state
   queue/dedupe cleanup and retention-based deletion of old durable job records). `PointerGc` handles
   structural orphan cleanup, but it does not enforce reconcile retention/state policy.
+  Terminal jobs are removed from active scheduling immediately, but their canonical records remain
+  queryable until reconcile-job retention expires and GC reaps them.
 
 ### Backend selection
 - `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
@@ -83,23 +113,35 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 
 ## Data Flow & Lifecycle
 ```
-Connector StartCapture → ReconcileJobStore.enqueue
+Connector StartCapture / CaptureNow → ReconcileJobStore.enqueuePlan
   → ReconcilerScheduler.pollOnce
       → jobs.leaseNext (returns account + connector IDs)
       → markRunning
-      → ReconcilerService.reconcile (capture mode on leased job)
-          → Connectors.GetConnector → ConnectorConfig
-          → Ensure destination catalog/namespace/table
-          → ConnectorFactory.create + try-with-resources
-              → listTables / describe / enumerateSnapshots
-              → ingest metadata/snapshots/constraints
-              → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
-              → (for STATS_ONLY) capture via stats control-plane/engine registry
-          → Update connector destination IDs if missing
+      → if PLAN_CONNECTOR:
+          → ReconcilerService.planTableTasks / planViewTasks
+          → enqueue child EXEC_TABLE / EXEC_VIEW jobs
+      → if EXEC_TABLE:
+          → ReconcilerService.reconcile (capture mode on leased job)
+              → Connectors.GetConnector → ConnectorConfig
+              → Ensure destination catalog/namespace/table
+              → ConnectorFactory.create + try-with-resources
+                  → describe / enumerateSnapshots
+                  → ingest metadata/snapshots/constraints
+                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
+                  → (for STATS_ONLY) capture via stats control-plane/engine registry
+              → Update connector destination IDs if missing
+      → if EXEC_VIEW:
+          → ReconcilerService.reconcileView
+              → ConnectorFactory.create + try-with-resources
+                  → describeView (or listViewDescriptors fallback)
+                  → ensure destination namespace exists
+                  → create or update the destination view
       → markSucceeded or markFailed
 ```
-Jobs include `fullRescan` and track `tablesScanned`, `tablesChanged`, `errors`. `ReconcilerScheduler`
-uses an `AtomicBoolean` guard to prevent concurrent runs within the same instance.
+Jobs include `fullRescan`, `executionPolicy`, `jobKind`, optional `tableTask`, and track
+`tablesScanned`, `tablesChanged`, `viewsScanned`, `viewsChanged`, and `errors`.
+`ReconcilerScheduler` uses an `AtomicBoolean` guard to prevent concurrent runs within the same
+instance.
 
 ## Configuration & Extensibility
 - Scheduling cadence via `reconciler.pollEvery` (defaults to `1s`).

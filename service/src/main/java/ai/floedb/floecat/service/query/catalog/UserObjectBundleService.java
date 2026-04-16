@@ -47,6 +47,7 @@ import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.SqlDefinition;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
@@ -930,6 +931,15 @@ public class UserObjectBundleService {
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
     ViewDefinition.Builder builder =
         ViewDefinition.newBuilder().setCanonicalSql(view.sql()).setDialect(view.dialect());
+    builder.addAllSqlDefinitions(
+        view.sqlDefinitions().stream()
+            .map(
+                def ->
+                    SqlDefinition.newBuilder()
+                        .setSql(def.getSql())
+                        .setDialect(def.getDialect())
+                        .build())
+            .toList());
     builder.addAllBaseRelations(view.baseRelations());
     builder.addAllCreationSearchPath(view.creationSearchPath());
     return builder;

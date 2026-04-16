@@ -133,6 +133,20 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId VIEWS_SCANNED =
+        new MetricId(
+            "floecat.service.reconcile.views_scanned.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId VIEWS_CHANGED =
+        new MetricId(
+            "floecat.service.reconcile.views_changed.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
     public static final MetricId ERRORS =
         new MetricId(
             "floecat.service.reconcile.errors.total", MetricType.COUNTER, "", CONTRACT, "service");

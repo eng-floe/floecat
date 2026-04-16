@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.ConnectorPlanningSupport;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
 import ai.floedb.floecat.connector.common.StatsEngine;
@@ -93,6 +94,11 @@ abstract class DeltaConnector implements FloecatConnector {
   @Override
   public ConnectorFormat format() {
     return ConnectorFormat.CF_DELTA;
+  }
+
+  @Override
+  public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
+    return ConnectorPlanningSupport.planTableTasks(request, this::listTables);
   }
 
   @Override

@@ -21,8 +21,11 @@ import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
@@ -73,6 +76,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
                             .map(GrpcRemoteReconcileExecutorClient::toProtoExecutionClass)
                             .toList())
                     .addAllLanes(executor.supportedLanes())
+                    .addAllJobKinds(
+                        executor.supportedJobKinds().stream()
+                            .map(GrpcRemoteReconcileExecutorClient::toProtoJobKind)
+                            .toList())
                     .build());
     if (!response.getFound()) {
       return Optional.empty();
@@ -106,8 +113,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
   @Override
   public LeaseHeartbeat reportProgress(
       RemoteLeasedJob lease,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -118,8 +127,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
                 ReportReconcileProgressRequest.newBuilder()
                     .setJobId(lease.lease().jobId)
                     .setLeaseEpoch(lease.lease().leaseEpoch)
-                    .setTablesScanned(scanned)
-                    .setTablesChanged(changed)
+                    .setTablesScanned(tablesScanned)
+                    .setTablesChanged(tablesChanged)
+                    .setViewsScanned(viewsScanned)
+                    .setViewsChanged(viewsChanged)
                     .setErrors(errors)
                     .setSnapshotsProcessed(snapshotsProcessed)
                     .setStatsProcessed(statsProcessed)
@@ -132,8 +143,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
   public CompletionResult complete(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -145,8 +158,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
                     .setJobId(lease.lease().jobId)
                     .setLeaseEpoch(lease.lease().leaseEpoch)
                     .setState(toProtoCompletionState(state))
-                    .setTablesScanned(scanned)
-                    .setTablesChanged(changed)
+                    .setTablesScanned(tablesScanned)
+                    .setTablesChanged(tablesChanged)
+                    .setViewsScanned(viewsScanned)
+                    .setViewsChanged(viewsChanged)
                     .setErrors(errors)
                     .setSnapshotsProcessed(snapshotsProcessed)
                     .setStatsProcessed(statsProcessed)
@@ -186,7 +201,11 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
         fromProtoExecutionPolicy(job.getExecutionPolicy()),
         job.getLeaseEpoch(),
         job.getPinnedExecutorId(),
-        job.getExecutorId());
+        job.getExecutorId(),
+        fromProtoJobKind(job.getKind()),
+        fromProtoTableTask(job.getTableTask()),
+        fromProtoViewTask(job.getViewTask()),
+        job.getParentJobId());
   }
 
   private static CaptureMode fromProtoCaptureMode(
@@ -235,6 +254,48 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
       case FAILED -> ReconcileCompletionState.RCS_FAILED;
       case CANCELLED -> ReconcileCompletionState.RCS_CANCELLED;
     };
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
+      ReconcileJobKind jobKind) {
+    return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
+      case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
+      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
+      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
+    };
+  }
+
+  private static ReconcileJobKind fromProtoJobKind(
+      ai.floedb.floecat.reconciler.rpc.ReconcileJobKind jobKind) {
+    return switch (jobKind) {
+      case RJK_PLAN_CONNECTOR -> ReconcileJobKind.PLAN_CONNECTOR;
+      case RJK_EXEC_TABLE -> ReconcileJobKind.EXEC_TABLE;
+      case RJK_EXEC_VIEW -> ReconcileJobKind.EXEC_VIEW;
+      case RJK_UNSPECIFIED, UNRECOGNIZED -> ReconcileJobKind.PLAN_CONNECTOR;
+    };
+  }
+
+  private static ReconcileTableTask fromProtoTableTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileTableTask tableTask) {
+    if (tableTask == null) {
+      return ReconcileTableTask.empty();
+    }
+    return ReconcileTableTask.of(
+        tableTask.getSourceNamespace(),
+        tableTask.getSourceTable(),
+        tableTask.getDestinationTableDisplayName());
+  }
+
+  private static ReconcileViewTask fromProtoViewTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileViewTask viewTask) {
+    if (viewTask == null) {
+      return ReconcileViewTask.empty();
+    }
+    return ReconcileViewTask.of(
+        viewTask.getSourceNamespace(),
+        viewTask.getSourceView(),
+        viewTask.getDestinationNamespace(),
+        viewTask.getDestinationViewDisplayName());
   }
 
   private <T extends AbstractStub<T>> T withHeaders(T stub, String correlationId) {

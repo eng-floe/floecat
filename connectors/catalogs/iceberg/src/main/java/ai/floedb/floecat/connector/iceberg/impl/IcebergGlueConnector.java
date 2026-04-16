@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.iceberg.impl;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -57,6 +58,21 @@ final class IcebergGlueConnector extends IcebergConnector {
       return listTablesSingle(namespaceFq);
     }
     return glueFilter.icebergTables(namespaceFq);
+  }
+
+  @Override
+  public List<String> listViews(String namespaceFq) {
+    return listViewsFromCatalog(catalog, namespaceFq);
+  }
+
+  @Override
+  public List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    return listViewDescriptorsFromCatalog(catalog, namespaceFq);
+  }
+
+  @Override
+  public Optional<ViewDescriptor> describeView(String namespaceFq, String viewName) {
+    return describeViewFromCatalog(catalog, namespaceFq, viewName);
   }
 
   @Override

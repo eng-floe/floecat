@@ -149,7 +149,7 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(response.getLeaseValid());
-    verify(service.jobs).markProgress("job-1", "lease-1", 4, 2, 1, 3, 5, "working");
+    verify(service.jobs).markProgress("job-1", "lease-1", 4, 2, 0, 0, 1, 3, 5, "working");
   }
 
   @Test
@@ -173,7 +173,8 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markSucceeded(eq("job-1"), eq("lease-1"), anyLong(), eq(7L), eq(3L), eq(2L), eq(9L));
+        .markSucceeded(
+            eq("job-1"), eq("lease-1"), anyLong(), eq(7L), eq(3L), eq(0L), eq(0L), eq(2L), eq(9L));
   }
 
   @Test

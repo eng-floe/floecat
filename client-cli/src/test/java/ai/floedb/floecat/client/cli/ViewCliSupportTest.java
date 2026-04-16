@@ -38,6 +38,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -61,6 +62,8 @@ class ViewCliSupportTest {
     return View.newBuilder()
         .setResourceId(ResourceId.newBuilder().setId(id).build())
         .setDisplayName(displayName)
+        .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("SELECT 1").setDialect("ansi"))
+        .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("SELECT `id`").setDialect("spark"))
         .build();
   }
 
@@ -118,7 +121,11 @@ class ViewCliSupportTest {
 
       assertEquals(1, h.viewService.createViewCalls.get());
       assertEquals("new-view", h.viewService.lastCreateRequest.getSpec().getDisplayName());
-      assertEquals("SELECT 1", h.viewService.lastCreateRequest.getSpec().getSql());
+      assertEquals(1, h.viewService.lastCreateRequest.getSpec().getSqlDefinitionsCount());
+      assertEquals(
+          "SELECT 1", h.viewService.lastCreateRequest.getSpec().getSqlDefinitions(0).getSql());
+      assertEquals(
+          "ansi", h.viewService.lastCreateRequest.getSpec().getSqlDefinitions(0).getDialect());
       assertEquals("My view", h.viewService.lastCreateRequest.getSpec().getDescription());
       assertTrue(buf.toString().contains(UUID_2));
     }
@@ -158,6 +165,8 @@ class ViewCliSupportTest {
 
       assertEquals(1, h.viewService.getViewCalls.get());
       assertTrue(buf.toString().contains(UUID_1));
+      assertTrue(buf.toString().contains("[ansi] SELECT 1"));
+      assertTrue(buf.toString().contains("[spark] SELECT `id`"));
     }
   }
 

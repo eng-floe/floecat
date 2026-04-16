@@ -60,7 +60,7 @@ class RemoteReconcileExecutorPollerTest {
 
           @Override
           public ExecutionResult execute(ExecutionContext context) {
-            context.progressListener().onProgress(1, 1, 0, 2, 3, "working");
+            context.progressListener().onProgress(1, 1, 0, 0, 0, 2, 3, "working");
             return ExecutionResult.success(4, 2, 0, 2, 3, "done");
           }
         };
@@ -91,13 +91,16 @@ class RemoteReconcileExecutorPollerTest {
     when(client.renew(any()))
         .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
     when(client.cancellationRequested(any())).thenReturn(false);
-    when(client.reportProgress(any(), eq(1L), eq(1L), eq(0L), eq(2L), eq(3L), eq("working")))
+    when(client.reportProgress(
+            any(), eq(1L), eq(1L), eq(0L), eq(0L), eq(0L), eq(2L), eq(3L), eq("working")))
         .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
     when(client.complete(
             any(),
             eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
             eq(4L),
             eq(2L),
+            eq(0L),
+            eq(0L),
             eq(0L),
             eq(2L),
             eq(3L),
@@ -200,6 +203,8 @@ class RemoteReconcileExecutorPollerTest {
     when(client.complete(
             eq(lease),
             eq(RemoteLeasedJob.CompletionState.CANCELLED),
+            eq(0L),
+            eq(0L),
             eq(0L),
             eq(0L),
             eq(1L),

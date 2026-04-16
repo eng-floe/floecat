@@ -21,7 +21,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -31,6 +33,9 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -46,9 +51,12 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
-    when(scheduler.jobs.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
             invocation -> {
               enqueued.add(invocation.getArgument(1, String.class));
@@ -103,10 +111,13 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     List<String> connectorTokens = new ArrayList<>();
-    when(scheduler.jobs.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
             invocation -> {
               enqueued.add(invocation.getArgument(1, String.class));
@@ -152,9 +163,12 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
-    when(scheduler.jobs.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
             invocation -> {
               enqueued.add(invocation.getArgument(1, String.class));
@@ -184,9 +198,12 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
-    when(scheduler.jobs.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
             invocation -> {
               enqueued.add(invocation.getArgument(1, String.class));
@@ -219,9 +236,12 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
-    when(scheduler.jobs.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
             invocation -> {
               enqueued.add(invocation.getArgument(1, String.class));
@@ -239,6 +259,63 @@ class ReconcilePlannerSchedulerTest {
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
     assertEquals(List.of("conn-enabled"), enqueued);
+  }
+
+  @Test
+  void runPlannerPassUsesConfiguredExecutionPolicyForPlanJobs() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+
+    String priorClass = System.getProperty("floecat.reconciler.auto.execution-class");
+    String priorLane = System.getProperty("floecat.reconciler.auto.execution-lane");
+    System.setProperty("floecat.reconciler.auto.execution-class", "HEAVY");
+    System.setProperty("floecat.reconciler.auto.execution-lane", "planner-lane");
+    try {
+      when(scheduler.accounts.list(anyInt(), anyString(), any()))
+          .thenReturn(List.of(account("acct-a", "alpha")));
+      when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+          .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+      when(scheduler.jobs.enqueuePlan(
+              anyString(),
+              anyString(),
+              anyBoolean(),
+              any(),
+              any(),
+              eq(
+                  ReconcileExecutionPolicy.of(
+                      ReconcileExecutionClass.HEAVY, "planner-lane", java.util.Map.of())),
+              anyString()))
+          .thenReturn("job-1");
+
+      scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+    } finally {
+      restoreProperty("floecat.reconciler.auto.execution-class", priorClass);
+      restoreProperty("floecat.reconciler.auto.execution-lane", priorLane);
+    }
+  }
+
+  @Test
+  void runPlannerPassDoesNotEnqueueWhenPlannerExecutorIsUnavailable() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(false);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    org.mockito.Mockito.verify(scheduler.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   private static Account account(String accountId, String displayName) {
@@ -274,6 +351,14 @@ class ReconcilePlannerSchedulerTest {
     @Override
     long nowMs() {
       return nowMs++;
+    }
+  }
+
+  private static void restoreProperty(String key, String value) {
+    if (value == null) {
+      System.clearProperty(key);
+    } else {
+      System.setProperty(key, value);
     }
   }
 }

@@ -17,10 +17,12 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadViewResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,16 +69,15 @@ public final class ViewResponseMapper {
             ? view.getCreatedAt().getSeconds() * 1000 + view.getCreatedAt().getNanos() / 1_000_000
             : Instant.now().toEpochMilli();
     List<String> namespace = NamespacePaths.split(namespacePath);
-    ViewMetadataView.ViewRepresentation representation =
-        new ViewMetadataView.ViewRepresentation(
-            "sql", view.getSql(), props.getOrDefault("dialect", "ansi"));
+    List<ViewMetadataView.ViewRepresentation> representations =
+        synthesizeRepresentations(view, props);
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(
             0,
             timestamp,
             0,
             Map.of("operation", "sql"),
-            List.of(representation),
+            representations,
             namespace,
             props.get("default-catalog"));
     ViewMetadataView.ViewHistoryEntry history = new ViewMetadataView.ViewHistoryEntry(0, timestamp);
@@ -91,5 +92,27 @@ public final class ViewResponseMapper {
         List.of(history),
         List.of(schema),
         props);
+  }
+
+  private static List<ViewMetadataView.ViewRepresentation> synthesizeRepresentations(
+      View view, Map<String, String> props) {
+    List<ViewMetadataView.ViewRepresentation> representations = new ArrayList<>();
+    for (ViewSqlDefinition definition : view.getSqlDefinitionsList()) {
+      if (definition == null || definition.getSql().isBlank()) {
+        continue;
+      }
+      representations.add(
+          new ViewMetadataView.ViewRepresentation(
+              "sql", definition.getSql(), defaultDialect(definition.getDialect())));
+    }
+    if (!representations.isEmpty()) {
+      return List.copyOf(representations);
+    }
+    return List.of(
+        new ViewMetadataView.ViewRepresentation("sql", "", defaultDialect(props.get("dialect"))));
+  }
+
+  private static String defaultDialect(String dialect) {
+    return dialect == null || dialect.isBlank() ? "ansi" : dialect;
   }
 }

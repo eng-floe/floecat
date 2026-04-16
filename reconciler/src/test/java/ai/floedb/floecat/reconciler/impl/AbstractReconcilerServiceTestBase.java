@@ -362,6 +362,14 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public Optional<FloecatConnector.ViewDescriptor> describeView(String namespaceFq, String name) {
+      return viewDescriptors.stream()
+          .filter(view -> namespaceFq.equals(view.namespaceFq()))
+          .filter(view -> name.equals(view.name()))
+          .findFirst();
+    }
+
+    @Override
     public void close() {}
   }
 }

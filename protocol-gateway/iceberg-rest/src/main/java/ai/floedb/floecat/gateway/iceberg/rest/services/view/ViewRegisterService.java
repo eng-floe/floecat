@@ -89,9 +89,11 @@ public class ViewRegisterService {
         ViewSpec.newBuilder()
             .setCatalogId(namespaceContext.catalogId())
             .setNamespaceId(namespaceContext.namespaceId())
-            .setDisplayName(viewName)
-            .setSql(metadataContext.sql());
+            .setDisplayName(viewName);
     try {
+      viewMetadataService.extractSqlDefinitions(metadataContext).forEach(spec::addSqlDefinitions);
+      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(metadataContext));
+      spec.addAllOutputColumns(viewMetadataService.extractOutputColumns(metadataContext));
       spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());

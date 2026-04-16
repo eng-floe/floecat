@@ -215,7 +215,32 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
     var existing = viewRepo.getByName(accountId, catalogId, namespaceId, normalized);
     if (existing.isPresent()) {
-      return ResourceId.getDefaultInstance(); // already exists — idempotent
+      View current = existing.get();
+      View desired =
+          current.toBuilder()
+              .setCatalogId(namespace.getCatalogId())
+              .setNamespaceId(spec.getNamespaceId())
+              .setDisplayName(normalized)
+              .clearSqlDefinitions()
+              .addAllSqlDefinitions(spec.getSqlDefinitionsList())
+              .clearCreationSearchPath()
+              .addAllCreationSearchPath(spec.getCreationSearchPathList())
+              .clearOutputColumns()
+              .addAllOutputColumns(spec.getOutputColumnsList())
+              .clearBaseRelations()
+              .addAllBaseRelations(spec.getBaseRelationsList())
+              .clearProperties()
+              .putAllProperties(spec.getPropertiesMap())
+              .build();
+      if (desired.equals(current)) {
+        return ResourceId.getDefaultInstance();
+      }
+      long expectedPointerVersion =
+          viewRepo.metaForSafe(current.getResourceId()).getPointerVersion();
+      if (!viewRepo.update(desired, expectedPointerVersion)) {
+        throw new IllegalStateException("Failed to update reconciled view " + normalized);
+      }
+      return current.getResourceId();
     }
 
     var view =
@@ -224,8 +249,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
             .setCatalogId(namespace.getCatalogId())
             .setNamespaceId(spec.getNamespaceId())
             .setDisplayName(normalized)
-            .setSql(spec.getSql())
-            .setDialect(spec.getDialect())
+            .addAllSqlDefinitions(spec.getSqlDefinitionsList())
             .addAllCreationSearchPath(spec.getCreationSearchPathList())
             .addAllOutputColumns(spec.getOutputColumnsList())
             .addAllBaseRelations(spec.getBaseRelationsList())

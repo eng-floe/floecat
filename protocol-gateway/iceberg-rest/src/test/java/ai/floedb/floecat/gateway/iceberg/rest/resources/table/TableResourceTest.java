@@ -1446,4 +1446,33 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(204);
   }
+
+  @Test
+  void metricsScanReportWithBooleanFilterReturns204() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .body(
+            """
+            {
+              "report-type":"scan",
+              "table-name":"orders",
+              "snapshot-id":1,
+              "filter":true,
+              "schema-id":1,
+              "projected-field-ids":[1],
+              "projected-field-names":["id"],
+              "metrics":{
+                "total-planning-duration":{"time-unit":"nanoseconds","count":1,"total-duration":1000}
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(204);
+  }
 }

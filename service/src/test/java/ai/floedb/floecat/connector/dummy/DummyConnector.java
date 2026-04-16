@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.ArrayList;
@@ -33,6 +34,7 @@ import java.util.stream.Collectors;
 
 public final class DummyConnector implements FloecatConnector {
   private final String id;
+  private final Map<String, String> options;
 
   private static final class Col {
     final int colId;
@@ -62,12 +64,13 @@ public final class DummyConnector implements FloecatConnector {
           new Col(11, "attrs.key", "STRING", 7),
           new Col(12, "attrs.value", "STRING", 8));
 
-  private DummyConnector(String id) {
+  private DummyConnector(String id, Map<String, String> options) {
     this.id = id;
+    this.options = options == null ? Map.of() : Map.copyOf(options);
   }
 
-  public static FloecatConnector create() {
-    return new DummyConnector("dummy");
+  public static FloecatConnector create(ConnectorConfig cfg) {
+    return new DummyConnector("dummy", cfg == null ? Map.of() : cfg.options());
   }
 
   @Override
@@ -276,6 +279,32 @@ public final class DummyConnector implements FloecatConnector {
         StatsProtoEmitter.toTargetFileStatsFromViews(
             destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, fileStats));
     return List.copyOf(materialized);
+  }
+
+  @Override
+  public List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    if (!Boolean.parseBoolean(options.getOrDefault("dummy.view.enabled", "false"))) {
+      return List.of();
+    }
+    String configuredNamespace = options.getOrDefault("dummy.view.namespace", namespaceFq);
+    if (!configuredNamespace.equals(namespaceFq)) {
+      return List.of();
+    }
+    String viewName = options.getOrDefault("dummy.view.name", "dummy_view");
+    String sql =
+        options.getOrDefault("dummy.view.sql", "SELECT id FROM " + namespaceFq + ".events");
+    String schemaJson =
+        options.getOrDefault(
+            "dummy.view.schema_json",
+            "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"long\",\"required\":false}]}");
+    return List.of(
+        new ViewDescriptor(
+            namespaceFq,
+            viewName,
+            sql,
+            options.getOrDefault("dummy.view.dialect", "spark"),
+            List.of(namespaceFq),
+            schemaJson));
   }
 
   @Override

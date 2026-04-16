@@ -79,7 +79,10 @@ class NameResolverTest {
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName("orders_v")
-            .setSql("select 1")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 1")
+                    .build())
             .build());
   }
 

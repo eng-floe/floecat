@@ -28,8 +28,10 @@ interface RemoteReconcileExecutorClient {
 
   LeaseHeartbeat reportProgress(
       RemoteLeasedJob lease,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -38,8 +40,10 @@ interface RemoteReconcileExecutorClient {
   CompletionResult complete(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,

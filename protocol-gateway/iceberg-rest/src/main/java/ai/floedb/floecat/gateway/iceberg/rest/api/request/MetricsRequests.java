@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.api.request;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
 import java.util.Map;
 
@@ -34,7 +35,7 @@ public final class MetricsRequests {
       @JsonProperty("schema-id") Integer schemaId,
       @JsonProperty("projected-field-ids") List<Integer> projectedFieldIds,
       @JsonProperty("projected-field-names") List<String> projectedFieldNames,
-      @JsonProperty("filter") Map<String, Object> filter,
+      @JsonProperty("filter") JsonNode filter,
       Map<String, MetricValue> metrics,
       Map<String, String> metadata) {}
 
