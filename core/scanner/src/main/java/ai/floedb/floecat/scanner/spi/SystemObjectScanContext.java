@@ -46,6 +46,7 @@ public record SystemObjectScanContext(
     EngineContext engineContext,
     StatsProvider statsProvider,
     ConstraintProvider constraintProvider,
+    ScanTelemetryHook telemetryHook,
     ConcurrentMap<Object, Object> memoizedValues)
     implements MetadataResolutionContext {
 
@@ -55,6 +56,7 @@ public record SystemObjectScanContext(
     engineContext = engineContext == null ? EngineContext.empty() : engineContext;
     statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
     constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
+    telemetryHook = telemetryHook == null ? ScanTelemetryHook.NOOP : telemetryHook;
     memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
   }
 
@@ -70,6 +72,7 @@ public record SystemObjectScanContext(
         engineContext,
         StatsProvider.NONE,
         ConstraintProvider.NONE,
+        ScanTelemetryHook.NOOP,
         new ConcurrentHashMap<>());
   }
 
@@ -86,6 +89,7 @@ public record SystemObjectScanContext(
         engineContext,
         statsProvider,
         ConstraintProvider.NONE,
+        ScanTelemetryHook.NOOP,
         new ConcurrentHashMap<>());
   }
 
@@ -103,6 +107,45 @@ public record SystemObjectScanContext(
         engineContext,
         statsProvider,
         constraintProvider,
+        ScanTelemetryHook.NOOP,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogOverlay graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      EngineContext engineContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider,
+      ConcurrentMap<Object, Object> memoizedValues) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        engineContext,
+        statsProvider,
+        constraintProvider,
+        ScanTelemetryHook.NOOP,
+        memoizedValues);
+  }
+
+  public SystemObjectScanContext(
+      CatalogOverlay graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      EngineContext engineContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider,
+      ScanTelemetryHook telemetryHook) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        engineContext,
+        statsProvider,
+        constraintProvider,
+        telemetryHook,
         new ConcurrentHashMap<>());
   }
 

@@ -17,7 +17,9 @@
 package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -36,7 +38,51 @@ public interface StatsProvider {
     return OptionalLong.empty();
   }
 
+  /**
+   * Returns latest known upstream snapshot id for the table.
+   *
+   * <p>This is intended for system-table scans that need "latest snapshot" semantics without
+   * requiring query snapshot pinning.
+   */
+  default OptionalLong latestSnapshotId(ResourceId tableId) {
+    return OptionalLong.empty();
+  }
+
+  /**
+   * Returns the latest snapshot id for which persisted stats exist for the requested target type.
+   *
+   * <p>When no persisted stats exist, returns empty.
+   */
+  default OptionalLong latestPersistedStatsSnapshotId(
+      ResourceId tableId, Optional<String> targetType) {
+    return OptionalLong.empty();
+  }
+
+  /**
+   * Lists persisted target stats without triggering capture orchestration.
+   *
+   * <p>Scanner-side callers use this to read persisted rows only. Implementations should interpret
+   * {@code targetType} case-insensitively when provided (for example: TABLE, COLUMN, EXPRESSION).
+   */
+  default TargetStatsPage listPersistedStats(
+      ResourceId tableId,
+      long snapshotId,
+      Optional<String> targetType,
+      int limit,
+      String pageToken) {
+    return TargetStatsPage.EMPTY;
+  }
+
   StatsProvider NONE = new StatsProvider() {};
+
+  record TargetStatsPage(List<TargetStatsRecord> items, String nextToken) {
+    public static final TargetStatsPage EMPTY = new TargetStatsPage(List.of(), "");
+
+    public TargetStatsPage {
+      items = items == null ? List.of() : List.copyOf(items);
+      nextToken = nextToken == null ? "" : nextToken;
+    }
+  }
 
   interface TableStatsView {
     /** Table identity */
