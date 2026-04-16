@@ -19,9 +19,18 @@ package ai.floedb.floecat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
+import ai.floedb.floecat.catalog.rpc.StatsCoverage;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
+import ai.floedb.floecat.catalog.rpc.StatsProducer;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -32,10 +41,10 @@ import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.impl.QueryContext;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
@@ -85,13 +94,16 @@ public class QuerySystemScanServiceIT {
   TableServiceGrpc.TableServiceBlockingStub table;
 
   @GrpcClient("floecat")
+  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
+
+  @GrpcClient("floecat")
   QueryServiceGrpc.QueryServiceBlockingStub queryService;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;
-  @Inject StatsRepository statsRepository;
+  @Inject StatsStore statsStore;
 
   private String catalogPrefix = getClass().getSimpleName() + "_";
 
@@ -214,8 +226,7 @@ public class QuerySystemScanServiceIT {
 
     ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
     TableValueStats stats = TableValueStats.newBuilder().setRowCount(1).build();
-    statsRepository.putTargetStats(
-        TargetStatsRecords.tableRecord(systemTableId, 987L, stats, null));
+    statsStore.putTargetStats(TargetStatsRecords.tableRecord(systemTableId, 987L, stats, null));
 
     var provider = statsFactory.forQuery(preScan, "corr-stats");
     assertTrue(provider.tableStats(systemTableId).isEmpty(), "Unpinned tables should skip stats");
@@ -359,6 +370,190 @@ public class QuerySystemScanServiceIT {
         "Default Arrow payload must include the 'shipments' table");
   }
 
+  @Test
+  void sysStatsTablesExposePersistedTargetsAndDefaultToLatestSnapshot() {
+    var catName = catalogPrefix + "sys_stats_latest";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "ns", List.of("analytics"), "");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders_stats",
+            "s3://bucket/orders_stats",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "orders stats table");
+    long oldSnapshot = 101L;
+    long latestSnapshot = 202L;
+    long now = System.currentTimeMillis();
+    TestSupport.createSnapshot(snapshot, tbl.getResourceId(), oldSnapshot, now - 2_000L);
+    TestSupport.createSnapshot(snapshot, tbl.getResourceId(), latestSnapshot, now + 60_000L);
+
+    StatsMetadata metadata =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .setConfidenceLevel(0.95d)
+            .setCoverage(StatsCoverage.newBuilder().setRowsScanned(222L).setFilesScanned(7L))
+            .build();
+    statsStore.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            tbl.getResourceId(),
+            oldSnapshot,
+            TableValueStats.newBuilder().setRowCount(111L).setDataFileCount(3L).build(),
+            metadata));
+    statsStore.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            tbl.getResourceId(),
+            latestSnapshot,
+            TableValueStats.newBuilder()
+                .setRowCount(222L)
+                .setDataFileCount(7L)
+                .setTotalSizeBytes(8192L)
+                .build(),
+            metadata));
+    statsStore.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            tbl.getResourceId(),
+            latestSnapshot,
+            1L,
+            ScalarStats.newBuilder()
+                .setDisplayName("id")
+                .setLogicalType("int")
+                .setValueCount(222L)
+                .setNullCount(0L)
+                .setMin("1")
+                .setMax("222")
+                .build(),
+            metadata));
+    statsStore.putTargetStats(
+        TargetStatsRecords.expressionRecord(
+            tbl.getResourceId(),
+            latestSnapshot,
+            EngineExpressionStatsTarget.newBuilder()
+                .setEngineKind("duckdb")
+                .setEngineExpressionKey(com.google.protobuf.ByteString.copyFromUtf8("sum(id)"))
+                .build(),
+            ScalarStats.newBuilder()
+                .setDisplayName("sum(id)")
+                .setLogicalType("int64")
+                .setValueCount(1L)
+                .setMin("222")
+                .setMax("222")
+                .build(),
+            metadata));
+    String queryId = beginQuery(cat.getResourceId());
+    var stub = withEngine(systemScan, "pg");
+
+    List<List<String>> tableRows =
+        rows(
+            collectChunks(
+                stub,
+                ScanSystemTableRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .setTableId(systemTable("pg", "sys", "stats_table"))
+                    .setOutputFormat(OutputFormat.ROWS)
+                    .build()));
+    List<String> tableRow = rowForTableId(tableRows, tbl.getResourceId().getId());
+    assertEquals(Long.toString(latestSnapshot), tableRow.get(5), "latest snapshot should be used");
+    assertEquals("222", tableRow.get(6), "row_count should come from latest snapshot");
+
+    List<List<String>> snapshotRows =
+        rows(
+            collectChunks(
+                stub,
+                ScanSystemTableRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .setTableId(systemTable("pg", "sys", "stats_snapshot"))
+                    .setOutputFormat(OutputFormat.ROWS)
+                    .build()));
+    List<String> snapshotRow = rowForTableId(snapshotRows, tbl.getResourceId().getId());
+    assertEquals(Long.toString(latestSnapshot), snapshotRow.get(5));
+    assertEquals("complete", snapshotRow.get(6));
+
+    List<List<String>> columnRows =
+        rows(
+            collectChunks(
+                stub,
+                ScanSystemTableRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .setTableId(systemTable("pg", "sys", "stats_column"))
+                    .setOutputFormat(OutputFormat.ROWS)
+                    .build()));
+    List<String> columnRow = rowForTableId(columnRows, tbl.getResourceId().getId());
+    assertEquals("1", columnRow.get(6), "column_id should be rendered");
+    assertEquals("id", columnRow.get(7));
+
+    List<List<String>> expressionRows =
+        rows(
+            collectChunks(
+                stub,
+                ScanSystemTableRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .setTableId(systemTable("pg", "sys", "stats_expression"))
+                    .setOutputFormat(OutputFormat.ROWS)
+                    .build()));
+    List<String> expressionRow = rowForTableId(expressionRows, tbl.getResourceId().getId());
+    assertEquals("duckdb", expressionRow.get(6));
+    assertFalse(expressionRow.get(7).isBlank(), "expression key should be encoded");
+  }
+
+  @Test
+  void sysStatsTableAcceptsSnapshotZeroPredicate() {
+    var catName = catalogPrefix + "sys_stats_zero";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "ns", List.of("analytics"), "");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "snapshot_zero_tbl",
+            "s3://bucket/snapshot_zero_tbl",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "snapshot zero table");
+    TestSupport.createSnapshot(
+        snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() + 60_000L);
+
+    statsStore.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            tbl.getResourceId(),
+            0L,
+            TableValueStats.newBuilder().setRowCount(42L).setDataFileCount(1L).build(),
+            null));
+    String queryId = beginQuery(cat.getResourceId());
+    var stub = withEngine(systemScan, "pg");
+    List<List<String>> rows =
+        rows(
+            collectChunks(
+                stub,
+                ScanSystemTableRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .setTableId(systemTable("pg", "sys", "stats_table"))
+                    .setOutputFormat(OutputFormat.ROWS)
+                    .addPredicates(
+                        Predicate.newBuilder()
+                            .setColumn("table_id")
+                            .setOp(ai.floedb.floecat.common.rpc.Operator.OP_EQ)
+                            .addValues(tbl.getResourceId().getId())
+                            .build())
+                    .addPredicates(
+                        Predicate.newBuilder()
+                            .setColumn("snapshot_id")
+                            .setOp(ai.floedb.floecat.common.rpc.Operator.OP_EQ)
+                            .addValues("0")
+                            .build())
+                    .build()));
+
+    assertEquals(1, rows.size());
+    assertEquals("0", rows.getFirst().get(5), "snapshot_id=0 should be matched as valid");
+    assertEquals("42", rows.getFirst().get(6));
+  }
+
   // ------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------
@@ -367,6 +562,22 @@ public class QuerySystemScanServiceIT {
         .filter(ScanSystemTableChunk::hasRow)
         .map(chunk -> List.copyOf(chunk.getRow().getValuesList()))
         .toList();
+  }
+
+  private static List<String> rowForTableId(List<List<String>> rows, String tableId) {
+    return rows.stream()
+        .filter(row -> row.size() > 4 && tableId.equals(row.get(4)))
+        .findFirst()
+        .orElseThrow(
+            () ->
+                new AssertionError(
+                    "missing row for table_id="
+                        + tableId
+                        + " available_table_ids="
+                        + rows.stream()
+                            .filter(row -> row.size() > 4)
+                            .map(row -> row.get(4))
+                            .toList()));
   }
 
   private List<List<String>> arrowRows(List<ScanSystemTableChunk> chunks) throws IOException {
