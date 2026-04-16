@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.ScanTelemetryHook;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -41,6 +42,7 @@ import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowSink;
 import ai.floedb.floecat.service.query.impl.arrow.GrpcArrowSink;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
+import ai.floedb.floecat.service.query.system.StatsSystemTableTelemetry;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowMappers;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
@@ -51,6 +53,7 @@ import ai.floedb.floecat.system.rpc.QuerySystemScanService;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.system.rpc.SystemTableRow;
+import ai.floedb.floecat.telemetry.Observability;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
@@ -77,6 +80,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;
   @Inject ConstraintProviderFactory constraintFactory;
+  @Inject Observability observability;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
@@ -125,6 +129,14 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
       EngineContext engineCtx = engineContext.engineContext();
       var statsProvider = statsFactory.forQuery(queryCtx, correlationIdHolder.get());
+      ScanTelemetryHook telemetryHook = ScanTelemetryHook.NOOP;
+      if (StatsSystemTableTelemetry.isStatsSystemTable(graph, tableId)) {
+        telemetryHook =
+            StatsSystemTableTelemetry.hook(
+                observability,
+                "query_system_scan",
+                StatsSystemTableTelemetry.resourceName(graph, tableId));
+      }
       SystemObjectScanContext ctx =
           new SystemObjectScanContext(
               graph,
@@ -132,7 +144,8 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               queryCtx.getQueryDefaultCatalogId(),
               engineCtx,
               statsProvider,
-              constraintFactory.provider());
+              constraintFactory.provider(),
+              telemetryHook);
       List<SchemaColumn> schema = scanner.schema();
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();

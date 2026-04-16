@@ -174,4 +174,35 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
   }
+
+  public static final class Stats {
+    public static final MetricId SYSTABLE_ROWS_SCANNED =
+        new MetricId(
+            "floecat.service.stats.systable.rows_scanned.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId SYSTABLE_ROWS_EMITTED =
+        new MetricId(
+            "floecat.service.stats.systable.rows_emitted.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId SYSTABLE_BATCHES_EMITTED =
+        new MetricId(
+            "floecat.service.stats.systable.batches_emitted.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId SYSTABLE_BUILD_LATENCY =
+        new MetricId(
+            "floecat.service.stats.systable.build.latency",
+            MetricType.TIMER,
+            "ms",
+            CONTRACT,
+            "service");
+  }
 }
