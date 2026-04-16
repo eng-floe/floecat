@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.storage.secrets;
 
+import ai.floedb.floecat.storage.kv.Keys;
 import java.util.Optional;
 
 public interface SecretsManager {
@@ -31,7 +32,12 @@ public interface SecretsManager {
     requireNonBlank(accountId, "accountId");
     requireNonBlank(secretType, "secretType");
     requireNonBlank(secretId, "secretId");
-    return "accounts/" + accountId + "/" + secretType + "/" + secretId;
+    return "accounts/"
+        + Keys.encodeSegment(accountId)
+        + "/"
+        + Keys.encodeSegment(secretType)
+        + "/"
+        + Keys.encodeSegment(secretId);
   }
 
   private static void requireNonBlank(String value, String name) {
