@@ -69,8 +69,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -190,13 +188,6 @@ class UserObjectBundleServiceTest {
             47470,
             false,
             "test");
-  }
-
-  private static void injectOverlay(QueryInputResolver resolver, FakeCatalogOverlay overlay)
-      throws Exception {
-    Field metadataGraph = QueryInputResolver.class.getDeclaredField("metadataGraph");
-    metadataGraph.setAccessible(true);
-    metadataGraph.set(resolver, overlay);
   }
 
   @Test
@@ -1223,19 +1214,7 @@ class UserObjectBundleServiceTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void schemaMismatchPathMarksAllColumnsFailed() throws Exception {
-    Method decorateColumns =
-        UserObjectBundleService.class.getDeclaredMethod(
-            "decorateColumns",
-            List.class,
-            List.class,
-            ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration.class,
-            Optional.class,
-            EngineContext.class,
-            boolean.class,
-            ResourceId.class);
-    decorateColumns.setAccessible(true);
-
+  void schemaMismatchPathMarksAllColumnsFailed() {
     List<ColumnInfo> columns =
         List.of(
             ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
@@ -1245,16 +1224,14 @@ class UserObjectBundleServiceTest {
     ResourceId relationId = TABLE_A;
 
     List<ColumnResult> results =
-        (List<ColumnResult>)
-            decorateColumns.invoke(
-                service,
-                columns,
-                pruned,
-                null,
-                Optional.empty(),
-                EngineContext.of("pg", "16.0"),
-                true,
-                relationId);
+        service.decorateColumns(
+            columns,
+            pruned,
+            null,
+            Optional.empty(),
+            EngineContext.of("pg", "16.0"),
+            true,
+            relationId);
 
     assertThat(results).hasSize(2);
     assertThat(results)
@@ -1713,8 +1690,7 @@ class UserObjectBundleServiceTest {
             .build();
     queryStore.seed(asOfCtx);
 
-    QueryInputResolver realResolver = new QueryInputResolver();
-    injectOverlay(realResolver, overlay);
+    QueryInputResolver realResolver = new QueryInputResolver(overlay);
     UserObjectBundleService realService =
         new UserObjectBundleService(
             overlay,

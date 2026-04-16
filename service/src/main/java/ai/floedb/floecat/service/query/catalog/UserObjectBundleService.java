@@ -71,6 +71,10 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -87,6 +91,8 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -100,6 +106,10 @@ public class UserObjectBundleService {
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
   private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
+  private static final String RELATION_HINT_PERSIST_NANOS_KEY =
+      "decorator.relation_hint_persist_nanos";
+  private static final String COLUMN_HINT_PERSIST_NANOS_KEY = "decorator.column_hint_persist_nanos";
+  private static final String COLUMN_WARM_HIT_COUNT_KEY = "decorator.column_warm_hits";
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
@@ -108,10 +118,9 @@ public class UserObjectBundleService {
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
+  private final long slowRpcMs;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
-  private final long slowLogMs;
-  private final boolean logTimingBreakdown;
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -151,10 +160,7 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
           boolean grpcPlainText,
       @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile,
-      @ConfigProperty(name = "floecat.catalog.bundle.slow-log-ms", defaultValue = "1000")
-          long slowLogMs,
-      @ConfigProperty(name = "floecat.catalog.bundle.log-timings", defaultValue = "false")
-          boolean logTimingBreakdown) {
+      @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250") long slowRpcMs) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
@@ -162,19 +168,17 @@ public class UserObjectBundleService {
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
     this.engineSpecificEnabled = engineSpecificEnabled;
+    this.slowRpcMs = Math.max(0L, slowRpcMs);
     this.floecatFlightEndpoint =
         FlightEndpointRef.newBuilder()
             .setHost(flightHost)
             .setPort(flightPort)
             .setTls(!grpcPlainText)
             .build();
-    this.slowLogMs = slowLogMs;
-    this.logTimingBreakdown = logTimingBreakdown;
     warnFlightHost(flightHost, quarkusProfile);
   }
 
-  // Convenience constructor for tests that instantiate the service directly.
-  public UserObjectBundleService(
+  UserObjectBundleService(
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
@@ -198,8 +202,7 @@ public class UserObjectBundleService {
         flightPort,
         grpcPlainText,
         quarkusProfile,
-        1_000L,
-        false);
+        250L);
   }
 
   public Multi<UserObjectsBundleChunk> stream(
@@ -215,12 +218,16 @@ public class UserObjectBundleService {
     }
     return Multi.createFrom()
         .<UserObjectsBundleChunk>deferred(
-            () ->
-                Multi.createFrom()
-                    .iterable(
-                        () ->
-                            new UserObjectBundleIterator(
-                                correlationId, ctx, candidates, defaultCatalog)));
+            () -> {
+              UserObjectBundleIterator iterator =
+                  new UserObjectBundleIterator(correlationId, ctx, candidates, defaultCatalog);
+              return Multi.createFrom()
+                  .iterable(() -> iterator)
+                  .onFailure()
+                  .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
+                  .onTermination()
+                  .invoke(() -> iterator.publishStreamTelemetry("cancelled"));
+            });
   }
 
   private List<QueryInput> normalizeCandidates(
@@ -354,6 +361,14 @@ public class UserObjectBundleService {
 
   private static final class TimingAccumulator {
     private long statsLookupNanos;
+    private long decorateRelationNanos;
+    private long decorateViewNanos;
+    private long decorateColumnsNanos;
+    private long decorateColumnInvokeNanos;
+    private long decorateCompleteNanos;
+    private long decoratePersistRelationNanos;
+    private long decoratePersistColumnsNanos;
+    private long decorateColumnWarmHits;
 
     private void addStatsLookupNanos(long nanos) {
       statsLookupNanos += nanos;
@@ -361,6 +376,77 @@ public class UserObjectBundleService {
 
     private long statsLookupNanos() {
       return statsLookupNanos;
+    }
+
+    private void addDecorateRelationNanos(long nanos) {
+      decorateRelationNanos += nanos;
+    }
+
+    private long decorateRelationNanos() {
+      return decorateRelationNanos;
+    }
+
+    private void addDecorateViewNanos(long nanos) {
+      decorateViewNanos += nanos;
+    }
+
+    private long decorateViewNanos() {
+      return decorateViewNanos;
+    }
+
+    private void addDecorateColumnsNanos(long nanos) {
+      decorateColumnsNanos += nanos;
+    }
+
+    private long decorateColumnsNanos() {
+      return decorateColumnsNanos;
+    }
+
+    private void addDecorateColumnInvokeNanos(long nanos) {
+      decorateColumnInvokeNanos += nanos;
+    }
+
+    private long decorateColumnInvokeNanos() {
+      return decorateColumnInvokeNanos;
+    }
+
+    private void addDecorateCompleteNanos(long nanos) {
+      decorateCompleteNanos += nanos;
+    }
+
+    private long decorateCompleteNanos() {
+      return decorateCompleteNanos;
+    }
+
+    private void addDecoratePersistRelationNanos(long nanos) {
+      decoratePersistRelationNanos += nanos;
+    }
+
+    private long decoratePersistRelationNanos() {
+      return decoratePersistRelationNanos;
+    }
+
+    private void addDecoratePersistColumnsNanos(long nanos) {
+      decoratePersistColumnsNanos += nanos;
+    }
+
+    private long decoratePersistColumnsNanos() {
+      return decoratePersistColumnsNanos;
+    }
+
+    private void addDecorateColumnWarmHits(long warmHits) {
+      decorateColumnWarmHits += warmHits;
+    }
+
+    private long decorateColumnWarmHits() {
+      return decorateColumnWarmHits;
+    }
+
+    private long decorationTotalNanos() {
+      return decorateRelationNanos
+          + decorateViewNanos
+          + decorateColumnsNanos
+          + decorateCompleteNanos;
     }
   }
 
@@ -447,6 +533,7 @@ public class UserObjectBundleService {
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;
     boolean relationDecorationSucceeded = true;
+    long relationDecorationBeforeNanos = timings.decorationTotalNanos();
 
     if (decorationRequired && decorator.isPresent()) {
       MetadataResolutionContext resolutionContext =
@@ -467,7 +554,12 @@ public class UserObjectBundleService {
               resolutionContext);
 
       try {
-        decorator.get().decorateRelation(ctx, relationDecoration);
+        long decorateRelationStartNs = System.nanoTime();
+        try {
+          decorator.get().decorateRelation(ctx, relationDecoration);
+        } finally {
+          timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
+        }
       } catch (RuntimeException e) {
         relationDecorationSucceeded = false;
         LOG.debugf(
@@ -487,7 +579,12 @@ public class UserObjectBundleService {
                 builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
 
         try {
-          decorator.get().decorateView(ctx, viewDecoration);
+          long decorateViewStartNs = System.nanoTime();
+          try {
+            decorator.get().decorateView(ctx, viewDecoration);
+          } finally {
+            timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
+          }
         } catch (RuntimeException e) {
           LOG.debugf(
               e,
@@ -506,7 +603,10 @@ public class UserObjectBundleService {
             decorator,
             ctx,
             decorationRequired,
-            relation.relationId());
+            relation.relationId(),
+            timings);
+    long relationWarmHitCount = decorationCounter(relationDecoration, COLUMN_WARM_HIT_COUNT_KEY);
+    timings.addDecorateColumnWarmHits(relationWarmHitCount);
 
     if (relationDecoration != null && decorator.isPresent()) {
       boolean commitRelationHints = relationDecorationSucceeded;
@@ -524,10 +624,19 @@ public class UserObjectBundleService {
             readyColumnIds.size());
       }
       try {
-        decorator
-            .get()
-            .completeRelation(
-                ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
+        long decorateCompleteStartNs = System.nanoTime();
+        try {
+          decorator
+              .get()
+              .completeRelation(
+                  ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
+        } finally {
+          timings.addDecorateCompleteNanos(System.nanoTime() - decorateCompleteStartNs);
+          timings.addDecoratePersistRelationNanos(
+              decorationTimingNanos(relationDecoration, RELATION_HINT_PERSIST_NANOS_KEY));
+          timings.addDecoratePersistColumnsNanos(
+              decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
+        }
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -538,16 +647,46 @@ public class UserObjectBundleService {
     }
 
     if (LOG.isDebugEnabled()) {
+      long relationDecorationNanos =
+          Math.max(0L, timings.decorationTotalNanos() - relationDecorationBeforeNanos);
+      long relationColdMissCount = Math.max(0L, columnResults.size() - relationWarmHitCount);
       LOG.debugf(
-          "Built relation bundle relation=%s columns=%d ready=%d failed=%d",
+          "Built relation bundle relation=%s columns=%d ready=%d failed=%d warm=%d cold=%d"
+              + " decorationMs=%.1f",
           relation.relationId(),
           columnResults.size(),
           countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_OK),
-          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED));
+          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED),
+          relationWarmHitCount,
+          relationColdMissCount,
+          relationDecorationNanos / 1_000_000.0);
     }
 
     builder.addAllColumns(columnResults);
     return builder.build();
+  }
+
+  private static long decorationTimingNanos(
+      RelationDecoration relationDecoration, String attributeKey) {
+    if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
+      return 0L;
+    }
+    Object value = relationDecoration.attribute(attributeKey);
+    if (!(value instanceof Number number)) {
+      return 0L;
+    }
+    return Math.max(0L, number.longValue());
+  }
+
+  private static long decorationCounter(RelationDecoration relationDecoration, String attributeKey) {
+    if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
+      return 0L;
+    }
+    Object value = relationDecoration.attribute(attributeKey);
+    if (!(value instanceof Number number)) {
+      return 0L;
+    }
+    return Math.max(0L, number.longValue());
   }
 
   private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
@@ -577,7 +716,7 @@ public class UserObjectBundleService {
         FlightEndpointRef.newBuilder().setHost(host.get()).setPort(port.get()).setTls(tls).build());
   }
 
-  private List<ColumnResult> decorateColumns(
+  List<ColumnResult> decorateColumns(
       List<ColumnInfo> columns,
       List<SchemaColumn> pruned,
       RelationDecoration relationDecoration,
@@ -585,6 +724,26 @@ public class UserObjectBundleService {
       EngineContext ctx,
       boolean decorationRequired,
       ResourceId relationId) {
+    return decorateColumns(
+        columns,
+        pruned,
+        relationDecoration,
+        decorator,
+        ctx,
+        decorationRequired,
+        relationId,
+        new TimingAccumulator());
+  }
+
+  private List<ColumnResult> decorateColumns(
+      List<ColumnInfo> columns,
+      List<SchemaColumn> pruned,
+      RelationDecoration relationDecoration,
+      Optional<EngineMetadataDecorator> decorator,
+      EngineContext ctx,
+      boolean decorationRequired,
+      ResourceId relationId,
+      TimingAccumulator timings) {
 
     if (pruned == null || pruned.size() != columns.size()) {
       String msg =
@@ -635,6 +794,7 @@ public class UserObjectBundleService {
 
     List<ColumnResult> decorated = new ArrayList<>(columns.size());
     for (int i = 0; i < columns.size(); i++) {
+      long decorateColumnTotalStartNs = System.nanoTime();
       ColumnInfo column = columns.get(i);
       SchemaColumn schema = pruned.get(i);
       ColumnInfo.Builder builder = column.toBuilder();
@@ -643,7 +803,12 @@ public class UserObjectBundleService {
           new ColumnDecoration(
               builder, schema, logicalType, column.getOrdinal(), relationDecoration);
       try {
-        decorator.get().decorateColumn(ctx, columnDecoration);
+        long decorateColumnInvokeStartNs = System.nanoTime();
+        try {
+          decorator.get().decorateColumn(ctx, columnDecoration);
+        } finally {
+          timings.addDecorateColumnInvokeNanos(System.nanoTime() - decorateColumnInvokeStartNs);
+        }
         ColumnInfo decoratedColumn = columnDecoration.builder().build();
         if (hasRequiredEnginePayload(decoratedColumn, ctx)) {
           decorated.add(readyColumn(decoratedColumn));
@@ -678,6 +843,8 @@ public class UserObjectBundleService {
             failure.getCode(),
             failure.hasExtensionCodeValue() ? failure.getExtensionCodeValue() : 0);
         decorated.add(failedColumn(column, failure));
+      } finally {
+        timings.addDecorateColumnsNanos(System.nanoTime() - decorateColumnTotalStartNs);
       }
     }
     return decorated;
@@ -811,10 +978,6 @@ public class UserObjectBundleService {
 
   private static String safe(String value) {
     return value == null ? "" : value;
-  }
-
-  private static double nanosToMs(long nanos) {
-    return nanos / 1_000_000.0;
   }
 
   private static void addEngineDetails(ColumnFailure.Builder failure, EngineContext ctx) {
@@ -1055,6 +1218,9 @@ public class UserObjectBundleService {
     private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final long streamStartNs = System.nanoTime();
+    private final long streamStartEpochNs =
+        TimeUnit.MILLISECONDS.toNanos(System.currentTimeMillis());
+    private final Span parentSpan = Span.current();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
 
     private int seq = 1;
@@ -1064,11 +1230,15 @@ public class UserObjectBundleService {
     private int emittedResolutionChunks = 0;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
+    private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
+    private boolean defaultCatalogResolved = false;
+    private String defaultCatalogName = "";
     private long resolveNanos = 0L;
     private long baseInjectNanos = 0L;
     private long pinCollectNanos = 0L;
     private long pinCommitNanos = 0L;
     private long relationBuildNanos = 0L;
+    private long decorationNanos = 0L;
 
     UserObjectBundleIterator(
         String correlationId,
@@ -1117,7 +1287,7 @@ public class UserObjectBundleService {
 
       if (!endEmitted) {
         endEmitted = true;
-        logStreamTiming();
+        publishStreamTelemetry("completed");
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
               "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
@@ -1320,12 +1490,15 @@ public class UserObjectBundleService {
           continue;
         }
         long statsBeforeNanos = timings.statsLookupNanos();
+        long decorationBeforeNanos = timings.decorationTotalNanos();
         long buildStartNs = System.nanoTime();
         RelationInfo info =
             buildRelation(correlationId, found.relation(), liveCtx, statsProvider, timings);
         long buildNanos = System.nanoTime() - buildStartNs;
         long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
-        relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
+        long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
+        relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos - decorationDeltaNanos);
+        decorationNanos += Math.max(0L, decorationDeltaNanos);
         relationInfoCache.put(cacheKey, info);
         resolutions.add(
             RelationResolution.newBuilder()
@@ -1354,48 +1527,225 @@ public class UserObjectBundleService {
       return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
     }
 
-    private void logStreamTiming() {
-      long totalNanos = System.nanoTime() - streamStartNs;
-      double totalMs = nanosToMs(totalNanos);
-      boolean slow = totalMs >= slowLogMs;
-      if (!slow && !logTimingBreakdown) {
+    private void publishStreamTelemetry(String outcome) {
+      if (!telemetryPublished.compareAndSet(false, true)) {
         return;
       }
-      String message =
-          String.format(
-              Locale.ROOT,
-              "GetUserObjects timings query_id=%s correlation_id=%s totalMs=%.1f candidates=%d"
-                  + " chunks=%d found=%d notFound=%d resolveMs=%.1f baseInjectMs=%.1f"
-                  + " pinCollectMs=%.1f pinCommitMs=%.1f relationBuildMs=%.1f"
-                  + " statsLookupMs=%.1f schedulingMs=%.1f",
-              ctx.getQueryId(),
-              correlationId,
-              totalMs,
-              resolutionCount,
-              emittedResolutionChunks,
-              foundCount,
-              notFoundCount,
-              nanosToMs(resolveNanos),
-              nanosToMs(baseInjectNanos),
-              nanosToMs(pinCollectNanos),
-              nanosToMs(pinCommitNanos),
-              nanosToMs(relationBuildNanos),
-              nanosToMs(timings.statsLookupNanos()),
-              nanosToMs(
-                  Math.max(
-                      0L,
-                      totalNanos
-                          - resolveNanos
-                          - baseInjectNanos
-                          - pinCollectNanos
-                          - pinCommitNanos
-                          - relationBuildNanos
-                          - timings.statsLookupNanos())));
-      if (slow) {
-        LOG.warn(message);
-      } else {
-        LOG.debug(message);
+      long totalNanos = System.nanoTime() - streamStartNs;
+      long schedulingNanos =
+          Math.max(
+              0L,
+              totalNanos
+                  - resolveNanos
+                  - baseInjectNanos
+                  - pinCollectNanos
+                  - pinCommitNanos
+                  - relationBuildNanos
+                  - decorationNanos
+                  - timings.statsLookupNanos());
+      emitPhaseSpans(totalNanos, schedulingNanos, outcome);
+
+      double totalMs = totalNanos / 1_000_000.0;
+      if (totalMs >= slowRpcMs) {
+        double pinMs = (pinCollectNanos + pinCommitNanos) / 1_000_000.0;
+        LOG.infof(
+            "op=GetUserObjects slow query_id=%s correlation_id=%s totalMs=%.1f"
+                + " resolveMs=%.1f baseInjectMs=%.1f pinMs=%.1f relationBuildMs=%.1f"
+                + " decorationMs=%.1f statsLookupMs=%.1f schedulingMs=%.1f"
+                + " candidates=%d chunks=%d found=%d notFound=%d outcome=%s",
+            ctx.getQueryId(),
+            correlationId,
+            totalMs,
+            resolveNanos / 1_000_000.0,
+            baseInjectNanos / 1_000_000.0,
+            pinMs,
+            relationBuildNanos / 1_000_000.0,
+            decorationNanos / 1_000_000.0,
+            timings.statsLookupNanos() / 1_000_000.0,
+            schedulingNanos / 1_000_000.0,
+            resolutionCount,
+            emittedResolutionChunks,
+            foundCount,
+            notFoundCount,
+            outcome);
       }
+
+      if (LOG.isTraceEnabled()) {
+        LOG.tracef(
+            "GetUserObjects telemetry query_id=%s correlation_id=%s candidates=%d chunks=%d"
+                + " found=%d notFound=%d outcome=%s",
+            ctx.getQueryId(),
+            correlationId,
+            resolutionCount,
+            emittedResolutionChunks,
+            foundCount,
+            notFoundCount,
+            outcome);
+      }
+    }
+
+    private void emitPhaseSpans(long totalNanos, long schedulingNanos, String outcome) {
+      if (!parentSpan.getSpanContext().isValid()) {
+        return;
+      }
+      long cursorNs = 0L;
+      cursorNs = emitPhaseSpan(parentSpan, "resolve", cursorNs, resolveNanos, outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "base_inject", cursorNs, baseInjectNanos, outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "pin_collect", cursorNs, pinCollectNanos, outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "pin_commit", cursorNs, pinCommitNanos, outcome, "");
+      cursorNs =
+          emitPhaseSpan(parentSpan, "relation_build", cursorNs, relationBuildNanos, outcome, "");
+
+      long decorationStartNs = cursorNs;
+      Span decorationSpan =
+          startPhaseSpan(parentSpan, "decoration", decorationStartNs, outcome, "");
+      long decorationCursorNs = 0L;
+      decorationCursorNs =
+          emitPhaseSpan(
+              decorationSpan,
+              "decoration_relation",
+              decorationCursorNs,
+              timings.decorateRelationNanos(),
+              outcome,
+              "decoration");
+      decorationCursorNs =
+          emitPhaseSpan(
+              decorationSpan,
+              "decoration_view",
+              decorationCursorNs,
+              timings.decorateViewNanos(),
+              outcome,
+              "decoration");
+      long columnsStartNs = decorationCursorNs;
+      Span decorationColumnsSpan =
+          startPhaseSpan(
+              decorationSpan, "decoration_columns", columnsStartNs, outcome, "decoration");
+      long columnsInvokeNanos = timings.decorateColumnInvokeNanos();
+      long columnsPostprocessNanos =
+          Math.max(0L, timings.decorateColumnsNanos() - timings.decorateColumnInvokeNanos());
+      long columnsCursorNs = 0L;
+      columnsCursorNs =
+          emitPhaseSpan(
+              decorationColumnsSpan,
+              "decoration_columns_invoke",
+              columnsCursorNs,
+              columnsInvokeNanos,
+              outcome,
+              "decoration_columns");
+      columnsCursorNs =
+          emitPhaseSpan(
+              decorationColumnsSpan,
+              "decoration_columns_postprocess",
+              columnsCursorNs,
+              columnsPostprocessNanos,
+              outcome,
+              "decoration_columns");
+      endPhaseSpan(decorationColumnsSpan, columnsStartNs, timings.decorateColumnsNanos());
+      decorationCursorNs += timings.decorateColumnsNanos();
+      long completeStartNs = decorationCursorNs;
+      Span completeSpan =
+          startPhaseSpan(decorationSpan, "decoration_complete", completeStartNs, outcome, "decoration");
+      long completeCursorNs = 0L;
+      long relationPersistNanos = timings.decoratePersistRelationNanos();
+      long columnPersistNanos = timings.decoratePersistColumnsNanos();
+      completeCursorNs =
+          emitPhaseSpan(
+              completeSpan,
+              "decoration_persist_relation",
+              completeCursorNs,
+              relationPersistNanos,
+              outcome,
+              "decoration_complete");
+      completeCursorNs =
+          emitPhaseSpan(
+              completeSpan,
+              "decoration_persist_columns",
+              completeCursorNs,
+              columnPersistNanos,
+              outcome,
+              "decoration_complete");
+      long decorationCompleteOtherNanos =
+          Math.max(0L, timings.decorateCompleteNanos() - relationPersistNanos - columnPersistNanos);
+      completeCursorNs =
+          emitPhaseSpan(
+              completeSpan,
+              "decoration_complete_other",
+              completeCursorNs,
+              decorationCompleteOtherNanos,
+              outcome,
+              "decoration_complete");
+      endPhaseSpan(completeSpan, completeStartNs, timings.decorateCompleteNanos());
+      decorationCursorNs += timings.decorateCompleteNanos();
+      endPhaseSpan(decorationSpan, decorationStartNs, decorationNanos);
+      cursorNs += decorationNanos;
+
+      cursorNs =
+          emitPhaseSpan(
+              parentSpan, "stats_lookup", cursorNs, timings.statsLookupNanos(), outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "scheduling", cursorNs, schedulingNanos, outcome, "");
+
+      parentSpan.addEvent(
+          "floecat.get_user_objects.summary",
+          Attributes.builder()
+              .put("query_id", ctx.getQueryId())
+              .put("correlation_id", correlationId)
+              .put("candidates", resolutionCount)
+              .put("chunks", emittedResolutionChunks)
+              .put("found", foundCount)
+              .put("not_found", notFoundCount)
+              .put("decorator_warm_hits", timings.decorateColumnWarmHits())
+              .put(
+                  "hint_persist_ms",
+                  (timings.decoratePersistRelationNanos() + timings.decoratePersistColumnsNanos())
+                      / 1_000_000.0)
+              .put("outcome", safe(outcome))
+              .build());
+    }
+
+    private Span startPhaseSpan(
+        Span parent, String phase, long startOffsetNs, String outcome, String parentPhase) {
+      if (parent == null || !parent.getSpanContext().isValid()) {
+        return Span.getInvalid();
+      }
+      long safeStartOffset = Math.max(0L, startOffsetNs);
+      long startTimestampNs = streamStartEpochNs + safeStartOffset;
+      var builder =
+          GlobalOpenTelemetry.getTracer("floecat.service")
+              .spanBuilder("floecat.get_user_objects.phase." + phase)
+              .setParent(Context.root().with(parent))
+              .setStartTimestamp(startTimestampNs, TimeUnit.NANOSECONDS)
+              .setAttribute("query_id", ctx.getQueryId())
+              .setAttribute("correlation_id", correlationId)
+              .setAttribute("phase", phase)
+              .setAttribute("outcome", safe(outcome));
+      if (parentPhase != null && !parentPhase.isBlank()) {
+        builder.setAttribute("parent_phase", parentPhase);
+      }
+      return builder.startSpan();
+    }
+
+    private void endPhaseSpan(Span phaseSpan, long startOffsetNs, long elapsedNanos) {
+      if (phaseSpan == null || !phaseSpan.getSpanContext().isValid()) {
+        return;
+      }
+      long safeStartOffset = Math.max(0L, startOffsetNs);
+      long safeElapsed = Math.max(0L, elapsedNanos);
+      long endTimestampNs = streamStartEpochNs + safeStartOffset + safeElapsed;
+      phaseSpan.setAttribute("elapsed_ns", safeElapsed);
+      phaseSpan.setAttribute("elapsed_ms", safeElapsed / 1_000_000.0);
+      phaseSpan.end(endTimestampNs, TimeUnit.NANOSECONDS);
+    }
+
+    private long emitPhaseSpan(
+        Span parent,
+        String phase,
+        long startOffsetNs,
+        long elapsedNanos,
+        String outcome,
+        String parentPhase) {
+      Span phaseSpan = startPhaseSpan(parent, phase, startOffsetNs, outcome, parentPhase);
+      endPhaseSpan(phaseSpan, startOffsetNs, elapsedNanos);
+      return Math.max(0L, startOffsetNs) + Math.max(0L, elapsedNanos);
     }
 
     private RelationCacheKey relationCacheKey(ResolvedRelation relation) {

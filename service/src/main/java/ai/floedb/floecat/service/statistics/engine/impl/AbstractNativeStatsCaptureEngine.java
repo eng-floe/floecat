@@ -42,6 +42,9 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
 import com.google.protobuf.util.Timestamps;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -142,6 +145,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
           // hit store without additional capture. Replace the table entry with the matched
           // canonical record.
           Set<String> seenTargets = new LinkedHashSet<>();
+          long statsPersistNanos = 0L;
+          int persistedCount = 0;
           for (TargetStatsRecord bundleRecord : capturedRecords) {
             TargetStatsRecord toPersist =
                 bundleRecord.hasTable()
@@ -149,11 +154,14 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                     : withCanonicalMetadata(bundleRecord, request);
             String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
             if (seenTargets.add(storageId)) {
-              persistRecord(toPersist);
+              statsPersistNanos += persistRecord(toPersist);
+              persistedCount++;
             }
           }
+          publishStatsPersistTelemetry(request, statsPersistNanos, persistedCount);
         } else {
-          persistRecord(canonicalRecord);
+          long statsPersistNanos = persistRecord(canonicalRecord);
+          publishStatsPersistTelemetry(request, statsPersistNanos, 1);
         }
         return Optional.of(
             StatsCaptureResult.forRecord(
@@ -221,7 +229,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     };
   }
 
-  private void persistRecord(TargetStatsRecord record) {
+  private long persistRecord(TargetStatsRecord record) {
+    long startNs = System.nanoTime();
     try {
       statsStore.putTargetStats(record);
     } catch (RuntimeException e) {
@@ -230,6 +239,40 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
           "Failed persisting captured stats record engine=%s target=%s",
           id(),
           record.getTarget());
+    }
+    return System.nanoTime() - startNs;
+  }
+
+  private void publishStatsPersistTelemetry(
+      StatsCaptureRequest request, long statsPersistNanos, int persistedCount) {
+    if (persistedCount <= 0) {
+      return;
+    }
+    Span parent = Span.current();
+    if (parent == null || !parent.getSpanContext().isValid()) {
+      return;
+    }
+    double statsPersistMs = Math.max(0L, statsPersistNanos) / 1_000_000.0;
+    Attributes attrs =
+        Attributes.builder()
+            .put("engine_id", id())
+            .put("table_id", request.tableId().getId())
+            .put("snapshot_id", request.snapshotId())
+            .put("persisted_count", persistedCount)
+            .put("stats_persist_ms", statsPersistMs)
+            .build();
+    parent.addEvent("floecat.stats.persist", attrs);
+
+    Span persistSpan =
+        GlobalOpenTelemetry.getTracer("floecat.service").spanBuilder("floecat.stats.persist").startSpan();
+    try {
+      persistSpan.setAttribute("engine_id", id());
+      persistSpan.setAttribute("table_id", request.tableId().getId());
+      persistSpan.setAttribute("snapshot_id", request.snapshotId());
+      persistSpan.setAttribute("persisted_count", persistedCount);
+      persistSpan.setAttribute("stats_persist_ms", statsPersistMs);
+    } finally {
+      persistSpan.end();
     }
   }
 

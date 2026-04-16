@@ -32,6 +32,7 @@ import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.lang.reflect.Method;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -43,6 +44,12 @@ import org.jboss.logging.Logger;
 public class RpcLoggingInterceptor implements ServerInterceptor {
   private static final Logger LOG = Logger.getLogger(RpcLoggingInterceptor.class);
   private static final String MISSING = "-";
+
+  @ConfigProperty(name = "floecat.rpc.log.success", defaultValue = "false")
+  boolean logSuccessfulCalls = false;
+
+  @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250")
+  long slowRpcMs = 250L;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -158,10 +165,16 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
       logMessage += " rpc_message=" + statusMessage;
     }
 
-    if (status.isOk()) {
-      LOG.info(logMessage);
-    } else {
+    if (!status.isOk()) {
       LOG.error(logMessage);
+      return;
+    }
+    if (durationMs >= slowRpcMs) {
+      LOG.warn(logMessage + " slow=true");
+      return;
+    }
+    if (logSuccessfulCalls) {
+      LOG.info(logMessage);
     }
   }
 
