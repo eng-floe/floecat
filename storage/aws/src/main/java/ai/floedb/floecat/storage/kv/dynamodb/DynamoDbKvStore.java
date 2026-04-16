@@ -398,14 +398,25 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
         .onFailure(TransactionCanceledException.class)
         .recoverWithItem(
             t -> {
-              // Return false only for conditional check failure; otherwise rethrow.
+              // Return false for retryable conflicts; throw on unexpected reasons.
               TransactionCanceledException ex = (TransactionCanceledException) t;
+              boolean sawRetryable = false;
               if (ex.cancellationReasons() != null) {
                 for (var r : ex.cancellationReasons()) {
-                  if (r != null && "ConditionalCheckFailed".equals(r.code())) {
-                    return false;
+                  if (r == null || "None".equals(r.code())) {
+                    continue;
                   }
+                  if ("ConditionalCheckFailed".equals(r.code())
+                      || "TransactionConflict".equals(r.code())) {
+                    sawRetryable = true;
+                    continue;
+                  }
+                  // Non-retryable reason — abort immediately
+                  throw ex;
                 }
+              }
+              if (sawRetryable) {
+                return false;
               }
               throw ex;
             });
