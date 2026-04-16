@@ -54,6 +54,7 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionResult;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
@@ -176,7 +177,13 @@ class UserObjectBundleServiceTest {
             tableRepository,
             new StatsEngineRegistry(
                 List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
-    statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
+    statsFactory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            queryStore,
+            statsRepository);
     service =
         new UserObjectBundleService(
             overlay,
@@ -288,7 +295,12 @@ class UserObjectBundleServiceTest {
             new StatsEngineRegistry(
                 List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
     StatsProviderFactory localStatsFactory =
-        new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
+        new StatsProviderFactory(
+            localOrchestrator,
+            localTableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            localStore,
+            localStatsRepository);
     UserObjectBundleService localService =
         new UserObjectBundleService(
             overlay,

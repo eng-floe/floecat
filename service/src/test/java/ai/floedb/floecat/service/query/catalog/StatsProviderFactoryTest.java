@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
@@ -37,12 +39,15 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -248,7 +253,13 @@ class StatsProviderFactoryTest {
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
-    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            store,
+            Mockito.mock(StatsStore.class));
 
     long snapshotId = 500L;
     QueryContext ctx = queryContextWithPin(snapshotId);
@@ -281,6 +292,66 @@ class StatsProviderFactoryTest {
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
   }
 
+  @Test
+  void listPersistedStatsParsesTargetTypeAndReturnsPage() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            store,
+            statsStore);
+
+    long snapshotId = 700L;
+    QueryContext ctx = queryContextWithPin(snapshotId);
+    store.seed(ctx);
+    TargetStatsRecord record =
+        TargetStatsRecord.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).build();
+    when(statsStore.listTargetStats(
+            eq(TABLE), eq(snapshotId), eq(Optional.of(StatsTargetType.COLUMN)), eq(123), eq("t0")))
+        .thenReturn(new StatsStore.StatsStorePage(List.of(record), "t1"));
+
+    var provider = factory.forQuery(ctx, "corr");
+    var page = provider.listPersistedStats(TABLE, snapshotId, Optional.of("column"), 123, "t0");
+
+    assertEquals(1, page.items().size());
+    assertEquals("t1", page.nextToken());
+    verify(statsStore)
+        .listTargetStats(TABLE, snapshotId, Optional.of(StatsTargetType.COLUMN), 123, "t0");
+  }
+
+  @Test
+  void listPersistedStatsIgnoresUnknownTargetType() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            store,
+            statsStore);
+
+    long snapshotId = 701L;
+    QueryContext ctx = queryContextWithPin(snapshotId);
+    store.seed(ctx);
+    when(statsStore.listTargetStats(eq(TABLE), eq(snapshotId), eq(Optional.empty()), eq(5), eq("")))
+        .thenReturn(new StatsStore.StatsStorePage(List.of(), ""));
+
+    var provider = factory.forQuery(ctx, "corr");
+    provider.listPersistedStats(TABLE, snapshotId, Optional.of("not_a_kind"), 5, "");
+
+    verify(statsStore).listTargetStats(TABLE, snapshotId, Optional.empty(), 5, "");
+  }
+
   private static QueryContext queryContextWithPin(long snapshotId) {
     return queryContextWithPin("query-" + snapshotId, snapshotId);
   }
@@ -294,7 +365,8 @@ class StatsProviderFactoryTest {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     StatsOrchestrator orchestrator =
         new StatsOrchestrator(repository, jobStore, tableRepository, registry);
-    return new StatsProviderFactory(orchestrator, tableRepository, store);
+    return new StatsProviderFactory(
+        orchestrator, tableRepository, Mockito.mock(SnapshotRepository.class), store, repository);
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {

@@ -26,11 +26,15 @@ import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
@@ -47,21 +51,33 @@ public final class StatsProviderFactory {
 
   private final StatsOrchestrator statsOrchestrator;
   private final TableRepository tableRepository;
+  private final SnapshotRepository snapshotRepository;
   private final QueryContextStore queryStore;
+  private final StatsStore statsStore;
 
   @Inject
   public StatsProviderFactory(
       StatsOrchestrator statsOrchestrator,
       TableRepository tableRepository,
-      QueryContextStore queryStore) {
+      SnapshotRepository snapshotRepository,
+      QueryContextStore queryStore,
+      StatsStore statsStore) {
     this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
+    this.snapshotRepository = snapshotRepository;
     this.queryStore = queryStore;
+    this.statsStore = statsStore;
   }
 
   public StatsProvider forQuery(QueryContext ctx, String correlationId) {
     return new CachedStatsProvider(
-        statsOrchestrator, tableRepository, queryStore, ctx, correlationId);
+        statsOrchestrator,
+        tableRepository,
+        snapshotRepository,
+        queryStore,
+        statsStore,
+        ctx,
+        correlationId);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -72,6 +88,8 @@ public final class StatsProviderFactory {
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
+    private final SnapshotRepository snapshotRepository;
+    private final StatsStore statsStore;
     private final SnapshotPinResolver pinResolver;
     private final String correlationId;
     private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
@@ -80,11 +98,15 @@ public final class StatsProviderFactory {
     private CachedStatsProvider(
         StatsOrchestrator statsOrchestrator,
         TableRepository tableRepository,
+        SnapshotRepository snapshotRepository,
         QueryContextStore queryStore,
+        StatsStore statsStore,
         QueryContext ctx,
         String correlationId) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
+      this.snapshotRepository = snapshotRepository;
+      this.statsStore = statsStore;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
     }
@@ -108,6 +130,148 @@ public final class StatsProviderFactory {
     @Override
     public OptionalLong pinnedSnapshotId(ResourceId tableId) {
       return pinResolver.pinnedSnapshotId(tableId);
+    }
+
+    @Override
+    public OptionalLong latestSnapshotId(ResourceId tableId) {
+      OptionalLong byTime = latestSnapshotIdByTimeIndex(tableId);
+      if (byTime.isPresent()) {
+        return byTime;
+      }
+      return latestSnapshotIdByIdIndex(tableId);
+    }
+
+    @Override
+    public OptionalLong latestPersistedStatsSnapshotId(
+        ResourceId tableId, Optional<String> targetType) {
+      Optional<StatsTargetType> parsedType = parseTargetType(targetType);
+      OptionalLong byTime = latestPersistedStatsSnapshotIdByTimeIndex(tableId, parsedType);
+      if (byTime.isPresent()) {
+        return byTime;
+      }
+      return latestPersistedStatsSnapshotIdByIdIndex(tableId, parsedType);
+    }
+
+    @Override
+    public StatsProvider.TargetStatsPage listPersistedStats(
+        ResourceId tableId,
+        long snapshotId,
+        Optional<String> targetType,
+        int limit,
+        String pageToken) {
+      try {
+        Optional<StatsTargetType> parsedType = parseTargetType(targetType);
+        StatsStore.StatsStorePage page =
+            statsStore.listTargetStats(tableId, snapshotId, parsedType, limit, pageToken);
+        return new StatsProvider.TargetStatsPage(page.records(), page.nextPageToken());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "persisted stats listing failed for %s snapshot %s targetType %s",
+            tableId,
+            snapshotId,
+            targetType.orElse(""));
+        return StatsProvider.TargetStatsPage.EMPTY;
+      }
+    }
+
+    private Optional<StatsTargetType> parseTargetType(Optional<String> targetType) {
+      if (targetType.isEmpty() || targetType.get().isBlank()) {
+        return Optional.empty();
+      }
+      try {
+        return Optional.of(StatsTargetType.valueOf(targetType.get().trim().toUpperCase()));
+      } catch (IllegalArgumentException e) {
+        LOG.debugf(
+            "ignoring unknown stats target type for persisted listing: '%s'", targetType.get());
+        return Optional.empty();
+      }
+    }
+
+    private OptionalLong latestSnapshotIdByTimeIndex(ResourceId tableId) {
+      long bestSnapshotId = Long.MIN_VALUE;
+      long bestCreatedMs = Long.MIN_VALUE;
+      String token = "";
+      StringBuilder next = new StringBuilder();
+      do {
+        for (var snapshotRecord : snapshotRepository.listByTime(tableId, 200, token, next)) {
+          long createdMs = Timestamps.toMillis(snapshotRecord.getUpstreamCreatedAt());
+          long snapshotId = snapshotRecord.getSnapshotId();
+          if (createdMs > bestCreatedMs
+              || (createdMs == bestCreatedMs && snapshotId > bestSnapshotId)) {
+            bestCreatedMs = createdMs;
+            bestSnapshotId = snapshotId;
+          }
+        }
+        token = next.toString();
+        next.setLength(0);
+      } while (!token.isEmpty());
+      return bestSnapshotId == Long.MIN_VALUE
+          ? OptionalLong.empty()
+          : OptionalLong.of(bestSnapshotId);
+    }
+
+    private OptionalLong latestSnapshotIdByIdIndex(ResourceId tableId) {
+      long bestSnapshotId = Long.MIN_VALUE;
+      String token = "";
+      StringBuilder next = new StringBuilder();
+      do {
+        for (var snapshotRecord : snapshotRepository.list(tableId, 200, token, next)) {
+          bestSnapshotId = Math.max(bestSnapshotId, snapshotRecord.getSnapshotId());
+        }
+        token = next.toString();
+        next.setLength(0);
+      } while (!token.isEmpty());
+      return bestSnapshotId == Long.MIN_VALUE
+          ? OptionalLong.empty()
+          : OptionalLong.of(bestSnapshotId);
+    }
+
+    private OptionalLong latestPersistedStatsSnapshotIdByTimeIndex(
+        ResourceId tableId, Optional<StatsTargetType> parsedType) {
+      long bestSnapshotId = Long.MIN_VALUE;
+      long bestCreatedMs = Long.MIN_VALUE;
+      String token = "";
+      StringBuilder next = new StringBuilder();
+      do {
+        for (var snapshotRecord : snapshotRepository.listByTime(tableId, 200, token, next)) {
+          long snapshotId = snapshotRecord.getSnapshotId();
+          if (statsStore.countTargetStats(tableId, snapshotId, parsedType) <= 0) {
+            continue;
+          }
+          long createdMs = Timestamps.toMillis(snapshotRecord.getUpstreamCreatedAt());
+          if (createdMs > bestCreatedMs
+              || (createdMs == bestCreatedMs && snapshotId > bestSnapshotId)) {
+            bestCreatedMs = createdMs;
+            bestSnapshotId = snapshotId;
+          }
+        }
+        token = next.toString();
+        next.setLength(0);
+      } while (!token.isEmpty());
+      return bestSnapshotId == Long.MIN_VALUE
+          ? OptionalLong.empty()
+          : OptionalLong.of(bestSnapshotId);
+    }
+
+    private OptionalLong latestPersistedStatsSnapshotIdByIdIndex(
+        ResourceId tableId, Optional<StatsTargetType> parsedType) {
+      long bestSnapshotId = Long.MIN_VALUE;
+      String token = "";
+      StringBuilder next = new StringBuilder();
+      do {
+        for (var snapshotRecord : snapshotRepository.list(tableId, 200, token, next)) {
+          long snapshotId = snapshotRecord.getSnapshotId();
+          if (statsStore.countTargetStats(tableId, snapshotId, parsedType) > 0) {
+            bestSnapshotId = Math.max(bestSnapshotId, snapshotId);
+          }
+        }
+        token = next.toString();
+        next.setLength(0);
+      } while (!token.isEmpty());
+      return bestSnapshotId == Long.MIN_VALUE
+          ? OptionalLong.empty()
+          : OptionalLong.of(bestSnapshotId);
     }
 
     private Optional<StatsProvider.TableStatsView> safeTableStats(
