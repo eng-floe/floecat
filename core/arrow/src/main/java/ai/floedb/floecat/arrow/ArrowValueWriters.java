@@ -16,8 +16,14 @@
 
 package ai.floedb.floecat.arrow;
 
+import com.google.protobuf.Timestamp;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.OptionalDouble;
+import java.util.OptionalLong;
+import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.Float8Vector;
+import org.apache.arrow.vector.TimeStampMicroTZVector;
 import org.apache.arrow.vector.VarCharVector;
 
 /** Lightweight helpers for writing values into Arrow vectors. */
@@ -33,5 +39,45 @@ public final class ArrowValueWriters {
     }
     byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
     vector.setSafe(index, bytes);
+  }
+
+  public static void writeBigInt(BigIntVector vector, int index, long value) {
+    Objects.requireNonNull(vector, "vector");
+    vector.setSafe(index, value);
+  }
+
+  public static void writeBigIntNullable(BigIntVector vector, int index, OptionalLong value) {
+    Objects.requireNonNull(vector, "vector");
+    Objects.requireNonNull(value, "value");
+    if (value.isPresent()) {
+      vector.setSafe(index, value.getAsLong());
+      return;
+    }
+    vector.setNull(index);
+  }
+
+  public static void writeDouble(Float8Vector vector, int index, double value) {
+    Objects.requireNonNull(vector, "vector");
+    vector.setSafe(index, value);
+  }
+
+  public static void writeDoubleNullable(Float8Vector vector, int index, OptionalDouble value) {
+    Objects.requireNonNull(vector, "vector");
+    Objects.requireNonNull(value, "value");
+    if (value.isPresent()) {
+      vector.setSafe(index, value.getAsDouble());
+      return;
+    }
+    vector.setNull(index);
+  }
+
+  public static void writeTimestamp(TimeStampMicroTZVector vector, int index, Timestamp value) {
+    Objects.requireNonNull(vector, "vector");
+    if (value == null) {
+      vector.setNull(index);
+      return;
+    }
+    long micros = value.getSeconds() * 1_000_000L + (value.getNanos() / 1_000L);
+    vector.setSafe(index, micros);
   }
 }
