@@ -96,7 +96,7 @@ class NamespacesPagingIT {
     var all = collectAllNamespacesAtRootChildrenOnly(100);
     var names = toNames(all);
 
-    var expected = Set.of("a", "m", "z", "information_schema");
+    var expected = Set.of("a", "m", "z", "information_schema", "sys");
     assertEquals(expected, new HashSet<>(names));
 
     var totalResp =
@@ -107,7 +107,7 @@ class NamespacesPagingIT {
                 .setRecursive(false)
                 .setPage(PageRequest.newBuilder().setPageSize(1))
                 .build());
-    assertEquals(4, totalResp.getPage().getTotalSize());
+    assertEquals(5, totalResp.getPage().getTotalSize());
   }
 
   @Test

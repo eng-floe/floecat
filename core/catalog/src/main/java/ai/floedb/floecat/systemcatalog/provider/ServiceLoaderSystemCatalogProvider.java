@@ -50,7 +50,7 @@ import org.jboss.logging.Logger;
  * Production implementation of SystemCatalogProvider. Discovers EngineSystemCatalogExtension
  * implementations using ServiceLoader.
  */
-public final class ServiceLoaderSystemCatalogProvider
+public class ServiceLoaderSystemCatalogProvider
     implements SystemCatalogProvider, EngineMetadataDecoratorProvider {
 
   private static final Logger LOG = Logger.getLogger(ServiceLoaderSystemCatalogProvider.class);

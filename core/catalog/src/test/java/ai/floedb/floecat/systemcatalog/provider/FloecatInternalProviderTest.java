@@ -47,12 +47,33 @@ class FloecatInternalProviderTest {
   }
 
   @Test
+  void catalogDataContainsSystemNamespaces() {
+    SystemCatalogData catalog = FloecatInternalProvider.catalogData();
+    assertThat(
+            catalog.namespaces().stream()
+                .map(namespace -> NameRefUtil.canonical(namespace.name()))
+                .toList())
+        .contains("information_schema", "sys");
+  }
+
+  @Test
   void supportsSysStatsTablesByName() {
     FloecatInternalProvider provider = new FloecatInternalProvider();
 
     assertThat(
             provider.supports(
                 NameRef.newBuilder().addPath("sys").setName("stats_table").build(), "duckdb"))
+        .isTrue();
+  }
+
+  @Test
+  void supportsInformationSchemaTablesByName() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+
+    assertThat(
+            provider.supports(
+                NameRef.newBuilder().addPath("information_schema").setName("tables").build(),
+                "duckdb"))
         .isTrue();
   }
 
@@ -78,5 +99,18 @@ class FloecatInternalProviderTest {
   void providesStatsExpressionScanner() {
     FloecatInternalProvider provider = new FloecatInternalProvider();
     assertThat(provider.provide("stats_expression_scanner", "duckdb", "1.0")).isPresent();
+  }
+
+  @Test
+  void providesInformationSchemaScanner() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide("tables_scanner", "duckdb", "1.0")).isPresent();
+  }
+
+  @Test
+  void provideReturnsEmptyForNullAndUnknownScannerIds() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide(null, "duckdb", "1.0")).isEmpty();
+    assertThat(provider.provide("unknown_scanner", "duckdb", "1.0")).isEmpty();
   }
 }
