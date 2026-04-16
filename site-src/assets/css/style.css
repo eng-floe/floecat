@@ -72,3 +72,9 @@
   font-size: 1.4rem;
 }
 
+.footer-simple {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
