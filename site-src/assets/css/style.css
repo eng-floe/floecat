@@ -4,7 +4,7 @@
 @import "minima";
 
 .hero {
-  padding: 2rem 0 1rem 0;
+  margin-bottom: 1.5rem;
 }
 
 .eyebrow {
@@ -52,20 +52,19 @@
 }
 
 .feature-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  padding: 1.1rem 1rem;
-  background: #fafafa;
+  border-left: 2px solid #e5e7eb;
+  padding: 0.5rem 0 0.5rem 0.75rem;
+  background: transparent;
 }
 
-.feature-card h2 {
-  font-size: 1.1rem;
-  margin-top: 0.25rem;
-  margin-bottom: 0.5rem;
+.feature-card h3 {
+  margin-bottom: 0.25rem;
+  font-size: 1rem;
 }
 
 .feature-card p {
-  margin-bottom: 0;
+  margin: 0;
+  color: #555;
 }
 
 .feature-icon {
