@@ -101,6 +101,12 @@ public final class QueryContext {
   /** Cached parsed SnapshotSet for this immutable context instance (lazy). */
   private final transient AtomicReference<SnapshotSet> parsedSnapshotSet = new AtomicReference<>();
 
+  /**
+   * Cached parsed BeginQuery as-of default timestamp for this immutable context instance (lazy).
+   */
+  private final transient AtomicReference<java.util.Optional<Timestamp>> parsedAsOfDefault =
+      new AtomicReference<>();
+
   // ----------------------------------------------------------------------
   //  Construction
   // ----------------------------------------------------------------------
@@ -308,7 +314,10 @@ public final class QueryContext {
         .findFirst();
   }
 
-  private SnapshotSet parseSnapshotSet(String correlationId) {
+  public SnapshotSet parseSnapshotSet(String correlationId) {
+    if (snapshotSet == null || snapshotSet.length == 0) {
+      return SnapshotSet.getDefaultInstance();
+    }
     // Memoize parsing: QueryContext is immutable, so caching is safe for the life of the instance.
     SnapshotSet cached = parsedSnapshotSet.get();
     if (cached != null) {
@@ -337,12 +346,21 @@ public final class QueryContext {
    * default.
    */
   public java.util.Optional<Timestamp> parseAsOfDefault(String correlationId) {
+    java.util.Optional<Timestamp> cached = parsedAsOfDefault.get();
+    if (cached != null) {
+      return cached;
+    }
     if (asOfDefault == null || asOfDefault.length == 0) {
-      return java.util.Optional.empty();
+      java.util.Optional<Timestamp> empty = java.util.Optional.empty();
+      parsedAsOfDefault.compareAndSet(null, empty);
+      return empty;
     }
 
     try {
-      return java.util.Optional.of(Timestamp.parseFrom(asOfDefault));
+      java.util.Optional<Timestamp> parsed =
+          java.util.Optional.of(Timestamp.parseFrom(asOfDefault));
+      parsedAsOfDefault.compareAndSet(null, parsed);
+      return parsed;
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
           correlationId, QUERY_AS_OF_DEFAULT_PARSE_FAILED, Map.of("query_id", queryId));
@@ -462,13 +480,18 @@ public final class QueryContext {
 
   private boolean tableIdMatches(ResourceId a, ResourceId b) {
     if (a == null || b == null) return false;
-
-    if (!isBlank(a.getAccountId())
-        && !isBlank(b.getAccountId())
-        && !Objects.equals(a.getAccountId(), b.getAccountId())) {
+    if (!Objects.equals(a.getId(), b.getId())) {
       return false;
     }
-    return Objects.equals(a.getId(), b.getId());
+    boolean aBlank = isBlank(a.getAccountId());
+    boolean bBlank = isBlank(b.getAccountId());
+    if (aBlank && bBlank) {
+      return true;
+    }
+    if (aBlank || bBlank) {
+      return false;
+    }
+    return Objects.equals(a.getAccountId(), b.getAccountId());
   }
 
   private static String requireNonEmpty(String v, String field) {

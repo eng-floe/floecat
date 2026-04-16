@@ -69,9 +69,9 @@ public final class UserGraph {
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
-  private SnapshotHelper snapshots;
-  private EngineHintManager hints;
-  private PrincipalProvider principal;
+  private final SnapshotHelper snapshots;
+  private final EngineHintManager hints;
+  private final PrincipalProvider principal;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -102,15 +102,42 @@ public final class UserGraph {
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
+      @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
+          long metaCacheTtlSeconds,
       EngineHintManager engineHints) {
-
-    this.cache = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, observability);
+    this.cache =
+        new GraphCacheManager(
+            cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.snapshots = new SnapshotHelper(snapshotRepo);
     this.hints = engineHints;
     this.principal = principal;
+  }
+
+  /** TEST-ONLY constructor with explicit cache knobs. */
+  public UserGraph(
+      CatalogRepository catalogRepo,
+      NamespaceRepository nsRepo,
+      SnapshotRepository snapshotRepo,
+      TableRepository tableRepo,
+      ViewRepository viewRepo,
+      Observability observability,
+      PrincipalProvider principal,
+      long cacheMaxSize,
+      EngineHintManager engineHints) {
+    this(
+        catalogRepo,
+        nsRepo,
+        snapshotRepo,
+        tableRepo,
+        viewRepo,
+        observability,
+        principal,
+        cacheMaxSize,
+        2L,
+        engineHints);
   }
 
   /** TEST-ONLY constructor */
@@ -121,24 +148,22 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       Observability observability) {
-
-    this.cache = new GraphCacheManager(true, 1024, observability);
-    this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-
-    // Snapshot helper without gRPC client
-    this.snapshots = new SnapshotHelper(snapshotRepo);
-
-    this.principal =
+    this(
+        catalogRepo,
+        nsRepo,
+        snapshotRepo,
+        tableRepo,
+        viewRepo,
+        observability,
         new PrincipalProvider() {
           @Override
           public PrincipalContext get() {
             return PrincipalContext.newBuilder().setAccountId("account").build();
           }
-        };
-
-    this.hints = null;
+        },
+        1024L,
+        2L,
+        null);
   }
 
   public void invalidate(ResourceId id) {
@@ -232,10 +257,15 @@ public final class UserGraph {
   public Optional<GraphNode> resolve(ResourceId id) {
 
     // ----- Regular nodes (cached in graph) ------------------------------------
-    Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
-    if (metaOpt.isEmpty()) return Optional.empty();
-
-    MutationMeta meta = metaOpt.get();
+    MutationMeta meta = cache.getMeta(id);
+    if (meta == null) {
+      Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
+      if (metaOpt.isEmpty()) {
+        return Optional.empty();
+      }
+      meta = metaOpt.get();
+      cache.putMeta(id, meta);
+    }
     GraphCacheKey key = new GraphCacheKey(id, meta.getPointerVersion());
 
     GraphNode cached = cache.get(id, key);
@@ -609,17 +639,6 @@ public final class UserGraph {
     b.setName(relName);
     b.setResourceId(id);
     return b.build();
-  }
-
-  // ----------------------------------------------------------------------
-  // Dependency setters (for injection/configuration)
-  // ----------------------------------------------------------------------
-  public void setSnapshotHelper(SnapshotHelper helper) {
-    this.snapshots = helper;
-  }
-
-  public void setPrincipalProvider(PrincipalProvider principal) {
-    this.principal = principal;
   }
 
   // ----------------------------------------------------------------------

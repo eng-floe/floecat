@@ -626,6 +626,22 @@ public class QueryInputResolverTest {
     assertEquals(0, pins.get(0).getAsOf().getSeconds());
   }
 
+  @Test
+  void currentSnapshotPinCacheReusedAcrossResolveCalls() {
+    ResourceId tableId = rid("CACHE_TABLE");
+    metadataGraph.setCurrentSnapshot(tableId, 1234L);
+    QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
+    Map<ResourceId, SnapshotPin> cache = new HashMap<>();
+
+    resolver.resolveInputs("cid-a", List.of(input), Optional.empty(), Optional.empty(), cache);
+    resolver.resolveInputs("cid-b", List.of(input), Optional.empty(), Optional.empty(), cache);
+
+    long tablePinCalls =
+        metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(tableId)).count();
+    assertEquals(1L, tablePinCalls);
+    assertEquals(1, cache.size());
+  }
+
   // ----------------------------------------------------------------------
   // Base-relation enrichment (catalog + search-path fallback)
   // ----------------------------------------------------------------------

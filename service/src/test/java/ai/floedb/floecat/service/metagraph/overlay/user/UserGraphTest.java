@@ -37,7 +37,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
@@ -76,8 +75,8 @@ class UserGraphTest {
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
 
-    // Use the lightweight test-only constructor; it wires up a minimal graph
     observability = new TestObservability();
+    principalProvider = new FakePrincipalProvider("account");
     graph =
         new UserGraph(
             catalogRepository,
@@ -85,12 +84,10 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            observability);
-
-    graph.setSnapshotHelper(new SnapshotHelper(snapshotRepository));
-
-    principalProvider = new FakePrincipalProvider("account");
-    graph.setPrincipalProvider(principalProvider);
+            observability,
+            principalProvider,
+            1024L,
+            null);
   }
 
   @Test
@@ -193,11 +190,13 @@ class UserGraphTest {
     assertThat(first).isPresent();
     assertThat(second).containsSame(first.get());
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
 
     graph.invalidate(tableId);
     Optional<UserTableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(2);
   }
 
   @Test
@@ -224,16 +223,17 @@ class UserGraphTest {
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
 
     tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-01T00:00:00Z")));
+    graph.invalidate(tableId);
     graph.table(tableId);
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
 
-    graph.invalidate(tableId);
-
     tableRepository.putMeta(tableId, mutationMeta(1L, Instant.parse("2024-06-02T00:00:00Z")));
+    graph.invalidate(tableId);
     graph.table(tableId);
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(3);
 
     tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-03T00:00:00Z")));
+    graph.invalidate(tableId);
     graph.table(tableId);
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(4);
   }

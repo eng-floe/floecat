@@ -34,6 +34,7 @@ public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, Table> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
+  private final Map<ResourceId, Integer> metaGets = new HashMap<>();
 
   public FakeTableRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -111,6 +112,7 @@ public final class FakeTableRepository extends TableRepository {
 
   @Override
   public MutationMeta metaForSafe(ResourceId id) {
+    metaGets.merge(id, 1, Integer::sum);
     MutationMeta meta = metas.get(id);
     if (meta == null) {
       throw new StorageNotFoundException("missing table meta");
@@ -120,6 +122,10 @@ public final class FakeTableRepository extends TableRepository {
 
   public int getByIdCount(ResourceId id) {
     return gets.getOrDefault(id, 0);
+  }
+
+  public int metaForSafeCount(ResourceId id) {
+    return metaGets.getOrDefault(id, 0);
   }
 
   private List<Table> matchingTables(String accountId, String catalogId, String namespaceId) {

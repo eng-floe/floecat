@@ -24,6 +24,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
@@ -35,6 +36,9 @@ import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -54,6 +58,11 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
   @Override
   public Multi<UserObjectsBundleChunk> getUserObjects(GetUserObjectsRequest request) {
     var L = LogHelper.start(LOG, "GetUserObjects");
+    long startNs = System.nanoTime();
+    AtomicLong workStartNs = new AtomicLong(0L);
+    AtomicBoolean completed = new AtomicBoolean(false);
+    AtomicBoolean failed = new AtomicBoolean(false);
+    AtomicReference<String> correlationRef = new AtomicReference<>("");
     // Capture the incoming gRPC context so the principal/correlation-id stays available
     // while authz/QueryContext lookup happen; the bundle builder itself is context-free.
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
@@ -63,8 +72,15 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
             () ->
                 grpcCtx.call(
                     () -> {
+                      workStartNs.compareAndSet(0L, System.nanoTime());
                       var principalContext = principal.get();
-                      var correlationId = principalContext.getCorrelationId();
+                      var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
+                      var principalCorrelationId = principalContext.getCorrelationId();
+                      var correlationId =
+                          contextCorrelationId != null && !contextCorrelationId.isBlank()
+                              ? contextCorrelationId
+                              : principalCorrelationId;
+                      correlationRef.set(correlationId == null ? "" : correlationId);
                       authz.require(principalContext, "catalog.read");
 
                       String queryId =
@@ -86,9 +102,42 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                       return bundles.stream(correlationId, ctx, request.getTablesList());
                     }))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .onFailure()
-        .invoke(L::fail)
         .onCompletion()
-        .invoke(L::ok);
+        .invoke(() -> completed.set(true))
+        .onFailure()
+        .invoke(
+            t -> {
+              failed.set(true);
+              L.fail(t);
+            })
+        .onTermination()
+        .invoke(
+            () -> {
+              long workNs = workStartNs.get();
+              double dispatchMs = workNs <= 0L ? 0.0 : (workNs - startNs) / 1_000_000.0;
+              if (failed.get()) {
+                LOG.warnf(
+                    "op=GetUserObjects terminated query_id=%s correlation_id=%s tables=%d"
+                        + " dispatchMs=%.1f outcome=failed",
+                    request.getQueryId(),
+                    correlationRef.get(),
+                    request.getTablesCount(),
+                    dispatchMs);
+                return;
+              }
+              if (!completed.get()) {
+                LOG.warnf(
+                    "op=GetUserObjects terminated query_id=%s correlation_id=%s tables=%d"
+                        + " dispatchMs=%.1f outcome=cancelled",
+                    request.getQueryId(),
+                    correlationRef.get(),
+                    request.getTablesCount(),
+                    dispatchMs);
+                return;
+              }
+              L.okf(
+                  "query_id=%s correlation_id=%s tables=%d dispatchMs=%.1f outcome=completed",
+                  request.getQueryId(), correlationRef.get(), request.getTablesCount(), dispatchMs);
+            });
   }
 }

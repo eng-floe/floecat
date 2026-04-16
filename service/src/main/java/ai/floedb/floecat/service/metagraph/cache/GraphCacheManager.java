@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.metagraph.cache;
 
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -37,26 +38,59 @@ import java.util.concurrent.ConcurrentMap;
  * isolated between accounts while sharing the common configuration knobs (enable flag, max size,
  * TTL). It also exposes global gauges and per-account hit/miss counters so operators can understand
  * cache health across multi-account deployments.
+ *
+ * <p>Consistency model: the optional mutation-meta cache is best-effort and eventually consistent.
+ * After a write, callers may observe a stale pointer version for at most the configured meta cache
+ * TTL window.
  */
 public class GraphCacheManager {
 
-  private final boolean cacheEnabled;
+  private final boolean graphCacheEnabled;
+  private final boolean metaCacheEnabled;
   private final long cacheMaxSize;
   private final Observability observability;
   private final CacheMetrics cacheMetrics;
+  private final CacheMetrics metaCacheMetrics;
   private final ConcurrentMap<String, Cache<GraphCacheKey, GraphNode>> accountCaches =
       new ConcurrentHashMap<>();
+  private final Cache<ResourceId, MutationMeta> metaCache;
 
-  public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, Observability observability) {
-    this.cacheEnabled = cacheEnabled;
+  public GraphCacheManager(
+      boolean cacheEnabled,
+      long cacheMaxSize,
+      long metaCacheTtlSeconds,
+      Observability observability) {
+    this.graphCacheEnabled = cacheEnabled;
+    this.metaCacheEnabled = metaCacheTtlSeconds > 0;
     this.cacheMaxSize = cacheMaxSize;
     this.observability = Objects.requireNonNull(observability, "observability");
+    this.metaCache =
+        metaCacheEnabled
+            ? Caffeine.newBuilder()
+                .maximumSize(Math.max(1L, cacheMaxSize))
+                .expireAfterWrite(Duration.ofSeconds(metaCacheTtlSeconds))
+                .build()
+            : null;
     this.cacheMetrics =
         new CacheMetrics(this.observability, "service", "graph-cache", "graph-cache");
+    this.metaCacheMetrics =
+        new CacheMetrics(this.observability, "service", "graph-cache", "graph-meta-cache");
     registerGauges();
     cacheMetrics.trackSize(
         () -> accountCaches.values().stream().mapToDouble(Cache::estimatedSize).sum(),
         "Estimated graph cache entries");
+    metaCacheMetrics.trackEnabled(
+        () -> metaCacheEnabled ? 1.0 : 0.0, "Graph metadata cache enabled");
+    metaCacheMetrics.trackMaxEntries(
+        () -> metaCacheEnabled ? (double) cacheMaxSize : 0.0,
+        "Graph metadata cache configured max entries");
+    metaCacheMetrics.trackSize(
+        () -> metaCacheEnabled && metaCache != null ? (double) metaCache.estimatedSize() : 0.0,
+        "Estimated graph metadata cache entries");
+  }
+
+  public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, Observability observability) {
+    this(cacheEnabled, cacheMaxSize, 0L, observability);
   }
 
   /**
@@ -64,7 +98,7 @@ public class GraphCacheManager {
    * the entry is missing.
    */
   public GraphNode get(ResourceId id, GraphCacheKey key) {
-    if (!cacheEnabled) {
+    if (!graphCacheEnabled) {
       return null;
     }
     Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
@@ -78,7 +112,7 @@ public class GraphCacheManager {
 
   /** Stores the resolved node inside the account cache. */
   public void put(ResourceId id, GraphCacheKey key, GraphNode node) {
-    if (!cacheEnabled || node == null) {
+    if (!graphCacheEnabled || node == null) {
       return;
     }
     Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
@@ -89,16 +123,34 @@ public class GraphCacheManager {
 
   /** Evicts every cached version of the resource. */
   public void invalidate(ResourceId id) {
-    if (!cacheEnabled) {
-      return;
-    }
-    Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
-    if (cache != null) {
-      cache.asMap().keySet().removeIf(key -> key.id().equals(id));
-      if (cache.estimatedSize() == 0) {
-        accountCaches.remove(id.getAccountId(), cache);
+    if (graphCacheEnabled) {
+      Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
+      if (cache != null) {
+        cache.asMap().keySet().removeIf(key -> key.id().equals(id));
+        if (cache.estimatedSize() == 0) {
+          accountCaches.remove(id.getAccountId(), cache);
+        }
       }
     }
+    if (metaCacheEnabled && metaCache != null) {
+      metaCache.invalidate(id);
+    }
+  }
+
+  public MutationMeta getMeta(ResourceId id) {
+    if (!metaCacheEnabled || metaCache == null) {
+      return null;
+    }
+    MutationMeta meta = metaCache.getIfPresent(id);
+    incrementMetaCounter(id.getAccountId(), meta != null);
+    return meta;
+  }
+
+  public void putMeta(ResourceId id, MutationMeta meta) {
+    if (!metaCacheEnabled || metaCache == null || meta == null) {
+      return;
+    }
+    metaCache.put(id, meta);
   }
 
   private Cache<GraphCacheKey, GraphNode> accountCache(String accountId) {
@@ -126,10 +178,23 @@ public class GraphCacheManager {
     }
   }
 
+  private void incrementMetaCounter(String accountId, boolean hit) {
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    Tag accountTag = Tag.of(TagKey.ACCOUNT, accountId);
+    if (hit) {
+      metaCacheMetrics.recordHit(accountTag);
+    } else {
+      metaCacheMetrics.recordMiss(accountTag);
+    }
+  }
+
   private void registerGauges() {
-    cacheMetrics.trackEnabled(() -> cacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
+    cacheMetrics.trackEnabled(() -> graphCacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
     cacheMetrics.trackMaxEntries(
-        () -> cacheEnabled ? (double) cacheMaxSize : 0.0, "Graph cache configured max entries");
+        () -> graphCacheEnabled ? (double) cacheMaxSize : 0.0,
+        "Graph cache configured max entries");
     cacheMetrics.trackAccounts(() -> (double) accountCaches.size(), "Graph cache account count");
   }
 
@@ -137,14 +202,14 @@ public class GraphCacheManager {
     if (duration == null) {
       return;
     }
-    if (!cacheEnabled) {
+    if (!graphCacheEnabled) {
       return;
     }
     cacheMetrics.recordLoad(duration, true);
   }
 
   public void recordLoadFailure(Duration duration, Throwable error) {
-    if (duration == null || !cacheEnabled) {
+    if (duration == null || !graphCacheEnabled) {
       return;
     }
     cacheMetrics.recordLoadFailure(duration, error);
