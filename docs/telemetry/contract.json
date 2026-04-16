@@ -670,6 +670,56 @@
     "allowedTags": ["component", "operation", "reason", "result"]
   },
   {
+    "name": "floecat.service.stats.batch_groups.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats batch request groups processed.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.batch_items.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats batch item counters (untagged series tracks submitted items; tagged series with result=* tracks per-outcome items; query with result tag filters to avoid double-counting).",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.engine_batch_calls.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats engine batch capture calls.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.store_hits.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats store hit count for batch resolution.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.store_misses.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats store miss count for batch resolution.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
     "name": "floecat.service.storage.account.bytes",
     "type": "GAUGE",
     "unit": "bytes",

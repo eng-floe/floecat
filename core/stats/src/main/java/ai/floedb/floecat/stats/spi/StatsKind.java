@@ -18,18 +18,18 @@ package ai.floedb.floecat.stats.spi;
 
 /** Supported statistic families for capability routing. */
 public enum StatsKind {
-  /** Row-count statistics (table/file targets). */
+  /** Row-count statistics (TABLE, FILE, COLUMN targets). */
   ROW_COUNT,
-  /** File-count statistics (table targets). */
+  /** File-count statistics (TABLE targets). */
   FILE_COUNT,
-  /** Total-bytes statistics (table/file targets). */
+  /** Total-bytes statistics (TABLE, FILE targets). */
   TOTAL_BYTES,
-  /** Null-count statistics (scalar targets). */
+  /** Null-count statistics (COLUMN, FILE targets). */
   NULL_COUNT,
-  /** Distinct-count estimates (scalar targets). */
+  /** Distinct-count estimates (COLUMN targets). */
   NDV,
-  /** Minimum/maximum value bounds (scalar targets). */
+  /** Minimum/maximum value bounds (COLUMN, FILE targets). */
   MIN_MAX,
-  /** Distribution summaries such as histograms (scalar targets). */
+  /** Distribution summaries such as histograms (COLUMN targets). */
   HISTOGRAM
 }

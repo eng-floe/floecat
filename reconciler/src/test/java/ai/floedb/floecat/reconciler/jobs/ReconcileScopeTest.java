@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -39,5 +40,21 @@ class ReconcileScopeTest {
 
     assertTrue(scope.acceptsTable("dest.ns", "tbl"));
     assertFalse(scope.acceptsTable("dest.ns", "other"));
+  }
+
+  @Test
+  void storesExplicitSnapshotAndTargetFilters() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(List.of("dest", "ns")),
+            "tbl",
+            List.of(),
+            List.of(10L, 11L),
+            List.of("table", "column:7"));
+
+    assertTrue(scope.hasSnapshotFilter());
+    assertTrue(scope.hasStatsTargetFilter());
+    assertEquals(List.of(10L, 11L), scope.destinationSnapshotIds());
+    assertEquals(List.of("table", "column:7"), scope.destinationStatsTargets());
   }
 }

@@ -23,17 +23,29 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
-import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.jboss.logging.Logger;
 
@@ -44,7 +56,7 @@ import org.jboss.logging.Logger;
  *
  * <ul>
  *   <li>query-time resolution policy via {@link #resolve(StatsCaptureRequest)}
- *   <li>explicit capture execution via {@link #trigger(StatsCaptureRequest)}
+ *   <li>explicit capture execution via {@link #triggerBatch(StatsCaptureBatchRequest)}
  * </ul>
  *
  * <p>Resolution is store-first, then optional synchronous capture, then async enqueue fallback when
@@ -54,22 +66,36 @@ import org.jboss.logging.Logger;
 public class StatsOrchestrator {
 
   private static final Logger LOG = Logger.getLogger(StatsOrchestrator.class);
+  private static final String COMPONENT = "service";
+  private static final String OPERATION = "stats_orchestrator";
 
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
   private final TableRepository tableRepository;
   private final StatsEngineRegistry statsEngineRegistry;
+  private final Observability observability;
 
   @Inject
   public StatsOrchestrator(
       StatsStore statsStore,
       ReconcileJobStore reconcileJobStore,
       TableRepository tableRepository,
-      StatsEngineRegistry statsEngineRegistry) {
+      StatsEngineRegistry statsEngineRegistry,
+      Instance<Observability> observability) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
     this.statsEngineRegistry = statsEngineRegistry;
+    this.observability =
+        observability == null || observability.isUnsatisfied() ? null : observability.get();
+  }
+
+  public StatsOrchestrator(
+      StatsStore statsStore,
+      ReconcileJobStore reconcileJobStore,
+      TableRepository tableRepository,
+      StatsEngineRegistry statsEngineRegistry) {
+    this(statsStore, reconcileJobStore, tableRepository, statsEngineRegistry, null);
   }
 
   /**
@@ -79,52 +105,146 @@ public class StatsOrchestrator {
    * for misses that have at least one registry-capable ASYNC engine candidate.
    */
   public Optional<TargetStatsRecord> resolve(StatsCaptureRequest request) {
-    Optional<TargetStatsRecord> stored = readStore(request);
-    if (stored.isPresent()) {
-      return stored;
+    return resolveBatch(StatsCaptureBatchRequest.of(request)).getFirst();
+  }
+
+  /**
+   * Batch variant of {@link #resolve(StatsCaptureRequest)}.
+   *
+   * <p>Requests are resolved in-order with the same semantics as single-item resolve.
+   */
+  public List<Optional<TargetStatsRecord>> resolveBatch(StatsCaptureBatchRequest batchRequest) {
+    List<StatsCaptureRequest> requests = batchRequest.requests();
+    incrementCounter(
+        ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
+        requests.size(),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
+    List<Optional<TargetStatsRecord>> resolved = new ArrayList<>(requests.size());
+    List<Integer> syncMissingIndexes = new ArrayList<>();
+    List<StatsCaptureRequest> syncMissingRequests = new ArrayList<>();
+    List<StatsCaptureRequest> unresolvedForAsync = new ArrayList<>();
+
+    for (StatsCaptureRequest request : requests) {
+      Optional<TargetStatsRecord> stored = readStore(request);
+      resolved.add(stored);
+      if (stored.isPresent()) {
+        continue;
+      }
+      if (request.executionMode() == StatsExecutionMode.SYNC) {
+        syncMissingIndexes.add(resolved.size() - 1);
+        syncMissingRequests.add(request);
+      } else {
+        unresolvedForAsync.add(request);
+      }
     }
 
-    if (request.executionMode() == StatsExecutionMode.SYNC) {
-      // PR6 behavior: for SYNC requests, attempt one inline capture pass before queue fallback.
-      // PR10 insertion point: after enqueue, wait up to latency budget and re-read store.
-      CaptureAttempt attempt = captureAttempt(request);
-      if (attempt.result().isPresent()) {
-        return attempt.result().map(StatsCaptureResult::record);
+    if (!syncMissingRequests.isEmpty()) {
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "sync_capture"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
+      StatsCaptureBatchResult syncCaptureResult =
+          triggerBatch(StatsCaptureBatchRequest.of(syncMissingRequests));
+      for (int i = 0; i < syncCaptureResult.results().size(); i++) {
+        StatsCaptureBatchItemResult item = syncCaptureResult.results().get(i);
+        int resolvedIndex = syncMissingIndexes.get(i);
+        if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
+          resolved.set(resolvedIndex, item.captureResult().map(StatsCaptureResult::record));
+          continue;
+        }
+        unresolvedForAsync.add(item.request());
       }
-      maybeEnqueue(request, attempt.supported());
-      return Optional.empty();
     }
-    maybeEnqueue(request, true);
-    return Optional.empty();
+
+    if (!unresolvedForAsync.isEmpty()) {
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "async_followup"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
+      tryEnqueueAsyncCaptureBatch(unresolvedForAsync);
+    }
+    return List.copyOf(resolved);
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
     // Fast path: authoritative persisted read.
-    return statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
+    Optional<TargetStatsRecord> out =
+        statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
+    incrementCounter(
+        out.isPresent()
+            ? ServiceMetrics.Stats.STORE_HITS_TOTAL
+            : ServiceMetrics.Stats.STORE_MISSES_TOTAL,
+        1,
+        Tag.of(TagKey.SCOPE, "orchestrator"));
+    return out;
   }
 
-  private void maybeEnqueue(StatsCaptureRequest request, boolean enqueueEligible) {
-    if (!enqueueEligible) {
+  private void tryEnqueueAsyncCaptureBatch(List<StatsCaptureRequest> requests) {
+    if (requests == null || requests.isEmpty()) {
       return;
     }
-    tryEnqueueAsyncCapture(request);
+    Map<TableKey, List<StatsCaptureRequest>> groupedByTable = new LinkedHashMap<>();
+    Map<AsyncCandidateKey, Boolean> asyncCandidateCache = new LinkedHashMap<>();
+    for (StatsCaptureRequest request : requests) {
+      if (request.snapshotId() < 0L) {
+        recordAsyncSkip(
+            request,
+            "invalid_snapshot_id",
+            "Skipping async enqueue because snapshot id is invalid");
+        continue;
+      }
+      StatsCaptureRequest asyncRequest = toAsyncRequest(request);
+      AsyncCandidateKey candidateKey = AsyncCandidateKey.from(asyncRequest);
+      boolean hasCandidates =
+          asyncCandidateCache.computeIfAbsent(
+              candidateKey, ignored -> hasAsyncCandidates(asyncRequest));
+      if (!hasCandidates) {
+        recordAsyncSkip(
+            asyncRequest,
+            "no_async_candidates",
+            "Skipping async enqueue because no ASYNC candidate engine supports the request");
+        continue;
+      }
+      groupedByTable
+          .computeIfAbsent(tableKey(asyncRequest), ignored -> new ArrayList<>())
+          .add(asyncRequest);
+    }
+    for (List<StatsCaptureRequest> groupedRequests : groupedByTable.values()) {
+      enqueueAsyncGroup(groupedRequests);
+    }
   }
 
-  private void tryEnqueueAsyncCapture(StatsCaptureRequest request) {
-    // Delta tables can legitimately use snapshot id 0.
-    if (request.snapshotId() < 0L) {
+  private void enqueueAsyncGroup(List<StatsCaptureRequest> groupedRequests) {
+    if (groupedRequests == null || groupedRequests.isEmpty()) {
       return;
     }
-    StatsCaptureRequest asyncRequest = toAsyncRequest(request);
-    if (!hasAsyncCandidates(asyncRequest)) {
-      return;
-    }
+    StatsCaptureRequest first = groupedRequests.getFirst();
     try {
-      Optional<Table> table = tableRepository.getById(request.tableId());
-      if (table.isEmpty()
-          || !table.get().hasUpstream()
-          || !table.get().getUpstream().hasConnectorId()
-          || table.get().getUpstream().getConnectorId().getId().isBlank()) {
+      Optional<Table> table = tableRepository.getById(first.tableId());
+      if (table.isEmpty()) {
+        recordAsyncSkip(
+            first, "missing_table", "Skipping async enqueue because table lookup failed");
+        return;
+      }
+      if (!table.get().hasUpstream()) {
+        recordAsyncSkip(
+            first, "missing_upstream", "Skipping async enqueue because table has no upstream");
+        return;
+      }
+      if (!table.get().getUpstream().hasConnectorId()) {
+        recordAsyncSkip(
+            first,
+            "missing_connector_id",
+            "Skipping async enqueue because upstream connector id is missing");
+        return;
+      }
+      if (table.get().getUpstream().getConnectorId().getId().isBlank()) {
+        recordAsyncSkip(
+            first,
+            "blank_connector_id",
+            "Skipping async enqueue because upstream connector id is blank");
         return;
       }
       List<List<String>> namespaceScope =
@@ -135,20 +255,62 @@ public class StatsOrchestrator {
           table.get().getUpstream().getTableDisplayName().isBlank()
               ? table.get().getDisplayName()
               : table.get().getUpstream().getTableDisplayName();
-      ReconcileScope scope = ReconcileScope.of(namespaceScope, tableDisplay, List.of());
+      LinkedHashSet<Long> snapshotIds = new LinkedHashSet<>();
+      LinkedHashSet<String> statsTargets = new LinkedHashSet<>();
+      for (StatsCaptureRequest request : groupedRequests) {
+        snapshotIds.add(request.snapshotId());
+        statsTargets.add(StatsTargetScopeCodec.encode(request.target()));
+      }
+      ReconcileScope scope =
+          ReconcileScope.of(
+              namespaceScope,
+              tableDisplay,
+              List.of(),
+              List.copyOf(snapshotIds),
+              List.copyOf(statsTargets));
       reconcileJobStore.enqueue(
-          request.tableId().getAccountId(),
+          first.tableId().getAccountId(),
           table.get().getUpstream().getConnectorId().getId(),
           false,
           ReconcilerService.CaptureMode.STATS_ONLY,
           scope);
+      LOG.infof(
+          "stats_enqueue outcome=%s table=%s snapshots=%d targets=%d reason=%s group_size=%d",
+          StatsTriggerOutcome.QUEUED,
+          first.tableId(),
+          snapshotIds.size(),
+          statsTargets.size(),
+          "missing_or_degraded_sync_capture",
+          groupedRequests.size());
     } catch (RuntimeException e) {
       LOG.warnf(
           e,
-          "Failed enqueuing async stats capture table=%s snapshot=%s",
-          request.tableId(),
-          request.snapshotId());
+          "Failed enqueuing async stats capture table=%s requests=%d",
+          first.tableId(),
+          groupedRequests.size());
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "async_skip"),
+          Tag.of(TagKey.REASON, "enqueue_failure"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
     }
+  }
+
+  private void recordAsyncSkip(StatsCaptureRequest request, String reason, String message) {
+    LOG.warnf(
+        "%s table=%s snapshot=%d reason=%s",
+        message, request.tableId(), request.snapshotId(), reason);
+    incrementCounter(
+        ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+        1,
+        Tag.of(TagKey.TRIGGER, "async_skip"),
+        Tag.of(TagKey.REASON, reason),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
+  }
+
+  private static TableKey tableKey(StatsCaptureRequest request) {
+    return new TableKey(request.tableId().getAccountId(), request.tableId().getId());
   }
 
   private StatsCaptureRequest toAsyncRequest(StatsCaptureRequest request) {
@@ -168,51 +330,69 @@ public class StatsOrchestrator {
 
   private boolean hasAsyncCandidates(StatsCaptureRequest asyncRequest) {
     List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(asyncRequest);
-    return candidates != null && !candidates.isEmpty();
+    return !candidates.isEmpty();
   }
 
   /**
-   * Executes one explicit trigger attempt through the registry.
+   * Executes explicit capture trigger attempts for each request in the batch.
    *
-   * <p>This path does not perform store-read short-circuiting and does not enqueue fallback work.
-   * It is intended for control-plane callers that explicitly request capture now.
+   * <p>Each item is routed independently using registry capability + priority policy. Results are
+   * returned in the same order as requests.
    */
-  public StatsTriggerResult trigger(StatsCaptureRequest request) {
-    CaptureAttempt attempt = captureAttempt(request);
-    StatsTriggerResult result;
-    if (attempt.result().isPresent()) {
-      result = StatsTriggerResult.captured(attempt.result().get());
-    } else if (!attempt.supported()) {
-      result = StatsTriggerResult.uncapturable("target unsupported");
-    } else {
-      result = StatsTriggerResult.uncapturable("no capture result");
-    }
-    logTriggerOutcome(request, result);
-    return result;
+  public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
+    StatsCaptureBatchResult registryResult = statsEngineRegistry.captureBatch(batchRequest);
+    Map<StatsTriggerOutcome, Integer> outcomeCounts = new LinkedHashMap<>();
+    registryResult
+        .results()
+        .forEach(
+            item -> {
+              outcomeCounts.merge(item.outcome(), 1, Integer::sum);
+              incrementCounter(
+                  ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
+                  1,
+                  Tag.of(TagKey.RESULT, item.outcome().name()),
+                  Tag.of(TagKey.SCOPE, "orchestrator"));
+              logTriggerOutcome(item);
+            });
+    LOG.infof(
+        "stats_trigger_batch outcome=%s group_size=%d",
+        outcomeCounts, batchRequest.requests().size());
+    return registryResult;
   }
 
-  private CaptureAttempt captureAttempt(StatsCaptureRequest request) {
-    try {
-      return new CaptureAttempt(statsEngineRegistry.capture(request), true);
-    } catch (StatsUnsupportedTargetException unsupported) {
-      LOG.debugf(
-          "Stats target not supported for capture table=%s snapshot=%s target=%s",
-          request.tableId(), request.snapshotId(), unsupported.targetType());
-      return new CaptureAttempt(Optional.empty(), false);
-    }
-  }
-
-  private record CaptureAttempt(Optional<StatsCaptureResult> result, boolean supported) {}
-
-  private void logTriggerOutcome(StatsCaptureRequest request, StatsTriggerResult result) {
-    if (result.outcome() == StatsTriggerOutcome.CAPTURED) {
+  private void logTriggerOutcome(StatsCaptureBatchItemResult item) {
+    StatsCaptureRequest request = item.request();
+    if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
       LOG.debugf(
           "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
-          result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+          item.outcome(), request.tableId(), request.snapshotId(), item.detail());
       return;
     }
     LOG.warnf(
         "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
-        result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+        item.outcome(), request.tableId(), request.snapshotId(), item.detail());
+  }
+
+  private void incrementCounter(MetricId metric, double amount, Tag... tags) {
+    if (observability == null) {
+      return;
+    }
+    Tag[] baseTags = {Tag.of(TagKey.COMPONENT, COMPONENT), Tag.of(TagKey.OPERATION, OPERATION)};
+    Tag[] merged = new Tag[baseTags.length + tags.length];
+    System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
+    System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
+    observability.counter(metric, amount, merged);
+  }
+
+  private record TableKey(String accountId, String tableId) {}
+
+  private record AsyncCandidateKey(
+      String connectorType, String targetCase, StatsExecutionMode mode) {
+    private static AsyncCandidateKey from(StatsCaptureRequest request) {
+      return new AsyncCandidateKey(
+          request.connectorType(),
+          request.target().getTargetCase().name(),
+          request.executionMode());
+    }
   }
 }

@@ -22,88 +22,33 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
-import ai.floedb.floecat.catalog.rpc.TableValueStats;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
-import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
-import java.util.Map;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 class StatsCaptureControlPlaneAdapterTest {
 
   @Test
-  void delegatesCaptureToOrchestrator() {
+  void delegatesBatchTrigger() {
     StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
     StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
     StatsCaptureRequest request = request();
-    StatsCaptureResult expected =
-        StatsCaptureResult.forRecord(
-            "test",
-            TargetStatsRecord.newBuilder()
-                .setTableId(request.tableId())
-                .setSnapshotId(request.snapshotId())
-                .setTarget(request.target())
-                .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
-                .build(),
-            Map.of());
-    when(orchestrator.trigger(request)).thenReturn(StatsTriggerResult.captured(expected));
+    StatsCaptureBatchRequest batchRequest = StatsCaptureBatchRequest.of(request);
+    StatsCaptureBatchResult expected =
+        StatsCaptureBatchResult.of(
+            List.of(StatsCaptureBatchItemResult.uncapturable(request, "unsupported")));
+    when(orchestrator.triggerBatch(batchRequest)).thenReturn(expected);
 
-    StatsTriggerResult out = adapter.trigger(request);
+    StatsCaptureBatchResult out = adapter.triggerBatch(batchRequest);
 
-    assertThat(out.outcome()).isEqualTo(StatsTriggerOutcome.CAPTURED);
-    assertThat(out.captureResult()).contains(expected);
-    verify(orchestrator).trigger(request);
-  }
-
-  @Test
-  void delegatesQueuedOutcome() {
-    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
-    StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
-    StatsCaptureRequest request = request();
-    when(orchestrator.trigger(request)).thenReturn(StatsTriggerResult.queued("queued for worker"));
-
-    StatsTriggerResult out = adapter.trigger(request);
-
-    assertThat(out.outcome()).isEqualTo(StatsTriggerOutcome.QUEUED);
-    assertThat(out.captureResult()).isEmpty();
-    assertThat(out.detail()).isEqualTo("queued for worker");
-    verify(orchestrator).trigger(request);
-  }
-
-  @Test
-  void delegatesUncapturableOutcome() {
-    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
-    StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
-    StatsCaptureRequest request = request();
-    when(orchestrator.trigger(request))
-        .thenReturn(StatsTriggerResult.uncapturable("engine unsupported"));
-
-    StatsTriggerResult out = adapter.trigger(request);
-
-    assertThat(out.outcome()).isEqualTo(StatsTriggerOutcome.UNCAPTURABLE);
-    assertThat(out.captureResult()).isEmpty();
-    assertThat(out.detail()).isEqualTo("engine unsupported");
-    verify(orchestrator).trigger(request);
-  }
-
-  @Test
-  void delegatesDegradedOutcome() {
-    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
-    StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
-    StatsCaptureRequest request = request();
-    when(orchestrator.trigger(request)).thenReturn(StatsTriggerResult.degraded("runtime failure"));
-
-    StatsTriggerResult out = adapter.trigger(request);
-
-    assertThat(out.outcome()).isEqualTo(StatsTriggerOutcome.DEGRADED);
-    assertThat(out.captureResult()).isEmpty();
-    assertThat(out.detail()).isEqualTo("runtime failure");
-    verify(orchestrator).trigger(request);
+    assertThat(out).isEqualTo(expected);
+    verify(orchestrator).triggerBatch(batchRequest);
   }
 
   private static StatsCaptureRequest request() {

@@ -663,7 +663,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .map(List::copyOf)
             .toList();
     return ReconcileScope.of(
-        namespaces, scope.getDestinationTableDisplayName(), scope.getDestinationTableColumnsList());
+        namespaces,
+        scope.getDestinationTableDisplayName(),
+        scope.getDestinationTableColumnsList(),
+        scope.getDestinationSnapshotIdsList().stream().map(Long::valueOf).toList(),
+        scope.getDestinationStatsTargetsList());
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {

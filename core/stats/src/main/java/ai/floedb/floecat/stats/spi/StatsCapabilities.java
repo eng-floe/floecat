@@ -31,7 +31,12 @@ import java.util.stream.Collectors;
  *
  * <p>- Empty {@code targetTypes} means no target-type constraint (matches all target types).
  *
- * <p>- Empty {@code statisticKinds} means no kind constraint (matches all statistic kinds).
+ * <p>- Empty-set <em>values</em> in {@code statisticKindsByTarget} mean no kind constraint (matches
+ * all statistic kinds for that target type).
+ *
+ * <p>- {@code statisticKindsByTarget} must still declare an entry for each target type declared in
+ * {@code targetTypes}; use an empty set for a target entry to express "all kinds for this target"
+ * while preserving explicit target coverage.
  *
  * <p>Engine authors should set {@code targetTypes(...)} explicitly unless match-all behavior is
  * intended.
@@ -62,8 +67,9 @@ public record StatsCapabilities(
   /**
    * Returns whether these capabilities support the given request.
    *
-   * <p>Empty sets in {@code connectors}, {@code targetTypes}, and {@code statisticKinds} are
-   * treated as no constraint for that dimension (match-all).
+   * <p>Empty sets in {@code connectors} and {@code targetTypes} are treated as no constraint for
+   * that dimension (match-all). For statistic kinds, empty-set values in {@code
+   * statisticKindsByTarget} are treated as no kind constraint for the corresponding target type.
    */
   public boolean supports(StatsCaptureRequest request) {
     Objects.requireNonNull(request, "request");
@@ -146,7 +152,7 @@ public record StatsCapabilities(
 
     /** Limits matching to the provided target types (empty set means all target types). */
     public Builder targetTypes(Set<StatsTargetType> targetTypes) {
-      this.targetTypes = Set.copyOf(targetTypes);
+      this.targetTypes = Set.copyOf(Objects.requireNonNull(targetTypes, "targetTypes"));
       return this;
     }
 

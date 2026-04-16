@@ -58,11 +58,21 @@ public interface StatsCaptureEngine {
     return capabilities().supports(request);
   }
 
-  /**
-   * Attempts to capture stats for the request.
-   *
-   * <p>Return {@link Optional#empty()} when the engine has no data for this request. Throw a
-   * runtime exception when the engine encounters a processing error.
-   */
+  /** Attempts to capture stats for the request. */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
+
+  /**
+   * Attempts to capture stats for multiple requests.
+   *
+   * <p>Implementations must satisfy all of the following:
+   *
+   * <ol>
+   *   <li>Return a result list with {@code results().size() == batchRequest.requests().size()}.
+   *   <li>Preserve input order. Result index {@code i} must correspond to request index {@code i}.
+   *   <li>Process all items. Failure for one item must not prevent attempts for other items.
+   *   <li>Represent failures as per-item {@link StatsTriggerOutcome#DEGRADED} or {@link
+   *       StatsTriggerOutcome#UNCAPTURABLE} outcomes instead of throwing.
+   * </ol>
+   */
+  StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest);
 }

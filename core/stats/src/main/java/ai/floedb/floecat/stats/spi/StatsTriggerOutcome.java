@@ -22,8 +22,19 @@ public enum StatsTriggerOutcome {
   CAPTURED,
   /** Work was accepted and queued for background execution. */
   QUEUED,
-  /** Request cannot be satisfied for current capabilities/configuration. */
+  /**
+   * Request cannot be satisfied by the current engine capabilities/configuration.
+   *
+   * <p>Use this for permanent capability mismatches (for example unsupported target kind, connector
+   * family mismatch, or requested kind gap). Registry routing treats this as retryable with the
+   * next candidate engine.
+   */
   UNCAPTURABLE,
-  /** Request could not be completed because of a transient/runtime failure. */
+  /**
+   * Request could not be completed because of a runtime/transient failure.
+   *
+   * <p>Use this for operational failures after selection (for example connector availability,
+   * network timeouts, credential issues). Registry routing treats this as final for the request.
+   */
   DEGRADED
 }

@@ -76,6 +76,36 @@ public interface FloecatConnector extends Closeable {
       Set<String> includeColumns);
 
   /**
+   * Captures target stats for one snapshot and optional selector scope with explicit target-kind
+   * hints.
+   *
+   * <p>Default behavior delegates to {@link #captureSnapshotTargetStats(String, String, ResourceId,
+   * long, Set)} and ignores {@code includeTargetKinds}. Connectors may override this to skip
+   * unnecessary work (for example file-level planning when only column targets are requested).
+   *
+   * <p>When {@link StatsTargetKind#TABLE} is included, callers may also include {@link
+   * StatsTargetKind#COLUMN} and {@link StatsTargetKind#FILE} so full-bundle capture and persistence
+   * can happen in one pass. Connectors may return any subset of the requested kinds.
+   */
+  default List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStats(
+        namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
+  }
+
+  enum StatsTargetKind {
+    TABLE,
+    COLUMN,
+    FILE,
+    EXPRESSION
+  }
+
+  /**
    * Returns per-snapshot constraints for a table snapshot, if available.
    *
    * <p>Default: no constraints emitted.

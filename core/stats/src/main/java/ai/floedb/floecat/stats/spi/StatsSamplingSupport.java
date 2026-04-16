@@ -16,7 +16,13 @@
 
 package ai.floedb.floecat.stats.spi;
 
-/** Sampling modes a stats engine can support. */
+/**
+ * Sampling modes a stats engine can support when {@link StatsCaptureRequest#samplingRequested()} is
+ * {@code true}.
+ *
+ * <p>Sampling is a capability hint, not a hard contract. Engines that only advertise {@link #NONE}
+ * can still process sampled requests using non-sampled paths.
+ */
 public enum StatsSamplingSupport {
   /** No sampling; exact or metadata-only paths. */
   NONE,
