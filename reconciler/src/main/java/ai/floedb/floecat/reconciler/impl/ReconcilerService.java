@@ -59,6 +59,7 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
+import ai.floedb.floecat.storage.kv.Keys;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -66,8 +67,6 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -1747,7 +1746,7 @@ public class ReconcilerService {
   }
 
   private String encodePathSegment(String value) {
-    return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
+    return Keys.encodeSegment(value == null ? "" : value);
   }
 
   private ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
