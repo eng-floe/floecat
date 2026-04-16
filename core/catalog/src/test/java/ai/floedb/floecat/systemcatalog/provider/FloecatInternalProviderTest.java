@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.provider;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import org.junit.jupiter.api.Test;
@@ -34,5 +35,24 @@ class FloecatInternalProviderTest {
             "information_schema.tables",
             "information_schema.columns",
             "information_schema.schemata");
+  }
+
+  @Test
+  void catalogDataContainsSysStatsTables() {
+    SystemCatalogData catalog = FloecatInternalProvider.catalogData();
+
+    assertThat(catalog.tables().stream().map(table -> NameRefUtil.canonical(table.name())).toList())
+        .contains(
+            "sys.stats_snapshot", "sys.stats_table", "sys.stats_column", "sys.stats_expression");
+  }
+
+  @Test
+  void supportsSysStatsTablesByName() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+
+    assertThat(
+            provider.supports(
+                NameRef.newBuilder().addPath("sys").setName("stats_table").build(), "duckdb"))
+        .isTrue();
   }
 }

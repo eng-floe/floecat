@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -41,15 +42,24 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
 
   private static final String RESOURCE_DIR = "/builtins/floecat_internal";
   private static final String INDEX_PATH = RESOURCE_DIR + "/_index.txt";
+  private static final String SYS_NAMESPACE = "sys";
+  private static final String STATS_SNAPSHOT_SCANNER = "stats_snapshot_scanner";
+  private static final String STATS_TABLE_SCANNER = "stats_table_scanner";
+  private static final String STATS_COLUMN_SCANNER = "stats_column_scanner";
+  private static final String STATS_EXPRESSION_SCANNER = "stats_expression_scanner";
+
+  private static final Map<String, String> STATS_TABLE_SCANNERS =
+      Map.of(
+          "stats_snapshot", STATS_SNAPSHOT_SCANNER,
+          "stats_table", STATS_TABLE_SCANNER,
+          "stats_column", STATS_COLUMN_SCANNER,
+          "stats_expression", STATS_EXPRESSION_SCANNER);
 
   private static final SystemCatalogData CATALOG = loadCatalogData();
 
   private final InformationSchemaProvider informationSchema = new InformationSchemaProvider();
 
-  private final List<SystemObjectDef> definitions =
-      List.copyOf(
-          Stream.concat(CATALOG.namespaces().stream(), CATALOG.tables().stream())
-              .collect(Collectors.toUnmodifiableList()));
+  private final List<SystemObjectDef> definitions = buildDefinitions();
 
   @Override
   public List<SystemObjectDef> definitions() {
@@ -63,13 +73,32 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
 
   @Override
   public boolean supports(NameRef name, String engineKind) {
-    return informationSchema.supports(name, engineKind);
+    if (informationSchema.supports(name, engineKind)) {
+      return true;
+    }
+    if (name == null) {
+      return false;
+    }
+    if (name.getPathCount() != 1 || !SYS_NAMESPACE.equalsIgnoreCase(name.getPath(0))) {
+      return false;
+    }
+    return STATS_TABLE_SCANNERS.containsKey(name.getName().toLowerCase());
   }
 
   @Override
   public Optional<SystemObjectScanner> provide(
       String scannerId, String engineKind, String engineVersion) {
-    return informationSchema.provide(scannerId, engineKind, engineVersion);
+    Optional<SystemObjectScanner> info =
+        informationSchema.provide(scannerId, engineKind, engineVersion);
+    if (info.isPresent() || scannerId == null) {
+      return info;
+    }
+    return Optional.empty();
+  }
+
+  private static List<SystemObjectDef> buildDefinitions() {
+    return Stream.concat(CATALOG.namespaces().stream(), CATALOG.tables().stream())
+        .collect(Collectors.toUnmodifiableList());
   }
 
   private static SystemCatalogData loadCatalogData() {
