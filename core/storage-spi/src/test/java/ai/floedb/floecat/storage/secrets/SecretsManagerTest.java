@@ -30,6 +30,12 @@ class SecretsManagerTest {
   }
 
   @Test
+  void buildSecretKey_encodes_segments_as_path_safe_values() {
+    String key = SecretsManager.buildSecretKey("acct 1", "type+group", "id/with%chars");
+    assertEquals("accounts/acct%201/type%2Bgroup/id%2Fwith%25chars", key);
+  }
+
+  @Test
   void buildSecretKey_rejects_blank_parts() {
     assertThrows(
         IllegalArgumentException.class, () -> SecretsManager.buildSecretKey(null, "t", "id"));
