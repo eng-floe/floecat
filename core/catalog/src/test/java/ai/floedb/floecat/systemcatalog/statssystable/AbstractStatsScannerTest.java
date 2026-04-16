@@ -23,6 +23,8 @@ import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
@@ -32,58 +34,61 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import org.apache.arrow.memory.BufferAllocator;
 import org.junit.jupiter.api.Test;
 
 class AbstractStatsScannerTest {
 
   @Test
-  void pushdownParsesEqPredicatesFromAndTree() {
-    Expr predicate =
-        new Expr.And(
-            new Expr.Eq(new Expr.ColumnRef("table_id"), new Expr.Literal("public.orders")),
-            new Expr.And(
-                new Expr.Eq(new Expr.ColumnRef("snapshot_id"), new Expr.Literal("10")),
-                new Expr.And(
-                    new Expr.Eq(new Expr.ColumnRef("column_id"), new Expr.Literal("4")),
-                    new Expr.Eq(new Expr.ColumnRef("engine_kind"), new Expr.Literal("trino")))));
-
-    AbstractStatsScanner.StatsPushdown pushdown =
-        AbstractStatsScanner.StatsPushdown.parse(predicate);
-
-    assertThat(pushdown.impossible()).isFalse();
-    assertThat(pushdown.tableFiltered()).isTrue();
-    assertThat(pushdown.tableIds()).containsExactly("public.orders");
-    assertThat(pushdown.snapshotId().orElseThrow()).isEqualTo(10L);
-    assertThat(pushdown.columnId().orElseThrow()).isEqualTo(4L);
-    assertThat(pushdown.engineKind().orElseThrow()).isEqualTo("trino");
-  }
-
-  @Test
-  void pushdownMarksContradictoryEqualsAsImpossible() {
-    Expr predicate =
-        new Expr.And(
-            new Expr.Eq(new Expr.ColumnRef("snapshot_id"), new Expr.Literal("10")),
-            new Expr.Eq(new Expr.ColumnRef("snapshot_id"), new Expr.Literal("11")));
-
-    AbstractStatsScanner.StatsPushdown pushdown =
-        AbstractStatsScanner.StatsPushdown.parse(predicate);
-    assertThat(pushdown.impossible()).isTrue();
-  }
-
-  @Test
-  void iteratorUsesPinnedSnapshotAndSkipsTablesWithoutPin() {
+  void iteratorIgnoresPredicateAndStreamsAllCurrentSnapshotRows() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");
-    var orders = builder.addTable(ns, "orders", Map.of("id", 1), Map.of("id", "bigint"));
-    builder.addTable(ns, "customers", Map.of("id", 1), Map.of("id", "bigint"));
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(55L));
 
     FakeStatsProvider stats = new FakeStatsProvider(1);
-    stats.pin(orders.id(), 44L);
+    stats.put(
+        orders.id(),
+        55L,
+        List.of(columnRecord(orders.id(), 55L, 1L), columnRecord(orders.id(), 55L, 2L)));
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            builder.overlay(),
+            ai.floedb.floecat.common.rpc.NameRef.getDefaultInstance(),
+            ResourceId.newBuilder()
+                .setAccountId("account")
+                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_CATALOG)
+                .setId("catalog")
+                .build(),
+            ai.floedb.floecat.scanner.utils.EngineContext.empty(),
+            stats);
+
+    Expr predicate = new Expr.Eq(new Expr.ColumnRef("column_id"), new Expr.Literal("2"));
+    DummyScanner scanner = new DummyScanner(AbstractStatsScanner.TargetType.COLUMN);
+    List<AbstractStatsScanner.StatsScanRecord> rows =
+        scanner.streamRecords(ctx, predicate).toList();
+
+    assertThat(rows).hasSize(2);
+  }
+
+  @Test
+  void iteratorUsesCurrentSnapshotAndSkipsTablesWithoutSnapshotId() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("public");
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(44L));
+    builder.addTable(
+        ns, "customers", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.empty());
+
+    FakeStatsProvider stats = new FakeStatsProvider(1);
     stats.put(
         orders.id(),
         44L,
@@ -110,13 +115,53 @@ class AbstractStatsScannerTest {
   }
 
   @Test
-  void iteratorAppliesColumnFilterAndConsumesPagedResults() {
+  void iteratorSkipsTablesWithNonNumericCurrentSnapshotRef() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");
-    var orders = builder.addTable(ns, "orders", Map.of("id", 1), Map.of("id", "bigint"));
+    var orders =
+        builder.addTable(
+            ns,
+            "orders",
+            Map.of("id", 1),
+            Map.of("id", "bigint"),
+            Optional.of(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build()));
+    var customers =
+        builder.addTable(
+            ns, "customers", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(77L));
+
+    FakeStatsProvider stats = new FakeStatsProvider(10);
+    stats.put(customers.id(), 77L, List.of(columnRecord(customers.id(), 77L, 3L)));
+    stats.put(orders.id(), 0L, List.of(columnRecord(orders.id(), 0L, 1L)));
+
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            builder.overlay(),
+            ai.floedb.floecat.common.rpc.NameRef.getDefaultInstance(),
+            ResourceId.newBuilder()
+                .setAccountId("account")
+                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_CATALOG)
+                .setId("catalog")
+                .build(),
+            ai.floedb.floecat.scanner.utils.EngineContext.empty(),
+            stats);
+
+    DummyScanner scanner = new DummyScanner(AbstractStatsScanner.TargetType.COLUMN);
+    List<AbstractStatsScanner.StatsScanRecord> rows = scanner.streamRecords(ctx, null).toList();
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst().table()).isEqualTo("customers");
+    assertThat(rows.getFirst().snapshotId()).isEqualTo(77L);
+  }
+
+  @Test
+  void iteratorConsumesPagedResults() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("public");
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(55L));
 
     FakeStatsProvider stats = new FakeStatsProvider(1);
-    stats.pin(orders.id(), 55L);
     stats.put(
         orders.id(),
         55L,
@@ -133,23 +178,53 @@ class AbstractStatsScannerTest {
             ai.floedb.floecat.scanner.utils.EngineContext.empty(),
             stats);
 
-    Expr predicate = new Expr.Eq(new Expr.ColumnRef("column_id"), new Expr.Literal("2"));
     DummyScanner scanner = new DummyScanner(AbstractStatsScanner.TargetType.COLUMN);
-    List<AbstractStatsScanner.StatsScanRecord> rows =
-        scanner.streamRecords(ctx, predicate).toList();
+    List<AbstractStatsScanner.StatsScanRecord> rows = scanner.streamRecords(ctx, null).toList();
 
-    assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().record().getTarget().getColumn().getColumnId()).isEqualTo(2L);
+    assertThat(rows).hasSize(2);
+    assertThat(rows)
+        .extracting(r -> r.record().getTarget().getColumn().getColumnId())
+        .containsExactly(1L, 2L);
   }
 
   @Test
-  void iteratorAppliesEngineKindFilterForExpressionRows() {
+  void iteratorTerminatesWhenProviderReturnsEmptyPageWithContinuationToken() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");
-    var orders = builder.addTable(ns, "orders", Map.of("id", 1), Map.of("id", "bigint"));
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(55L));
 
     FakeStatsProvider stats = new FakeStatsProvider(10);
-    stats.pin(orders.id(), 66L);
+    stats.emitEmptyFirstPage(orders.id(), 55L);
+    stats.put(orders.id(), 55L, List.of(columnRecord(orders.id(), 55L, 1L)));
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            builder.overlay(),
+            ai.floedb.floecat.common.rpc.NameRef.getDefaultInstance(),
+            ResourceId.newBuilder()
+                .setAccountId("account")
+                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_CATALOG)
+                .setId("catalog")
+                .build(),
+            ai.floedb.floecat.scanner.utils.EngineContext.empty(),
+            stats);
+
+    DummyScanner scanner = new DummyScanner(AbstractStatsScanner.TargetType.COLUMN);
+    List<AbstractStatsScanner.StatsScanRecord> rows = scanner.streamRecords(ctx, null).toList();
+
+    assertThat(rows).isEmpty();
+  }
+
+  @Test
+  void iteratorDoesNotApplyEngineKindFilter() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("public");
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(66L));
+
+    FakeStatsProvider stats = new FakeStatsProvider(10);
     stats.put(
         orders.id(),
         66L,
@@ -168,14 +243,13 @@ class AbstractStatsScannerTest {
             ai.floedb.floecat.scanner.utils.EngineContext.empty(),
             stats);
 
-    Expr predicate = new Expr.Eq(new Expr.ColumnRef("engine_kind"), new Expr.Literal("spark"));
     DummyScanner scanner = new DummyScanner(AbstractStatsScanner.TargetType.EXPRESSION);
-    List<AbstractStatsScanner.StatsScanRecord> rows =
-        scanner.streamRecords(ctx, predicate).toList();
+    List<AbstractStatsScanner.StatsScanRecord> rows = scanner.streamRecords(ctx, null).toList();
 
-    assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().record().getTarget().getExpression().getEngineKind())
-        .isEqualTo("spark");
+    assertThat(rows).hasSize(2);
+    assertThat(rows)
+        .extracting(r -> r.record().getTarget().getExpression().getEngineKind())
+        .containsExactly("trino", "spark");
   }
 
   private static TargetStatsRecord columnRecord(
@@ -244,28 +318,20 @@ class AbstractStatsScannerTest {
   private static final class FakeStatsProvider implements StatsProvider {
 
     private final int forcedPageSize;
-    private final Map<ResourceId, Long> pins = new HashMap<>();
     private final Map<Key, List<TargetStatsRecord>> records = new HashMap<>();
+    private final Set<Key> emptyFirstPageKeys = new HashSet<>();
+    private final Set<Key> consumedEmptyFirstPage = new HashSet<>();
 
     private FakeStatsProvider(int forcedPageSize) {
       this.forcedPageSize = forcedPageSize;
-    }
-
-    void pin(ResourceId tableId, long snapshotId) {
-      pins.put(tableId, snapshotId);
     }
 
     void put(ResourceId tableId, long snapshotId, List<TargetStatsRecord> items) {
       records.put(new Key(tableId, snapshotId), List.copyOf(items));
     }
 
-    @Override
-    public OptionalLong pinnedSnapshotId(ResourceId tableId) {
-      Long snapshot = pins.get(tableId);
-      if (snapshot == null) {
-        return OptionalLong.empty();
-      }
-      return OptionalLong.of(snapshot);
+    void emitEmptyFirstPage(ResourceId tableId, long snapshotId) {
+      emptyFirstPageKeys.add(new Key(tableId, snapshotId));
     }
 
     @Override
@@ -276,6 +342,12 @@ class AbstractStatsScannerTest {
         int limit,
         String pageToken) {
       List<TargetStatsRecord> items = records.getOrDefault(new Key(tableId, snapshotId), List.of());
+      Key key = new Key(tableId, snapshotId);
+      if ((pageToken == null || pageToken.isBlank())
+          && emptyFirstPageKeys.contains(key)
+          && consumedEmptyFirstPage.add(key)) {
+        return new TargetStatsPage(List.of(), "9999");
+      }
       List<TargetStatsRecord> filtered = new ArrayList<>(items.size());
       for (TargetStatsRecord item : items) {
         if (targetType.isPresent() && !matchesType(targetType.get(), item)) {

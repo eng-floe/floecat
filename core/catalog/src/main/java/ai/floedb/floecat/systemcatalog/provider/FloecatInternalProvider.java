@@ -25,6 +25,8 @@ import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvid
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
+import ai.floedb.floecat.systemcatalog.statssystable.StatsColumnScanner;
+import ai.floedb.floecat.systemcatalog.statssystable.StatsExpressionScanner;
 import ai.floedb.floecat.systemcatalog.statssystable.StatsSnapshotScanner;
 import ai.floedb.floecat.systemcatalog.statssystable.StatsTableScanner;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
@@ -63,7 +65,9 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
   private final Map<String, SystemObjectScanner> statsScanners =
       Map.of(
           STATS_SNAPSHOT_SCANNER, new StatsSnapshotScanner(),
-          STATS_TABLE_SCANNER, new StatsTableScanner());
+          STATS_TABLE_SCANNER, new StatsTableScanner(),
+          STATS_COLUMN_SCANNER, new StatsColumnScanner(),
+          STATS_EXPRESSION_SCANNER, new StatsExpressionScanner());
 
   private final List<SystemObjectDef> definitions = buildDefinitions();
 

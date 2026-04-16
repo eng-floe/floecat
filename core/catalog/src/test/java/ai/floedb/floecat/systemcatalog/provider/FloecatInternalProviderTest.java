@@ -67,4 +67,16 @@ class FloecatInternalProviderTest {
     FloecatInternalProvider provider = new FloecatInternalProvider();
     assertThat(provider.provide("stats_table_scanner", "duckdb", "1.0")).isPresent();
   }
+
+  @Test
+  void providesStatsColumnScanner() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide("stats_column_scanner", "duckdb", "1.0")).isPresent();
+  }
+
+  @Test
+  void providesStatsExpressionScanner() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide("stats_expression_scanner", "duckdb", "1.0")).isPresent();
+  }
 }

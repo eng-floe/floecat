@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.time.Instant;
@@ -87,6 +88,32 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
 
   public UserTableNode addTable(
       NamespaceNode ns, String name, Map<String, Integer> fieldIds, Map<String, String> types) {
+    return addTable(ns, name, fieldIds, types, Optional.empty());
+  }
+
+  public UserTableNode addTable(
+      NamespaceNode ns,
+      String name,
+      Map<String, Integer> fieldIds,
+      Map<String, String> types,
+      OptionalLong currentSnapshotId) {
+    return addTable(
+        ns,
+        name,
+        fieldIds,
+        types,
+        currentSnapshotId.isPresent()
+            ? Optional.of(
+                SnapshotRef.newBuilder().setSnapshotId(currentSnapshotId.getAsLong()).build())
+            : Optional.empty());
+  }
+
+  public UserTableNode addTable(
+      NamespaceNode ns,
+      String name,
+      Map<String, Integer> fieldIds,
+      Map<String, String> types,
+      Optional<SnapshotRef> currentSnapshot) {
 
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -108,7 +135,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             "",
             Map.of(),
             List.of(),
-            Optional.empty(),
+            currentSnapshot,
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),

@@ -36,45 +36,50 @@ public final class StatsTableScanner extends AbstractStatsScanner {
 
   static final List<SchemaColumn> SCHEMA =
       List.of(
-          column("account_id", "VARCHAR", false),
-          column("catalog", "VARCHAR", false),
-          column("schema", "VARCHAR", false),
-          column("table", "VARCHAR", false),
-          column("table_id", "VARCHAR", false),
-          column("snapshot_id", "INT", false),
-          column("row_count", "INT", true),
-          column("file_count", "INT", true),
-          column("total_bytes", "INT", true),
-          column("completeness", "VARCHAR", true),
-          column("provenance", "VARCHAR", true),
-          column("confidence", "DOUBLE", true),
-          column("capture_time", "TIMESTAMPTZ", true),
-          column("refresh_time", "TIMESTAMPTZ", true));
+          schemaColumn("account_id", "VARCHAR", false),
+          schemaColumn("catalog", "VARCHAR", false),
+          schemaColumn("schema", "VARCHAR", false),
+          schemaColumn("table", "VARCHAR", false),
+          schemaColumn("table_id", "VARCHAR", false),
+          schemaColumn("snapshot_id", "INT", false),
+          schemaColumn("row_count", "INT", true),
+          schemaColumn("file_count", "INT", true),
+          schemaColumn("total_bytes", "INT", true),
+          schemaColumn("completeness", "VARCHAR", true),
+          schemaColumn("provenance", "VARCHAR", true),
+          schemaColumn("confidence", "DOUBLE", true),
+          schemaColumn("capture_time", "TIMESTAMPTZ", true),
+          schemaColumn("refresh_time", "TIMESTAMPTZ", true));
 
   private static final Schema ARROW_SCHEMA = ArrowSchemaUtil.toArrowSchema(SCHEMA);
 
   @Override
+  /** Declares that this scanner reads table-target stats records. */
   protected TargetType targetType() {
     return TargetType.TABLE;
   }
 
   @Override
+  /** Returns the public schema for {@code sys.stats_table}. */
   public List<SchemaColumn> schema() {
     return SCHEMA;
   }
 
   @Override
+  /** Allocates a batch builder for Arrow output rows. */
   protected AbstractArrowBatchBuilder newBatchBuilder(
       BufferAllocator allocator, Set<String> requiredColumns) {
     return new TableBatchBuilder(allocator, requiredColumns);
   }
 
   @Override
+  /** Appends one projected row into the current Arrow batch. */
   protected void appendArrowRow(AbstractArrowBatchBuilder builder, StatsScanRecord row) {
     ((TableBatchBuilder) builder).append(row);
   }
 
   @Override
+  /** Builds the row-oriented representation for {@code sys.stats_table}. */
   protected SystemObjectRow toRow(StatsScanRecord row) {
     return new SystemObjectRow(
         new Object[] {
@@ -84,19 +89,18 @@ public final class StatsTableScanner extends AbstractStatsScanner {
           row.table(),
           row.tableId(),
           row.snapshotId(),
-          tableRowCount(row).isPresent() ? tableRowCount(row).getAsLong() : null,
-          tableFileCount(row).isPresent() ? tableFileCount(row).getAsLong() : null,
-          tableTotalBytes(row).isPresent() ? tableTotalBytes(row).getAsLong() : null,
+          nullable(tableRowCount(row)),
+          nullable(tableFileCount(row)),
+          nullable(tableTotalBytes(row)),
           metadataCompleteness(row.record()),
           metadataProvenance(row.record()),
-          metadataConfidence(row.record()).isPresent()
-              ? metadataConfidence(row.record()).getAsDouble()
-              : null,
+          nullable(metadataConfidence(row.record())),
           metadataCaptureTime(row.record()),
           metadataRefreshTime(row.record())
         });
   }
 
+  /** Returns table row count when a table bundle is present. */
   private static OptionalLong tableRowCount(StatsScanRecord row) {
     if (!row.record().hasTable()) {
       return OptionalLong.empty();
@@ -104,6 +108,7 @@ public final class StatsTableScanner extends AbstractStatsScanner {
     return OptionalLong.of(row.record().getTable().getRowCount());
   }
 
+  /** Returns table file count when a table bundle is present. */
   private static OptionalLong tableFileCount(StatsScanRecord row) {
     if (!row.record().hasTable()) {
       return OptionalLong.empty();
@@ -111,19 +116,12 @@ public final class StatsTableScanner extends AbstractStatsScanner {
     return OptionalLong.of(row.record().getTable().getDataFileCount());
   }
 
+  /** Returns table total-bytes value when a table bundle is present. */
   private static OptionalLong tableTotalBytes(StatsScanRecord row) {
     if (!row.record().hasTable()) {
       return OptionalLong.empty();
     }
     return OptionalLong.of(row.record().getTable().getTotalSizeBytes());
-  }
-
-  private static SchemaColumn column(String name, String logicalType, boolean nullable) {
-    return SchemaColumn.newBuilder()
-        .setName(name)
-        .setLogicalType(logicalType)
-        .setNullable(nullable)
-        .build();
   }
 
   private static final class TableBatchBuilder extends AbstractArrowBatchBuilder {
@@ -157,6 +155,7 @@ public final class StatsTableScanner extends AbstractStatsScanner {
     private final boolean includeCaptureTime;
     private final boolean includeRefreshTime;
 
+    /** Initializes vectors and projection flags once per emitted Arrow batch. */
     private TableBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
@@ -194,6 +193,7 @@ public final class StatsTableScanner extends AbstractStatsScanner {
           ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "refresh_time");
     }
 
+    /** Writes one table stats row into the batch. */
     private void append(StatsScanRecord row) {
       int rowIndex = rowCount();
       writeText(accountId, includeAccountId, rowIndex, row.accountId());
