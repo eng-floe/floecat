@@ -54,6 +54,7 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionResult;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
@@ -166,9 +167,14 @@ class UserObjectBundleServiceTest {
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(
-            statsRepository, Mockito.mock(ReconcileJobStore.class), tableRepository);
-    statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
+        new StatsOrchestrator(statsRepository, Mockito.mock(ReconcileJobStore.class), tableRepository);
+    statsFactory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            queryStore,
+            statsRepository);
     service =
         new UserObjectBundleService(
             overlay,
@@ -269,7 +275,12 @@ class UserObjectBundleServiceTest {
         new StatsOrchestrator(
             localStatsRepository, Mockito.mock(ReconcileJobStore.class), localTableRepository);
     StatsProviderFactory localStatsFactory =
-        new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
+        new StatsProviderFactory(
+            localOrchestrator,
+            localTableRepository,
+            Mockito.mock(SnapshotRepository.class),
+            localStore,
+            localStatsRepository);
     UserObjectBundleService localService =
         new UserObjectBundleService(
             overlay,

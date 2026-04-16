@@ -41,6 +41,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -348,7 +349,9 @@ class PlannerStatsServiceImplTest {
             new StatsOrchestrator(
                 repository, Mockito.mock(ReconcileJobStore.class), tableRepository),
             tableRepository,
-            store);
+            Mockito.mock(SnapshotRepository.class),
+            store,
+            repository);
     return PlannerStatsBundleService.forTesting(
         factory, repository, /* maxTables= */ 10, /* maxTargets= */ 10, /* chunkSize= */ 5);
   }
