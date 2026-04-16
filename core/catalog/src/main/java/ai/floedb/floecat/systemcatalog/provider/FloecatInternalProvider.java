@@ -25,6 +25,8 @@ import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvid
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
+import ai.floedb.floecat.systemcatalog.statssystable.StatsSnapshotScanner;
+import ai.floedb.floecat.systemcatalog.statssystable.StatsTableScanner;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import com.google.protobuf.TextFormat;
@@ -58,6 +60,10 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
   private static final SystemCatalogData CATALOG = loadCatalogData();
 
   private final InformationSchemaProvider informationSchema = new InformationSchemaProvider();
+  private final Map<String, SystemObjectScanner> statsScanners =
+      Map.of(
+          STATS_SNAPSHOT_SCANNER, new StatsSnapshotScanner(),
+          STATS_TABLE_SCANNER, new StatsTableScanner());
 
   private final List<SystemObjectDef> definitions = buildDefinitions();
 
@@ -93,7 +99,7 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
     if (info.isPresent() || scannerId == null) {
       return info;
     }
-    return Optional.empty();
+    return Optional.ofNullable(statsScanners.get(scannerId.toLowerCase()));
   }
 
   private static List<SystemObjectDef> buildDefinitions() {

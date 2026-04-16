@@ -55,4 +55,16 @@ class FloecatInternalProviderTest {
                 NameRef.newBuilder().addPath("sys").setName("stats_table").build(), "duckdb"))
         .isTrue();
   }
+
+  @Test
+  void providesStatsSnapshotScanner() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide("stats_snapshot_scanner", "duckdb", "1.0")).isPresent();
+  }
+
+  @Test
+  void providesStatsTableScanner() {
+    FloecatInternalProvider provider = new FloecatInternalProvider();
+    assertThat(provider.provide("stats_table_scanner", "duckdb", "1.0")).isPresent();
+  }
 }
