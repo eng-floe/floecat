@@ -263,5 +263,6 @@ class SystemObjectScanContextTest {
 
     assertThat(ctx.name()).isEqualTo(name);
     assertThat(ctx.queryDefaultCatalogId()).isEqualTo(catalog);
+    assertThat(ctx.telemetryHook()).isSameAs(ScanTelemetryHook.NOOP);
   }
 }
