@@ -14,9 +14,10 @@
 }
 
 .hero-header img {
-  height: 100px;
-  width: auto;
-  max-width: none;
+  width: 140px;
+  height: auto;
+  max-width: 140px;
+  flex: 0 0 auto;
   display: block;
 }
 
@@ -63,15 +64,24 @@
   flex-wrap: wrap;
 }
 
-h1 {
+.post-title {
+  display: none;
+}
+
+.post-header {
+  margin-bottom: 0;
+}
+
+.hero h1 {
   margin-bottom: 0.25rem;
   font-size: 2rem;
 }
 
-h2 {
+.post-content h2 {
   margin-top: 1.75rem;
   border-top: 1px solid #e5e7eb;
   padding-top: 0.75rem;
+  font-size: 2rem;
 }
 
 pre {

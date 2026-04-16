@@ -8,7 +8,6 @@ permalink: /
   <div class="hero-header">
     <img src="{{ '/images/floecat.png' | relative_url }}" alt="Floecat logo">
     <div>
-      <h1>Floecat</h1>
       <p class="lead">
         A metadata control plane for Iceberg and Delta that gives query engines one consistent, planner-ready view across fragmented catalogs.
       </p>
