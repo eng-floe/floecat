@@ -15,7 +15,9 @@
 
 .hero-header img {
   height: 100px;
-  flex-shrink: 0;
+  width: auto;
+  max-width: none;
+  display: block;
 }
 
 .eyebrow {
