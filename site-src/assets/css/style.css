@@ -4,13 +4,13 @@
 @import "minima";
 
 .hero {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .hero-header {
   display: flex;
-  align-items: flex-start;
-  gap: 1.25rem;
+  align-items: center;
+  gap: 1rem;
 }
 
 .hero-header img {
@@ -95,7 +95,8 @@
 }
 
 h1 {
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.25rem;
+  font-size: 2rem;
 }
 
 h2 {
