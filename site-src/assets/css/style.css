@@ -7,6 +7,17 @@
   margin-bottom: 1.5rem;
 }
 
+.hero-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+
+.hero-header img {
+  height: 100px;
+  flex-shrink: 0;
+}
+
 .eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -20,6 +31,13 @@
   font-size: 1.2rem;
   max-width: 52rem;
   line-height: 1.6;
+  margin-bottom: 0.5rem;
+}
+
+.subtle {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  color: #666;
 }
 
 .hero-actions {
@@ -67,13 +85,23 @@
   color: #555;
 }
 
-.feature-icon {
-  font-size: 1.4rem;
-}
-
 .footer-simple {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
   flex-wrap: wrap;
+}
+
+h1 {
+  margin-bottom: 0.5rem;
+}
+
+h2 {
+  margin-top: 1.75rem;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.75rem;
+}
+
+pre {
+  max-width: 600px;
 }
