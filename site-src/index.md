@@ -18,8 +18,6 @@ permalink: /
   </div>
 </div>
 
----
-
 ## Why Floecat exists
 
 Lakehouse metadata is fragmented across catalogs, clouds, and engines.
@@ -30,8 +28,6 @@ Open table formats solved storage interoperability, but not:
 - cross-engine compatibility  
 
 Floecat is built for **consumption**, not mutation. It gives query engines a stable, consistent metadata layer instead of forcing each engine to rebuild its own.
-
----
 
 ## What Floecat does
 
@@ -59,8 +55,6 @@ Floecat is built for **consumption**, not mutation. It gives query engines a sta
 
 </div>
 
----
-
 ## Where it fits
 
 Floecat sits between query engines and upstream catalogs:
@@ -73,8 +67,6 @@ Instead of every engine solving:
 - policy translation  
 
 Floecat provides a shared control plane for all of them.
-
----
 
 ## Get started
 
