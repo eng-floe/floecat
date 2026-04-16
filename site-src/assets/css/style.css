@@ -7,6 +7,13 @@
   margin-bottom: 1.25rem;
 }
 
+.hero img {
+  height: 100px;
+  width: auto;
+  max-width: none;
+  display: block;
+}
+
 .hero-header {
   display: flex;
   align-items: center;
