@@ -94,6 +94,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -207,20 +208,21 @@ public class UserObjectBundleService {
 
   public Multi<UserObjectsBundleChunk> stream(
       String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
-    String defaultCatalog =
-        overlay.catalog(ctx.getQueryDefaultCatalogId()).map(CatalogNode::displayName).orElse("");
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
           "GetUserObjects stream start query_id=%s correlation_id=%s candidates=%d"
-              + " default_catalog=%s",
-          ctx.getQueryId(), correlationId, candidates.size(), defaultCatalog);
+              + " default_catalog_id=%s",
+          ctx.getQueryId(),
+          correlationId,
+          candidates.size(),
+          ctx.getQueryDefaultCatalogId().getId());
     }
     return Multi.createFrom()
         .<UserObjectsBundleChunk>deferred(
             () -> {
               UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates, defaultCatalog);
+                  new UserObjectBundleIterator(correlationId, ctx, candidates);
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
@@ -231,7 +233,9 @@ public class UserObjectBundleService {
   }
 
   private List<QueryInput> normalizeCandidates(
-      String correlationId, TableReferenceCandidate candidate, String defaultCatalog) {
+      String correlationId,
+      TableReferenceCandidate candidate,
+      Supplier<String> defaultCatalogSupplier) {
     if (candidate.getCandidatesCount() == 0) {
       throw GrpcErrors.invalidArgument(correlationId, CATALOG_BUNDLE_CANDIDATE_MISSING, Map.of());
     }
@@ -246,7 +250,8 @@ public class UserObjectBundleService {
       // fully-qualified.
       NameRef name = input.getName();
       if (name.getCatalog().isEmpty() || name.getCatalog().isBlank()) {
-        NameRef adjusted = UserObjectBundleUtils.applyDefaultCatalog(name, defaultCatalog);
+        NameRef adjusted =
+            UserObjectBundleUtils.applyDefaultCatalog(name, defaultCatalogSupplier.get());
         normalized.add(input.toBuilder().setName(adjusted).build());
       } else {
         normalized.add(input);
@@ -1202,7 +1207,7 @@ public class UserObjectBundleService {
     private final QueryContext ctx;
     private final List<TableReferenceCandidate> tables;
     private final int resolutionCount;
-    private final String defaultCatalog;
+    private final ResourceId defaultCatalogId;
     private final StatsProvider statsProvider;
     private final String engineKind;
     private final String engineVersion;
@@ -1241,15 +1246,12 @@ public class UserObjectBundleService {
     private long decorationNanos = 0L;
 
     UserObjectBundleIterator(
-        String correlationId,
-        QueryContext ctx,
-        List<TableReferenceCandidate> tables,
-        String defaultCatalog) {
+        String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
       this.correlationId = correlationId;
       this.ctx = ctx;
       this.tables = tables;
       this.resolutionCount = tables.size();
-      this.defaultCatalog = defaultCatalog;
+      this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
       this.engineKind = requestEngine.normalizedKind();
@@ -1257,8 +1259,8 @@ public class UserObjectBundleService {
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Initialized bundle iterator query_id=%s correlation_id=%s resolution_count=%d"
-                + " default_catalog=%s",
-            ctx.getQueryId(), correlationId, resolutionCount, defaultCatalog);
+                + " default_catalog_id=%s",
+            ctx.getQueryId(), correlationId, resolutionCount, defaultCatalogId.getId());
       }
     }
 
@@ -1352,7 +1354,7 @@ public class UserObjectBundleService {
         long resolveStartNs = System.nanoTime();
         try {
           NameRef enriched =
-              ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalog);
+              ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalogName());
           Optional<ResourceId> baseIdOpt = resolveNameCached(enriched);
           if (baseIdOpt.isEmpty()) {
             continue;
@@ -1393,7 +1395,8 @@ public class UserObjectBundleService {
               "Resolving candidate query_id=%s input_index=%d candidate_count=%d",
               ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
         }
-        List<QueryInput> normalized = normalizeCandidates(correlationId, candidate, defaultCatalog);
+        List<QueryInput> normalized =
+            normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
         try {
           Optional<ResolvedRelation> resolved =
               selectResolvedRelation(
@@ -1422,7 +1425,7 @@ public class UserObjectBundleService {
                   .setCode("catalog_bundle.graph.missing_node")
                   .setMessage("relation resolved but missing from graph")
                   .putDetails("resource_id", e.relationId().getId())
-                  .putDetails("default_catalog", defaultCatalog)
+                  .putDetails("default_catalog", defaultCatalogForDiagnostics())
                   .addAllAttempted(normalized)
                   .build();
           return new PendingResolved(
@@ -1443,7 +1446,7 @@ public class UserObjectBundleService {
                 .setCode("catalog_bundle.relation_not_found")
                 .setMessage("relation not found")
                 .putDetails("candidate_count", Integer.toString(normalized.size()))
-                .putDetails("default_catalog", defaultCatalog)
+                .putDetails("default_catalog", defaultCatalogForDiagnostics())
                 .addAllAttempted(normalized)
                 .build();
         return new PendingResolved(
@@ -1470,7 +1473,7 @@ public class UserObjectBundleService {
       long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
       pinCommitNanos += System.nanoTime() - pinCommitStartNs;
-      QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
+      QueryContext liveCtx = null;
       List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
       for (PendingItem item : chunkItems) {
         if (item instanceof PendingResolved resolved) {
@@ -1492,6 +1495,9 @@ public class UserObjectBundleService {
         long statsBeforeNanos = timings.statsLookupNanos();
         long decorationBeforeNanos = timings.decorationTotalNanos();
         long buildStartNs = System.nanoTime();
+        if (liveCtx == null) {
+          liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
+        }
         RelationInfo info =
             buildRelation(correlationId, found.relation(), liveCtx, statsProvider, timings);
         long buildNanos = System.nanoTime() - buildStartNs;
@@ -1765,6 +1771,19 @@ public class UserObjectBundleService {
           engineKind,
           engineVersion,
           snapshotOverride);
+    }
+
+    private String defaultCatalogName() {
+      if (!defaultCatalogResolved) {
+        defaultCatalogName =
+            overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+        defaultCatalogResolved = true;
+      }
+      return defaultCatalogName;
+    }
+
+    private String defaultCatalogForDiagnostics() {
+      return defaultCatalogResolved ? defaultCatalogName : "";
     }
 
     private Optional<ResourceId> resolveNameCached(NameRef ref) {
