@@ -402,6 +402,36 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void markFailedPreservesViewTaskContext() {
+    System.setProperty("floecat.reconciler.job-store.max-attempts", "1");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of("src_ns", "src_view", "dst_ns", "dst_view"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var lease = store.leaseNext().orElseThrow();
+
+    store.markFailed(jobId, lease.leaseEpoch, System.currentTimeMillis(), "boom", 0, 0, 1, 0, 1);
+
+    ReconcileJob failed = store.get(jobId).orElseThrow();
+    assertEquals("JS_FAILED", failed.state);
+    assertEquals("src_ns", failed.viewTask.sourceNamespace());
+    assertEquals("src_view", failed.viewTask.sourceView());
+    assertEquals("dst_ns", failed.viewTask.destinationNamespace());
+    assertEquals("dst_view", failed.viewTask.destinationViewDisplayName());
+  }
+
+  @Test
   void getIsScopedToAccount() {
     store.init();
 

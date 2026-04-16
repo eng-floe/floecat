@@ -334,15 +334,36 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             principalContext.getAccountId(),
                             request.getJobId(),
                             request.getReason());
+                    boolean cancelledViaActiveChildren = false;
                     if (cancelled.isEmpty()) {
-                      throw GrpcErrors.notFound(
-                          corr,
-                          GeneratedErrorMessages.MessageKey.JOB,
-                          Map.of("id", request.getJobId()));
+                      var existing =
+                          jobs.get(principalContext.getAccountId(), request.getJobId())
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          corr,
+                                          GeneratedErrorMessages.MessageKey.JOB,
+                                          Map.of("id", request.getJobId())));
+                      var effective = aggregateIfPlanJob(principalContext.getAccountId(), existing);
+                      if (!canCancelViaActiveChildren(existing, effective)) {
+                        throw GrpcErrors.notFound(
+                            corr,
+                            GeneratedErrorMessages.MessageKey.JOB,
+                            Map.of("id", request.getJobId()));
+                      }
+                      cancelChildJobs(
+                          principalContext.getAccountId(), existing, request.getReason());
+                      cancelledViaActiveChildren = true;
+                      cancelled =
+                          jobs.get(principalContext.getAccountId(), request.getJobId())
+                              .map(job -> aggregateIfPlanJob(principalContext.getAccountId(), job))
+                              .or(() -> Optional.of(effective));
                     }
                     var cancelledJob = cancelled.get();
-                    cancelChildJobs(
-                        principalContext.getAccountId(), cancelledJob, request.getReason());
+                    if (!cancelledViaActiveChildren) {
+                      cancelChildJobs(
+                          principalContext.getAccountId(), cancelledJob, request.getReason());
+                    }
                     cancelled =
                         jobs.get(principalContext.getAccountId(), request.getJobId())
                             .map(job -> aggregateIfPlanJob(principalContext.getAccountId(), job))
@@ -876,6 +897,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         cancellations.requestCancel(cancelled.get().jobId);
       }
     }
+  }
+
+  private static boolean canCancelViaActiveChildren(
+      ReconcileJobStore.ReconcileJob storedJob, ReconcileJobStore.ReconcileJob effectiveJob) {
+    return storedJob != null
+        && storedJob.jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        && effectiveJob != null
+        && !isTerminalState(effectiveJob.state);
   }
 
   private static String aggregateState(

@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
@@ -329,6 +330,39 @@ class ReconcileControlImplTest {
     assertEquals(2L, response.getTablesChanged());
   }
 
+  @Test
+  void cancelReconcileJobCancelsActiveChildrenWhenPlanJobAlreadySucceeded() {
+    var planJob = job("plan-1", "JS_SUCCEEDED", 0, 0, 0, "");
+    var childOne = childJob("child-1", "JS_RUNNING", 0, 0, 0, "", "plan-1");
+    var childTwo = childJob("child-2", "JS_QUEUED", 0, 0, 0, "", "plan-1");
+    when(service.jobs.cancel("acct", "plan-1", "stop")).thenReturn(Optional.empty());
+    when(service.jobs.get("acct", "plan-1"))
+        .thenReturn(Optional.of(planJob), Optional.of(planJob), Optional.of(planJob));
+    when(service.jobs.childJobs("acct", "plan-1"))
+        .thenReturn(
+            java.util.List.of(childOne, childTwo),
+            java.util.List.of(
+                childJob("child-1", "JS_CANCELLING", 0, 0, 0, "stop", "plan-1"),
+                childJob("child-2", "JS_CANCELLED", 0, 0, 0, "stop", "plan-1")));
+    when(service.jobs.cancel("acct", "child-1", "stop"))
+        .thenReturn(Optional.of(childJob("child-1", "JS_CANCELLING", 0, 0, 0, "stop", "plan-1")));
+    when(service.jobs.cancel("acct", "child-2", "stop"))
+        .thenReturn(Optional.of(childJob("child-2", "JS_CANCELLED", 0, 0, 0, "stop", "plan-1")));
+
+    var response =
+        service
+            .cancelReconcileJob(
+                CancelReconcileJobRequest.newBuilder().setJobId("plan-1").setReason("stop").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(
+        ai.floedb.floecat.reconciler.rpc.JobState.JS_CANCELLING, response.getJob().getState());
+    verify(service.jobs).cancel("acct", "child-1", "stop");
+    verify(service.jobs).cancel("acct", "child-2", "stop");
+    verify(service.cancellations).requestCancel("child-1");
+  }
+
   private static ResourceId connectorId() {
     return ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
   }
@@ -345,6 +379,8 @@ class ReconcileControlImplTest {
         0L,
         scanned,
         changed,
+        0L,
+        0L,
         errors,
         false,
         null,
@@ -354,6 +390,7 @@ class ReconcileControlImplTest {
         null,
         "",
         ReconcileJobKind.PLAN_CONNECTOR,
+        null,
         null,
         "");
   }
@@ -376,6 +413,8 @@ class ReconcileControlImplTest {
         0L,
         scanned,
         changed,
+        0L,
+        0L,
         errors,
         false,
         null,
@@ -385,6 +424,7 @@ class ReconcileControlImplTest {
         null,
         "executor-1",
         ReconcileJobKind.EXEC_TABLE,
+        null,
         null,
         parentJobId);
   }

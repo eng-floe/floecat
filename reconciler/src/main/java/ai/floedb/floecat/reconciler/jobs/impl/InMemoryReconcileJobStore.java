@@ -426,6 +426,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
   }
