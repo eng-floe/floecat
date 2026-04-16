@@ -54,6 +54,38 @@ default FLOECAT catalog ID where applicable.
 Scanners receive a best-effort `StatsProvider` in scan context. Stats are optional and may be
 absent for system/unpinned relations; callers must treat them as advisory only.
 
+## `sys.stats_*` system tables
+
+Floecat exposes persisted stats through these system tables:
+
+- `sys.stats_snapshot`
+- `sys.stats_table`
+- `sys.stats_column`
+- `sys.stats_expression`
+
+Schema summary:
+
+- `sys.stats_snapshot`: table identity (`account_id`, `catalog`, `schema`, `table`, `table_id`),
+  `snapshot_id`, and metadata/coverage (`completeness`, `provenance`, `confidence`,
+  `capture_time`, `refresh_time`, `rows_seen_count`, `files_seen_count`, `row_groups_seen_count`).
+- `sys.stats_table`: table identity + `snapshot_id`, table aggregates (`row_count`, `file_count`,
+  `total_bytes`), and metadata (`completeness`, `provenance`, `confidence`, times).
+- `sys.stats_column`: table identity + `snapshot_id`, `column_id`, scalar stats fields
+  (`value_count`, `null_count`, `nan_count`, `distinct_count`, `min_value`, `max_value`,
+  `histogram_json`) and metadata/coverage.
+- `sys.stats_expression`: table identity + `snapshot_id`, expression identity (`engine_kind`,
+  `expression_key`), scalar stats fields, and metadata/coverage.
+
+Contract and behavior:
+
+- Read path is persisted-only. Querying these tables never triggers capture/recompute.
+- Default snapshot behavior is "latest/current snapshot per table".
+  If no `snapshot_id` predicate is supplied, rows come from the table's current snapshot.
+- `snapshot_id = 0` is valid and supported.
+- Some fields are intentionally nullable when upstream payloads do not provide them yet (for
+  example `ordinal`, `avg_width_bytes`, and MCV-related columns in `sys.stats_column`).
+- Generic post-scan predicates/projection still apply (`SystemRowFilter` and `required_columns`).
+
 ## Memory and cancellation
 
 - Per-stream allocators are child allocators with an explicit cap.
