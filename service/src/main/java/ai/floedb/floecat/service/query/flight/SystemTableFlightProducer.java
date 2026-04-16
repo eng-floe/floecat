@@ -28,6 +28,7 @@ import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.ScanTelemetryHook;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
+import ai.floedb.floecat.service.query.system.StatsSystemTableTelemetry;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
@@ -184,6 +186,14 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     List<String> requiredColumns = command.getRequiredColumnsList();
     List<Predicate> predicates = command.getPredicatesList();
     Expr arrowExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
+    ScanTelemetryHook telemetryHook = ScanTelemetryHook.NOOP;
+    if (StatsSystemTableTelemetry.isStatsSystemTable(graph, resolvedTableId)) {
+      telemetryHook =
+          StatsSystemTableTelemetry.hook(
+              observability,
+              "flight_get_stream",
+              StatsSystemTableTelemetry.resourceName(graph, resolvedTableId));
+    }
     SystemObjectScanContext scanContext =
         new SystemObjectScanContext(
             graph,
@@ -191,7 +201,8 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             queryCtx.getQueryDefaultCatalogId(),
             context.engineContext(),
             statsProvider,
-            constraintFactory.provider());
+            constraintFactory.provider(),
+            telemetryHook);
 
     return arrowPlanner.plan(
         scanner, scanContext, scanner.schema(), predicates, requiredColumns, arrowExpr, allocator);

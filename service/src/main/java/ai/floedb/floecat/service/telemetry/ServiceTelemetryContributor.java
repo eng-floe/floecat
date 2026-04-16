@@ -62,6 +62,10 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
             TagKey.REASON,
             TagKey.RESOURCE,
             TagKey.SCOPE);
+    Set<String> statsSystemScanRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
+    Set<String> statsSystemScanAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
 
     add(
         defs,
@@ -275,6 +279,30 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsRequired,
         statsAllowed,
         "Stats store miss count for batch resolution.");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYSTABLE_ROWS_SCANNED,
+        statsSystemScanRequired,
+        statsSystemScanAllowed,
+        "System-table stats scan rows read from persisted storage.");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYSTABLE_ROWS_EMITTED,
+        statsSystemScanRequired,
+        statsSystemScanAllowed,
+        "System-table stats scan rows emitted by scanners before transport-level filtering.");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYSTABLE_BATCHES_EMITTED,
+        statsSystemScanRequired,
+        statsSystemScanAllowed,
+        "System-table stats scan Arrow batches emitted.");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYSTABLE_BUILD_LATENCY,
+        statsSystemScanRequired,
+        statsSystemScanAllowed,
+        "System-table stats scan build latency in milliseconds.");
     return Collections.unmodifiableMap(defs);
   }
 

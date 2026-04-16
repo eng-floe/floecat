@@ -293,7 +293,9 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    return streamRecords(ctx, null).map(this::toRow);
+    return streamRecords(ctx, null)
+        .peek(ignored -> ctx.telemetryHook().onRowsEmitted(1))
+        .map(this::toRow);
   }
 
   @Override
@@ -322,7 +324,9 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
                 }
                 appendArrowRow(builder, rows.next());
                 batchRows++;
+                ctx.telemetryHook().onRowsEmitted(1);
                 if (batchRows >= batchSize()) {
+                  ctx.telemetryHook().onBatchEmitted(batchRows);
                   action.accept(builder.buildBatch());
                   return true;
                 }
@@ -330,6 +334,7 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
               if (builder == null || builder.isEmpty()) {
                 return false;
               }
+              ctx.telemetryHook().onBatchEmitted(batchRows);
               action.accept(builder.buildBatch());
               return true;
             } finally {
@@ -647,6 +652,8 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
     private final StatsPushdown pushdown;
     private final List<ResolvedTable> tables;
     private final TargetType targetType;
+    private final ai.floedb.floecat.scanner.spi.ScanTelemetryHook telemetryHook;
+    private final long startedNanos;
     private final ArrayDeque<StatsScanRecord> buffered = new ArrayDeque<>();
 
     private int tableIndex = -1;
@@ -655,6 +662,7 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
     private String pageToken = "";
     private boolean pageLoaded;
     private Iterator<TargetStatsRecord> currentPage = Collections.emptyIterator();
+    private boolean completed;
 
     private StatsRecordIterator(
         SystemObjectScanContext ctx,
@@ -665,6 +673,8 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
       this.pushdown = pushdown;
       this.tables = tables;
       this.targetType = targetType;
+      this.telemetryHook = ctx.telemetryHook();
+      this.startedNanos = System.nanoTime();
     }
 
     @Override
@@ -706,9 +716,12 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
     private TargetStatsRecord pollRecord() {
       while (true) {
         if (currentPage.hasNext()) {
-          return currentPage.next();
+          TargetStatsRecord next = currentPage.next();
+          telemetryHook.onRowsScanned(1);
+          return next;
         }
         if (currentTable == null && !advanceTable()) {
+          completeIfNeeded();
           return null;
         }
         if (loadNextPage()) {
@@ -796,6 +809,14 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
         }
       }
       return true;
+    }
+
+    private void completeIfNeeded() {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      telemetryHook.onComplete((System.nanoTime() - startedNanos) / 1_000_000L);
     }
   }
 }
