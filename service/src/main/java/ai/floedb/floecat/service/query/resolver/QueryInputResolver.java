@@ -78,6 +78,13 @@ public class QueryInputResolver {
 
   @Inject CatalogOverlay metadataGraph;
 
+  public QueryInputResolver() {}
+
+  /** Test-only constructor to avoid reflection-based field injection in unit tests. */
+  public QueryInputResolver(CatalogOverlay metadataGraph) {
+    this.metadataGraph = metadataGraph;
+  }
+
   // =============================================================================
   // Result container
   // =============================================================================
