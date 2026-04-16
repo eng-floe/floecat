@@ -12,5 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-00_system_relations.pbtxt
-01_stats_system_tables.pbtxt
+00_information_schema.pbtxt
+01_sys.pbtxt
