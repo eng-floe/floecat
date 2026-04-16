@@ -20,9 +20,11 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
@@ -49,6 +51,7 @@ public class ReconcilePlannerScheduler {
   @Inject AccountRepository accounts;
   @Inject ConnectorRepository connectors;
   @Inject ReconcileJobStore jobs;
+  @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject ReconcilerSettingsStore settings;
   @Inject Observability observability;
 
@@ -247,6 +250,11 @@ public class ReconcilePlannerScheduler {
     }
 
     try {
+      if (executorRegistry != null
+          && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR)) {
+        observePlannerEnqueue("skipped", "n_a", "planner_unavailable");
+        return;
+      }
       jobs.enqueuePlan(
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),

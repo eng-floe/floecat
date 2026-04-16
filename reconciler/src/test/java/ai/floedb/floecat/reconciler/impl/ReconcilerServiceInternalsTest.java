@@ -151,6 +151,6 @@ class ReconcilerServiceInternalsTest {
   }
 
   private static ReconcilerService.ProgressListener noopProgress() {
-    return (s, c, e, sp, stp, m) -> {};
+    return (ts, tc, vs, vc, e, sp, stp, m) -> {};
   }
 }

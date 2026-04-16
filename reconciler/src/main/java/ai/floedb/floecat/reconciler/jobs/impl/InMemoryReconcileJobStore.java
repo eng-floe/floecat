@@ -22,6 +22,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -55,6 +56,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileScope scope,
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
+      ReconcileViewTask viewTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
@@ -72,6 +74,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             0,
             0,
             0,
+            0,
+            0,
             fullRescan,
             captureMode,
             0,
@@ -81,6 +85,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "",
             jobKind,
             tableTask,
+            viewTask,
             parentJobId);
     jobs.put(id, job);
     pinnedExecutors.put(id, pinnedExecutorId == null ? "" : pinnedExecutorId.trim());
@@ -133,6 +138,22 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     int end = Math.min(filtered.size(), offset + limit);
     String next = end < filtered.size() ? Integer.toString(end) : "";
     return new ReconcileJobPage(filtered.subList(offset, end), next);
+  }
+
+  @Override
+  public List<ReconcileJob> childJobs(String accountId, String parentJobId) {
+    if (parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
+    }
+    return jobs.values().stream()
+        .filter(j -> accountId == null || accountId.isBlank() || accountId.equals(j.accountId))
+        .filter(j -> parentJobId.equals(j.parentJobId))
+        .sorted(
+            (a, b) ->
+                Long.compare(
+                    b.startedAtMs == 0L ? b.finishedAtMs : b.startedAtMs,
+                    a.startedAtMs == 0L ? a.finishedAtMs : a.startedAtMs))
+        .collect(Collectors.toUnmodifiableList());
   }
 
   @Override
@@ -204,6 +225,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.executorId,
                 job.jobKind,
                 job.tableTask,
+                job.viewTask,
                 job.parentJobId));
       }
     }
@@ -240,6 +262,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               0L,
               job.tablesScanned,
               job.tablesChanged,
+              job.viewsScanned,
+              job.viewsChanged,
               job.errors,
               job.fullRescan,
               job.captureMode,
@@ -250,6 +274,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
   }
@@ -258,8 +283,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   public void markProgress(
       String jobId,
       String leaseEpoch,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -283,8 +310,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               message == null ? (job.message == null ? "" : job.message) : message,
               job.startedAtMs,
               job.finishedAtMs,
-              scanned,
-              changed,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
               errors,
               job.fullRescan,
               job.captureMode,
@@ -295,6 +324,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
   }
@@ -304,8 +334,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String jobId,
       String leaseEpoch,
       long finishedAtMs,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long snapshotsProcessed,
       long statsProcessed) {
     jobs.computeIfPresent(
@@ -328,8 +360,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               "Succeeded",
               job.startedAtMs == 0 ? finishedAtMs : job.startedAtMs,
               finishedAtMs,
-              scanned,
-              changed,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
               job.errors,
               job.fullRescan,
               job.captureMode,
@@ -340,6 +374,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
   }
@@ -350,8 +385,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String leaseEpoch,
       long finishedAtMs,
       String message,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
@@ -375,8 +412,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               message == null ? "Failed" : message,
               job.startedAtMs == 0 ? finishedAtMs : job.startedAtMs,
               finishedAtMs,
-              scanned,
-              changed,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
               errors,
               job.fullRescan,
               job.captureMode,
@@ -415,6 +454,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 0L,
                 job.tablesScanned,
                 job.tablesChanged,
+                job.viewsScanned,
+                job.viewsChanged,
                 job.errors,
                 job.fullRescan,
                 job.captureMode,
@@ -425,6 +466,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.executorId,
                 job.jobKind,
                 job.tableTask,
+                job.viewTask,
                 job.parentJobId);
           }
           leased.remove(id);
@@ -440,6 +482,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               System.currentTimeMillis(),
               job.tablesScanned,
               job.tablesChanged,
+              job.viewsScanned,
+              job.viewsChanged,
               job.errors,
               job.fullRescan,
               job.captureMode,
@@ -450,6 +494,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
     var current = jobs.get(jobId);
@@ -480,8 +525,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String leaseEpoch,
       long finishedAtMs,
       String message,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
@@ -503,8 +550,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               message == null || message.isBlank() ? "Cancelled" : message,
               job.startedAtMs == 0 ? finishedAtMs : job.startedAtMs,
               finishedAtMs,
-              scanned,
-              changed,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
               errors,
               job.fullRescan,
               job.captureMode,
@@ -515,6 +564,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.executorId,
               job.jobKind,
               job.tableTask,
+              job.viewTask,
               job.parentJobId);
         });
   }

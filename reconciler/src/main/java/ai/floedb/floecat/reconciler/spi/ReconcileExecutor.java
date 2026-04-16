@@ -75,8 +75,10 @@ public interface ReconcileExecutor {
   @FunctionalInterface
   interface ProgressListener {
     void onProgress(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
@@ -101,6 +103,10 @@ public interface ReconcileExecutor {
       INTERNAL
     }
 
+    public final long tablesScanned;
+    public final long tablesChanged;
+    public final long viewsScanned;
+    public final long viewsChanged;
     public final long scanned;
     public final long changed;
     public final long errors;
@@ -112,8 +118,10 @@ public interface ReconcileExecutor {
     public final Exception error;
 
     private ExecutionResult(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
@@ -121,8 +129,12 @@ public interface ReconcileExecutor {
         FailureKind failureKind,
         String message,
         Exception error) {
-      this.scanned = scanned;
-      this.changed = changed;
+      this.tablesScanned = tablesScanned;
+      this.tablesChanged = tablesChanged;
+      this.viewsScanned = viewsScanned;
+      this.viewsChanged = viewsChanged;
+      this.scanned = tablesScanned + viewsScanned;
+      this.changed = tablesChanged + viewsChanged;
       this.errors = errors;
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
@@ -133,15 +145,30 @@ public interface ReconcileExecutor {
     }
 
     public static ExecutionResult success(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message) {
+      return success(
+          tablesScanned, tablesChanged, 0, 0, errors, snapshotsProcessed, statsProcessed, message);
+    }
+
+    public static ExecutionResult success(
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
         String message) {
       return new ExecutionResult(
-          scanned,
-          changed,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
           errors,
           snapshotsProcessed,
           statsProcessed,
@@ -152,15 +179,30 @@ public interface ReconcileExecutor {
     }
 
     public static ExecutionResult cancelled(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message) {
+      return cancelled(
+          tablesScanned, tablesChanged, 0, 0, errors, snapshotsProcessed, statsProcessed, message);
+    }
+
+    public static ExecutionResult cancelled(
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
         String message) {
       return new ExecutionResult(
-          scanned,
-          changed,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
           errors,
           snapshotsProcessed,
           statsProcessed,
@@ -171,16 +213,40 @@ public interface ReconcileExecutor {
     }
 
     public static ExecutionResult failure(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message,
+        Exception error) {
+      return failure(
+          tablesScanned,
+          tablesChanged,
+          0,
+          0,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          message,
+          error);
+    }
+
+    public static ExecutionResult failure(
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
         String message,
         Exception error) {
       return new ExecutionResult(
-          scanned,
-          changed,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
           errors,
           snapshotsProcessed,
           statsProcessed,
@@ -191,8 +257,32 @@ public interface ReconcileExecutor {
     }
 
     public static ExecutionResult failure(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        FailureKind failureKind,
+        String message,
+        Exception error) {
+      return failure(
+          tablesScanned,
+          tablesChanged,
+          0,
+          0,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          failureKind,
+          message,
+          error);
+    }
+
+    public static ExecutionResult failure(
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
@@ -200,8 +290,10 @@ public interface ReconcileExecutor {
         String message,
         Exception error) {
       return new ExecutionResult(
-          scanned,
-          changed,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
           errors,
           snapshotsProcessed,
           statsProcessed,

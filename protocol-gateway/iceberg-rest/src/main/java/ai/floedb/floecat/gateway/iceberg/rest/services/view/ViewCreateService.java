@@ -55,10 +55,9 @@ public class ViewCreateService {
             .setCatalogId(namespaceContext.catalogId())
             .setNamespaceId(namespaceContext.namespaceId())
             .setDisplayName(viewName);
-    spec.setSql(metadataContext.sql());
     try {
       spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
-      spec.setDialect(viewMetadataService.extractDialect(metadataContext));
+      viewMetadataService.extractSqlDefinitions(metadataContext).forEach(spec::addSqlDefinitions);
       spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(metadataContext));
       spec.addAllOutputColumns(viewMetadataService.extractOutputColumns(metadataContext));
     } catch (IllegalArgumentException e) {

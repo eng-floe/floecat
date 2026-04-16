@@ -887,7 +887,8 @@ final class ConnectorCliSupport {
 
   private static void printReconcileJobSummary(GetReconcileJobResponse job, PrintStream out) {
     out.printf(
-        "job_id=%s connector_id=%s state=%s kind=%s mode=%s duration_ms=%d scanned=%d changed=%d"
+        "job_id=%s connector_id=%s state=%s kind=%s mode=%s duration_ms=%d"
+            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
             + " snapshots=%d stats=%d errors=%d%n",
         job.getJobId(),
         job.getConnectorId(),
@@ -897,6 +898,8 @@ final class ConnectorCliSupport {
         job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
+        job.getViewsScanned(),
+        job.getViewsChanged(),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
         job.getErrors());
@@ -911,7 +914,8 @@ final class ConnectorCliSupport {
   private static void printReconcileJob(GetReconcileJobResponse job, PrintStream out) {
     out.printf(
         "job_id=%s connector_id=%s state=%s kind=%s mode=%s started=%s finished=%s duration_ms=%d"
-            + " scanned=%d changed=%d snapshots=%d stats=%d errors=%d%n",
+            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
+            + " snapshots=%d stats=%d errors=%d%n",
         job.getJobId(),
         job.getConnectorId(),
         job.getState().name(),
@@ -922,6 +926,8 @@ final class ConnectorCliSupport {
         job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
+        job.getViewsScanned(),
+        job.getViewsChanged(),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
         job.getErrors());
@@ -966,6 +972,10 @@ final class ConnectorCliSupport {
     if (!tableTask.isBlank()) {
       parts.add("table=" + tableTask);
     }
+    String viewTask = formatViewTask(job);
+    if (!viewTask.isBlank()) {
+      parts.add("view=" + viewTask);
+    }
     return String.join(" ", parts);
   }
 
@@ -979,6 +989,28 @@ final class ConnectorCliSupport {
             ? tableTask.getSourceTable()
             : tableTask.getSourceNamespace() + "." + tableTask.getSourceTable();
     String destination = tableTask.getDestinationTableDisplayName();
+    if (source.isBlank()) {
+      return destination;
+    }
+    if (destination.isBlank() || source.equals(destination)) {
+      return source;
+    }
+    return source + "->" + destination;
+  }
+
+  private static String formatViewTask(GetReconcileJobResponse job) {
+    if (!job.hasViewTask()) {
+      return "";
+    }
+    var viewTask = job.getViewTask();
+    String source =
+        viewTask.getSourceNamespace().isBlank()
+            ? viewTask.getSourceView()
+            : viewTask.getSourceNamespace() + "." + viewTask.getSourceView();
+    String destination =
+        viewTask.getDestinationNamespace().isBlank()
+            ? viewTask.getDestinationViewDisplayName()
+            : viewTask.getDestinationNamespace() + "." + viewTask.getDestinationViewDisplayName();
     if (source.isBlank()) {
       return destination;
     }

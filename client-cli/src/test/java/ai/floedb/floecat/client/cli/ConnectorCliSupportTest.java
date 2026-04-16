@@ -324,6 +324,10 @@ class ConnectorCliSupportTest {
                       .setJobId("job-plan-1")
                       .setConnectorId(CONNECTOR_UUID)
                       .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                      .setTablesScanned(2)
+                      .setTablesChanged(0)
+                      .setViewsScanned(1)
+                      .setViewsChanged(0)
                       .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
                       .build())
               .addJobs(
@@ -333,6 +337,8 @@ class ConnectorCliSupportTest {
                       .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
                       .setParentJobId("job-plan-1")
                       .setExecutorId("remote-executor-a")
+                      .setTablesScanned(1)
+                      .setTablesChanged(1)
                       .setTableTask(
                           ReconcileTableTask.newBuilder()
                               .setSourceNamespace("sales")
@@ -356,6 +362,12 @@ class ConnectorCliSupportTest {
       assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
       assertTrue(buf.toString().contains("kind=plan_connector"));
       assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(
+          buf.toString()
+              .contains("tables_scanned=2 tables_changed=0 views_scanned=1 views_changed=0"));
+      assertTrue(
+          buf.toString()
+              .contains("tables_scanned=1 tables_changed=1 views_scanned=0 views_changed=0"));
       assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
       assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
     }
@@ -371,6 +383,8 @@ class ConnectorCliSupportTest {
               .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
               .setParentJobId("job-plan-1")
               .setExecutorId("remote-executor-a")
+              .setTablesScanned(4)
+              .setTablesChanged(1)
               .setTableTask(
                   ReconcileTableTask.newBuilder()
                       .setSourceNamespace("sales")
@@ -392,6 +406,9 @@ class ConnectorCliSupportTest {
 
       assertEquals(1, h.reconcileControlService.getReconcileJobCalls.get());
       assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(
+          buf.toString()
+              .contains("tables_scanned=4 tables_changed=1 views_scanned=0 views_changed=0"));
       assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
       assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
     }

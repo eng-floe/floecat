@@ -724,6 +724,25 @@ public final class Keys {
     return "/accounts/by-id/reconcile/jobs/by-id/";
   }
 
+  public static String reconcileJobByParentPointer(
+      String accountId, String parentJobId, String jobId) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String jid = req("job_id", jobId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/by-parent/"
+        + encode(pid)
+        + "/"
+        + encode(jid);
+  }
+
+  public static String reconcileJobByParentPointerPrefix(String accountId, String parentJobId) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-parent/" + encode(pid) + "/";
+  }
+
   public static String reconcileJobBlobUri(String accountId, String jobId, String suffix) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);

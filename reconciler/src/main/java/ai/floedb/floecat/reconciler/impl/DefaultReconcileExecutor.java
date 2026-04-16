@@ -54,7 +54,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
 
   @Override
   public Set<ReconcileJobKind> supportedJobKinds() {
-    return EnumSet.of(ReconcileJobKind.EXEC_TABLE);
+    return EnumSet.of(ReconcileJobKind.EXEC_TABLE, ReconcileJobKind.EXEC_VIEW);
   }
 
   @Override
@@ -75,21 +75,32 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
             .build();
 
     ReconcilerService.Result result =
-        reconcilerService.reconcile(
-            principal,
-            connectorId,
-            lease.fullRescan,
-            lease.scope,
-            lease.tableTask,
-            lease.captureMode,
-            null,
-            context.shouldStop(),
-            context.progressListener()::onProgress);
+        lease.jobKind == ReconcileJobKind.EXEC_VIEW
+            ? reconcilerService.reconcileView(
+                principal,
+                connectorId,
+                lease.scope,
+                lease.viewTask,
+                null,
+                context.shouldStop(),
+                context.progressListener()::onProgress)
+            : reconcilerService.reconcile(
+                principal,
+                connectorId,
+                lease.fullRescan,
+                lease.scope,
+                lease.tableTask,
+                lease.captureMode,
+                null,
+                context.shouldStop(),
+                context.progressListener()::onProgress);
 
     if (result.cancelled()) {
       return ExecutionResult.cancelled(
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
@@ -97,8 +108,10 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
     }
     if (!result.ok()) {
       return ExecutionResult.failure(
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
@@ -107,8 +120,10 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
           result.error);
     }
     return ExecutionResult.success(
-        result.scanned,
-        result.changed,
+        result.tablesScanned,
+        result.tablesChanged,
+        result.viewsScanned,
+        result.viewsChanged,
         result.errors,
         result.snapshotsProcessed,
         result.statsProcessed,

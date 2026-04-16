@@ -51,6 +51,7 @@ import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
@@ -97,6 +98,7 @@ public class ConnectorIT {
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
+  @Inject ViewRepository views;
   @Inject SnapshotRepository snaps;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -795,6 +797,106 @@ public class ConnectorIT {
   }
 
   @Test
+  void splitScopedReconcileMissReturnsExplicitFailure() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-scope-miss", "");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-scope-miss")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(source(List.of("db")))
+                .setDestination(dest("cat-scope-miss"))
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .build());
+
+    var job =
+        runReconcile(
+            conn.getResourceId(),
+            true,
+            CaptureScope.newBuilder()
+                .setConnectorId(conn.getResourceId())
+                .setDestinationTableDisplayName("missing_table")
+                .build(),
+            false);
+
+    assertNotNull(job);
+    assertEquals("JS_FAILED", job.state);
+    assertTrue(job.message.contains("No tables matched scope: missing_table"), job.message);
+  }
+
+  @Test
+  void splitPhasePlanJobSyncsViewsOncePerTopLevelJob() throws Exception {
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-plan-views", "");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-plan-views")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(source(List.of("db")))
+                .setDestination(
+                    DestinationTarget.newBuilder()
+                        .setCatalogDisplayName("cat-plan-views")
+                        .setNamespace(NamespacePath.newBuilder().addSegments("analytics").build())
+                        .build())
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putProperties("dummy.view.enabled", "true")
+                .putProperties("dummy.view.namespace", "db")
+                .putProperties("dummy.view.name", "events_summary")
+                .putProperties("dummy.view.sql", "SELECT id FROM db.events")
+                .build());
+
+    var planJob = runReconcile(conn.getResourceId(), true, null, true);
+
+    assertNotNull(planJob);
+    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+    assertEquals(2L, planJob.tablesScanned, "expected 2 planned tables");
+    assertEquals(1L, planJob.viewsScanned, "expected 1 planned view");
+    assertEquals(0L, planJob.tablesChanged, "plan job should not mutate destination objects");
+    assertEquals(0L, planJob.viewsChanged, "plan job should not mutate destination objects");
+
+    var aggregatedJob =
+        awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    assertEquals(
+        "JS_SUCCEEDED",
+        aggregatedJob.state,
+        () -> "aggregate job failed: " + aggregatedJob.message);
+    assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
+    assertEquals(2L, aggregatedJob.tablesChanged, "expected two newly created destination tables");
+    assertEquals(1L, aggregatedJob.viewsScanned, "expected 1 executed view");
+    assertEquals(1L, aggregatedJob.viewsChanged, "expected one newly created destination view");
+
+    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    assertEquals(3, childJobs.size(), "expected child jobs for 2 tables plus 1 view");
+    assertEquals(
+        2L,
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.EXEC_TABLE).count(),
+        "expected one child EXEC_TABLE job per planned table");
+    assertEquals(
+        1L,
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.EXEC_VIEW).count(),
+        "expected one child EXEC_VIEW job for planned views");
+
+    var catId =
+        catalogs.getByName(accountId.getId(), "cat-plan-views").orElseThrow().getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("analytics")).orElseThrow();
+
+    assertEquals(1, views.count(accountId.getId(), catId.getId(), ns.getResourceId().getId()));
+    assertTrue(
+        views
+            .getByName(
+                accountId.getId(), catId.getId(), ns.getResourceId().getId(), "events_summary")
+            .isPresent());
+  }
+
+  @Test
   void deltaConnectorEndToEnd() throws Exception {
     Assumptions.assumeTrue(
         TestDeltaFixtures.useAwsFixtures(), "Delta fixtures require S3/localstack");
@@ -940,12 +1042,19 @@ public class ConnectorIT {
   }
 
   ReconcileJobStore.ReconcileJob runReconcile(ResourceId rid, boolean fullRescan) throws Exception {
+    return runReconcile(rid, fullRescan, null, false);
+  }
+
+  ReconcileJobStore.ReconcileJob runReconcile(
+      ResourceId rid, boolean fullRescan, CaptureScope scope, boolean returnPlanJob)
+      throws Exception {
     assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
 
     var trig =
         reconcileControl.startCapture(
             StartCaptureRequest.newBuilder()
-                .setScope(CaptureScope.newBuilder().setConnectorId(rid).build())
+                .setScope(
+                    scope == null ? CaptureScope.newBuilder().setConnectorId(rid).build() : scope)
                 .setMode(CaptureMode.CM_METADATA_AND_STATS)
                 .setFullRescan(fullRescan)
                 .build());
@@ -968,6 +1077,10 @@ public class ConnectorIT {
     }
 
     if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+      return job;
+    }
+
+    if (returnPlanJob) {
       return job;
     }
 
@@ -1008,6 +1121,8 @@ public class ConnectorIT {
               childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(0L));
       long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
       long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+      long viewsScanned = childJobs.stream().mapToLong(job -> job.viewsScanned).sum();
+      long viewsChanged = childJobs.stream().mapToLong(job -> job.viewsChanged).sum();
       long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
       long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
       long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
@@ -1022,6 +1137,8 @@ public class ConnectorIT {
           finishedAtMs,
           tablesScanned,
           tablesChanged,
+          viewsScanned,
+          viewsChanged,
           errors,
           planJob.fullRescan,
           planJob.captureMode,
@@ -1056,6 +1173,8 @@ public class ConnectorIT {
         childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(planJob.finishedAtMs);
     long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
     long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+    long viewsScanned = childJobs.stream().mapToLong(job -> job.viewsScanned).sum();
+    long viewsChanged = childJobs.stream().mapToLong(job -> job.viewsChanged).sum();
     long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
     long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
     long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
@@ -1070,6 +1189,8 @@ public class ConnectorIT {
         finishedAtMs,
         tablesScanned,
         tablesChanged,
+        viewsScanned,
+        viewsChanged,
         errors,
         planJob.fullRescan,
         planJob.captureMode,

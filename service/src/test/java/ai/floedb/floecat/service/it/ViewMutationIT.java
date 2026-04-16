@@ -218,16 +218,19 @@ class ViewMutationIT {
         staleRename, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeSql = TestSupport.metaForView(ptr, blob, viewId);
-    FieldMask mask_sql = FieldMask.newBuilder().addPaths("sql").build();
+    FieldMask mask_sql = FieldMask.newBuilder().addPaths("sql_definitions").build();
     var sqlUpdate =
         view.updateView(
             UpdateViewRequest.newBuilder()
                 .setViewId(viewId)
                 .setSpec(
                     ViewSpec.newBuilder()
-                        .setSql(
-                            "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
-                                + "WHERE order_date >= current_date - INTERVAL '14' DAY")
+                        .addSqlDefinitions(
+                            ViewSqlDefinition.newBuilder()
+                                .setSql(
+                                    "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
+                                        + "WHERE order_date >= current_date - INTERVAL '14' DAY")
+                                .build())
                         .build())
                 .setUpdateMask(mask_sql)
                 .setPrecondition(
@@ -239,7 +242,7 @@ class ViewMutationIT {
     assertEquals(
         "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders WHERE order_date >="
             + " current_date - INTERVAL '14' DAY",
-        sqlUpdate.getView().getSql());
+        sqlUpdate.getView().getSqlDefinitions(0).getSql());
     assertTrue(sqlUpdate.getMeta().getPointerVersion() > beforeSql.getPointerVersion());
 
     var staleSql =
@@ -249,7 +252,11 @@ class ViewMutationIT {
                 view.updateView(
                     UpdateViewRequest.newBuilder()
                         .setViewId(viewId)
-                        .setSpec(ViewSpec.newBuilder().setSql("SELECT 1").build())
+                        .setSpec(
+                            ViewSpec.newBuilder()
+                                .addSqlDefinitions(
+                                    ViewSqlDefinition.newBuilder().setSql("SELECT 1").build())
+                                .build())
                         .setUpdateMask(mask_sql)
                         .setPrecondition(
                             Precondition.newBuilder()
@@ -261,7 +268,8 @@ class ViewMutationIT {
         staleSql, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeNoop = TestSupport.metaForView(ptr, blob, viewId);
-    FieldMask mask_all = FieldMask.newBuilder().addAllPaths(List.of("sql", "display_name")).build();
+    FieldMask mask_all =
+        FieldMask.newBuilder().addAllPaths(List.of("sql_definitions", "display_name")).build();
     var noop =
         view.updateView(
             UpdateViewRequest.newBuilder()
@@ -269,9 +277,12 @@ class ViewMutationIT {
                 .setSpec(
                     ViewSpec.newBuilder()
                         .setDisplayName("recent_orders_v2")
-                        .setSql(
-                            "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
-                                + "WHERE order_date >= current_date - INTERVAL '14' DAY")
+                        .addSqlDefinitions(
+                            ViewSqlDefinition.newBuilder()
+                                .setSql(
+                                    "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
+                                        + "WHERE order_date >= current_date - INTERVAL '14' DAY")
+                                .build())
                         .build())
                 .setUpdateMask(mask_all)
                 .setPrecondition(
@@ -344,7 +355,7 @@ class ViewMutationIT {
             .setNamespaceId(ns.getResourceId())
             .setDisplayName("idem_view")
             .setDescription("desc-a")
-            .setSql("SELECT 1")
+            .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("SELECT 1").build())
             .addOutputColumns(defaultCol)
             .build();
 
@@ -354,7 +365,7 @@ class ViewMutationIT {
             .setNamespaceId(ns.getResourceId())
             .setDisplayName("idem_view")
             .setDescription("desc-a")
-            .setSql("SELECT 2")
+            .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("SELECT 2").build())
             .addOutputColumns(defaultCol)
             .build();
 
@@ -393,8 +404,11 @@ class ViewMutationIT {
                             .setCatalogId(cat.getResourceId())
                             .setNamespaceId(ns.getResourceId())
                             .setDisplayName("sem_view")
-                            .setSql("SELECT order_id FROM mycat.sales.orders")
-                            .setDialect("spark")
+                            .addSqlDefinitions(
+                                ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT order_id FROM mycat.sales.orders")
+                                    .setDialect("spark")
+                                    .build())
                             .addBaseRelations("mycat.sales.orders")
                             .addCreationSearchPath("sales")
                             .addOutputColumns(col))
@@ -405,7 +419,7 @@ class ViewMutationIT {
         view.getView(GetViewRequest.newBuilder().setViewId(created.getResourceId()).build())
             .getView();
 
-    assertEquals("spark", fetched.getDialect());
+    assertEquals("spark", fetched.getSqlDefinitions(0).getDialect());
     assertEquals(List.of("mycat.sales.orders"), fetched.getBaseRelationsList());
     assertEquals(List.of("sales"), fetched.getCreationSearchPathList());
     assertEquals(1, fetched.getOutputColumnsCount());
@@ -432,7 +446,8 @@ class ViewMutationIT {
                                 .setCatalogId(cat.getResourceId())
                                 .setNamespaceId(ns.getResourceId())
                                 .setDisplayName("no_cols_view")
-                                .setSql("SELECT 1"))
+                                .addSqlDefinitions(
+                                    ViewSqlDefinition.newBuilder().setSql("SELECT 1").build()))
                         .build()));
 
     TestSupport.assertGrpcAndMc(
@@ -456,25 +471,36 @@ class ViewMutationIT {
                             .setCatalogId(cat.getResourceId())
                             .setNamespaceId(ns.getResourceId())
                             .setDisplayName("upd_view")
-                            .setSql("SELECT id FROM t")
-                            .setDialect("spark")
+                            .addSqlDefinitions(
+                                ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT id FROM t")
+                                    .setDialect("spark")
+                                    .build())
                             .addOutputColumns(colV1))
                     .build())
             .getView();
 
     var colV2 =
         SchemaColumn.newBuilder().setName("id").setNullable(true).setLogicalType("BIGINT").build();
-    var mask = FieldMask.newBuilder().addPaths("dialect").addPaths("output_columns").build();
+    var mask =
+        FieldMask.newBuilder().addPaths("sql_definitions").addPaths("output_columns").build();
     var updated =
         view.updateView(
                 UpdateViewRequest.newBuilder()
                     .setViewId(created.getResourceId())
-                    .setSpec(ViewSpec.newBuilder().setDialect("trino").addOutputColumns(colV2))
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .addSqlDefinitions(
+                                ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT id FROM t")
+                                    .setDialect("trino")
+                                    .build())
+                            .addOutputColumns(colV2))
                     .setUpdateMask(mask)
                     .build())
             .getView();
 
-    assertEquals("trino", updated.getDialect());
+    assertEquals("trino", updated.getSqlDefinitions(0).getDialect());
     assertEquals(1, updated.getOutputColumnsCount());
     assertEquals("BIGINT", updated.getOutputColumns(0).getLogicalType());
     assertTrue(updated.getOutputColumns(0).getNullable());

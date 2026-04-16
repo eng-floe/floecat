@@ -29,6 +29,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import org.junit.jupiter.api.Test;
 
@@ -68,10 +69,61 @@ class DefaultReconcileExecutorTest {
             new ReconcileExecutor.ExecutionContext(
                 lease,
                 () -> false,
-                (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {}));
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
 
     assertThat(result.failureKind)
         .isEqualTo(ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING);
     assertThat(result.error).isSameAs(failure);
+  }
+
+  @Test
+  void executeViewJobUsesReconcileViewPath() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var executor = new DefaultReconcileExecutor(reconcilerService, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view"),
+            "");
+
+    when(reconcilerService.reconcileView(
+            any(), any(), any(), any(), nullable(String.class), any(), any()))
+        .thenReturn(new ReconcilerService.Result(1, 1, 0, 0, 0, null));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
   }
 }

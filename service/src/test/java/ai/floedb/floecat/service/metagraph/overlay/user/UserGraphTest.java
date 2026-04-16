@@ -456,7 +456,10 @@ class UserGraphTest {
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName("sales_view")
-            .setSql("select * from sales")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select * from sales")
+                    .build())
             .build();
 
     viewRepository.put(view, meta);
@@ -582,7 +585,10 @@ class UserGraphTest {
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("view")
-            .setSql("select 1")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 1")
+                    .build())
             .build();
     viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
@@ -637,7 +643,10 @@ class UserGraphTest {
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("obj")
-            .setSql("select 1")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 1")
+                    .build())
             .build();
     viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
@@ -780,7 +789,10 @@ class UserGraphTest {
             .setCatalogId(catalogId)
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("reports_nested")
-            .setSql("select 1")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 1")
+                    .build())
             .build(),
         mutationMeta(1L, Instant.now()));
 
@@ -892,7 +904,10 @@ class UserGraphTest {
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName(name)
-            .setSql("select 1")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 1")
+                    .build())
             .build(),
         mutationMeta(1L, Instant.now()));
 

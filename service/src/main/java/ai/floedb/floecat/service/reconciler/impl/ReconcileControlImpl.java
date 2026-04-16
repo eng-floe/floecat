@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -68,7 +70,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -86,6 +87,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcileCancellationRegistry cancellations;
+  @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject ReconcilerSettingsStore settings;
   @Inject Observability observability;
 
@@ -137,6 +139,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     return CaptureNowResponse.newBuilder()
                         .setTablesScanned(job.tablesScanned)
                         .setTablesChanged(job.tablesChanged)
+                        .setViewsScanned(job.viewsScanned)
+                        .setViewsChanged(job.viewsChanged)
                         .setErrors(job.errors)
                         .build();
                   } catch (RuntimeException e) {
@@ -186,14 +190,12 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                     Map.of("id", connectorId.getId())));
 
                     var jobId =
-                        jobs.enqueuePlan(
-                            connectorId.getAccountId(),
-                            connectorId.getId(),
+                        enqueueCapture(
+                            connectorId,
                             request.getFullRescan(),
                             mapCaptureMode(request.getMode()),
                             scopeFromRequest(request),
-                            mapExecutionPolicy(request.getExecutionPolicy()),
-                            "");
+                            mapExecutionPolicy(request.getExecutionPolicy()));
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.START_CAPTURE,
                         "start_capture",
@@ -592,6 +594,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       CaptureMode mode,
       ReconcileScope scope,
       ReconcileExecutionPolicy executionPolicy) {
+    ensurePlannerExecutorAvailable();
     return jobs.enqueuePlan(
         connectorId.getAccountId(),
         connectorId.getId(),
@@ -600,6 +603,15 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         scope,
         executionPolicy,
         "");
+  }
+
+  private void ensurePlannerExecutorAvailable() {
+    if (executorRegistry != null
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR)) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("No enabled reconcile executor is available for PLAN_CONNECTOR jobs")
+          .asRuntimeException();
+    }
   }
 
   private ReconcileJobStore.ReconcileJob waitForTerminalJob(
@@ -794,11 +806,20 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                 job.finishedAtMs,
                 children.stream().mapToLong(child -> child.finishedAtMs).max().orElse(0L))
             : 0L;
-    long tablesScanned = children.stream().mapToLong(child -> child.tablesScanned).sum();
-    long tablesChanged = children.stream().mapToLong(child -> child.tablesChanged).sum();
-    long errors = children.stream().mapToLong(child -> child.errors).sum();
-    long snapshotsProcessed = children.stream().mapToLong(child -> child.snapshotsProcessed).sum();
-    long statsProcessed = children.stream().mapToLong(child -> child.statsProcessed).sum();
+    long tablesScanned =
+        job.tablesScanned + children.stream().mapToLong(child -> child.tablesScanned).sum();
+    long tablesChanged =
+        job.tablesChanged + children.stream().mapToLong(child -> child.tablesChanged).sum();
+    long viewsScanned =
+        job.viewsScanned + children.stream().mapToLong(child -> child.viewsScanned).sum();
+    long viewsChanged =
+        job.viewsChanged + children.stream().mapToLong(child -> child.viewsChanged).sum();
+    long errors = job.errors + children.stream().mapToLong(child -> child.errors).sum();
+    long snapshotsProcessed =
+        job.snapshotsProcessed
+            + children.stream().mapToLong(child -> child.snapshotsProcessed).sum();
+    long statsProcessed =
+        job.statsProcessed + children.stream().mapToLong(child -> child.statsProcessed).sum();
     String executorId =
         children.stream()
             .map(child -> child.executorId == null ? "" : child.executorId)
@@ -816,6 +837,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         finishedAtMs,
         tablesScanned,
         tablesChanged,
+        viewsScanned,
+        viewsChanged,
         errors,
         job.fullRescan,
         job.captureMode,
@@ -826,6 +849,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         executorId,
         job.jobKind,
         job.tableTask,
+        job.viewTask,
         job.parentJobId);
   }
 
@@ -834,18 +858,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (planJob == null || planJob.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
       return List.of();
     }
-    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
-    String nextToken = "";
-    do {
-      var page = jobs.list(accountId, 200, nextToken, planJob.connectorId, Set.of());
-      for (var candidate : page.jobs) {
-        if (planJob.jobId.equals(candidate.parentJobId)) {
-          out.add(candidate);
-        }
-      }
-      nextToken = page.nextPageToken;
-    } while (nextToken != null && !nextToken.isBlank());
-    return List.copyOf(out);
+    return jobs.childJobs(accountId, planJob.jobId);
   }
 
   private void cancelChildJobs(
@@ -903,6 +916,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                 : Timestamps.fromMillis(job.finishedAtMs))
         .setTablesScanned(job.tablesScanned)
         .setTablesChanged(job.tablesChanged)
+        .setViewsScanned(job.viewsScanned)
+        .setViewsChanged(job.viewsChanged)
         .setErrors(job.errors)
         .setFullRescan(job.fullRescan)
         .setSnapshotsProcessed(job.snapshotsProcessed)
@@ -913,6 +928,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setKind(toProtoJobKind(job.jobKind))
         .setParentJobId(job.parentJobId == null ? "" : job.parentJobId)
         .setTableTask(toProtoTableTask(job.tableTask))
+        .setViewTask(toProtoViewTask(job.viewTask))
         .build();
   }
 
@@ -921,6 +937,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
       case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
       case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
+      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
     };
   }
 
@@ -931,6 +948,17 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
         .setDestinationTableDisplayName(effective.destinationTableDisplayName())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileViewTask toProtoViewTask(
+      ReconcileViewTask viewTask) {
+    ReconcileViewTask effective = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileViewTask.newBuilder()
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceView(effective.sourceView())
+        .setDestinationNamespace(effective.destinationNamespace())
+        .setDestinationViewDisplayName(effective.destinationViewDisplayName())
         .build();
   }
 

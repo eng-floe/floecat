@@ -60,6 +60,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -81,10 +82,16 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.view.SQLViewRepresentation;
+import org.apache.iceberg.view.View;
+import org.apache.iceberg.view.ViewVersion;
 import org.jboss.logging.Logger;
 
 public abstract class IcebergConnector implements FloecatConnector {
@@ -136,6 +143,81 @@ public abstract class IcebergConnector implements FloecatConnector {
   @Override
   public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
     return ConnectorPlanningSupport.planTableTasks(request, this::listTables);
+  }
+
+  protected Namespace namespaceOf(String namespaceFq) {
+    return (namespaceFq == null || namespaceFq.isBlank())
+        ? Namespace.empty()
+        : Namespace.of(namespaceFq.split("\\."));
+  }
+
+  protected TableIdentifier tableIdentifierOf(String namespaceFq, String name) {
+    Namespace namespace = namespaceOf(namespaceFq);
+    return namespace.isEmpty() ? TableIdentifier.of(name) : TableIdentifier.of(namespace, name);
+  }
+
+  protected List<String> listViewsFromCatalog(ViewCatalog catalog, String namespaceFq) {
+    return catalog.listViews(namespaceOf(namespaceFq)).stream()
+        .map(TableIdentifier::name)
+        .sorted()
+        .toList();
+  }
+
+  protected List<ViewDescriptor> listViewDescriptorsFromCatalog(
+      ViewCatalog catalog, String namespaceFq) {
+    return catalog.listViews(namespaceOf(namespaceFq)).stream()
+        .map(
+            viewId ->
+                toViewDescriptor(
+                    namespaceFq,
+                    viewId.name(),
+                    Objects.requireNonNull(catalog.loadView(viewId), "view")))
+        .sorted(Comparator.comparing(ViewDescriptor::name))
+        .toList();
+  }
+
+  protected Optional<ViewDescriptor> describeViewFromCatalog(
+      ViewCatalog catalog, String namespaceFq, String viewName) {
+    try {
+      View view = catalog.loadView(tableIdentifierOf(namespaceFq, viewName));
+      return Optional.of(toViewDescriptor(namespaceFq, viewName, view));
+    } catch (RuntimeException e) {
+      if (e.getClass().getName().endsWith("NoSuchViewException")
+          || e.getClass().getName().endsWith("NoSuchIcebergViewException")) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  protected ViewDescriptor toViewDescriptor(String namespaceFq, String viewName, View view) {
+    String schemaJson = SchemaParser.toJson(view.schema());
+    ViewVersion currentVersion = view.currentVersion();
+    List<String> searchPath =
+        currentVersion == null || currentVersion.defaultNamespace() == null
+            ? namespacePath(namespaceOf(namespaceFq))
+            : namespacePath(currentVersion.defaultNamespace());
+    return new ViewDescriptor(namespaceFq, viewName, sqlDefinitions(view), searchPath, schemaJson);
+  }
+
+  private List<String> namespacePath(Namespace namespace) {
+    return namespace == null || namespace.isEmpty() ? List.of() : List.of(namespace.levels());
+  }
+
+  private List<ViewSqlDefinition> sqlDefinitions(View view) {
+    if (view == null) {
+      return List.of();
+    }
+    ViewVersion currentVersion = view.currentVersion();
+    if (currentVersion == null || currentVersion.representations() == null) {
+      return List.of();
+    }
+    return currentVersion.representations().stream()
+        .filter(SQLViewRepresentation.class::isInstance)
+        .map(SQLViewRepresentation.class::cast)
+        .filter(rep -> rep.sql() != null && !rep.sql().isBlank())
+        .map(rep -> new ViewSqlDefinition(rep.sql(), rep.dialect()))
+        .toList();
   }
 
   @Override

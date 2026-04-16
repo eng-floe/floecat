@@ -450,6 +450,11 @@ message ColumnInfo {
 /**
  * Optional view definition for resolved relations of kind VIEW.
  */
+message SqlDefinition {
+  string sql = 1;
+  string dialect = 2;
+}
+
 message ViewDefinition {
   /** Canonical SQL definition of the view. */
   string canonical_sql = 1;
@@ -472,6 +477,7 @@ message ViewDefinition {
 
   /** Search path as captured when the view was created. */
   repeated string creation_search_path = 4;
+  repeated SqlDefinition sql_definitions = 5;
 
   /** Engine-specific metadata extensions (collations, hints, etc.). */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;

@@ -174,6 +174,18 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Tables changed by reconcile jobs.");
     add(
         defs,
+        ServiceMetrics.Reconcile.VIEWS_SCANNED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Views scanned by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.VIEWS_CHANGED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Views changed by reconcile jobs.");
+    add(
+        defs,
         ServiceMetrics.Reconcile.ERRORS,
         reconcileExecutionRequired,
         reconcileExecutionAllowed,

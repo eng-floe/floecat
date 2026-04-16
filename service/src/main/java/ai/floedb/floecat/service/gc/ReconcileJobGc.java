@@ -109,6 +109,11 @@ public class ReconcileJobGc {
             String jobId = decodeJobId(jobPrefix, canonical.getKey());
             if (jobId != null) {
               deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
+              String parentJobId = text(record, "parentJobId");
+              if (!parentJobId.isBlank()) {
+                deletePointerIfPresent(
+                    Keys.reconcileJobByParentPointer(accountId, parentJobId, jobId));
+              }
               blobStore.deletePrefix(Keys.reconcileJobBlobPrefix(accountId, jobId));
             }
           }
@@ -143,6 +148,11 @@ public class ReconcileJobGc {
               String jobId = decodeJobId(jobPrefix, canonical.getKey());
               if (jobId != null) {
                 deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
+                String parentJobId = text(record, "parentJobId");
+                if (!parentJobId.isBlank()) {
+                  deletePointerIfPresent(
+                      Keys.reconcileJobByParentPointer(accountId, parentJobId, jobId));
+                }
                 blobStore.deletePrefix(Keys.reconcileJobBlobPrefix(accountId, jobId));
               }
             }

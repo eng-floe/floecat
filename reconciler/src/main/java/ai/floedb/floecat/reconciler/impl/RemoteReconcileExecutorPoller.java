@@ -210,7 +210,16 @@ public class RemoteReconcileExecutorPoller {
       client.start(remoteLease, executor.id());
       if (shouldStop.getAsBoolean()) {
         completeIfPossible(
-            remoteLease, RemoteLeasedJob.CompletionState.CANCELLED, 0, 0, 0, 0, 0, "Cancelled");
+            remoteLease,
+            RemoteLeasedJob.CompletionState.CANCELLED,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "Cancelled");
         return;
       }
       var result =
@@ -218,16 +227,32 @@ public class RemoteReconcileExecutorPoller {
               new ReconcileExecutor.ExecutionContext(
                   lease,
                   shouldStop,
-                  (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {
+                  (tablesScanned,
+                      tablesChanged,
+                      viewsScanned,
+                      viewsChanged,
+                      errors,
+                      snapshotsProcessed,
+                      statsProcessed,
+                      message) -> {
                     if (!leaseValid.get()) {
                       return;
                     }
-                    progress.update(scanned, changed, errors, snapshotsProcessed, statsProcessed);
+                    progress.update(
+                        tablesScanned,
+                        tablesChanged,
+                        viewsScanned,
+                        viewsChanged,
+                        errors,
+                        snapshotsProcessed,
+                        statsProcessed);
                     RemoteReconcileExecutorClient.LeaseHeartbeat response =
                         client.reportProgress(
                             remoteLease,
-                            scanned,
-                            changed,
+                            tablesScanned,
+                            tablesChanged,
+                            viewsScanned,
+                            viewsChanged,
                             errors,
                             snapshotsProcessed,
                             statsProcessed,
@@ -243,8 +268,10 @@ public class RemoteReconcileExecutorPoller {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             result.snapshotsProcessed,
             result.statsProcessed,
@@ -255,8 +282,10 @@ public class RemoteReconcileExecutorPoller {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             result.snapshotsProcessed,
             result.statsProcessed,
@@ -267,8 +296,10 @@ public class RemoteReconcileExecutorPoller {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.FAILED,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             result.snapshotsProcessed,
             result.statsProcessed,
@@ -278,8 +309,10 @@ public class RemoteReconcileExecutorPoller {
       completeIfPossible(
           remoteLease,
           RemoteLeasedJob.CompletionState.SUCCEEDED,
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
@@ -301,8 +334,10 @@ public class RemoteReconcileExecutorPoller {
                         == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
                 ? RemoteLeasedJob.CompletionState.CANCELLED
                 : RemoteLeasedJob.CompletionState.FAILED,
-            progress.scanned,
-            progress.changed,
+            progress.tablesScanned,
+            progress.tablesChanged,
+            progress.viewsScanned,
+            progress.viewsChanged,
             errorCount,
             progress.snapshotsProcessed,
             progress.statsProcessed,
@@ -321,15 +356,26 @@ public class RemoteReconcileExecutorPoller {
   private void completeIfPossible(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
-      long scanned,
-      long changed,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
     RemoteReconcileExecutorClient.CompletionResult result =
         client.complete(
-            lease, state, scanned, changed, errors, snapshotsProcessed, statsProcessed, message);
+            lease,
+            state,
+            tablesScanned,
+            tablesChanged,
+            viewsScanned,
+            viewsChanged,
+            errors,
+            snapshotsProcessed,
+            statsProcessed,
+            message);
     if (!result.accepted()) {
       LOG.warnf("Remote reconcile completion rejected for job %s", lease.lease().jobId);
     }
@@ -360,16 +406,26 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private static final class ProgressSnapshot {
-    long scanned;
-    long changed;
+    long tablesScanned;
+    long tablesChanged;
+    long viewsScanned;
+    long viewsChanged;
     long errors;
     long snapshotsProcessed;
     long statsProcessed;
 
     void update(
-        long scanned, long changed, long errors, long snapshotsProcessed, long statsProcessed) {
-      this.scanned = scanned;
-      this.changed = changed;
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed) {
+      this.tablesScanned = tablesScanned;
+      this.tablesChanged = tablesChanged;
+      this.viewsScanned = viewsScanned;
+      this.viewsChanged = viewsChanged;
       this.errors = errors;
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;

@@ -30,10 +30,8 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,6 +76,12 @@ public class ReconcilerScheduler {
           "",
           "v1",
           "service");
+  private static final MetricId RECONCILE_VIEWS_SCANNED =
+      new MetricId(
+          "floecat.service.reconcile.views_scanned.total", MetricType.COUNTER, "", "v1", "service");
+  private static final MetricId RECONCILE_VIEWS_CHANGED =
+      new MetricId(
+          "floecat.service.reconcile.views_changed.total", MetricType.COUNTER, "", "v1", "service");
   private static final MetricId RECONCILE_ERRORS =
       new MetricId(
           "floecat.service.reconcile.errors.total", MetricType.COUNTER, "", "v1", "service");
@@ -197,6 +201,7 @@ public class ReconcilerScheduler {
             .or(
                 () ->
                     executorRegistry.orderedExecutors().stream()
+                        .filter(candidate -> candidate.supportsJobKind(lease.jobKind))
                         .filter(
                             candidate ->
                                 candidate.supportsExecutionClass(
@@ -265,12 +270,12 @@ public class ReconcilerScheduler {
         };
     if (!heartbeat.getAsBoolean()) {
       long now = System.currentTimeMillis();
-      emitOutcome(lease, "lease_lost", now - started, 0, 0, 0, 0, 0, "lease_lost");
+      emitOutcome(lease, "lease_lost", now - started, 0, 0, 0, 0, 0, 0, 0, "lease_lost");
       return;
     }
     try {
       jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), executor.id());
-      jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, "Running reconcile");
+      jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, 0, 0, "Running reconcile");
       BooleanSupplier shouldStop =
           () -> {
             if (!leaseValid.get()) {
@@ -284,8 +289,8 @@ public class ReconcilerScheduler {
           };
       if (cancelRequested.getAsBoolean()) {
         long now = System.currentTimeMillis();
-        jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0);
-        emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
+        jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0, 0, 0);
+        emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, 0, 0, null);
         return;
       }
       var result =
@@ -293,17 +298,33 @@ public class ReconcilerScheduler {
               new ReconcileExecutor.ExecutionContext(
                   lease,
                   shouldStop,
-                  (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {
+                  (tablesScanned,
+                      tablesChanged,
+                      viewsScanned,
+                      viewsChanged,
+                      errors,
+                      snapshotsProcessed,
+                      statsProcessed,
+                      message) -> {
                     if (!heartbeat.getAsBoolean()) {
                       return;
                     }
                     progress.update(
-                        scanned, changed, errors, snapshotsProcessed, statsProcessed, message);
+                        tablesScanned,
+                        tablesChanged,
+                        viewsScanned,
+                        viewsChanged,
+                        errors,
+                        snapshotsProcessed,
+                        statsProcessed,
+                        message);
                     jobs.markProgress(
                         lease.jobId,
                         lease.leaseEpoch,
-                        scanned,
-                        changed,
+                        tablesScanned,
+                        tablesChanged,
+                        viewsScanned,
+                        viewsChanged,
                         errors,
                         snapshotsProcessed,
                         statsProcessed,
@@ -318,8 +339,10 @@ public class ReconcilerScheduler {
             lease,
             "lease_lost",
             finished - started,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats,
@@ -333,8 +356,10 @@ public class ReconcilerScheduler {
             lease.leaseEpoch,
             finished,
             result.message,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats);
@@ -343,8 +368,10 @@ public class ReconcilerScheduler {
             lease,
             "cancelled",
             finished - started,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats,
@@ -357,8 +384,10 @@ public class ReconcilerScheduler {
             lease.leaseEpoch,
             finished,
             result.message,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats);
@@ -367,8 +396,10 @@ public class ReconcilerScheduler {
             lease,
             "cancelled",
             finished - started,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats,
@@ -382,8 +413,10 @@ public class ReconcilerScheduler {
             lease.leaseEpoch,
             finished,
             result.message,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats);
@@ -392,8 +425,10 @@ public class ReconcilerScheduler {
             lease,
             "failed",
             finished - started,
-            result.scanned,
-            result.changed,
+            result.tablesScanned,
+            result.tablesChanged,
+            result.viewsScanned,
+            result.viewsChanged,
             result.errors,
             totalSnapshots,
             totalStats,
@@ -405,16 +440,20 @@ public class ReconcilerScheduler {
           lease.jobId,
           lease.leaseEpoch,
           finished,
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           totalSnapshots,
           totalStats);
       emitOutcome(
           lease,
           "succeeded",
           finished - started,
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           totalSnapshots,
           totalStats,
@@ -426,8 +465,10 @@ public class ReconcilerScheduler {
             lease,
             "lease_lost",
             now - started,
-            progress.scanned,
-            progress.changed,
+            progress.tablesScanned,
+            progress.tablesChanged,
+            progress.viewsScanned,
+            progress.viewsChanged,
             progress.errors,
             progress.snapshotsProcessed,
             progress.statsProcessed,
@@ -441,8 +482,10 @@ public class ReconcilerScheduler {
               lease.leaseEpoch,
               now,
               progress.message.isBlank() ? "Cancelled" : progress.message,
-              progress.scanned,
-              progress.changed,
+              progress.tablesScanned,
+              progress.tablesChanged,
+              progress.viewsScanned,
+              progress.viewsChanged,
               progress.errors,
               progress.snapshotsProcessed,
               progress.statsProcessed);
@@ -451,8 +494,10 @@ public class ReconcilerScheduler {
               lease,
               "cancelled",
               now - started,
-              progress.scanned,
-              progress.changed,
+              progress.tablesScanned,
+              progress.tablesChanged,
+              progress.viewsScanned,
+              progress.viewsChanged,
               progress.errors,
               progress.snapshotsProcessed,
               progress.statsProcessed,
@@ -463,8 +508,10 @@ public class ReconcilerScheduler {
               lease,
               "interrupted",
               now - started,
-              progress.scanned,
-              progress.changed,
+              progress.tablesScanned,
+              progress.tablesChanged,
+              progress.viewsScanned,
+              progress.viewsChanged,
               progress.errors,
               progress.snapshotsProcessed,
               progress.statsProcessed,
@@ -479,8 +526,10 @@ public class ReconcilerScheduler {
                 lease.leaseEpoch,
                 now,
                 msg,
-                progress.scanned,
-                progress.changed,
+                progress.tablesScanned,
+                progress.tablesChanged,
+                progress.viewsScanned,
+                progress.viewsChanged,
                 errorCount,
                 progress.snapshotsProcessed,
                 progress.statsProcessed);
@@ -489,8 +538,10 @@ public class ReconcilerScheduler {
                 lease,
                 "cancelled",
                 now - started,
-                progress.scanned,
-                progress.changed,
+                progress.tablesScanned,
+                progress.tablesChanged,
+                progress.viewsScanned,
+                progress.viewsChanged,
                 errorCount,
                 progress.snapshotsProcessed,
                 progress.statsProcessed,
@@ -503,8 +554,10 @@ public class ReconcilerScheduler {
                 lease.leaseEpoch,
                 now,
                 msg,
-                progress.scanned,
-                progress.changed,
+                progress.tablesScanned,
+                progress.tablesChanged,
+                progress.viewsScanned,
+                progress.viewsChanged,
                 errorCount,
                 progress.snapshotsProcessed,
                 progress.statsProcessed);
@@ -513,8 +566,10 @@ public class ReconcilerScheduler {
                 lease,
                 "failed",
                 now - started,
-                progress.scanned,
-                progress.changed,
+                progress.tablesScanned,
+                progress.tablesChanged,
+                progress.viewsScanned,
+                progress.viewsChanged,
                 errorCount,
                 progress.snapshotsProcessed,
                 progress.statsProcessed,
@@ -546,40 +601,32 @@ public class ReconcilerScheduler {
     if (lease == null || lease.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
       return List.of();
     }
-    List<ReconcileJobStore.ReconcileJob> children = new ArrayList<>();
-    String nextToken = "";
-    do {
-      var page = jobs.list(lease.accountId, 200, nextToken, lease.connectorId, Set.of());
-      if (page == null || page.jobs == null) {
-        break;
-      }
-      for (var candidate : page.jobs) {
-        if (lease.jobId.equals(candidate.parentJobId)) {
-          children.add(candidate);
-        }
-      }
-      nextToken = page.nextPageToken;
-    } while (nextToken != null && !nextToken.isBlank());
-    return List.copyOf(children);
+    return jobs.childJobs(lease.accountId, lease.jobId);
   }
 
   private static final class ProgressSnapshot {
-    long scanned;
-    long changed;
+    long tablesScanned;
+    long tablesChanged;
+    long viewsScanned;
+    long viewsChanged;
     long errors;
     long snapshotsProcessed;
     long statsProcessed;
     String message = "";
 
     void update(
-        long scanned,
-        long changed,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
         long errors,
         long snapshotsProcessed,
         long statsProcessed,
         String message) {
-      this.scanned = scanned;
-      this.changed = changed;
+      this.tablesScanned = tablesScanned;
+      this.tablesChanged = tablesChanged;
+      this.viewsScanned = viewsScanned;
+      this.viewsChanged = viewsChanged;
       this.errors = errors;
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
@@ -641,6 +688,8 @@ public class ReconcilerScheduler {
       long durationMs,
       long tablesScanned,
       long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -651,6 +700,8 @@ public class ReconcilerScheduler {
         durationMs,
         tablesScanned,
         tablesChanged,
+        viewsScanned,
+        viewsChanged,
         errors,
         snapshotsProcessed,
         statsProcessed,
@@ -664,6 +715,8 @@ public class ReconcilerScheduler {
       long durationMs,
       long tablesScanned,
       long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -675,6 +728,8 @@ public class ReconcilerScheduler {
         durationMs,
         tablesScanned,
         tablesChanged,
+        viewsScanned,
+        viewsChanged,
         errors,
         snapshotsProcessed,
         statsProcessed,
@@ -700,6 +755,8 @@ public class ReconcilerScheduler {
       long durationMs,
       long tablesScanned,
       long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
@@ -712,6 +769,8 @@ public class ReconcilerScheduler {
     observability.timer(RECONCILE_JOB_LATENCY, Duration.ofMillis(Math.max(0L, durationMs)), tags);
     observability.counter(RECONCILE_TABLES_SCANNED, Math.max(0L, tablesScanned), tags);
     observability.counter(RECONCILE_TABLES_CHANGED, Math.max(0L, tablesChanged), tags);
+    observability.counter(RECONCILE_VIEWS_SCANNED, Math.max(0L, viewsScanned), tags);
+    observability.counter(RECONCILE_VIEWS_CHANGED, Math.max(0L, viewsChanged), tags);
     observability.counter(RECONCILE_ERRORS, Math.max(0L, errors), tags);
     observability.counter(RECONCILE_SNAPSHOTS_PROCESSED, Math.max(0L, snapshotsProcessed), tags);
     observability.counter(RECONCILE_STATS_PROCESSED, Math.max(0L, statsProcessed), tags);

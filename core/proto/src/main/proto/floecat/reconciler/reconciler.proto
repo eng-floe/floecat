@@ -64,10 +64,12 @@ enum ExecutionClass {
 // The current model is split:
 // - PLAN_CONNECTOR is the top-level connector job that enumerates child work.
 // - EXEC_TABLE is a child job that executes one planned table task.
+// - EXEC_VIEW is a child job that executes one planned view task.
 enum ReconcileJobKind {
   RJK_UNSPECIFIED = 0;
   RJK_PLAN_CONNECTOR = 1;
   RJK_EXEC_TABLE = 2;
+  RJK_EXEC_VIEW = 3;
 }
 
 // One table-scoped unit of reconcile work emitted by a planner job.
@@ -78,6 +80,18 @@ message ReconcileTableTask {
   string source_table = 2;
   // Destination display name to persist/use for this table execution.
   string destination_table_display_name = 3;
+}
+
+// One view-scoped unit of reconcile work emitted by a planner job.
+message ReconcileViewTask {
+  // Fully qualified upstream source namespace.
+  string source_namespace = 1;
+  // Upstream source view name.
+  string source_view = 2;
+  // Fully qualified destination namespace.
+  string destination_namespace = 3;
+  // Destination display name to persist/use for this view execution.
+  string destination_view_display_name = 4;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -106,6 +120,8 @@ message CaptureNowResponse {
   uint64 tables_scanned = 1;
   uint64 tables_changed = 2;
   uint64 errors = 3;
+  uint64 views_scanned = 4;
+  uint64 views_changed = 5;
 }
 
 // Asynchronous reconcile request that enqueues a job for later execution.
@@ -137,10 +153,12 @@ message LeasedReconcileJob {
   // Executor currently holding the lease, if any.
   string executor_id = 9;
   ReconcileJobKind kind = 10;
-  // Present for EXEC_TABLE jobs; empty for PLAN_CONNECTOR jobs.
+  // Present for EXEC_TABLE jobs; empty otherwise.
   ReconcileTableTask table_task = 11;
   // Parent job id for child execution jobs.
   string parent_job_id = 12;
+  // Present for EXEC_VIEW jobs; empty otherwise.
+  ReconcileViewTask view_task = 13;
 }
 
 // Request from an executor asking the scheduler for work it is willing to run.
@@ -196,6 +214,8 @@ message ReportReconcileProgressRequest {
   uint64 stats_processed = 7;
   // Optional human-readable status string for operators and clients.
   string message = 8;
+  uint64 views_scanned = 9;
+  uint64 views_changed = 10;
 }
 
 message ReportReconcileProgressResponse {
@@ -225,6 +245,8 @@ message CompleteLeasedReconcileJobRequest {
   uint64 stats_processed = 8;
   // Optional final operator-facing summary or failure reason.
   string message = 9;
+  uint64 views_scanned = 10;
+  uint64 views_changed = 11;
 }
 
 message CompleteLeasedReconcileJobResponse {
@@ -248,7 +270,7 @@ message GetReconcileJobRequest {
 // Durable job status returned to clients and operators.
 //
 // For PLAN_CONNECTOR jobs, the service may return an aggregated state/counter view derived from the
-// parent plan job plus its child EXEC_TABLE jobs.
+// parent plan job plus its child EXEC_TABLE/EXEC_VIEW jobs.
 message GetReconcileJobResponse {
   string job_id = 1;
   // Connector id as a plain string for lightweight display and filtering.
@@ -276,6 +298,10 @@ message GetReconcileJobResponse {
   string parent_job_id = 17;
   // Planned table task carried by an EXEC_TABLE job.
   ReconcileTableTask table_task = 18;
+  // Planned view task carried by an EXEC_VIEW job.
+  ReconcileViewTask view_task = 19;
+  uint64 views_scanned = 20;
+  uint64 views_changed = 21;
 }
 
 // Lists reconcile jobs visible to the caller.

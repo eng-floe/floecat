@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -106,13 +107,46 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
             .setCorrelationId("reconcile-plan-" + lease.jobId)
             .build();
     long planned = 0L;
+    long tablesPlanned = 0L;
+    long changed = 0L;
+    long viewsPlanned = 0L;
+    long viewsChanged = 0L;
+    long errors = 0L;
+    long snapshotsProcessed = 0L;
+    long statsProcessed = 0L;
 
     try {
-      List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tasks =
+      List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks =
           reconcilerService.planTableTasks(principal, connectorId, lease.scope, null);
-      for (var task : tasks) {
+      List<ReconcileViewTask> viewTasks =
+          reconcilerService.planViewTasks(principal, connectorId, lease.scope, null);
+      if (tableTasks.isEmpty()
+          && viewTasks.isEmpty()
+          && lease.scope != null
+          && lease.scope.hasTableFilter()) {
+        return ExecutionResult.failure(
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            "No tables matched scope: " + lease.scope.destinationTableDisplayName(),
+            new IllegalArgumentException(
+                "No tables matched scope: " + lease.scope.destinationTableDisplayName()));
+      }
+      for (var task : tableTasks) {
         if (context.shouldStop().getAsBoolean()) {
-          return ExecutionResult.cancelled(planned, 0, 0, 0, 0, "Cancelled");
+          return ExecutionResult.cancelled(
+              tablesPlanned,
+              changed,
+              viewsPlanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              "Cancelled");
         }
         jobs.enqueueTableExecution(
             lease.accountId,
@@ -125,30 +159,90 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
             lease.jobId,
             executionPinnedExecutorId);
         planned++;
+        tablesPlanned++;
         context
             .progressListener()
             .onProgress(
-                planned,
+                tablesPlanned,
+                0,
+                viewsPlanned,
                 0,
                 0,
                 0,
                 0,
                 "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
       }
-      return ExecutionResult.success(planned, 0, 0, 0, 0, "Planned " + planned + " table jobs");
+      for (var task : viewTasks) {
+        if (context.shouldStop().getAsBoolean()) {
+          return ExecutionResult.cancelled(
+              tablesPlanned,
+              changed,
+              viewsPlanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              "Cancelled");
+        }
+        jobs.enqueueViewExecution(
+            lease.accountId,
+            lease.connectorId,
+            lease.fullRescan,
+            lease.captureMode,
+            lease.scope,
+            task,
+            lease.executionPolicy,
+            lease.jobId,
+            executionPinnedExecutorId);
+        planned++;
+        viewsPlanned++;
+        context
+            .progressListener()
+            .onProgress(
+                tablesPlanned,
+                0,
+                viewsPlanned,
+                0,
+                0,
+                0,
+                0,
+                "Planned view " + task.sourceNamespace() + "." + task.sourceView());
+      }
+      if (context.shouldStop().getAsBoolean()) {
+        return ExecutionResult.cancelled(
+            tablesPlanned,
+            changed,
+            viewsPlanned,
+            viewsChanged,
+            errors,
+            snapshotsProcessed,
+            statsProcessed,
+            "Cancelled");
+      }
+      return ExecutionResult.success(
+          tablesPlanned,
+          changed,
+          viewsPlanned,
+          viewsChanged,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          "Planned " + planned + " reconcile jobs");
     } catch (Exception e) {
       String message = e.getMessage();
       if (message == null || message.isBlank()) {
         message = e.getClass().getSimpleName();
       }
       return ExecutionResult.failure(
-          planned,
+          tablesPlanned,
+          0,
+          viewsPlanned,
           0,
           1,
           0,
           0,
           planned > 0
-              ? "Planning failed after enqueuing " + planned + " table jobs: " + message
+              ? "Planning failed after enqueuing " + planned + " reconcile jobs: " + message
               : "Planning failed: " + message,
           e);
     }

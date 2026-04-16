@@ -72,6 +72,11 @@ public class ReconcileExecutorRegistry {
     return executors;
   }
 
+  public boolean hasExecutorForJobKind(ReconcileJobKind jobKind) {
+    ReconcileJobKind effectiveJobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
+    return executors.stream().anyMatch(executor -> executor.supportsJobKind(effectiveJobKind));
+  }
+
   public ReconcileJobStore.LeaseRequest leaseRequest() {
     Set<ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass> executionClasses =
         executors.stream()
@@ -81,11 +86,15 @@ public class ReconcileExecutorRegistry {
                     () ->
                         EnumSet.noneOf(
                             ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass.class)));
+    boolean wildcardLane =
+        executors.stream().anyMatch(executor -> executor.supportedLanes().isEmpty());
     Set<String> lanes =
-        executors.stream()
-            .flatMap(executor -> executor.supportedLanes().stream())
-            .map(lane -> lane == null ? "" : lane.trim())
-            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        wildcardLane
+            ? Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken())
+            : executors.stream()
+                .flatMap(executor -> executor.supportedLanes().stream())
+                .map(lane -> lane == null ? "" : lane.trim())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     Set<String> executorIds =
         executors.stream()
             .map(ReconcileExecutor::id)

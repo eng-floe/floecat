@@ -69,7 +69,8 @@ class ViewMetadataServiceTest {
         View.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:reports").build())
             .setDisplayName("reports")
-            .setSql("")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder().setSql("").build())
             .putProperties(ViewMetadataService.METADATA_PROPERTY_KEY, "{not-json")
             .putProperties(
                 ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY, "s3://warehouse/reports")
@@ -91,7 +92,10 @@ class ViewMetadataServiceTest {
     View view =
         View.newBuilder()
             .setDisplayName("reports")
-            .setSql("select 7")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 7")
+                    .build())
             .putProperties(
                 ViewMetadataService.METADATA_PROPERTY_KEY, json.writeValueAsString(stored))
             .putProperties(ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY, "s3://loc/from-prop")

@@ -33,10 +33,7 @@ public final class ConnectorPlanningSupport {
     String sourceNamespaceFq = requireNonBlank(request.sourceNamespaceFq(), "source namespace");
     String destinationNamespaceFq = blankToNull(request.destinationNamespaceFq());
     if (!matchesNamespaceFilter(destinationNamespaceFq, request.destinationNamespacePaths())) {
-      throw new IllegalArgumentException(
-          "Connector destination namespace "
-              + destinationNamespaceFq
-              + " does not match requested scope");
+      return List.of();
     }
 
     List<String> sourceTables =
@@ -57,6 +54,37 @@ public final class ConnectorPlanningSupport {
       planned.add(
           new FloecatConnector.PlannedTableTask(
               sourceNamespaceFq, sourceTable, destinationTableDisplayName));
+    }
+    if (planned.isEmpty() && destinationTableFilter != null) {
+      throw new IllegalArgumentException("No tables matched scope: " + destinationTableFilter);
+    }
+    return List.copyOf(planned);
+  }
+
+  public static List<FloecatConnector.PlannedViewTask> planViewTasks(
+      FloecatConnector.ViewPlanningRequest request,
+      Function<String, List<FloecatConnector.ViewDescriptor>> listViews) {
+    if (request == null) {
+      return List.of();
+    }
+
+    String sourceNamespaceFq = requireNonBlank(request.sourceNamespaceFq(), "source namespace");
+    String destinationNamespaceFq = blankToNull(request.destinationNamespaceFq());
+    if (!matchesNamespaceFilter(destinationNamespaceFq, request.destinationNamespacePaths())) {
+      return List.of();
+    }
+
+    List<FloecatConnector.PlannedViewTask> planned = new ArrayList<>();
+    for (FloecatConnector.ViewDescriptor view : listViews.apply(sourceNamespaceFq)) {
+      if (view == null || blankToNull(view.name()) == null) {
+        continue;
+      }
+      planned.add(
+          new FloecatConnector.PlannedViewTask(
+              sourceNamespaceFq,
+              view.name(),
+              destinationNamespaceFq == null ? sourceNamespaceFq : destinationNamespaceFq,
+              view.name()));
     }
     return List.copyOf(planned);
   }

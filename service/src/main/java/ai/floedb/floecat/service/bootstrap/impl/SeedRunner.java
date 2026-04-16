@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -347,7 +348,7 @@ public class SeedRunner {
             .setDescription(name + " view")
             .setCatalogId(catalogId)
             .setNamespaceId(nsRid)
-            .setSql(sql)
+            .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql(sql).build())
             .setCreatedAt(Timestamps.fromMillis(now))
             .putAllProperties(properties == null ? Map.of() : properties)
             .build();

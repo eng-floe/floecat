@@ -248,7 +248,10 @@ class ViewServiceImplSystemViewTest {
                     .setCatalogId(userCatalogId)
                     .setNamespaceId(namespaceId)
                     .setDisplayName("v_orders")
-                    .setSql("select 1")
+                    .addSqlDefinitions(
+                        ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                            .setSql("select 1")
+                            .build())
                     .build()));
 
     var req =

@@ -964,6 +964,24 @@ run_sql("DROP TABLE IF EXISTS iceberg.trino_ctas_smoke")
 run_sql("CREATE TABLE iceberg.trino_ctas_smoke AS SELECT * FROM delta.call_center LIMIT 5")
 print(scalar("SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.trino_ctas_smoke"))
 run_sql("DROP TABLE iceberg.trino_ctas_smoke")
+run_sql("DROP VIEW IF EXISTS iceberg.trino_view_smoke")
+run_sql("CREATE VIEW iceberg.trino_view_smoke AS SELECT id, v FROM delta.dv_demo_delta")
+print(
+    scalar(
+        "SELECT 'view_initial=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+        "FROM iceberg.trino_view_smoke"
+    )
+)
+run_sql("CREATE OR REPLACE VIEW iceberg.trino_view_smoke AS SELECT id, v FROM delta.dv_demo_delta WHERE id = 3")
+print(
+    scalar(
+        "SELECT 'view_updated=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+        "FROM iceberg.trino_view_smoke"
+    )
+)
+run_sql("DROP VIEW iceberg.trino_view_smoke")
 drop_ok = False
 try:
     run_sql("SELECT COUNT(*) FROM iceberg.trino_ctas_smoke")
@@ -1105,6 +1123,8 @@ PY
     assert_contains "$label trino dv_demo_delta count" "$trino_out" "dv_demo_delta=2"
     assert_contains "$label trino dv_demo_delta content" "$trino_out" "dv_content=1,3,a,c"
     assert_contains "$label trino ctas count" "$trino_out" "ctas_count=5"
+    assert_contains "$label trino view initial query" "$trino_out" "view_initial=2,4,a,c"
+    assert_contains "$label trino view updated query" "$trino_out" "view_updated=1,3,c,c"
     assert_contains "$label trino drop table verification" "$trino_out" "drop_table_ok=1"
     assert_contains "$label trino namespace create" "$trino_out" "ns_create_ok=1"
     assert_contains "$label trino namespace drop" "$trino_out" "ns_drop_ok=1"

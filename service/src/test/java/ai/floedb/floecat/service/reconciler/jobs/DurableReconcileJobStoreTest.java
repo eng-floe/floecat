@@ -25,9 +25,12 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -106,6 +109,74 @@ class DurableReconcileJobStoreTest {
             "");
 
     assertNotEquals(first, second);
+  }
+
+  @Test
+  void childJobsUsesParentIndex() {
+    store.init();
+
+    String planJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            planJobId,
+            "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_STATS,
+        ReconcileScope.empty(),
+        ReconcileJobKind.EXEC_TABLE,
+        ReconcileTableTask.of("src.ns", "customers", "customers"),
+        ReconcileExecutionPolicy.defaults(),
+        "other-plan",
+        "");
+
+    var children = store.childJobs(ACCOUNT_ID, planJobId);
+
+    assertEquals(1, children.size());
+    assertEquals(childJobId, children.get(0).jobId);
+    assertEquals(planJobId, children.get(0).parentJobId);
+  }
+
+  @Test
+  void enqueueAndLeaseExecViewPreservesSourceNamespace() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of(List.of("analytics")), "", List.of()),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of("db", "events_summary", "analytics", "events_summary"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = store.leaseNext().orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals("db", lease.viewTask.sourceNamespace());
+    assertEquals("events_summary", lease.viewTask.sourceView());
+    assertEquals("analytics", lease.viewTask.destinationNamespace());
   }
 
   @Test

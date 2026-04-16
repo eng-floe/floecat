@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -65,6 +66,7 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -85,11 +87,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       Set.of(
           "display_name",
           "description",
-          "sql",
           "properties",
           "catalog_id",
           "namespace_id",
-          "dialect",
+          "sql_definitions",
           "output_columns",
           "base_relations",
           "creation_search_path");
@@ -300,21 +301,20 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var accountId = pc.getAccountId();
                   var viewResourceId = randomResourceId(accountId, ResourceKind.RK_VIEW);
 
-                  var view =
+                  var viewBuilder =
                       View.newBuilder()
                           .setResourceId(viewResourceId)
                           .setCatalogId(spec.getCatalogId())
                           .setNamespaceId(spec.getNamespaceId())
                           .setDisplayName(normName)
                           .setDescription(spec.getDescription())
-                          .setSql(mustNonEmpty(spec.getSql(), "spec.sql", corr))
                           .setCreatedAt(tsNow)
                           .putAllProperties(spec.getPropertiesMap())
-                          .setDialect(spec.getDialect())
                           .addAllBaseRelations(spec.getBaseRelationsList())
                           .addAllCreationSearchPath(spec.getCreationSearchPathList())
-                          .addAllOutputColumns(spec.getOutputColumnsList())
-                          .build();
+                          .addAllOutputColumns(spec.getOutputColumnsList());
+                  applySqlDefinitions(viewBuilder, spec, corr);
+                  var view = viewBuilder.build();
 
                   if (idempotencyKey == null) {
                     var existing =
@@ -609,14 +609,15 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   private static View viewFromSystemNode(ViewNode node) {
-    return View.newBuilder()
-        .setResourceId(node.id())
-        .setCatalogId(node.catalogId())
-        .setNamespaceId(node.namespaceId())
-        .setDisplayName(node.displayName())
-        .setSql(node.sql())
-        .putAllProperties(node.properties())
-        .build();
+    View.Builder builder =
+        View.newBuilder()
+            .setResourceId(node.id())
+            .setCatalogId(node.catalogId())
+            .setNamespaceId(node.namespaceId())
+            .setDisplayName(node.displayName())
+            .putAllProperties(node.properties());
+    builder.addAllSqlDefinitions(node.sqlDefinitions());
+    return builder.build();
   }
 
   private boolean isSystemViewNode(GraphNode node) {
@@ -691,19 +692,14 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       }
     }
 
-    if (maskTargets(mask, "sql")) {
-      if (!spec.hasSql()) {
-        throw GrpcErrors.invalidArgument(corr, SQL_CANNOT_CLEAR, Map.of());
-      }
-      b.setSql(mustNonEmpty(spec.getSql(), "spec.sql", corr));
-    }
-
     if (maskTargets(mask, "properties")) {
       b.clearProperties().putAllProperties(spec.getPropertiesMap());
     }
 
-    if (maskTargets(mask, "dialect")) {
-      b.setDialect(spec.getDialect());
+    if (maskTargets(mask, "sql_definitions")) {
+      List<ViewSqlDefinition> mergedDefinitions = mergeSqlDefinitions(current, spec, mask, corr);
+      b.clearSqlDefinitions();
+      mergedDefinitions.forEach(b::addSqlDefinitions);
     }
 
     if (maskTargets(mask, "output_columns")) {
@@ -795,28 +791,99 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   private static byte[] canonicalFingerprint(ViewSpec s) {
+    List<ViewSqlDefinition> definitions = normalizeSqlDefinitions(s, "");
     return new Canonicalizer()
         .scalar("cat", nullSafeId(s.getCatalogId()))
         .scalar("ns", nullSafeId(s.getNamespaceId()))
         .scalar("name", normalizeName(s.getDisplayName()))
         .scalar("description", s.getDescription())
-        .scalar("sql", s.getSql())
+        .list(
+            "sql_definitions",
+            definitions.stream().map(def -> def.getDialect() + ":" + def.getSql()).toList())
         .map("properties", s.getPropertiesMap())
         .bytes();
   }
 
   private static ViewSpec specFromView(View view) {
-    return ViewSpec.newBuilder()
-        .setCatalogId(view.getCatalogId())
-        .setNamespaceId(view.getNamespaceId())
-        .setDisplayName(normalizeName(view.getDisplayName()))
-        .setDescription(view.getDescription())
-        .setSql(view.getSql())
-        .putAllProperties(view.getPropertiesMap())
-        .setDialect(view.getDialect())
-        .addAllBaseRelations(view.getBaseRelationsList())
-        .addAllCreationSearchPath(view.getCreationSearchPathList())
-        .addAllOutputColumns(view.getOutputColumnsList())
-        .build();
+    ViewSpec.Builder builder =
+        ViewSpec.newBuilder()
+            .setCatalogId(view.getCatalogId())
+            .setNamespaceId(view.getNamespaceId())
+            .setDisplayName(normalizeName(view.getDisplayName()))
+            .setDescription(view.getDescription())
+            .putAllProperties(view.getPropertiesMap())
+            .addAllBaseRelations(view.getBaseRelationsList())
+            .addAllCreationSearchPath(view.getCreationSearchPathList())
+            .addAllOutputColumns(view.getOutputColumnsList());
+    normalizeSqlDefinitions(view).forEach(builder::addSqlDefinitions);
+    return builder.build();
+  }
+
+  private static List<ViewSqlDefinition> mergeSqlDefinitions(
+      View current, ViewSpec spec, FieldMask mask, String corr) {
+    if (!maskTargets(mask, "sql_definitions")) {
+      return normalizeSqlDefinitions(current);
+    }
+    return normalizeSqlDefinitions(spec, corr);
+  }
+
+  private static void applySqlDefinitions(View.Builder view, ViewSpec spec, String corr) {
+    List<ViewSqlDefinition> definitions = normalizeSqlDefinitions(spec, corr);
+    if (definitions.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, SQL_CANNOT_CLEAR, Map.of());
+    }
+    view.clearSqlDefinitions();
+    definitions.forEach(view::addSqlDefinitions);
+  }
+
+  private static List<ViewSqlDefinition> normalizeSqlDefinitions(ViewSpec spec, String corr) {
+    List<ViewSqlDefinition> definitions =
+        spec.getSqlDefinitionsList().stream()
+            .filter(def -> def != null && !def.getSql().isBlank())
+            .map(
+                def ->
+                    ViewSqlDefinition.newBuilder()
+                        .setSql(requireNonEmptySql(def.getSql(), "spec.sql_definitions.sql", corr))
+                        .setDialect(def.getDialect())
+                        .build())
+            .toList();
+    if (!definitions.isEmpty()) {
+      return definitions;
+    }
+    return List.of();
+  }
+
+  private static List<ViewSqlDefinition> normalizeSqlDefinitions(View view) {
+    return view.getSqlDefinitionsList();
+  }
+
+  private static Optional<ViewSqlDefinition> preferredSqlDefinition(
+      List<ViewSqlDefinition> definitions) {
+    return definitions.stream()
+        .filter(def -> def != null && !def.getSql().isBlank())
+        .sorted(
+            (left, right) ->
+                Integer.compare(
+                    definitionPriority(left.getDialect()), definitionPriority(right.getDialect())))
+        .findFirst();
+  }
+
+  private static int definitionPriority(String dialect) {
+    if (dialect == null) {
+      return 3;
+    }
+    return switch (dialect.trim().toLowerCase()) {
+      case "floe" -> 0;
+      case "ansi" -> 1;
+      case "spark" -> 2;
+      default -> 3;
+    };
+  }
+
+  private static String requireNonEmptySql(String sql, String fieldName, String corr) {
+    if (sql == null || sql.isBlank()) {
+      throw GrpcErrors.invalidArgument(corr, SQL_CANNOT_CLEAR, Map.of("field", fieldName));
+    }
+    return sql;
   }
 }

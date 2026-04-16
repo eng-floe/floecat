@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -49,6 +51,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -107,6 +111,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     List<String> connectorTokens = new ArrayList<>();
@@ -157,6 +163,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -190,6 +198,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -226,6 +236,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -255,6 +267,8 @@ class ReconcilePlannerSchedulerTest {
     scheduler.accounts = mock(AccountRepository.class);
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
 
     String priorClass = System.getProperty("floecat.reconciler.auto.execution-class");
     String priorLane = System.getProperty("floecat.reconciler.auto.execution-lane");
@@ -282,6 +296,26 @@ class ReconcilePlannerSchedulerTest {
       restoreProperty("floecat.reconciler.auto.execution-class", priorClass);
       restoreProperty("floecat.reconciler.auto.execution-lane", priorLane);
     }
+  }
+
+  @Test
+  void runPlannerPassDoesNotEnqueueWhenPlannerExecutorIsUnavailable() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(false);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    org.mockito.Mockito.verify(scheduler.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   private static Account account(String accountId, String displayName) {

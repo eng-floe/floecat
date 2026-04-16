@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepresentation;
@@ -283,6 +284,23 @@ public class ViewMetadataService {
         .orElse("");
   }
 
+  public List<ViewSqlDefinition> extractSqlDefinitions(MetadataContext ctx) {
+    return findCurrentVersion(ctx)
+        .map(
+            version ->
+                version.representations().stream()
+                    .filter(rep -> rep != null && "sql".equals(rep.type()) && rep.sql() != null)
+                    .map(
+                        rep ->
+                            ViewSqlDefinition.newBuilder()
+                                .setSql(rep.sql())
+                                .setDialect(nonBlank(rep.dialect(), "ansi"))
+                                .build())
+                    .filter(def -> !def.getSql().isBlank())
+                    .toList())
+        .orElse(List.of());
+  }
+
   /**
    * Returns the {@code defaultNamespace} of the current view version as the creation search path.
    */
@@ -537,16 +555,13 @@ public class ViewMetadataService {
         view.hasCreatedAt()
             ? view.getCreatedAt().getSeconds() * 1000 + view.getCreatedAt().getNanos() / 1_000_000
             : Instant.now().toEpochMilli();
-    ViewMetadataView.ViewRepresentation representation =
-        new ViewMetadataView.ViewRepresentation(
-            "sql", nonBlank(view.getSql(), "select 1"), nonBlank(view.getDialect(), "ansi"));
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(
             0,
             timestamp,
             0,
             Map.of("operation", "unknown"),
-            List.of(representation),
+            synthesizeRepresentations(view),
             namespacePath,
             null);
     ViewMetadataView.ViewHistoryEntry history = new ViewMetadataView.ViewHistoryEntry(0, timestamp);
@@ -561,6 +576,21 @@ public class ViewMetadataService {
         List.of(history),
         List.of(schema),
         userProps);
+  }
+
+  private List<ViewMetadataView.ViewRepresentation> synthesizeRepresentations(View view) {
+    List<ViewMetadataView.ViewRepresentation> representations =
+        view.getSqlDefinitionsList().stream()
+            .filter(def -> def != null && !def.getSql().isBlank())
+            .map(
+                def ->
+                    new ViewMetadataView.ViewRepresentation(
+                        "sql", def.getSql(), nonBlank(def.getDialect(), "ansi")))
+            .toList();
+    if (!representations.isEmpty()) {
+      return representations;
+    }
+    return List.of(new ViewMetadataView.ViewRepresentation("sql", "select 1", "ansi"));
   }
 
   private List<ViewMetadataView.ViewHistoryEntry> dedupeHistory(
