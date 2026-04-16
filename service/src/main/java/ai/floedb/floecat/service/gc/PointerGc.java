@@ -23,7 +23,6 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -465,6 +464,6 @@ public class PointerGc {
   }
 
   private static String encode(String value) {
-    return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    return Keys.encodeSegment(value);
   }
 }

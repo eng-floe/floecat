@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
@@ -33,7 +34,7 @@ public class KeysTest {
 
   @Test
   void join_with_empty_parts() {
-    assertEquals("//b", Keys.join("", "b"));
+    assertThrows(IllegalArgumentException.class, () -> Keys.join("", "b"));
   }
 
   @Test
@@ -50,7 +51,7 @@ public class KeysTest {
 
   @Test
   void join_allows_double_slashes_in_parts() {
-    assertEquals("/a//b", Keys.join("a/", "b"));
+    assertEquals("/a%2F/b", Keys.join("a/", "b"));
   }
 
   @Test
@@ -58,5 +59,18 @@ public class KeysTest {
     assertEquals(
         "/accounts/acct%20id/tables/table%20id/snapshots/by-id/0000000000000000000",
         Keys.snapshotPointerById("acct id", "table id", 0L));
+  }
+
+  @Test
+  void encodeSegmentUsesRfc3986PathSegmentRules() {
+    assertEquals("a%20b", Keys.encodeSegment("a b"));
+    assertEquals("a%2Bb", Keys.encodeSegment("a+b"));
+    assertEquals("a%2Fb", Keys.encodeSegment("a/b"));
+    assertEquals("a%25b", Keys.encodeSegment("a%b"));
+  }
+
+  @Test
+  void joinEncodesSegments() {
+    assertEquals("/a%2Fb/c%20d", Keys.join("a/b", "c d"));
   }
 }
