@@ -212,6 +212,11 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
+    public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
+      throw unsupported();
+    }
+
+    @Override
     public SnapshotPin snapshotPinFor(
         String correlationId,
         ResourceId tableId,

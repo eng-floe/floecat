@@ -34,8 +34,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Locale;
 
 public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
+  private static final String SYSTEM_ACCOUNT = "_system";
 
   protected final Map<ResourceId, GraphNode> nodes = new HashMap<>();
   protected final Map<ResourceId, List<RelationNode>> relationsByNamespace = new HashMap<>();
@@ -157,6 +159,43 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
+  public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
+    String canonicalNamespace = normalize(namespace);
+    String canonicalTypeName = normalize(typeName);
+    if (canonicalNamespace.isEmpty() || canonicalTypeName.isEmpty()) {
+      return Optional.empty();
+    }
+    TypeNode matched = null;
+    for (GraphNode node : nodes.values()) {
+      if (!(node instanceof TypeNode typeNode)) {
+        continue;
+      }
+      if (!SYSTEM_ACCOUNT.equals(typeNode.id().getAccountId())) {
+        continue;
+      }
+      GraphNode namespaceNode = nodes.get(typeNode.namespaceId());
+      if (!(namespaceNode instanceof NamespaceNode ns)) {
+        continue;
+      }
+      if (!canonicalNamespace.equals(normalize(ns.displayName()))) {
+        continue;
+      }
+      if (!canonicalTypeName.equals(normalize(typeNode.displayName()))) {
+        continue;
+      }
+      if (matched != null && !matched.id().equals(typeNode.id())) {
+        throw new IllegalStateException(
+            "Duplicate canonical type in lookup scope: "
+                + canonicalNamespace
+                + "."
+                + canonicalTypeName);
+      }
+      matched = typeNode;
+    }
+    return Optional.ofNullable(matched);
+  }
+
+  @Override
   public ResolveResult batchResolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
     throw unsupported();
@@ -201,5 +240,12 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
 
   protected static UnsupportedOperationException unsupported() {
     return new UnsupportedOperationException("Not used in this test");
+  }
+
+  private static String normalize(String value) {
+    if (value == null) {
+      return "";
+    }
+    return value.trim().toLowerCase(Locale.ROOT);
   }
 }

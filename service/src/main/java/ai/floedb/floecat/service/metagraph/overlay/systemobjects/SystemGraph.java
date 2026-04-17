@@ -39,6 +39,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -173,6 +174,16 @@ public final class SystemGraph {
 
   public List<TypeNode> listTypes(ResourceId catalogId, String engineKind, String engineVersion) {
     return listTypes(catalogId, EngineContext.of(engineKind, engineVersion));
+  }
+
+  /** Resolves a system type by namespace + type name for the active engine snapshot. */
+  public Optional<TypeNode> resolveType(String namespace, String typeName, EngineContext ctx) {
+    return snapshotFor(ctx).resolveType(namespace, typeName);
+  }
+
+  public Optional<TypeNode> resolveType(
+      String namespace, String typeName, String engineKind, String engineVersion) {
+    return resolveType(namespace, typeName, EngineContext.of(engineKind, engineVersion));
   }
 
   public List<ResourceId> listCatalogs() {
@@ -441,6 +452,23 @@ public final class SystemGraph {
     Map<String, ResourceId> tableNames = new ConcurrentHashMap<>(nodes.tableNames());
     Map<String, ResourceId> viewNames = new ConcurrentHashMap<>(nodes.viewNames());
     Map<String, ResourceId> namespaceNames = new ConcurrentHashMap<>(nodes.namespaceNames());
+    Map<ResourceId, String> namespaceCanonicalById = new ConcurrentHashMap<>();
+    for (NamespaceNode namespaceNode : namespaceNodes) {
+      namespaceCanonicalById.put(
+          namespaceNode.id(), GraphSnapshot.canonicalSegment(namespaceNode.displayName()));
+    }
+    Map<String, TypeNode> typeNames = new ConcurrentHashMap<>();
+    for (TypeNode typeNode : nodes.types()) {
+      String namespace = namespaceCanonicalById.get(typeNode.namespaceId());
+      String key = GraphSnapshot.canonicalTypeKey(namespace, typeNode.displayName());
+      if (key.isBlank()) {
+        continue;
+      }
+      TypeNode previous = typeNames.putIfAbsent(key, typeNode);
+      if (previous != null && !Objects.equals(previous.id(), typeNode.id())) {
+        throw new IllegalStateException("Duplicate canonical system type in snapshot: " + key);
+      }
+    }
 
     namespaceNodes.forEach(
         ns -> {
@@ -471,7 +499,8 @@ public final class SystemGraph {
         Map.copyOf(nodesById),
         Map.copyOf(tableNames),
         Map.copyOf(viewNames),
-        Map.copyOf(namespaceNames));
+        Map.copyOf(namespaceNames),
+        Map.copyOf(typeNames));
   }
 
   private static Map<ResourceId, GraphNode> nodesById(BuiltinNodes nodes) {

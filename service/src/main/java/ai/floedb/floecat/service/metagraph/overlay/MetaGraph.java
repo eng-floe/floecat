@@ -311,6 +311,12 @@ public final class MetaGraph implements CatalogOverlay {
     return systemGraph.tableName(id, ctx);
   }
 
+  @Override
+  public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
+    EngineContext ctx = engineContext();
+    return systemGraph.resolveType(namespace, typeName, ctx);
+  }
+
   /**
    * Gets the snapshot pin for a table.
    *

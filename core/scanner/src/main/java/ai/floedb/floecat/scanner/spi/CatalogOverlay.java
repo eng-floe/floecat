@@ -80,6 +80,9 @@ public interface CatalogOverlay {
   /** Resolves a system table id back to name without involving the user graph. */
   Optional<NameRef> resolveSystemTableName(ResourceId id);
 
+  /** Resolves a system type by namespace + type name without involving the user graph. */
+  Optional<TypeNode> resolveSystemType(String namespace, String typeName);
+
   SnapshotPin snapshotPinFor(
       String correlationId,
       ResourceId tableId,

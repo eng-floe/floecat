@@ -460,6 +460,7 @@ public class UserObjectBundleService {
       String correlationId,
       ResolvedRelation relation,
       QueryContext queryContext,
+      MetadataResolutionContext resolutionContext,
       StatsProvider statsProvider,
       TimingAccumulator timings) {
     if (LOG.isTraceEnabled()) {
@@ -542,14 +543,6 @@ public class UserObjectBundleService {
     long relationDecorationBeforeNanos = timings.decorationTotalNanos();
 
     if (decorationRequired && decorator.isPresent()) {
-      MetadataResolutionContext resolutionContext =
-          MetadataResolutionContext.of(
-              overlay,
-              Objects.requireNonNull(
-                  queryContext.getQueryDefaultCatalogId(), "query default catalog id"),
-              ctx,
-              statsProvider);
-
       relationDecoration =
           new RelationDecoration(
               builder,
@@ -1219,6 +1212,7 @@ public class UserObjectBundleService {
     private final int resolutionCount;
     private final ResourceId defaultCatalogId;
     private final StatsProvider statsProvider;
+    private final MetadataResolutionContext resolutionContext;
     private final String engineKind;
     private final String engineVersion;
 
@@ -1266,6 +1260,13 @@ public class UserObjectBundleService {
       EngineContext requestEngine = engineContext.engineContext();
       this.engineKind = requestEngine.normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
+      this.resolutionContext =
+          MetadataResolutionContext.of(
+              overlay,
+              Objects.requireNonNull(
+                  ctx.getQueryDefaultCatalogId(), "query default catalog id"),
+              requestEngine,
+              statsProvider);
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Initialized bundle iterator query_id=%s correlation_id=%s resolution_count=%d"
@@ -1509,7 +1510,13 @@ public class UserObjectBundleService {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
         }
         RelationInfo info =
-            buildRelation(correlationId, found.relation(), liveCtx, statsProvider, timings);
+            buildRelation(
+                correlationId,
+                found.relation(),
+                liveCtx,
+                resolutionContext,
+                statsProvider,
+                timings);
         long buildNanos = System.nanoTime() - buildStartNs;
         long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
         long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
