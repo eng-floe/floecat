@@ -17,34 +17,40 @@
 package ai.floedb.floecat.connector.iceberg.impl;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
 
 final class IcebergRestConnector extends IcebergConnector {
   private final RESTCatalog catalog;
+  private final Catalog tableCatalog;
   private final boolean closeCatalogOnClose;
 
   IcebergRestConnector(
       String connectorId,
       RESTCatalog catalog,
+      Catalog tableCatalog,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
-    this(connectorId, catalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
+    this(connectorId, catalog, tableCatalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
   }
 
   IcebergRestConnector(
       String connectorId,
       RESTCatalog catalog,
+      Catalog tableCatalog,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles,
       boolean closeCatalogOnClose) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
-    this.catalog = catalog;
+    this.catalog = Objects.requireNonNull(catalog, "catalog");
+    this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
     this.closeCatalogOnClose = closeCatalogOnClose;
   }
 
@@ -93,7 +99,7 @@ final class IcebergRestConnector extends IcebergConnector {
         namespace.isEmpty()
             ? TableIdentifier.of(tableName)
             : TableIdentifier.of(namespace, tableName);
-    return catalog.loadTable(tableId);
+    return tableCatalog.loadTable(tableId);
   }
 
   @Override

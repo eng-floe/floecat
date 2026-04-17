@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
 
@@ -100,13 +101,16 @@ final class IcebergConnectorFactory {
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
-        RESTCatalog cat = acquireRestCatalog(props);
+        CatalogCacheEntry catalog = acquireRestCatalog(props);
+        RESTCatalog rawCatalog = catalog.rawCatalog();
+        Catalog tableCatalog = catalog.tableCatalog();
         if (source == IcebergSource.GLUE) {
           var glue = AwsGlueClientFactory.create(props, authProps);
           var glueFilter = new GlueIcebergFilter(glue);
           yield new IcebergGlueConnector(
               "iceberg-glue",
-              cat,
+              rawCatalog,
+              tableCatalog,
               glueFilter,
               ndvEnabled,
               ndvSampleFraction,
@@ -114,28 +118,41 @@ final class IcebergConnectorFactory {
               false);
         }
         yield new IcebergRestConnector(
-            "iceberg-rest", cat, ndvEnabled, ndvSampleFraction, ndvMaxFiles, false);
+            "iceberg-rest",
+            rawCatalog,
+            tableCatalog,
+            ndvEnabled,
+            ndvSampleFraction,
+            ndvMaxFiles,
+            false);
       }
     };
   }
 
-  private static synchronized RESTCatalog acquireRestCatalog(Map<String, String> props) {
+  private static CatalogCacheEntry acquireRestCatalog(Map<String, String> props) {
     long now = System.currentTimeMillis();
     evictExpiredCatalogs(now);
     CatalogCacheKey key = CatalogCacheKey.of(props);
     CatalogCacheEntry cached = REST_CATALOG_CACHE.get(key);
-    if (cached != null) {
-      if (!cached.isExpired(now)) {
-        cached.touch(now + REST_CATALOG_TTL_MS);
-        return cached.catalog();
-      }
-      REST_CATALOG_CACHE.remove(key, cached);
-      closeQuietly(cached.catalog());
+    if (cached != null && !cached.isExpired(now)) {
+      cached.touch(now + REST_CATALOG_TTL_MS);
+      return cached;
     }
-    RESTCatalog created = new RESTCatalog();
-    created.initialize("floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
-    REST_CATALOG_CACHE.put(key, new CatalogCacheEntry(created, now + REST_CATALOG_TTL_MS));
-    return created;
+    return REST_CATALOG_CACHE.compute(
+        key,
+        (ignored, existing) -> {
+          long refreshNow = System.currentTimeMillis();
+          if (existing != null && !existing.isExpired(refreshNow)) {
+            existing.touch(refreshNow + REST_CATALOG_TTL_MS);
+            return existing;
+          }
+          if (existing != null) {
+            closeQuietly(existing.rawCatalog());
+          }
+          RESTCatalog created = new RESTCatalog();
+          created.initialize("floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
+          return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
+        });
   }
 
   private static void evictExpiredCatalogs(long now) {
@@ -145,7 +162,7 @@ final class IcebergConnectorFactory {
         continue;
       }
       if (REST_CATALOG_CACHE.remove(entry.getKey(), cached)) {
-        closeQuietly(cached.catalog());
+        closeQuietly(cached.rawCatalog());
       }
     }
   }
@@ -253,15 +270,21 @@ final class IcebergConnectorFactory {
   }
 
   private static final class CatalogCacheEntry {
-    private final RESTCatalog catalog;
+    private final RESTCatalog rawCatalog;
+    private final Catalog catalog;
     private volatile long expiresAtMs;
 
-    private CatalogCacheEntry(RESTCatalog catalog, long expiresAtMs) {
+    private CatalogCacheEntry(RESTCatalog rawCatalog, Catalog catalog, long expiresAtMs) {
+      this.rawCatalog = rawCatalog;
       this.catalog = catalog;
       this.expiresAtMs = expiresAtMs;
     }
 
-    private RESTCatalog catalog() {
+    private RESTCatalog rawCatalog() {
+      return rawCatalog;
+    }
+
+    private Catalog tableCatalog() {
       return catalog;
     }
 
