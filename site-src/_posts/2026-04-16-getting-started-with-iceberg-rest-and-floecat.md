@@ -4,8 +4,6 @@ title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
 ---
 
-# "Getting Started with Iceberg REST Catalog and Floecat"
-
 Floecat implements the
 [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) which means that spec-compliant query engines, such as DuckDB and Trino, can interact with Floecat as they would any other
 compliant catalog implementation.
