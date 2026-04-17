@@ -66,6 +66,7 @@ class DeltaNativeStatsCaptureEngineTest {
         new DeltaNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
@@ -151,6 +152,7 @@ class DeltaNativeStatsCaptureEngineTest {
         new DeltaNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
@@ -268,6 +270,7 @@ class DeltaNativeStatsCaptureEngineTest {
         new DeltaNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
@@ -347,6 +350,7 @@ class DeltaNativeStatsCaptureEngineTest {
         new DeltaNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
