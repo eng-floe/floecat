@@ -177,7 +177,7 @@ assert_contains() {
   local output="$2"
   local pattern="$3"
 
-  if echo "$output" | grep -q "$pattern"; then
+  if [[ "$output" == *"$pattern"* ]]; then
     echo "[PASS] $check_name"
   else
     echo "[FAIL] $check_name (missing: $pattern)"
@@ -195,7 +195,7 @@ assert_contains_any() {
 
   local pattern
   for pattern in "$@"; do
-    if echo "$output" | grep -q "$pattern"; then
+    if [[ "$output" == *"$pattern"* ]]; then
       echo "[PASS] $check_name"
       return 0
     fi
