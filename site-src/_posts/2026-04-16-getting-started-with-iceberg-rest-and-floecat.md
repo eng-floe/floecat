@@ -4,7 +4,8 @@ title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
 ---
 
-The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a system.
+The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a
+shared control plane for metadata.
 If a query engine can speak the REST spec, it can interact with any compliant catalog without a custom connector. That’s what makes multi-engine lakehouse architectures actually work.
 
 Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as a foundation for something more: a control plane that can enrich and validate metadata across Iceberg and Delta catalogs.

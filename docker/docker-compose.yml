@@ -100,9 +100,9 @@ services:
         - CMD-SHELL
         - >
           bash -lc 'exec 3<>/dev/tcp/127.0.0.1/9200 &&
-          printf "HEAD /v1/examples/namespaces/iceberg HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+          printf "GET /v1/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
           IFS= read -r status <&3 &&
-          [[ "$$status" == *" 204 "* ]]'
+          [[ "$$status" == *" 200 "* ]]'
       interval: 5s
       timeout: 5s
       retries: 20
