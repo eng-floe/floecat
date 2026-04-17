@@ -25,6 +25,7 @@ import org.apache.iceberg.rest.RESTCatalog;
 
 final class IcebergRestConnector extends IcebergConnector {
   private final RESTCatalog catalog;
+  private final boolean closeCatalogOnClose;
 
   IcebergRestConnector(
       String connectorId,
@@ -32,8 +33,19 @@ final class IcebergRestConnector extends IcebergConnector {
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
+    this(connectorId, catalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
+  }
+
+  IcebergRestConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.catalog = catalog;
+    this.closeCatalogOnClose = closeCatalogOnClose;
   }
 
   @Override
@@ -86,6 +98,9 @@ final class IcebergRestConnector extends IcebergConnector {
 
   @Override
   protected void closeCatalog() {
+    if (!closeCatalogOnClose) {
+      return;
+    }
     try {
       catalog.close();
     } catch (Exception ignore) {

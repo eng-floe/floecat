@@ -27,6 +27,7 @@ import org.apache.iceberg.rest.RESTCatalog;
 final class IcebergGlueConnector extends IcebergConnector {
   private final GlueIcebergFilter glueFilter;
   private final RESTCatalog catalog;
+  private final boolean closeCatalogOnClose;
 
   IcebergGlueConnector(
       String connectorId,
@@ -35,9 +36,21 @@ final class IcebergGlueConnector extends IcebergConnector {
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
+    this(connectorId, catalog, glueFilter, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
+  }
+
+  IcebergGlueConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      GlueIcebergFilter glueFilter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.glueFilter = Objects.requireNonNull(glueFilter, "glueFilter");
     this.catalog = catalog;
+    this.closeCatalogOnClose = closeCatalogOnClose;
   }
 
   @Override
@@ -90,6 +103,9 @@ final class IcebergGlueConnector extends IcebergConnector {
 
   @Override
   protected void closeCatalog() {
+    if (!closeCatalogOnClose) {
+      return;
+    }
     try {
       catalog.close();
     } catch (Exception ignore) {
