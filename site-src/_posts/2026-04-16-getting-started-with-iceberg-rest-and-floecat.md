@@ -7,6 +7,9 @@ author_profile: false
 toc: false
 toc_sticky: false
 classes: wide
+
+header:
+  image: /images/icefloe.jpeg
 ---
 
 The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a

@@ -355,6 +355,37 @@ wait_for_url() {
   done
 }
 
+wait_for_url_auth() {
+  local url="$1"
+  local timeout_seconds="$2"
+  local label="$3"
+  local auth_header="$4"
+  local i
+
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsS -H "Authorization: $auth_header" "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$i" -eq "$timeout_seconds" ]; then
+      echo "$label timed out" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+fetch_keycloak_access_token() {
+  local token_url="$1"
+  local client_id="$2"
+  local client_secret="$3"
+
+  curl -fsS \
+    -X POST "$token_url" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data "grant_type=client_credentials&client_id=$client_id&client_secret=$client_secret" \
+    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'
+}
+
 run_mode() {
   local env_file="$1"
   local profile="$2"
@@ -474,7 +505,26 @@ run_mode() {
   fi
 
   local iceberg_rest_host_port="${FLOECAT_REST_HOST_PORT:-9200}"
-  wait_for_url "http://localhost:${iceberg_rest_host_port}/v1/config" 180 "Iceberg REST health"
+  if [ "$profile" = "localstack-oidc" ]; then
+    local oidc_client_id="${FLOECAT_OIDC_CLIENT_ID:-floecat-client}"
+    local oidc_client_secret="${FLOECAT_OIDC_CLIENT_SECRET:-floecat-secret}"
+    local oidc_token
+    oidc_token=$(fetch_keycloak_access_token \
+      "http://localhost:8080/realms/floecat/protocol/openid-connect/token" \
+      "$oidc_client_id" \
+      "$oidc_client_secret")
+    if [ -z "$oidc_token" ]; then
+      echo "Failed to obtain OIDC access token for Iceberg REST health check" >&2
+      return 1
+    fi
+    wait_for_url_auth \
+      "http://localhost:${iceberg_rest_host_port}/v1/config" \
+      180 \
+      "Iceberg REST health" \
+      "Bearer $oidc_token"
+  else
+    wait_for_url "http://localhost:${iceberg_rest_host_port}/v1/config" 180 "Iceberg REST health"
+  fi
 
   local i
   local service_logs
