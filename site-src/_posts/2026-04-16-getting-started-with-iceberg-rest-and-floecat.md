@@ -4,11 +4,12 @@ title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
 ---
 
-Floecat implements the
-[Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) which means that spec-compliant query engines, such as DuckDB and Trino, can interact with Floecat as they would any other
-compliant catalog implementation.
+The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a system.
+If a query engine can speak the REST spec, it can interact with any compliant catalog without a custom connector. That’s what makes multi-engine lakehouse architectures actually work.
 
-## What the Iceberg REST Catalog Actually Buys You
+Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as a foundation for something more: a control plane that can enrich and validate metadata across Iceberg and Delta catalogs.
+
+## What the Iceberg REST Catalog Buys You
 
 At a practical level, the Iceberg REST catalog is about simplifying engine integration without weakening guarantees.
 Instead of embedding catalog logic into engine-specific connectors,
@@ -20,16 +21,14 @@ the REST catalog becomes the control plane for table metadata:
 - Credentials are short-lived and scoped
 
 A fair question to ask is: "why another Iceberg REST catalog implementation?"
-It's true that Gravitino, Polaris, Nessie and others already exist, but this Iceberg REST implementation
-is part of a broader project that will augment the metadata gathered from upstream
-Iceberg and Delta table catalogs to generate advanced statistics for query planning.
+Other implementations like Gravitino, Polaris, and Nessie already exist.
+Floecat exists as part of a broader project that augments metadata from upstream Iceberg and Delta catalogs to generate advanced planning statistics.
 
-Many of the open source query engines leave a lot on the table when planning SQL queries
-against these open table formats.
-We want to provide richer metadata and statistics for our SQL compute service, 
-[Floe](https://floedb.ai/), to enable it to generate very good query plans.
+Most query engines leave a lot on the table when planning against open table formats.
+We want to provide richer metadata and statistics for our SQL compute service,
+[Floe](https://floedb.ai/), so it can generate better query plans.
 
-## The Spec Isn't as Intimidating as it Looks at First Glance
+## The Spec Isn't as Intimidating as it Looks
 
 The Iceberg REST spec can look intimidating if you approach it endpoint-by-endpoint.
 In practice, most of it groups cleanly into a few concerns:
@@ -229,15 +228,15 @@ select * from orders;
 (2 rows)
 ```
 
-What mattered wasn’t the setup but the result:
+The important part is the result:
 Trino could query and write to the same table that DuckDB created,
 without any engine-specific glue code.
 
 ## Where Things Stand
 
 At this point, the core Iceberg REST catalog surface is implemented in Floecat.
-The catalog has been exercised with both Trino and DuckDB and behaves
-the way you’d expect from a real control plane, not a demo service.
+The catalog has been exercised with both Trino and DuckDB and
+behaves like a real control plane rather than a demo service.
 
 One caveat that is worth mentioning is that Trino and DuckDB do not currently make use of the plan/task
 endpoint, which means they can't offload parquet file pruning to the catalog. It's not a big issue,
@@ -268,4 +267,4 @@ The failure mode is simple: two columns that differ only by case are valid in Ic
 That is part of the motivation for Floecat as a control plane: not just to serve table metadata over REST, but to become a place where cross-engine behavior can be observed, validated, and eventually made safer.
 
 [Floecat](https://github.com/eng-floe/floecat) is now open-sourced under the Apache 2.0 license.
-In the next post, I’ll give Floecat a proper architectural overview.
+In the next post, I’ll walk through Floecat’s architecture in more detail.
