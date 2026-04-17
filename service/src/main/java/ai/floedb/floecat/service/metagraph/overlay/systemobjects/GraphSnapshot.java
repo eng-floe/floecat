@@ -26,6 +26,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -62,6 +63,7 @@ public final class GraphSnapshot {
   private final Map<String, ResourceId> tableNames;
   private final Map<String, ResourceId> viewNames;
   private final Map<String, ResourceId> namespaceNames;
+  private final Map<String, TypeNode> typeNames;
 
   public GraphSnapshot(
       List<NamespaceNode> namespaces,
@@ -71,7 +73,8 @@ public final class GraphSnapshot {
       Map<ResourceId, GraphNode> nodesById,
       Map<String, ResourceId> tableNames,
       Map<String, ResourceId> viewNames,
-      Map<String, ResourceId> namespaceNames) {
+      Map<String, ResourceId> namespaceNames,
+      Map<String, TypeNode> typeNames) {
 
     this.namespaces = namespaces;
     this.tablesByNamespace = tablesByNamespace;
@@ -81,6 +84,7 @@ public final class GraphSnapshot {
     this.tableNames = tableNames;
     this.viewNames = viewNames;
     this.namespaceNames = namespaceNames;
+    this.typeNames = typeNames;
   }
 
   /** Returns all system namespaces in this snapshot. */
@@ -143,13 +147,22 @@ public final class GraphSnapshot {
     return resolve(id).filter(CatalogNode.class::isInstance).map(CatalogNode.class::cast);
   }
 
+  /** Resolves a system type by canonical namespace + type name. */
+  public Optional<TypeNode> resolveType(String namespace, String typeName) {
+    String key = canonicalTypeKey(namespace, typeName);
+    if (key.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(typeNames.get(key));
+  }
+
   /**
    * Returns an empty snapshot used as a safe fallback when no system catalog exists for a given
    * engine/version.
    */
   public static GraphSnapshot empty() {
     return new GraphSnapshot(
-        List.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        List.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
   }
 
   /** Returns the table name to ResourceId map. */
@@ -165,5 +178,31 @@ public final class GraphSnapshot {
   /** Returns the namespace name to ResourceId map. */
   public Map<String, ResourceId> namespaceNames() {
     return namespaceNames;
+  }
+
+  static String canonicalTypeKey(String namespace, String typeName) {
+    String canonicalNamespace = canonicalSegment(namespace);
+    String canonicalTypeName = localName(canonicalSegment(typeName));
+    if (canonicalNamespace.isEmpty() || canonicalTypeName.isEmpty()) {
+      return "";
+    }
+    return canonicalNamespace + "." + canonicalTypeName;
+  }
+
+  static String canonicalSegment(String value) {
+    return canonical(value);
+  }
+
+  private static String localName(String value) {
+    int idx = value.lastIndexOf('.');
+    return idx >= 0 ? value.substring(idx + 1) : value;
+  }
+
+  private static String canonical(String value) {
+    if (value == null) {
+      return "";
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? "" : trimmed.toLowerCase(Locale.ROOT);
   }
 }

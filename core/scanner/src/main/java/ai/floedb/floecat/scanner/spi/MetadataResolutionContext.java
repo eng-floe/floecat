@@ -20,6 +20,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Supplier;
 
 /** Shared context holding the overlay + catalog identity for metadata resolution. */
 public interface MetadataResolutionContext {
@@ -42,6 +45,21 @@ public interface MetadataResolutionContext {
     return statsProvider().columnStats(tableId, columnId);
   }
 
+  /**
+   * Per-context memoization helper for expensive resolver objects.
+   *
+   * <p>Implementations that do not support memoization may return {@code supplier.get()} directly.
+   */
+  default <T> T memoized(Object key, Supplier<T> supplier) {
+    Objects.requireNonNull(key, "key");
+    Objects.requireNonNull(supplier, "supplier");
+    T computed = supplier.get();
+    if (computed == null) {
+      throw new IllegalStateException("memoized value cannot be null for key: " + key);
+    }
+    return computed;
+  }
+
   static MetadataResolutionContext of(
       CatalogOverlay overlay, ResourceId catalogId, EngineContext engineContext) {
     return of(overlay, catalogId, engineContext, StatsProvider.NONE);
@@ -61,6 +79,7 @@ public interface MetadataResolutionContext {
     private final ResourceId catalogId;
     private final EngineContext engineContext;
     private final StatsProvider statsProvider;
+    private final ConcurrentMap<Object, Object> memoizedValues;
 
     public DefaultMetadataResolutionContext(
         CatalogOverlay overlay,
@@ -71,6 +90,7 @@ public interface MetadataResolutionContext {
       this.catalogId = Objects.requireNonNull(catalogId, "catalogId");
       this.engineContext = engineContext == null ? EngineContext.empty() : engineContext;
       this.statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
+      this.memoizedValues = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -91,6 +111,24 @@ public interface MetadataResolutionContext {
     @Override
     public StatsProvider statsProvider() {
       return statsProvider;
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public <T> T memoized(Object key, Supplier<T> supplier) {
+      Objects.requireNonNull(key, "key");
+      Objects.requireNonNull(supplier, "supplier");
+      return (T)
+          memoizedValues.computeIfAbsent(
+              key,
+              ignored -> {
+                T computed = supplier.get();
+                if (computed == null) {
+                  throw new IllegalStateException(
+                      "memoized value cannot be null for key: " + key);
+                }
+                return computed;
+              });
     }
   }
 }
