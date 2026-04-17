@@ -153,8 +153,7 @@ final class IcebergConnectorFactory {
           RESTCatalog created = new RESTCatalog();
           created.initialize("floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
           Catalog wrapped = CachingCatalog.wrap(created, REST_CATALOG_TTL_MS);
-          return new CatalogCacheEntry(
-              created, wrapped, refreshNow + REST_CATALOG_TTL_MS);
+          return new CatalogCacheEntry(created, wrapped, refreshNow + REST_CATALOG_TTL_MS);
         });
   }
 

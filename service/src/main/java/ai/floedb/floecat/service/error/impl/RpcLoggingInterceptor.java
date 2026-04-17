@@ -32,10 +32,10 @@ import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.lang.reflect.Method;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped

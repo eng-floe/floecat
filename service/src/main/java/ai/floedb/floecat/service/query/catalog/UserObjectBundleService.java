@@ -676,7 +676,8 @@ public class UserObjectBundleService {
     return Math.max(0L, number.longValue());
   }
 
-  private static long decorationCounter(RelationDecoration relationDecoration, String attributeKey) {
+  private static long decorationCounter(
+      RelationDecoration relationDecoration, String attributeKey) {
     if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
       return 0L;
     }
@@ -1253,8 +1254,7 @@ public class UserObjectBundleService {
       this.resolutionContext =
           MetadataResolutionContext.of(
               overlay,
-              Objects.requireNonNull(
-                  ctx.getQueryDefaultCatalogId(), "query default catalog id"),
+              Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
       if (LOG.isDebugEnabled()) {
@@ -1657,7 +1657,8 @@ public class UserObjectBundleService {
       decorationCursorNs += timings.decorateColumnsNanos();
       long completeStartNs = decorationCursorNs;
       Span completeSpan =
-          startPhaseSpan(decorationSpan, "decoration_complete", completeStartNs, outcome, "decoration");
+          startPhaseSpan(
+              decorationSpan, "decoration_complete", completeStartNs, outcome, "decoration");
       long completeCursorNs = 0L;
       long relationPersistNanos = timings.decoratePersistRelationNanos();
       long columnPersistNanos = timings.decoratePersistColumnsNanos();

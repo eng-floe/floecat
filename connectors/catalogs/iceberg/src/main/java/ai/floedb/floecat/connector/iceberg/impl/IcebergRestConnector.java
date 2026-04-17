@@ -36,14 +36,7 @@ final class IcebergRestConnector extends IcebergConnector {
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
-    this(
-        connectorId,
-        catalog,
-        tableCatalog,
-        ndvEnabled,
-        ndvSampleFraction,
-        ndvMaxFiles,
-        true);
+    this(connectorId, catalog, tableCatalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
   }
 
   IcebergRestConnector(

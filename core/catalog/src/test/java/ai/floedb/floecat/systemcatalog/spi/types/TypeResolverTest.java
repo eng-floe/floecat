@@ -257,7 +257,8 @@ final class TypeResolverTest {
   }
 
   private static TypeNode userType(String displayName, ResourceId namespaceId) {
-    return userType(displayName, namespaceId, "user-type-" + BuiltinTestSupport.leafName(displayName));
+    return userType(
+        displayName, namespaceId, "user-type-" + BuiltinTestSupport.leafName(displayName));
   }
 
   private static TypeNode userType(String displayName, ResourceId namespaceId, String id) {
@@ -295,7 +296,8 @@ final class TypeResolverTest {
     return userNamespace(name, userCatalog("user-cat"), "user-ns-" + name);
   }
 
-  private static NamespaceNode userNamespace(String name, ResourceId catalogId, String namespaceId) {
+  private static NamespaceNode userNamespace(
+      String name, ResourceId catalogId, String namespaceId) {
     return new NamespaceNode(
         ResourceId.newBuilder()
             .setAccountId("acct-user")
