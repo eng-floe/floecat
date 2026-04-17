@@ -1,7 +1,11 @@
 ---
-layout: post
+layout: single
 title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
+author_profile: false
+toc: true
+toc_sticky: true
+classes: wide
 ---
 
 The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a

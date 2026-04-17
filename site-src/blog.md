@@ -1,10 +1,10 @@
+## Replace `site-src/blog.md` with
+
+```md
 ---
-layout: page
 title: Blog
+layout: posts
 permalink: /blog/
+author_profile: false
+entries_layout: grid
 ---
-
-{% for post in site.posts %}
-- [{{ post.title }}]({{ post.url | relative_url }}) — {{ post.date | date: "%Y-%m-%d" }}
-{% endfor %}
-

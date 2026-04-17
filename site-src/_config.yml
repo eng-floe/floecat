@@ -1,15 +1,17 @@
 title: Floecat
 description: Floecat notes, architecture, and blog
-theme: minima
-markdown: kramdown
+
+remote_theme: "mmistakes/minimal-mistakes@4.27.3"
 
 baseurl: "/floecat"
 url: "https://eng-floe.github.io"
 
-header_pages:
-  - blog.md
-
 plugins:
+  - jekyll-include-cache
   - jekyll-feed
   - jekyll-seo-tag
 
+atom_feed:
+  hide: false
+
+search: true
