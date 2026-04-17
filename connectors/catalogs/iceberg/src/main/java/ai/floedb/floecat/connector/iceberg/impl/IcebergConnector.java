@@ -324,37 +324,24 @@ public abstract class IcebergConnector implements FloecatConnector {
             });
 
     List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
-    TableScan scan = table.newScan().useSnapshot(snapshotId);
-    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
-      for (FileScanTask task : tasks) {
-        for (var df : task.deletes()) {
-          List<Integer> eqIds =
-              df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                  ? df.equalityFieldIds()
-                  : List.of();
-
-          FileContent fc =
-              df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                  ? FileContent.FC_EQUALITY_DELETES
-                  : FileContent.FC_POSITION_DELETES;
-
-          deleteStats.add(
-              new FloecatConnector.FileColumnStatsView(
-                  df.location(),
-                  "", // format often unknown for deletes; leave blank
-                  df.recordCount(),
-                  df.fileSizeInBytes(),
-                  fc,
-                  "", // partition json not needed for deletes
-                  0,
-                  eqIds,
-                  df.fileSequenceNumber(),
-                  List.of() // no per-column stats for deletes
-                  ));
-        }
-      }
-    } catch (Exception e) {
-      throw new RuntimeException("Failed to enumerate delete files for snapshot " + snapshotId, e);
+    for (IcebergPlanner.DeleteFileStat deleteFile : engineOutput.deleteFiles()) {
+      FileContent fileContent =
+          deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+              ? FileContent.FC_EQUALITY_DELETES
+              : FileContent.FC_POSITION_DELETES;
+      deleteStats.add(
+          new FloecatConnector.FileColumnStatsView(
+              deleteFile.location(),
+              "", // format often unknown for deletes; leave blank
+              deleteFile.recordCount(),
+              deleteFile.fileSizeInBytes(),
+              fileContent,
+              "", // partition json not needed for deletes
+              0,
+              deleteFile.equalityFieldIds(),
+              deleteFile.fileSequenceNumber(),
+              List.of() // no per-column stats for deletes
+              ));
     }
 
     List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
@@ -869,7 +856,8 @@ public abstract class IcebergConnector implements FloecatConnector {
   private record EngineOut(
       StatsEngine.Result<Integer> result,
       Map<Integer, String> columnNames,
-      Map<Integer, LogicalType> logicalTypes) {}
+      Map<Integer, LogicalType> logicalTypes,
+      List<IcebergPlanner.DeleteFileStat> deleteFiles) {}
 
   private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
     try (var planner = new IcebergPlanner(table, snapshotId, colIds, null)) {
@@ -882,7 +870,7 @@ public abstract class IcebergConnector implements FloecatConnector {
         StatsEngine<Integer> engine =
             new GenericStatsEngine<>(planner, none, null, colNames, logicalTypes);
         var result = engine.compute();
-        return new EngineOut(result, colNames, logicalTypes);
+        return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
       }
 
       Map<String, ColumnNdv> puffinMap = null;
@@ -930,7 +918,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
 
       var result = engine.compute();
-      return new EngineOut(result, colNames, logicalTypes);
+      return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }
