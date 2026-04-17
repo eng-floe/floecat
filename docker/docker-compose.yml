@@ -24,12 +24,20 @@ services:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
       JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          bash -lc 'exec 3<>/dev/tcp/127.0.0.1/9100'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
     networks:
       - floecat
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
-
   executor:
     image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
     pull_policy: ${FLOECAT_PULL_POLICY:-never}
@@ -46,7 +54,8 @@ services:
       FLOECAT_RECONCILER_AUTO_ENABLED: "false"
       JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"
     depends_on:
-      - service
+      service:
+        condition: service_healthy
     profiles:
       - reconciler-executor
     networks:
@@ -86,7 +95,8 @@ services:
       AWS_PROFILE: ""
       AWS_SDK_LOAD_CONFIG: "1"
     depends_on:
-      - service
+      service:
+        condition: service_healthy
     networks:
       - floecat
     volumes:
@@ -102,7 +112,8 @@ services:
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
     depends_on:
-      - service
+      service:
+        condition: service_healthy
     stdin_open: true
     tty: true
     command: ["--host", "service", "--port", "9100"]
@@ -201,10 +212,24 @@ services:
       QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://polaris-db:5432/POLARIS
       QUARKUS_DATASOURCE_USERNAME: postgres
       QUARKUS_DATASOURCE_PASSWORD: postgres
+    entrypoint:
+      - /bin/sh
+      - -lc
     command:
-      - "bootstrap"
-      - "--realm=POLARIS"
-      - "--credential=POLARIS,root,s3cr3t"
+      - >
+        output_file=$$(mktemp) &&
+        if java -jar /deployments/polaris-admin-tool.jar bootstrap --realm=POLARIS --credential=POLARIS,root,s3cr3t >"$$output_file" 2>&1; then
+          cat "$$output_file"
+          rm -f "$$output_file"
+          exit 0
+        fi &&
+        cat "$$output_file" &&
+        if grep -q "already been bootstrapped" "$$output_file"; then
+          rm -f "$$output_file"
+          exit 0
+        fi &&
+        rm -f "$$output_file" &&
+        exit 1
     profiles:
       - polaris
     networks:
@@ -237,8 +262,10 @@ services:
     ports:
       - "${FLOECAT_TRINO_HOST_PORT:-8081}:8080"
     depends_on:
-      - iceberg-rest
-      - localstack
+      iceberg-rest:
+        condition: service_started
+      localstack:
+        condition: service_started
     volumes:
       - ./trino/catalog:/etc/trino/catalog:ro
     profiles:

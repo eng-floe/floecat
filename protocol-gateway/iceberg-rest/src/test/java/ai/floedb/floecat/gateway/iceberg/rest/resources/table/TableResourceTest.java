@@ -829,6 +829,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         ArgumentCaptor.forClass(DeleteTableRequest.class);
     verify(tableStub).deleteTable(deleteCaptor.capture());
     DeleteTableRequest sent = deleteCaptor.getValue();
+    assertEquals("cat:db:orders", sent.getTableId().getId());
     verify(tableDropCleanupService).purgeTableData(eq("foo"), eq("db"), eq("orders"), eq(table));
   }
 

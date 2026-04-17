@@ -76,6 +76,7 @@ public class TableCommitService {
       return IcebergErrorResponses.conflict(
           "stage " + stagedEntryOpt.get().key().stageId() + " was aborted");
     }
+    String effectiveIdempotencyKey = effectiveIdempotencyKey(command, stagedEntryOpt.orElse(null));
     TableRequests.Commit effectiveReq =
         mergeStagedCreateIntoCommit(command, req, stagedEntryOpt.orElse(null), preCommitTable);
 
@@ -89,7 +90,7 @@ public class TableCommitService {
 
     Response txResponse =
         transactionCommitService.commit(
-            command.prefix(), command.idempotencyKey(), txRequest, command.tableSupport());
+            command.prefix(), effectiveIdempotencyKey, txRequest, command.tableSupport());
     if (txResponse == null
         || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
       return txResponse;
@@ -218,6 +219,25 @@ public class TableCommitService {
     }
     if (command.transactionId() != null && !command.transactionId().isBlank()) {
       return command.transactionId();
+    }
+    return null;
+  }
+
+  private String effectiveIdempotencyKey(CommitCommand command, StagedTableEntry stagedEntry) {
+    if (command.idempotencyKey() != null && !command.idempotencyKey().isBlank()) {
+      return command.idempotencyKey();
+    }
+    if (stagedEntry != null
+        && stagedEntry.key() != null
+        && stagedEntry.key().stageId() != null
+        && !stagedEntry.key().stageId().isBlank()) {
+      return stagedEntry.key().stageId();
+    }
+    if (command.transactionId() != null && !command.transactionId().isBlank()) {
+      return command.transactionId();
+    }
+    if (command.stageId() != null && !command.stageId().isBlank()) {
+      return command.stageId();
     }
     return null;
   }
