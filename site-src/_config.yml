@@ -5,6 +5,9 @@ remote_theme: "mmistakes/minimal-mistakes@4.27.3"
 
 baseurl: "/floecat"
 url: "https://eng-floe.github.io"
+repository: "eng-floe/floecat"
+github:
+  repository_name: "eng-floe/floecat"
 
 plugins:
   - jekyll-include-cache
@@ -15,3 +18,28 @@ atom_feed:
   hide: false
 
 search: true
+
+comments:
+  provider: "giscus"
+  giscus:
+    repo_id: "R_kgDOP9Yb3A"
+    category_name: "Blog"
+    category_id: "DIC_kwDOP9Yb3M4C7EtH"
+    discussion_term: "pathname"
+    reactions_enabled: "1"
+    theme: "preferred_color_scheme"
+
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      comments: true
+      author_profile: false
+      toc: true
+      toc_sticky: true
+      classes: wide
+      header:
+        actions:
+          - label: "⭐ Star on GitHub"
+            url: "https://github.com/eng-floe/floecat"

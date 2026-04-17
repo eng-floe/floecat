@@ -6,14 +6,14 @@ author_profile: false
 classes: wide
 ---
 
-Floecat is a metadata control plane for Iceberg and Delta.
+![Floecat logo]({{ '/images/floecat.png' | relative_url }})
 
+Floecat is a metadata control plane for Iceberg and Delta.
 It gives query engines one consistent, planner-ready view across fragmented catalogs.
 
 ## Why Floecat exists
 
 Lakehouse metadata is fragmented across catalogs, clouds, and engines.
-
 Open table formats solved storage interoperability, but not:
 
 - planner-ready statistics

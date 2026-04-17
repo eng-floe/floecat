@@ -38,6 +38,10 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        required: false
 
   executor:
     image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
@@ -110,6 +114,9 @@ services:
     depends_on:
       service:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
+        required: false
     networks:
       - floecat
     volumes:
@@ -261,6 +268,15 @@ services:
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
     command: ["start-dev", "--import-realm"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          curl --fail --silent http://localhost:8080/realms/floecat/.well-known/openid-configuration >/dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
     volumes:
       - ./keycloak/realm-floecat.json:/opt/keycloak/data/import/realm-floecat.json:ro
     profiles:

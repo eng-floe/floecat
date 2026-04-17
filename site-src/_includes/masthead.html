@@ -1,0 +1,33 @@
+<div class="masthead">
+  <div class="masthead__inner-wrap">
+    <div class="masthead__menu">
+      <nav id="site-nav" class="greedy-nav">
+        <a class="site-title" href="{{ '/' | relative_url }}">
+          {{ site.title }}
+        </a>
+
+        <ul class="visible-links">
+          <li class="masthead__menu-item">
+            <a href="{{ '/blog/' | relative_url }}">Blog</a>
+          </li>
+          <li class="masthead__menu-item">
+            <iframe
+              src="https://ghbtns.com/github-btn.html?user=eng-floe&repo=floecat&type=star&count=true"
+              frameborder="0"
+              scrolling="0"
+              width="120"
+              height="20"
+              title="GitHub Star Button">
+            </iframe>
+          </li>
+        </ul>
+
+        <button class="greedy-nav__toggle hidden" type="button">
+          <span class="visually-hidden">Toggle menu</span>
+          <div class="navicon"></div>
+        </button>
+        <ul class="hidden-links hidden"></ul>
+      </nav>
+    </div>
+  </div>
+</div>
