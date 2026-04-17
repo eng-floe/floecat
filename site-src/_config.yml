@@ -36,10 +36,7 @@ defaults:
     values:
       comments: true
       author_profile: false
-      toc: true
-      toc_sticky: true
+      toc: false
+      toc_sticky: false
       classes: wide
-      header:
-        actions:
-          - label: "⭐ Star on GitHub"
-            url: "https://github.com/eng-floe/floecat"
+
