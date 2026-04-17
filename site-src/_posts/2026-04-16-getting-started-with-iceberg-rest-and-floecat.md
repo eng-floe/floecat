@@ -9,7 +9,7 @@ toc_sticky: false
 classes: wide
 
 header:
-  image: /images/icefloe.jpeg
+  image: /images/icefloe.png
 ---
 
 The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a
