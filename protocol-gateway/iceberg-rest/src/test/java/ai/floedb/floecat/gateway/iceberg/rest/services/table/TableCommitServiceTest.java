@@ -334,6 +334,81 @@ class TableCommitServiceTest {
   }
 
   @Test
+  void commitUsesStageIdAsIdempotencyKeyWhenCallerDidNotProvideOne() {
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResourceId.newBuilder().setId("cat:db:orders").build());
+    Table created = tableRecord("cat:db:orders");
+    when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
+        .thenReturn(created);
+    when(tableSupport.loadCurrentMetadata(created))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+
+    StagedTableEntry staged =
+        new StagedTableEntry(
+            new StagedTableKey("account-1", "catalog", List.of("db"), "orders", "stage-xyz"),
+            ResourceId.newBuilder().setId("cat").build(),
+            ResourceId.newBuilder().setId("cat:db").build(),
+            createRequest(),
+            ai.floedb.floecat.catalog.rpc.TableSpec.newBuilder().build(),
+            List.of(Map.of("type", "assert-create")),
+            StageState.STAGED,
+            Instant.now(),
+            Instant.now(),
+            null);
+    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+
+    TransactionCommitRequest stagedCreateTx =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto(
+                        List.of("db"), "orders"),
+                    List.of(Map.of("type", "assert-create")),
+                    List.of(Map.of("action", "add-schema")))));
+    when(tableCreateTransactionMapper.buildCreateRequest(any(), any(), any(), any(), any(), any()))
+        .thenReturn(stagedCreateTx);
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    CommitTableResponseDto dto =
+        new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
+    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(dto);
+
+    Response response =
+        service.commit(commandWithStageAndIdempotency(commitWithSingleUpdate(), "stage-xyz", null));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    verify(transactionCommitService).commit(eq("foo"), eq("stage-xyz"), any(), eq(tableSupport));
+  }
+
+  @Test
   void commitRejectsDeltaWhenCompatReadOnlyEnabled() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table deltaTable =
@@ -399,6 +474,11 @@ class TableCommitServiceTest {
 
   private TableCommitService.CommitCommand commandWithStage(
       TableRequests.Commit request, String stageId) {
+    return commandWithStageAndIdempotency(request, stageId, "idem");
+  }
+
+  private TableCommitService.CommitCommand commandWithStageAndIdempotency(
+      TableRequests.Commit request, String stageId, String idempotencyKey) {
     return new TableCommitService.CommitCommand(
         "foo",
         "db",
@@ -407,7 +487,7 @@ class TableCommitServiceTest {
         "catalog",
         ResourceId.newBuilder().setId("cat").build(),
         ResourceId.newBuilder().setId("cat:db").build(),
-        "idem",
+        idempotencyKey,
         stageId,
         null,
         request,
