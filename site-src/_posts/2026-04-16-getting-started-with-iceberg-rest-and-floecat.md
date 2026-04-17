@@ -10,6 +10,9 @@ classes: wide
 
 header:
   image: /images/icefloe.png
+  image_description: "Lake"
+  overlay_filter: 0.3
+  caption: ""
 ---
 
 The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a
