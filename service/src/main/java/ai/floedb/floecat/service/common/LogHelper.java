@@ -64,9 +64,10 @@ public final class LogHelper {
   }
 
   private Object[] merge(Object[] args, double ms) {
-    Object[] merged = new Object[args.length + 1];
-    System.arraycopy(args, 0, merged, 0, args.length);
-    merged[args.length] = ms;
+    Object[] merged = new Object[args.length + 2];
+    merged[0] = op;
+    System.arraycopy(args, 0, merged, 1, args.length);
+    merged[args.length + 1] = ms;
     return merged;
   }
 }

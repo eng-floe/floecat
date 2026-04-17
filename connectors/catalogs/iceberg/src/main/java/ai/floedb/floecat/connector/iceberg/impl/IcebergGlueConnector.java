@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import java.util.List;
 import java.util.Objects;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
@@ -26,17 +27,42 @@ import org.apache.iceberg.rest.RESTCatalog;
 final class IcebergGlueConnector extends IcebergConnector {
   private final GlueIcebergFilter glueFilter;
   private final RESTCatalog catalog;
+  private final Catalog tableCatalog;
+  private final boolean closeCatalogOnClose;
 
   IcebergGlueConnector(
       String connectorId,
       RESTCatalog catalog,
+      Catalog tableCatalog,
       GlueIcebergFilter glueFilter,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        glueFilter,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        true);
+  }
+
+  IcebergGlueConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      Catalog tableCatalog,
+      GlueIcebergFilter glueFilter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.glueFilter = Objects.requireNonNull(glueFilter, "glueFilter");
-    this.catalog = catalog;
+    this.catalog = Objects.requireNonNull(catalog, "catalog");
+    this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
+    this.closeCatalogOnClose = closeCatalogOnClose;
   }
 
   @Override
@@ -69,11 +95,14 @@ final class IcebergGlueConnector extends IcebergConnector {
         namespace.isEmpty()
             ? TableIdentifier.of(tableName)
             : TableIdentifier.of(namespace, tableName);
-    return catalog.loadTable(tableId);
+    return tableCatalog.loadTable(tableId);
   }
 
   @Override
   protected void closeCatalog() {
+    if (!closeCatalogOnClose) {
+      return;
+    }
     try {
       catalog.close();
     } catch (Exception ignore) {

@@ -43,12 +43,21 @@ import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.util.Timestamps;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import org.jboss.logging.Logger;
 
 /**
@@ -57,6 +66,9 @@ import org.jboss.logging.Logger;
  * <p>PR6 scope: resolves TABLE, COLUMN, and FILE targets.
  */
 abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
+  private static final int STATS_PERSIST_QUEUE_CAPACITY = 2_048;
+  private static final Executor DEFAULT_STATS_PERSIST_EXECUTOR = buildStatsPersistExecutor();
+  private static final Set<String> STATS_PERSIST_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
   @FunctionalInterface
   interface ConnectorOpener {
@@ -71,6 +83,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
 
   // Package-private test seam.
   ConnectorOpener connectorOpener = ConnectorFactory::create;
+  // Package-private test seam.
+  Executor persistExecutor = DEFAULT_STATS_PERSIST_EXECUTOR;
 
   protected AbstractNativeStatsCaptureEngine(
       Logger log,
@@ -142,6 +156,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
           // hit store without additional capture. Replace the table entry with the matched
           // canonical record.
           Set<String> seenTargets = new LinkedHashSet<>();
+          List<TargetStatsRecord> persistCandidates = new ArrayList<>();
           for (TargetStatsRecord bundleRecord : capturedRecords) {
             TargetStatsRecord toPersist =
                 bundleRecord.hasTable()
@@ -149,11 +164,16 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                     : withCanonicalMetadata(bundleRecord, request);
             String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
             if (seenTargets.add(storageId)) {
-              persistRecord(toPersist);
+              persistCandidates.add(toPersist);
             }
           }
+          PersistSchedule schedule = enqueueStatsPersistence(persistCandidates);
+          publishStatsPersistTelemetry(
+              request, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
         } else {
-          persistRecord(canonicalRecord);
+          PersistSchedule schedule = enqueueStatsPersistence(List.of(canonicalRecord));
+          publishStatsPersistTelemetry(
+              request, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
         }
         return Optional.of(
             StatsCaptureResult.forRecord(
@@ -221,16 +241,143 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     };
   }
 
-  private void persistRecord(TargetStatsRecord record) {
+  private PersistSchedule enqueueStatsPersistence(List<TargetStatsRecord> records) {
+    if (records == null || records.isEmpty()) {
+      return PersistSchedule.EMPTY;
+    }
+    long startNs = System.nanoTime();
+    int dedupedCount = 0;
+    List<PersistEntry> accepted = new ArrayList<>();
+    for (TargetStatsRecord record : records) {
+      String storageId = StatsTargetIdentity.storageId(record.getTarget());
+      if (!STATS_PERSIST_IN_FLIGHT.add(storageId)) {
+        dedupedCount++;
+        continue;
+      }
+      accepted.add(new PersistEntry(storageId, record));
+    }
+    if (accepted.isEmpty()) {
+      return new PersistSchedule(System.nanoTime() - startNs, 0, dedupedCount);
+    }
+    try {
+      persistExecutor.execute(() -> persistAccepted(accepted));
+    } catch (RuntimeException e) {
+      for (PersistEntry entry : accepted) {
+        STATS_PERSIST_IN_FLIGHT.remove(entry.storageId());
+      }
+      log.warnf(
+          e,
+          "Dropping async stats persistence engine=%s enqueued=%d deduped_inflight=%d",
+          id(),
+          accepted.size(),
+          dedupedCount);
+      return new PersistSchedule(System.nanoTime() - startNs, 0, dedupedCount);
+    }
+    return new PersistSchedule(System.nanoTime() - startNs, accepted.size(), dedupedCount);
+  }
+
+  private void persistAccepted(List<PersistEntry> accepted) {
+    long startNs = System.nanoTime();
+    int persistedCount = 0;
+    int failedCount = 0;
+    for (PersistEntry entry : accepted) {
+      try {
+        if (persistRecord(entry.record())) {
+          persistedCount++;
+        } else {
+          failedCount++;
+          if (log.isDebugEnabled()) {
+            log.debugf("async stats persist failed record=%s engine=%s", entry.storageId(), id());
+          }
+        }
+      } finally {
+        STATS_PERSIST_IN_FLIGHT.remove(entry.storageId());
+      }
+    }
+    if (log.isDebugEnabled()) {
+      log.debugf(
+          "engine=%s async stats persist done records=%d persisted=%d failed=%d durationMs=%.1f",
+          id(),
+          accepted.size(),
+          persistedCount,
+          failedCount,
+          (System.nanoTime() - startNs) / 1_000_000.0);
+    }
+  }
+
+  private boolean persistRecord(TargetStatsRecord record) {
     try {
       statsStore.putTargetStats(record);
+      return true;
     } catch (RuntimeException e) {
       log.warnf(
           e,
           "Failed persisting captured stats record engine=%s target=%s",
           id(),
           record.getTarget());
+      return false;
     }
+  }
+
+  private void publishStatsPersistTelemetry(
+      StatsCaptureRequest request, long statsPersistNanos, int persistedCount, int dedupedCount) {
+    if (persistedCount <= 0 && dedupedCount <= 0) {
+      return;
+    }
+    Span parent = Span.current();
+    if (parent == null || !parent.getSpanContext().isValid()) {
+      return;
+    }
+    double statsPersistMs = Math.max(0L, statsPersistNanos) / 1_000_000.0;
+    Attributes attrs =
+        Attributes.builder()
+            .put("engine_id", id())
+            .put("table_id", request.tableId().getId())
+            .put("snapshot_id", request.snapshotId())
+            .put("persisted_count", persistedCount)
+            .put("deduped_inflight_count", dedupedCount)
+            .put("stats_persist_ms", statsPersistMs)
+            .build();
+    parent.addEvent("floecat.stats.persist", attrs);
+
+    Span persistSpan =
+        GlobalOpenTelemetry.getTracer("floecat.service")
+            .spanBuilder("floecat.stats.persist")
+            .startSpan();
+    try {
+      persistSpan.setAttribute("engine_id", id());
+      persistSpan.setAttribute("table_id", request.tableId().getId());
+      persistSpan.setAttribute("snapshot_id", request.snapshotId());
+      persistSpan.setAttribute("persisted_count", persistedCount);
+      persistSpan.setAttribute("deduped_inflight_count", dedupedCount);
+      persistSpan.setAttribute("stats_persist_ms", statsPersistMs);
+    } finally {
+      persistSpan.end();
+    }
+  }
+
+  private static Executor buildStatsPersistExecutor() {
+    ThreadPoolExecutor executor =
+        new ThreadPoolExecutor(
+            1,
+            1,
+            60L,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(STATS_PERSIST_QUEUE_CAPACITY),
+            runnable -> {
+              Thread thread = new Thread(runnable, "floecat-stats-persist");
+              thread.setDaemon(true);
+              return thread;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
+    executor.allowCoreThreadTimeOut(true);
+    return executor;
+  }
+
+  private record PersistEntry(String storageId, TargetStatsRecord record) {}
+
+  private record PersistSchedule(long enqueueNanos, int enqueuedCount, int dedupedCount) {
+    private static final PersistSchedule EMPTY = new PersistSchedule(0L, 0, 0);
   }
 
   private TargetStatsRecord withCanonicalMetadata(
