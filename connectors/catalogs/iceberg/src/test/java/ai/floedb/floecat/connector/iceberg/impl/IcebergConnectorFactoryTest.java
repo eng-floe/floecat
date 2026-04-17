@@ -17,9 +17,14 @@
 package ai.floedb.floecat.connector.iceberg.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -85,5 +90,36 @@ class IcebergConnectorFactoryTest {
 
     assertEquals("us-east-2", props.get("s3.region"));
     assertEquals("us-west-2", props.get("client.region"));
+  }
+
+  @Test
+  void applyAuthAwsSigV4HandlesNullAuthProps() throws Exception {
+    Method method =
+        IcebergConnectorFactory.class.getDeclaredMethod(
+            "applyAuth", Map.class, String.class, Map.class);
+    method.setAccessible(true);
+    Map<String, String> props = new HashMap<>();
+    props.put("s3.region", "us-east-2");
+
+    assertDoesNotThrow(() -> method.invoke(null, props, "aws-sigv4", null));
+    assertEquals("sigv4", props.get("rest.auth.type"));
+    assertEquals("glue", props.get("rest.signing-name"));
+    assertEquals("us-east-2", props.get("rest.signing-region"));
+  }
+
+  @Test
+  void applyAuthOauth2NullAuthPropsFailsWithClearMessage() throws Exception {
+    Method method =
+        IcebergConnectorFactory.class.getDeclaredMethod(
+            "applyAuth", Map.class, String.class, Map.class);
+    method.setAccessible(true);
+    Map<String, String> props = new HashMap<>();
+
+    InvocationTargetException ex =
+        assertThrows(InvocationTargetException.class, () -> method.invoke(null, props, "oauth2", null));
+    Throwable cause = ex.getCause();
+    assertNotNull(cause);
+    assertEquals(NullPointerException.class, cause.getClass());
+    assertTrue(cause.getMessage().contains("authProps.token required for oauth2"));
   }
 }
