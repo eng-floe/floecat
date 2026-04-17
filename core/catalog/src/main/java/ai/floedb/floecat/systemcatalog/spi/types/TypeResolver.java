@@ -41,7 +41,7 @@ public final class TypeResolver {
     return ctx.memoized(new ResolverMemoKey(mapper), () -> new TypeResolver(ctx, mapper));
   }
 
-  public TypeResolver(MetadataResolutionContext ctx, EngineTypeMapper mapper) {
+  TypeResolver(MetadataResolutionContext ctx, EngineTypeMapper mapper) {
     this.mapper = Objects.requireNonNull(mapper, "mapper");
     Objects.requireNonNull(ctx, "ctx");
     TypeLookup userLookup = new UserTypeLookup(ctx);
