@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -31,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import org.jboss.logging.Logger;
 
@@ -42,11 +44,21 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
 
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
+  private final Consumer<ResourceId> cacheInvalidator;
 
   @Inject
-  public EngineHintPersistenceImpl(TableRepository tableRepository, ViewRepository viewRepository) {
+  public EngineHintPersistenceImpl(
+      TableRepository tableRepository, ViewRepository viewRepository, UserGraph userGraph) {
+    this(tableRepository, viewRepository, userGraph::invalidate);
+  }
+
+  EngineHintPersistenceImpl(
+      TableRepository tableRepository,
+      ViewRepository viewRepository,
+      Consumer<ResourceId> cacheInvalidator) {
     this.tableRepository = tableRepository;
     this.viewRepository = viewRepository;
+    this.cacheInvalidator = cacheInvalidator;
   }
 
   @Override
@@ -194,6 +206,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         attempted = true;
         long version = tableRepository.metaForSafe(tableId).getPointerVersion();
         if (tableRepository.update(builder.build(), version)) {
+          invalidateGraphCache(tableId);
           return;
         }
         LOG.debugf(
@@ -229,6 +242,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         attempted = true;
         long version = viewRepository.metaForSafe(viewId).getPointerVersion();
         if (viewRepository.update(builder.build(), version)) {
+          invalidateGraphCache(viewId);
           return;
         }
         LOG.debugf(
@@ -244,6 +258,14 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
     }
     if (attempted) {
       LOG.warnf("Could not persist engine hint for %s after %d attempts", viewId, maxAttempts);
+    }
+  }
+
+  private void invalidateGraphCache(ResourceId relationId) {
+    try {
+      cacheInvalidator.accept(relationId);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Failed to invalidate graph cache for %s after hint persistence", relationId);
     }
   }
 }

@@ -36,11 +36,11 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -66,12 +66,13 @@ class EngineHintPersistenceImplTest {
 
   @Mock private TableRepository tableRepository;
   @Mock private ViewRepository viewRepository;
+  @Mock private Consumer<ResourceId> cacheInvalidator;
 
-  @InjectMocks private EngineHintPersistenceImpl persistence;
+  private EngineHintPersistenceImpl persistence;
 
   @BeforeEach
   void setUp() {
-    // nothing to do; @InjectMocks handles wiring.
+    persistence = new EngineHintPersistenceImpl(tableRepository, viewRepository, cacheInvalidator);
   }
 
   @Test
@@ -89,6 +90,7 @@ class EngineHintPersistenceImplTest {
     String key = EngineHintMetadata.tableHintKey(PAYLOAD_TYPE);
     assertThat(updated.getPropertiesMap()).containsEntry(key, encode());
     verify(viewRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator).accept(TABLE_ID);
   }
 
   @Test
@@ -106,6 +108,7 @@ class EngineHintPersistenceImplTest {
     String key = EngineHintMetadata.tableHintKey(PAYLOAD_TYPE);
     assertThat(updated.getPropertiesMap()).containsEntry(key, encode());
     verify(tableRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator).accept(VIEW_ID);
   }
 
   @Test
@@ -119,6 +122,7 @@ class EngineHintPersistenceImplTest {
     persistence.persistRelationHint(TABLE_ID, PAYLOAD_TYPE, ENGINE_KIND, ENGINE_VERSION, PAYLOAD);
 
     verify(tableRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator, never()).accept(any());
   }
 
   @Test
@@ -139,6 +143,7 @@ class EngineHintPersistenceImplTest {
     Table updated = tableCaptor.getValue();
     String key = EngineHintMetadata.columnHintKey("floe.column+proto", 5L);
     assertThat(updated.getPropertiesMap()).containsEntry(key, encode());
+    verify(cacheInvalidator).accept(TABLE_ID);
   }
 
   @Test
@@ -163,6 +168,7 @@ class EngineHintPersistenceImplTest {
         .containsEntry(
             EngineHintMetadata.columnHintKey("floe.column+proto2", 5L),
             EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, new byte[] {7}));
+    verify(cacheInvalidator).accept(TABLE_ID);
   }
 
   @Test
@@ -183,6 +189,7 @@ class EngineHintPersistenceImplTest {
     View updated = viewCaptor.getValue();
     assertThat(updated.getPropertiesMap())
         .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 3L), encode());
+    verify(cacheInvalidator).accept(VIEW_ID);
   }
 
   @Test
