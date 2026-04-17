@@ -22,6 +22,13 @@
           </li>
         </ul>
 
+        {% if site.search == true %}
+          <button class="search__toggle" type="button">
+            <span class="visually-hidden">Toggle search</span>
+            <i class="fas fa-search"></i>
+          </button>
+        {% endif %}
+
         <button class="greedy-nav__toggle hidden" type="button">
           <span class="visually-hidden">Toggle menu</span>
           <div class="navicon"></div>

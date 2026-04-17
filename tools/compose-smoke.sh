@@ -473,6 +473,9 @@ run_mode() {
     return 1
   fi
 
+  local iceberg_rest_host_port="${FLOECAT_REST_HOST_PORT:-9200}"
+  wait_for_url "http://localhost:${iceberg_rest_host_port}/v1/config" 180 "Iceberg REST health"
+
   local i
   local service_logs
   for i in $(seq 1 180); do

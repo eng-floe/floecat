@@ -94,18 +94,6 @@ services:
       AWS_SESSION_TOKEN: ${FLOECAT_STORAGE_AWS_SESSION_TOKEN:-}
       AWS_PROFILE: ""
       AWS_SDK_LOAD_CONFIG: "1"
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >
-          bash -lc 'exec 3<>/dev/tcp/127.0.0.1/9200 &&
-          printf "GET /v1/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
-          IFS= read -r status <&3 &&
-          [[ "$$status" == *" 200 "* ]]'
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
     depends_on:
       service:
         condition: service_healthy
@@ -275,7 +263,7 @@ services:
       - "${FLOECAT_TRINO_HOST_PORT:-8081}:8080"
     depends_on:
       iceberg-rest:
-        condition: service_healthy
+        condition: service_started
       localstack:
         condition: service_started
     volumes:
