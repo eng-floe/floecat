@@ -24,3 +24,41 @@
   font-weight: 600;
 
 }
+
+.masthead__inner-wrap {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+}
+
+.greedy-nav {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 1rem;
+
+}
+
+.site-title {
+
+  display: flex;
+
+  align-items: center;
+
+  height: 100%;
+
+}
+
+.masthead__menu-item a {
+
+  display: flex;
+
+  align-items: center;
+
+}
