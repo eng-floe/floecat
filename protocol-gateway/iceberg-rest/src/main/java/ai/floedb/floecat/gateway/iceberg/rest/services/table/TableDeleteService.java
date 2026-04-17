@@ -57,7 +57,7 @@ public class TableDeleteService {
     if (connectorId != null) {
       tableSupport.deleteConnector(connectorId);
     }
-    tableLifecycleService.deleteTable(tableId, purge);
+    tableLifecycleService.deleteTable(tableId);
     return Response.noContent().build();
   }
 }

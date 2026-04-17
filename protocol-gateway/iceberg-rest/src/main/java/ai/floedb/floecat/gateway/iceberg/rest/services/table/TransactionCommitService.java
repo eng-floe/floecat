@@ -116,7 +116,7 @@ public class TransactionCommitService {
         tableCreateTransactionMapper.buildCreateRequest(
             namespacePath, tableName, catalogId, namespaceId, request, tableSupport),
         tableSupport,
-        true);
+        false);
   }
 
   public Response commit(

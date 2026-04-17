@@ -289,7 +289,8 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitCreateWithAssertCreatePreMaterializesWhenMetadataLocationMissing() throws Exception {
+  void commitCreateWithAssertCreateSkipsPreMaterializationWhenMetadataLocationMissing()
+      throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -366,7 +367,8 @@ class TransactionCommitServiceTest {
             tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(materializationService, never())
+        .materializeMetadata(any(), any(), any(), any(), any(), any());
   }
 
   @Test
