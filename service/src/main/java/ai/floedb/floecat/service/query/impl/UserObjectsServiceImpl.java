@@ -78,14 +78,13 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                     var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
                     var principalCorrelationId = principalContext.getCorrelationId();
                     var correlationId =
-                            contextCorrelationId != null && !contextCorrelationId.isBlank()
-                                    ? contextCorrelationId
-                                    : principalCorrelationId;
+                        contextCorrelationId != null && !contextCorrelationId.isBlank()
+                            ? contextCorrelationId
+                            : principalCorrelationId;
                     correlationRef.set(correlationId == null ? "" : correlationId);
                     authz.require(principalContext, "catalog.read");
 
-                    String queryId =
-                        mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                    String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
                     var ctxOpt = queryStore.get(queryId);
                     if (ctxOpt.isEmpty()) {
                       throw GrpcErrors.notFound(
@@ -101,8 +100,7 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                     }
 
                     try {
-                      bundles
-                          .stream(correlationId, ctx, request.getTablesList())
+                      bundles.stream(correlationId, ctx, request.getTablesList())
                           .subscribe()
                           .with(emitter::emit, emitter::fail, emitter::complete);
                     } catch (Throwable t) {
