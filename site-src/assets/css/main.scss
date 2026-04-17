@@ -3,7 +3,13 @@
 
 @import "minimal-mistakes";
 
-.page__hero {
-  max-height: 300px;
-  overflow: hidden;
+.page__hero--overlay,
+.page__hero-image {
+  height: 500px;
 }
+
+.page__hero--overlay {
+  background-position: center center;
+  background-size: cover;
+}
+
