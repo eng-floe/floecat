@@ -270,13 +270,18 @@ services:
     command: ["start-dev", "--import-realm"]
     healthcheck:
       test:
-        - CMD-SHELL
+        - CMD
+        - /usr/bin/bash
+        - -lc
         - >
-          curl --fail --silent http://localhost:8080/realms/floecat/.well-known/openid-configuration >/dev/null
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf "GET /realms/floecat/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+          IFS= read -r status <&3 &&
+          [[ "$status" == *" 200 "* || "$status" == *" 301 "* || "$status" == *" 302 "* || "$status" == *" 303 "* || "$status" == *" 307 "* || "$status" == *" 308 "* ]]
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 10s
+      start_period: 20s
     volumes:
       - ./keycloak/realm-floecat.json:/opt/keycloak/data/import/realm-floecat.json:ro
     profiles:

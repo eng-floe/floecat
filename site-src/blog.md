@@ -1,6 +1,3 @@
-## Replace `site-src/blog.md` with
-
-```md
 ---
 title: Blog
 layout: posts

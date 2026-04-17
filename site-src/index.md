@@ -6,7 +6,9 @@ author_profile: false
 classes: wide
 ---
 
-![Floecat logo]({{ '/images/floecat.png' | relative_url }})
+<img src="{{ '/images/floecat.png' | relative_url }}" 
+     alt="Floecat logo" 
+     style="width:140px; height:auto;">
 
 Floecat is a metadata control plane for Iceberg and Delta.
 It gives query engines one consistent, planner-ready view across fragmented catalogs.
@@ -35,5 +37,6 @@ Floecat is built for **consumption**, not mutation. It gives query engines a sta
 git clone https://github.com/eng-floe/floecat.git
 make run
 make cli-run
+```
 
 Point Floecat at an Iceberg or Delta catalog, then query through its APIs or connect an engine like DuckDB.
