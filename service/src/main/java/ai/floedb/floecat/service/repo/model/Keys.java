@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.service.repo.model;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 
@@ -71,8 +69,8 @@ public final class Keys {
   }
 
   private static String encode(String s) {
-    return URLEncoder.encode(Objects.requireNonNull(s, "encode value"), StandardCharsets.UTF_8)
-        .replace("+", "%20");
+    return ai.floedb.floecat.storage.kv.Keys.encodeSegment(
+        Objects.requireNonNull(s, "encode value"));
   }
 
   public static String encodeSegment(String s) {

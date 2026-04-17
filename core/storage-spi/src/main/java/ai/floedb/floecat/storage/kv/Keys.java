@@ -15,7 +15,6 @@
  */
 package ai.floedb.floecat.storage.kv;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
 public final class Keys {
@@ -38,15 +37,48 @@ public final class Keys {
   }
 
   public static String encodeSegment(String value) {
-    return URLEncoder.encode(req("segment", value), StandardCharsets.UTF_8).replace("+", "%20");
+    String segment = req("segment", value);
+    byte[] bytes = segment.getBytes(StandardCharsets.UTF_8);
+    StringBuilder out = new StringBuilder(bytes.length * 3);
+    for (byte b : bytes) {
+      int ch = b & 0xFF;
+      if (isUnreserved(ch)) {
+        out.append((char) ch);
+      } else {
+        out.append('%');
+        out.append(Character.toUpperCase(Character.forDigit((ch >>> 4) & 0x0F, 16)));
+        out.append(Character.toUpperCase(Character.forDigit(ch & 0x0F, 16)));
+      }
+    }
+    return out.toString();
   }
 
   public static String join(String... parts) {
-    return SEP + String.join(SEP, parts);
+    if (parts == null) {
+      throw new IllegalArgumentException("key arg 'parts' is null");
+    }
+    if (parts.length == 0) {
+      return SEP;
+    }
+    String[] encoded = new String[parts.length];
+    for (int i = 0; i < parts.length; i++) {
+      encoded[i] = encodeSegment(req("parts[" + i + "]", parts[i]));
+    }
+    return SEP + String.join(SEP, encoded);
   }
 
   public static String prefix(String... parts) {
     return join(parts) + SEP;
+  }
+
+  private static boolean isUnreserved(int ch) {
+    return (ch >= 'A' && ch <= 'Z')
+        || (ch >= 'a' && ch <= 'z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '-'
+        || ch == '.'
+        || ch == '_'
+        || ch == '~';
   }
 
   public static KvStore.Key key(String partitionKey, String sortKey) {

@@ -38,4 +38,19 @@ class KeysTest {
         "/accounts/acct%20id/tables/table%20id/snapshots/0000000000000000007/stats/constraints",
         Keys.snapshotConstraintsStatsPointer("acct id", "table id", 7L));
   }
+
+  @Test
+  void encodeSegmentUsesRfc3986PathSegmentRules() {
+    assertEquals("a%20b", Keys.encodeSegment("a b"));
+    assertEquals("a%2Bb", Keys.encodeSegment("a+b"));
+    assertEquals("a%2Fb", Keys.encodeSegment("a/b"));
+    assertEquals("a%25b", Keys.encodeSegment("a%b"));
+  }
+
+  @Test
+  void transactionDeleteSentinelEncodesOpaquePointerKey() {
+    assertEquals(
+        "/accounts/acct/transactions/tx/delete/%2Faccounts%2Fa%2Fb",
+        Keys.transactionDeleteSentinelUri("acct", "tx", "/accounts/a/b"));
+  }
 }
