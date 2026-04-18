@@ -16,9 +16,9 @@ header:
 ---
 
 The Iceberg REST catalog gives query engines a standard way to read and update table metadata.
-Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That’s what makes running multiple engines against the same lakehouse practical.
+Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That removes a lot of integration friction, even if it does not solve every cross-engine compatibility issue.
 
-Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as the foundation of control plane that can enrich and validate metadata across Iceberg and Delta catalogs.
+Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as the foundation of a control plane that can enrich metadata across Iceberg and Delta catalogs.
 
 ## What the Iceberg REST Catalog Buys You
 
@@ -29,7 +29,7 @@ the REST catalog becomes the control plane for table metadata:
 - Engines talk HTTP/JSON
 - Commits are transactional
 - Metadata is immutable and versioned
-- Credentials are short-lived and scoped
+- Storage credentials can be vended through the catalog
 
 A fair question to ask is: "why another Iceberg REST catalog implementation?"
 Other implementations like Gravitino, Polaris, and Nessie already exist.
@@ -49,25 +49,23 @@ In practice, most of it groups cleanly into a few concerns:
 - Namespaces and tables: lifecycle operations and metadata loading
 - Commits & staging: atomic updates expressed as requirements + updates
 - Planning & tasks: optional server-side scan planning
-- Credentials: vended, ephemeral access for object storage
+- Credentials: optional storage credential vending for object storage
 
 Once you treat the spec as a control-plane contract rather than a giant API surface,
 it becomes much more approachable.
 
 ## How the Service Is Structured
 
-The FLoecat REST catalog implementation lives as a Quarkus RESTEasy service.
-Each Iceberg endpoint is implemented as a thin JAX-RS resource that handles routing,
-validation, and response shaping. Behind that sits a gRPC-based catalog service that owns all stateful behavior:
+The Floecat REST catalog implementation lives as a Quarkus RESTEasy service.
+Each Iceberg endpoint is implemented as a JAX-RS resource. Behind that sits a gRPC-based catalog service that owns the durable catalog state:
 
 - table lifecycle
 - commit evaluation
 - metadata persistence
 - snapshot handling
 
-The REST layer is effectively a translation boundary.
-HTTP stays stateless, while all catalog semantics live in the gRPC backend.
-This separation made the implementation easier to reason about and easier to evolve.
+The REST layer is mostly a translation boundary, but it also owns some protocol-specific behavior like metadata hydration, credential vending, and plan/task orchestration.
+That separation still made the implementation easier to reason about and easier to evolve.
 
 ## Starting a LocalStack-Based Floecat Setup
 
@@ -176,7 +174,7 @@ Reading from the table follows the standard REST flow:
 
 - verify namespace existence
 - check table existence
-- load table metadata and credentials
+- load table metadata and, if requested, storage credentials
 - scan object storage directly
 
 ```sql
@@ -189,9 +187,8 @@ select * from iceberg_floecat.iceberg.orders;
 └──────────┴─────────┘
 ```
 
-That SQL sequence is deliberate, proving that DuckDB can drop and recreate the same Iceberg table cleanly through Floecat, and it leaves the recreated table in place for Trino to query next. Note the `PURGE_REQUESTED true`
-line in the DuckDB `ATTACH` expression, which forces Floecat to delete the Iceberg artifacts in S3 as well as the
-catalog metadata.
+That SQL sequence is deliberate, proving that DuckDB can drop and recreate the same Iceberg table cleanly through Floecat, and it leaves the recreated table in place for Trino to query next.
+The `PURGE_REQUESTED true` line in the DuckDB `ATTACH` expression tells Floecat to delete the Iceberg artifacts in S3 as well as the catalog metadata.
 
 ## Querying the Same Table with Trino
 
@@ -259,8 +256,8 @@ as Trino and DuckDB perform the pruning themselves.
 
 ## Closing Thoughts
 
-Building an Iceberg REST catalog implementation means that multi-engine support is essentially free,
-and avoids the tiresome process of building a connector to Floecat for every query engine out there.
+Building an Iceberg REST catalog implementation makes multi-engine support much easier,
+and avoids having to build a custom connector to Floecat for every query engine out there.
 If you’re evaluating Iceberg beyond "it’s a table format,"
 implementing or integrating with the REST catalog is where the architecture really starts to come together.
 
@@ -269,12 +266,12 @@ to do the right thing when they write data into a data lakehouse.
 Unlike a traditional transactional data warehouse,
 a data lakehouse can have writers from different companies
 and projects writing to the same table independently.
-While the Iceberg table standard and the Iceberg REST catalog can help with
-the transactional aspect, it doesn't stop software writing non-compliant files and breaking your data lake.
+While the Iceberg table standard and the Iceberg REST catalog help with
+the transactional aspect, they do not make every engine behave the same way.
 
-For example, Apache Spark is case-insensitive by default when it comes to table and column names, 
+For example, Apache Spark is case-insensitive by default when it comes to table and column names,
 Apache Iceberg preserves case but uses field IDs internally, 
-while Snowflake, Trino, and Apache Flink each apply their own casing rules (uppercasing, 
+while Snowflake, Trino, and Apache Flink each apply their own casing rules (uppercasing,
 lowercasing, or SQL-standard quoting). Everything appears fine until those rules collide.
 [Maninder Parmar's blog](https://www.infoq.com/articles/lakehouse-sql-identifier-rules/) goes
 into thorough detail on how different engines work (or don't) with each other in this regard.
