@@ -1,0 +1,58 @@
+---
+---
+
+@import "minimal-mistakes";
+
+.page__hero--overlay,
+.page__hero-image {
+  height: 500px;
+}
+
+.page__hero--overlay {
+  background-position: center center;
+  background-size: cover;
+}
+
+.masthead__inner-wrap,
+.greedy-nav,
+.visible-links {
+  display: flex;
+  align-items: center;
+}
+
+.visible-links {
+  gap: 1rem;
+}
+
+.masthead__menu-item {
+  display: flex;
+  align-items: center;
+}
+
+.site-title {
+  line-height: 1;
+  display: flex;
+  align-items: center;
+}
+
+.masthead__menu-item a,
+.masthead__menu-item a:visited,
+.masthead__menu-item a:hover,
+.masthead__menu-item a:focus {
+  text-decoration: none !important;
+}
+
+.masthead__menu-item a:hover,
+.masthead__menu-item a:focus {
+  font-weight: 600;
+}
+
+.masthead__menu-item a::before,
+.masthead__menu-item a::after {
+  display: none !important;
+}
+
+.masthead__menu-item iframe {
+  display: block;
+  margin-top: 2px;
+}
