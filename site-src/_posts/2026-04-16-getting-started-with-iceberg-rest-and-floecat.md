@@ -15,11 +15,10 @@ header:
   caption: ""
 ---
 
-The Iceberg REST catalog is where Iceberg stops being a file format and starts becoming a
-shared control plane for metadata.
-If a query engine can speak the REST spec, it can interact with any compliant catalog without a custom connector. That’s what makes multi-engine lakehouse architectures actually work.
+The Iceberg REST catalog gives query engines a standard way to read and update table metadata.
+Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That’s what makes running multiple engines against the same lakehouse practical.
 
-Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as a foundation for something more: a control plane that can enrich and validate metadata across Iceberg and Delta catalogs.
+Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as the foundation of control plane that can enrich and validate metadata across Iceberg and Delta catalogs.
 
 ## What the Iceberg REST Catalog Buys You
 
@@ -34,7 +33,8 @@ the REST catalog becomes the control plane for table metadata:
 
 A fair question to ask is: "why another Iceberg REST catalog implementation?"
 Other implementations like Gravitino, Polaris, and Nessie already exist.
-Floecat exists as part of a broader project that augments metadata from upstream Iceberg and Delta catalogs to generate advanced planning statistics.
+It's because Floecat exists as part of a broader project that augments 
+metadata from upstream Iceberg and Delta catalogs to generate advanced planning statistics.
 
 Most query engines leave a lot on the table when planning against open table formats.
 We want to provide richer metadata and statistics for our SQL compute service,
@@ -56,7 +56,7 @@ it becomes much more approachable.
 
 ## How the Service Is Structured
 
-The REST catalog lives as a Quarkus RESTEasy service.
+The FLoecat REST catalog implementation lives as a Quarkus RESTEasy service.
 Each Iceberg endpoint is implemented as a thin JAX-RS resource that handles routing,
 validation, and response shaping. Behind that sits a gRPC-based catalog service that owns all stateful behavior:
 
@@ -189,7 +189,9 @@ select * from iceberg_floecat.iceberg.orders;
 └──────────┴─────────┘
 ```
 
-That sequence is deliberate: it proves that DuckDB can drop and recreate the same Iceberg table cleanly through Floecat, and it leaves the recreated table in place for Trino to query next.
+That SQL sequence is deliberate, proving that DuckDB can drop and recreate the same Iceberg table cleanly through Floecat, and it leaves the recreated table in place for Trino to query next. Note the `PURGE_REQUESTED true`
+line in the DuckDB `ATTACH` expression, which forces Floecat to delete the Iceberg artifacts in S3 as well as the
+catalog metadata.
 
 ## Querying the Same Table with Trino
 
@@ -240,15 +242,16 @@ select * from orders;
 (2 rows)
 ```
 
-The important part is the result:
-Trino could query and write to the same table that DuckDB created,
+The key take away here is that
+Trino can query and write to the same table that DuckDB created,
 without any engine-specific glue code.
 
-## Where Things Stand
+## Where Things Stand with Floecat
 
 At this point, the core Iceberg REST catalog surface is implemented in Floecat.
 The catalog has been exercised with both Trino and DuckDB and
-behaves like a real control plane rather than a demo service.
+behaves like a real control plane rather than a demo service. In fact, we exercise
+these two query engines as part of our automated CI smoke tests.
 
 One caveat that is worth mentioning is that Trino and DuckDB do not currently make use of the plan/task
 endpoint, which means they can't offload parquet file pruning to the catalog. It's not a big issue,
@@ -273,10 +276,8 @@ For example, Apache Spark is case-insensitive by default when it comes to table 
 Apache Iceberg preserves case but uses field IDs internally, 
 while Snowflake, Trino, and Apache Flink each apply their own casing rules (uppercasing, 
 lowercasing, or SQL-standard quoting). Everything appears fine until those rules collide.
-
-The failure mode is simple: two columns that differ only by case are valid in Iceberg but not in most engines. That mismatch might show up later on, after multiple writers or schema evolution, when queries start failing or behaving unpredictably.
-
-That is part of the motivation for Floecat as a control plane: not just to serve table metadata over REST, but to become a place where cross-engine behavior can be observed, validated, and eventually made safer.
+[Maninder Parmar's blog](https://www.infoq.com/articles/lakehouse-sql-identifier-rules/) goes
+into thorough detail on how different engines work (or don't) with each other in this regard.
 
 [Floecat](https://github.com/eng-floe/floecat) is now open-sourced under the Apache 2.0 license.
 In the next post, I’ll walk through Floecat’s architecture in more detail.

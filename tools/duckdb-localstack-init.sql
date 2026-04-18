@@ -32,6 +32,7 @@ ATTACH 'examples' AS iceberg_floecat (
   TYPE iceberg,
   ENDPOINT 'http://localhost:9200/',
   AUTHORIZATION_TYPE none,
-  ACCESS_DELEGATION_MODE 'none'
+  ACCESS_DELEGATION_MODE 'none',
+  PURGE_REQUESTED true
 );
 
