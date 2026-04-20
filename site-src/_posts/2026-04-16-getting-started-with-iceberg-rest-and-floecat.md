@@ -18,6 +18,20 @@ Instead of every engine needing its own catalog-specific integration, anything t
 
 Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as the foundation of a control plane that can enrich metadata across Iceberg and Delta catalogs.
 
+## What You'll Do
+
+In this guide, you'll start a local Floecat environment backed by LocalStack, attach DuckDB to the Floecat Iceberg REST catalog, and verify that query engines can access the same table metadata through the REST interface.
+
+## Prerequisites
+
+Before starting, make sure you have:
+
+- Docker and Docker Compose installed
+- DuckDB installed locally
+- network access to pull the required container images from GHCR
+
+By the end, you should be able to query the same Iceberg catalog through Floecat and confirm that the REST catalog is working end to end.
+
 ## What the Iceberg REST Catalog Buys You
 
 At a practical level, the Iceberg REST catalog is about simplifying engine integration without weakening guarantees.
@@ -66,6 +80,8 @@ It also handles protocol-specific behavior like metadata hydration, credential v
 ## Starting a LocalStack-Based Floecat Setup
 
 For the examples below, start the published GHCR images with LocalStack and Trino enabled in Docker Compose:
+
+If the stack fails to start, the most common causes are missing GHCR access, Docker not running, or port conflicts on your machine.
 
 ```bash
 FLOECAT_SERVICE_IMAGE=ghcr.io/eng-floe/floecat-service:main \
