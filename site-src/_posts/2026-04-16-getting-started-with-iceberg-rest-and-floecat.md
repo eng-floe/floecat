@@ -11,8 +11,6 @@ classes: wide
 header:
   image: /images/icefloe.png
   image_description: "Lake"
-  overlay_filter: 0.3
-  caption: ""
 ---
 
 The Iceberg REST catalog gives query engines a standard way to read and update table metadata.

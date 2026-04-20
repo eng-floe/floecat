@@ -9,10 +9,8 @@ toc_sticky: true
 classes: wide
 
 header:
-  image: /images/icefloe.png
+  image: /images/2026-04-20-graph-theme.png
   image_description: "Lake"
-  overlay_filter: 0.3
-  caption: ""
 ---
 
 This post describes the NDV estimation work within the broader statistics capture system in Floecat. The focus here is on how NDV estimates are generated under strict latency constraints, how multiple estimators are reconciled, and how those estimates behave across different datasets and sampling regimes.
@@ -92,13 +90,13 @@ These datasets were chosen to expose different NDV regimes: low-cardinality iden
 
 On the store_sales table (2.8B rows), low-cardinality columns such as `ss_sold_date_sk` converge immediately with exact plateau detection. Medium-cardinality columns such as `ss_customer_sk` stabilize within approximately 10–15 percent error under frequency-of-frequencies. High-cardinality columns such as `ss_ticket_number` initially behave like subset estimates before transitioning to linear extrapolation as sampling reaches approximately 5 percent. The behavior for `ss_ticket_number` is shown below. The discovery curve remains effectively linear through early sampling, which drives the estimator toward linear extrapolation.
 
-![NDV discovery curve for ss_ticket_number]({{ site.baseurl }}/images/2026-04-tpcds-ss_ticket_number.png)
+![NDV discovery curve for ss_ticket_number]({{ site.baseurl }}/images/2026-04-tpcds-ss_ticket_number.png){: .post-chart }
 
 At low sampling fractions, the frequency-of-frequencies estimator underestimates NDV due to limited duplication evidence, before the system transitions to linear extrapolation once the discovery curve remains unsaturated.
 
 For comparison, the behavior of a low-cardinality column such as `ss_sold_date_sk` is shown below.
 
-![NDV discovery curve for ss_sold_date_sk]({{ site.baseurl }}/images/2026-04-tpcds-ss_sold_date_sk.png)
+![NDV discovery curve for ss_sold_date_sk]({{ site.baseurl }}/images/2026-04-tpcds-ss_sold_date_sk.png){: .post-chart }
 
 In contrast to `ss_ticket_number`, the discovery curve for `ss_sold_date_sk` saturates almost immediately. The number of distinct values stabilizes after scanning a small fraction of the table, and additional sampling does not materially increase the observed NDV.
 
@@ -112,7 +110,7 @@ The contrast with `ss_ticket_number` is deliberate. In that case, discovery rema
 
 The previous examples show idealized behavior under sampling. In practice, sampling can produce misleading signals when data is clustered or when row-group coverage is poor. The behavior of `pickup_location_id` from the NYC Taxi dataset illustrates this.
 
-![NDV discovery curve for pickup_location_id]({{ site.baseurl }}/images/2026-04-nyc-pickup_location_id.png)
+![NDV discovery curve for pickup_location_id]({{ site.baseurl }}/images/2026-04-nyc-pickup_location_id.png){: .post-chart }
 
 At low sampling fractions, the estimator incorrectly concludes that the column has a single distinct value. This is not a statistical failure of the estimator itself, but a consequence of the sampled row groups lacking diversity. The discovery curve appears to plateau immediately, even though the true NDV is 265.
 
