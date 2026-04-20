@@ -35,11 +35,11 @@ import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.subscription.MultiSubscriber;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import java.util.concurrent.Flow.Subscription;
 
 /**
  * Verifies that the gRPC principal context is propagated to the worker thread during streaming item
