@@ -103,3 +103,6 @@ nb-configuration.xml
 ##############################
 **/dynamodb-local-metadata.json
 dynamodb-local/
+
+# Jekyll build output
+site-src/_site/

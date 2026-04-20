@@ -4,8 +4,8 @@ title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
 comments: true
 author_profile: false
-toc: false
-toc_sticky: false
+toc: true
+toc_sticky: true
 classes: wide
 
 header:

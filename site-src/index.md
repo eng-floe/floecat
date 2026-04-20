@@ -6,32 +6,173 @@ author_profile: false
 classes: wide
 ---
 
-<img src="{{ '/images/floecat.png' | relative_url }}" 
-     alt="Floecat logo" 
-     style="width:140px; height:auto;">
+<section class="home-hero">
+  <div class="home-hero__content">
+    <p class="home-kicker">Metadata Control Plane</p>
+    <h1>One planner-ready metadata plane for Iceberg and Delta catalogs.</h1>
+    <p class="home-subtitle">
+      Built for data platform engineers and query engine teams that need consistent
+      metadata semantics across catalogs, clouds, and engines.
+    </p>
+    <p class="home-attribution">
+      Developed by <a href="https://floedb.ai/">FloeDB</a>.
+    </p>
+    <div class="home-actions">
+      <a class="btn btn--primary home-btn" href="https://github.com/eng-floe/floecat/tree/main/docs/docker.md">Run Local Stack</a>
+      <a class="btn btn--inverse home-btn" href="https://github.com/eng-floe/floecat/tree/main/docs">Read Docs</a>
+    </div>
+  </div>
+  <div class="home-hero__brand">
+    <img src="{{ '/images/floecat.png' | relative_url }}" alt="Floecat logo">
+  </div>
+</section>
 
-Floecat is a metadata control plane for Iceberg and Delta.
-It gives query engines one consistent, planner-ready view across fragmented catalogs.
+<section class="trust-strip">
+  <span>Iceberg REST compatible</span>
+  <span>Tested with DuckDB + Trino</span>
+  <span>Apache 2.0 open source</span>
+</section>
 
-## Why Floecat exists
+{% assign latest = site.posts | first %}
+{% if latest %}
+<section id="latest-post" class="home-latest-post">
+  <p class="home-latest-post__label">Latest Post</p>
+  <h2>{{ latest.title }}</h2>
+  <p class="home-latest-post__meta">
+    {{ latest.date | date: "%Y-%m-%d" }}
+    {% assign latest_words = latest.content | strip_html | number_of_words %}
+    {% assign latest_read = latest_words | divided_by: 180 | plus: 1 %}
+    · {{ latest_read }} min read
+  </p>
+  <p>{{ latest.excerpt | strip_html | truncate: 220 }}</p>
+  <a class="btn btn--primary" href="{{ latest.url | relative_url }}">Read Latest Post</a>
+</section>
+{% endif %}
 
-Lakehouse metadata is fragmented across catalogs, clouds, and engines.
-Open table formats solved storage interoperability, but not:
+<h2 id="why-floecat">Why teams use Floecat</h2>
 
-- planner-ready statistics
-- consistent semantics across catalogs
-- cross-engine compatibility
+<div class="feature-grid">
+  <article class="feature-card">
+    <p class="feature-card__eyebrow">Federation</p>
+    <h3>One API across catalogs</h3>
+    <p>Read metadata from Iceberg and Delta catalogs through one stable API surface.</p>
+  </article>
+  <article class="feature-card">
+    <p class="feature-card__eyebrow">Canonical Model</p>
+    <h3>Consistent metadata semantics</h3>
+    <p>Normalize heterogeneous metadata into a consistent representation for planners.</p>
+  </article>
+  <article class="feature-card">
+    <p class="feature-card__eyebrow">Planner Statistics</p>
+    <h3>Richer cost-based optimization</h3>
+    <p>Serve NDV, histograms, MCVs, and more for cost-based optimization.</p>
+  </article>
+  <article class="feature-card">
+    <p class="feature-card__eyebrow">Deterministic Planning</p>
+    <h3>Stable snapshot pinning</h3>
+    <p>Pin snapshots across catalogs for repeatable planning and stable query behavior.</p>
+  </article>
+</div>
 
-Floecat is built for **consumption**, not mutation. It gives query engines a stable, consistent metadata layer instead of forcing each engine to rebuild its own.
+<h2 id="installation">Install by environment</h2>
 
-## What Floecat does
+<section class="install-switcher" data-install-switcher>
+  <div class="install-switcher__tabs" role="tablist" aria-label="Install methods">
+    <button type="button" class="active" data-install-tab="docker" role="tab" aria-selected="true">Docker</button>
+    <button type="button" data-install-tab="source" role="tab" aria-selected="false">Source</button>
+    <button type="button" data-install-tab="cli" role="tab" aria-selected="false">CLI</button>
+    <button type="button" data-install-tab="duckdb" role="tab" aria-selected="false">DuckDB</button>
+  </div>
 
-- **Federation** — Access metadata across Iceberg and Delta catalogs through one API.
-- **Canonical model** — Normalize heterogeneous metadata into a consistent graph.
-- **Planner statistics** — Serve NDV, histograms, MCVs, and other statistics for cost-based optimization.
-- **Deterministic planning** — Pin snapshots across catalogs to guarantee consistent replanning.
+  <article class="install-switcher__panel active" data-install-panel="docker" role="tabpanel">
+    <pre class="install-code"><code>cd docker
+FLOECAT_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack,trino \
+  docker compose -f docker-compose.yml up -d --wait</code></pre>
+  </article>
 
-## Get started
+  <article class="install-switcher__panel" data-install-panel="source" role="tabpanel">
+    <pre class="install-code"><code>git clone https://github.com/eng-floe/floecat.git
+cd floecat
+make run</code></pre>
+  </article>
+
+  <article class="install-switcher__panel" data-install-panel="cli" role="tabpanel">
+    <pre class="install-code"><code>cd docker
+FLOECAT_ENV_FILE=./env.localstack docker compose -f docker-compose.yml run --rm cli</code></pre>
+  </article>
+
+  <article class="install-switcher__panel" data-install-panel="duckdb" role="tabpanel">
+    <pre class="install-code"><code>duckdb -init tools/duckdb-localstack-init.sql
+SELECT * FROM iceberg_floecat.iceberg.orders;</code></pre>
+  </article>
+</section>
+
+<h2 id="stack">Built for your stack</h2>
+
+<section class="stack-groups">
+  <article class="stack-group">
+    <h3>Formats</h3>
+    <div class="stack-chips">
+      <span>Iceberg</span>
+      <span>Delta Lake</span>
+      <span>Parquet</span>
+      <span>Arrow</span>
+    </div>
+  </article>
+  <article class="stack-group">
+    <h3>Engines and APIs</h3>
+    <div class="stack-chips">
+      <span>DuckDB</span>
+      <span>Trino</span>
+      <span>REST API</span>
+      <span>CLI</span>
+    </div>
+  </article>
+  <article class="stack-group">
+    <h3>Storage and operations</h3>
+    <div class="stack-chips">
+      <span>S3 / LocalStack</span>
+      <span>Docker</span>
+      <span>Telemetry</span>
+      <span>Security</span>
+    </div>
+  </article>
+</section>
+
+<h2 id="try-now">Try it now</h2>
+
+<section class="try-now-grid">
+  <article class="try-card">
+    <h3>Start local stack</h3>
+    <p>Run Floecat with LocalStack and Trino in minutes via Docker Compose.</p>
+    <a class="btn btn--primary" href="https://github.com/eng-floe/floecat/blob/main/docs/docker.md">Open local setup</a>
+  </article>
+  <article class="try-card">
+    <h3>Query with DuckDB</h3>
+    <p>Attach Iceberg through Floecat and run queries from a local DuckDB session.</p>
+    <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/blob/main/tools/duckdb-localstack-init.sql">Open DuckDB init script</a>
+  </article>
+  <article class="try-card">
+    <h3>Explore APIs</h3>
+    <p>Inspect service endpoints and gateway behavior for integration work.</p>
+    <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/blob/main/docs/service.md">Read API docs</a>
+  </article>
+</section>
+
+<h2 id="problem">The problem this solves</h2>
+
+Open table formats solved storage interoperability, but not
+planner-ready statistics,
+cross-catalog semantics,
+or cross-engine consistency.
+
+Floecat is built for metadata <strong>consumption</strong>, not mutation:
+it gives engines a stable metadata layer
+instead of making each engine rebuild catalog logic.
+
+<h2 id="quickstart">Quickstart</h2>
+
+Clone, start the service, and open the CLI:
 
 ```bash
 git clone https://github.com/eng-floe/floecat.git
@@ -39,4 +180,28 @@ make run
 make cli-run
 ```
 
-Point Floecat at an Iceberg or Delta catalog, then query through its APIs or connect an engine like DuckDB.
+<section class="quickstart-actions">
+  <a class="btn btn--primary" href="https://github.com/eng-floe/floecat/tree/main/docs/docker.md">Run Local Stack</a>
+  <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/tree/main/docs/architecture.md">Read Architecture</a>
+  <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/tree/main/docs/iceberg-rest-gateway.md">Iceberg REST Guide</a>
+</section>
+
+Then point Floecat at an Iceberg or Delta catalog and query through its APIs
+or from engines like DuckDB and Trino.
+
+<h2 id="contact-contribute">Contact and contribute</h2>
+
+<section class="community-actions">
+  <a class="community-card" href="https://github.com/eng-floe/floecat/issues/new/choose">
+    <h3>Report an issue</h3>
+    <p>Found a bug or docs gap? Open a ticket with reproduction details.</p>
+  </a>
+  <a class="community-card" href="https://github.com/eng-floe/floecat/discussions">
+    <h3>Start a discussion</h3>
+    <p>Ask implementation questions or propose roadmap ideas with the team.</p>
+  </a>
+  <a class="community-card" href="https://github.com/eng-floe/floecat/blob/main/CONTRIBUTING.md">
+    <h3>Contribute code/docs</h3>
+    <p>Read contribution workflow, conventions, and pull request expectations.</p>
+  </a>
+</section>
