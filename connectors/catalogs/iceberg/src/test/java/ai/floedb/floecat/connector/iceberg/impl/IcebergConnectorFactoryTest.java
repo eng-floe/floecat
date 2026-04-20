@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -116,7 +116,8 @@ class IcebergConnectorFactoryTest {
     Map<String, String> props = new HashMap<>();
 
     InvocationTargetException ex =
-        assertThrows(InvocationTargetException.class, () -> method.invoke(null, props, "oauth2", null));
+        assertThrows(
+            InvocationTargetException.class, () -> method.invoke(null, props, "oauth2", null));
     Throwable cause = ex.getCause();
     assertNotNull(cause);
     assertEquals(NullPointerException.class, cause.getClass());

@@ -124,8 +124,7 @@ public interface MetadataResolutionContext {
               ignored -> {
                 T computed = supplier.get();
                 if (computed == null) {
-                  throw new IllegalStateException(
-                      "memoized value cannot be null for key: " + key);
+                  throw new IllegalStateException("memoized value cannot be null for key: " + key);
                 }
                 return computed;
               });

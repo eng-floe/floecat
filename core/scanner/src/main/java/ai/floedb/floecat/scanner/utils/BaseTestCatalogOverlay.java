@@ -32,9 +32,9 @@ import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Locale;
 
 public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   private static final String SYSTEM_ACCOUNT = "_system";

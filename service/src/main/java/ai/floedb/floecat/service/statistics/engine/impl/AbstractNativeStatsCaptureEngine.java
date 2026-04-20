@@ -341,7 +341,9 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     parent.addEvent("floecat.stats.persist", attrs);
 
     Span persistSpan =
-        GlobalOpenTelemetry.getTracer("floecat.service").spanBuilder("floecat.stats.persist").startSpan();
+        GlobalOpenTelemetry.getTracer("floecat.service")
+            .spanBuilder("floecat.stats.persist")
+            .startSpan();
     try {
       persistSpan.setAttribute("engine_id", id());
       persistSpan.setAttribute("table_id", request.tableId().getId());
