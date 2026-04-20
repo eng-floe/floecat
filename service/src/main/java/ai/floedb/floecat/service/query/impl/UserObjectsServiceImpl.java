@@ -64,43 +64,54 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
     AtomicBoolean failed = new AtomicBoolean(false);
     AtomicReference<String> correlationRef = new AtomicReference<>("");
     // Capture the incoming gRPC context so the principal/correlation-id stays available
-    // while authz/QueryContext lookup happen; the bundle builder itself is context-free.
+    // throughout the entire streaming response — including lazy item emission from the
+    // UserObjectBundleIterator, which calls principal.get() for name resolution.
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
 
     return Multi.createFrom()
-        .<UserObjectsBundleChunk>deferred(
-            () ->
-                grpcCtx.call(
-                    () -> {
-                      workStartNs.compareAndSet(0L, System.nanoTime());
-                      var principalContext = principal.get();
-                      var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
-                      var principalCorrelationId = principalContext.getCorrelationId();
-                      var correlationId =
-                          contextCorrelationId != null && !contextCorrelationId.isBlank()
-                              ? contextCorrelationId
-                              : principalCorrelationId;
-                      correlationRef.set(correlationId == null ? "" : correlationId);
-                      authz.require(principalContext, "catalog.read");
+        .<UserObjectsBundleChunk>emitter(
+            emitter -> {
+              grpcCtx.run(
+                  () -> {
+                    workStartNs.compareAndSet(0L, System.nanoTime());
+                    var principalContext = principal.get();
+                    var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
+                    var principalCorrelationId = principalContext.getCorrelationId();
+                    var correlationId =
+                        contextCorrelationId != null && !contextCorrelationId.isBlank()
+                            ? contextCorrelationId
+                            : principalCorrelationId;
+                    correlationRef.set(correlationId == null ? "" : correlationId);
+                    authz.require(principalContext, "catalog.read");
 
-                      String queryId =
-                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                      var ctxOpt = queryStore.get(queryId);
-                      if (ctxOpt.isEmpty()) {
-                        throw GrpcErrors.notFound(
-                            correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
-                      }
+                    String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                    var ctxOpt = queryStore.get(queryId);
+                    if (ctxOpt.isEmpty()) {
+                      emitter.fail(
+                          GrpcErrors.notFound(
+                              correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+                      return;
+                    }
 
-                      QueryContext ctx = ctxOpt.get();
-                      if (!ctx.isActive()) {
-                        throw GrpcErrors.preconditionFailed(
-                            correlationId,
-                            QUERY_NOT_ACTIVE,
-                            Map.of("query_id", queryId, "state", ctx.getState().name()));
-                      }
+                    QueryContext ctx = ctxOpt.get();
+                    if (!ctx.isActive()) {
+                      emitter.fail(
+                          GrpcErrors.preconditionFailed(
+                              correlationId,
+                              QUERY_NOT_ACTIVE,
+                              Map.of("query_id", queryId, "state", ctx.getState().name())));
+                      return;
+                    }
 
-                      return bundles.stream(correlationId, ctx, request.getTablesList());
-                    }))
+                    var subscription =
+                        bundles.stream(correlationId, ctx, request.getTablesList())
+                            .subscribe()
+                            .with(emitter::emit, emitter::fail, emitter::complete);
+
+                    emitter.onTermination(subscription::cancel);
+                    emitter.onCancellation(subscription::cancel);
+                  });
+            })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onCompletion()
         .invoke(() -> completed.set(true))
