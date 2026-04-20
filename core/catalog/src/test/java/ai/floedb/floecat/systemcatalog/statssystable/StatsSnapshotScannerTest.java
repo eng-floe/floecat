@@ -83,7 +83,7 @@ class StatsSnapshotScannerTest {
   }
 
   @Test
-  void scanDoesNotPrefetchBySnapshotPredicateIncludingZero() {
+  void scanPrefetchesBySnapshotPredicateIncludingZero() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");
     var orders =
@@ -102,7 +102,8 @@ class StatsSnapshotScannerTest {
             .map(r -> new StatsSnapshotScanner().toRow(r).values())
             .toList();
 
-    assertThat(rows).isEmpty();
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()[5]).isEqualTo(0L);
   }
 
   private static TargetStatsRecord tableWithMetadataRecord(ResourceId tableId, long snapshotId) {

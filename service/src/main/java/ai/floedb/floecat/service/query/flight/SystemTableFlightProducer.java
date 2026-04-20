@@ -42,6 +42,7 @@ import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.StatsSystemTableTelemetry;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
+import ai.floedb.floecat.service.query.system.SystemScanTelemetry;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
@@ -186,13 +187,19 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     List<String> requiredColumns = command.getRequiredColumnsList();
     List<Predicate> predicates = command.getPredicatesList();
     Expr arrowExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
-    ScanTelemetryHook telemetryHook = ScanTelemetryHook.NOOP;
+    ScanTelemetryHook telemetryHook =
+        SystemScanTelemetry.hook(
+            observability,
+            "flight_get_stream",
+            StatsSystemTableTelemetry.resourceName(graph, resolvedTableId));
     if (StatsSystemTableTelemetry.isStatsSystemTable(graph, resolvedTableId)) {
       telemetryHook =
-          StatsSystemTableTelemetry.hook(
-              observability,
-              "flight_get_stream",
-              StatsSystemTableTelemetry.resourceName(graph, resolvedTableId));
+          SystemScanTelemetry.combine(
+              telemetryHook,
+              StatsSystemTableTelemetry.hook(
+                  observability,
+                  "flight_get_stream",
+                  StatsSystemTableTelemetry.resourceName(graph, resolvedTableId)));
     }
     SystemObjectScanContext scanContext =
         new SystemObjectScanContext(

@@ -25,6 +25,8 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.expr.ScanPrefilter;
+import ai.floedb.floecat.scanner.expr.ScanPrefilters;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
@@ -49,6 +51,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.schemata */
 public final class SchemataScanner implements SystemObjectScanner {
+  private static final Set<String> PREFILTER_COLUMNS = Set.of("catalog_name", "schema_name");
 
   public static final List<SchemaColumn> SCHEMA =
       List.of(
@@ -106,8 +109,16 @@ public final class SchemataScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
+    ScanPrefilter prefilter = ScanPrefilters.fromPredicate(predicate, PREFILTER_COLUMNS);
+    emitPrefilterTelemetry(ctx, prefilter);
+    if (prefilter.impossible()) {
+      return Stream.empty();
+    }
     Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
+    List<NamespaceNode> namespaces =
+        ctx.listNamespaces().stream()
+            .filter(ns -> prefilter.matchesValue("schema_name", schemaName(ns)))
+            .toList();
     Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
     Spliterator<ColumnarBatch> spliterator =
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
@@ -135,6 +146,9 @@ public final class SchemataScanner implements SystemObjectScanner {
                 String catalogName =
                     catalogNames.computeIfAbsent(
                         catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
+                if (!prefilter.matchesValue("catalog_name", catalogName)) {
+                  continue;
+                }
                 builder.append(catalogName, schemaName(namespace));
                 if (builder.isFull()) {
                   action.accept(builder.build());
@@ -149,6 +163,20 @@ public final class SchemataScanner implements SystemObjectScanner {
           }
         };
     return StreamSupport.stream(spliterator, false);
+  }
+
+  private void emitPrefilterTelemetry(SystemObjectScanContext ctx, ScanPrefilter prefilter) {
+    String scanner = getClass().getSimpleName();
+    if (prefilter.impossible()) {
+      ctx.telemetryHook().onPrefilterImpossible(scanner);
+      return;
+    }
+    for (String column : PREFILTER_COLUMNS) {
+      long valueCount = prefilter.valuesFor(column).size();
+      if (valueCount > 0) {
+        ctx.telemetryHook().onPrefilterConstraint(scanner, column, valueCount);
+      }
+    }
   }
 
   private static final class SchemataBatchBuilder extends AbstractArrowBatchBuilder {

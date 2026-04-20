@@ -96,6 +96,10 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.engine_batch_calls.total | COUNTER |  | v1 | Stats engine batch capture calls. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.store_hits.total | COUNTER |  | v1 | Stats store hit count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.store_misses.total | COUNTER |  | v1 | Stats store miss count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
+| floecat.service.stats.systable.batches_emitted.total | COUNTER |  | v1 | System-table stats scan Arrow batches emitted. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.build.latency | TIMER | ms | v1 | System-table stats scan build latency in milliseconds. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.rows_emitted.total | COUNTER |  | v1 | System-table stats scan rows emitted by scanners before transport-level filtering. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.rows_scanned.total | COUNTER |  | v1 | System-table stats scan rows read from persisted storage. | component, operation, resource | component, operation, resource |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 

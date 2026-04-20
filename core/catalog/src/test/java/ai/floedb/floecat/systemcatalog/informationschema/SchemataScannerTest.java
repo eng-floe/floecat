@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
@@ -130,6 +131,31 @@ class SchemataScannerTest {
               .orElseThrow();
 
       assertThat(fields).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void scanArrow_prefiltersBySchemaName() {
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace("public");
+    builder.addNamespace("sales");
+    SystemObjectScanContext ctx = builder.build();
+    Expr predicate = new Expr.Eq(new Expr.ColumnRef("schema_name"), new Expr.Literal("sales"));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<List<String>> rows =
+          new SchemataScanner()
+              .scanArrow(ctx, predicate, List.of(), allocator)
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return toRows(batch.root());
+                    }
+                  })
+              .flatMap(List::stream)
+              .toList();
+
+      assertThat(rows).containsExactly(List.of("main_catalog", "sales"));
     }
   }
 

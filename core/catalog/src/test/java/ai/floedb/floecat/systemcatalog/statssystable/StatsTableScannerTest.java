@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.statssystable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -28,6 +29,10 @@ import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.stream.Stream;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
 import org.junit.jupiter.api.Test;
 
 class StatsTableScannerTest {
@@ -73,7 +78,7 @@ class StatsTableScannerTest {
   }
 
   @Test
-  void scanDoesNotPrefetchBySnapshotPredicate() {
+  void scanPrefetchesBySnapshotPredicate() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");
     var orders =
@@ -92,7 +97,41 @@ class StatsTableScannerTest {
             .map(StatsTableScannerTest::toValues)
             .toList();
 
-    assertThat(rows).isEmpty();
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()[5]).isEqualTo(0L);
+  }
+
+  @Test
+  void scanArrowPrefetchesBySnapshotPredicate() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("public");
+    var orders =
+        builder.addTable(
+            ns, "orders", Map.of("id", 1), Map.of("id", "bigint"), OptionalLong.of(77L));
+
+    StatsScannerTestSupport.FakeStatsProvider stats =
+        new StatsScannerTestSupport.FakeStatsProvider();
+    stats.put(orders.id(), 0L, List.of(tableRecord(orders.id(), 0L)));
+
+    SystemObjectScanContext ctx = StatsScannerTestSupport.context(builder, stats);
+    Expr predicate = new Expr.Eq(new Expr.ColumnRef("snapshot_id"), new Expr.Literal("0"));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        Stream<ColumnarBatch> batches =
+            new StatsTableScanner().scanArrow(ctx, predicate, List.of(), allocator)) {
+      List<Long> snapshots =
+          batches
+              .map(
+                  batch -> {
+                    try (batch) {
+                      BigIntVector vector = (BigIntVector) batch.root().getVector("snapshot_id");
+                      return vector.get(0);
+                    }
+                  })
+              .toList();
+
+      assertThat(snapshots).containsExactly(0L);
+    }
   }
 
   @Test
