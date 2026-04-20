@@ -96,6 +96,7 @@ import org.jboss.logging.Logger;
 
 public abstract class IcebergConnector implements FloecatConnector {
   private static final Logger LOG = Logger.getLogger(IcebergConnector.class);
+  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
   private final String connectorId;
   protected final Table singleTable;
   private final String singleNamespaceFq;
@@ -722,7 +723,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       }
       Map<String, Object> root = new LinkedHashMap<>();
       root.put("partitionValues", values);
-      return new ObjectMapper().writeValueAsString(root);
+      return OBJECT_MAPPER.writeValueAsString(root);
     } catch (Exception e) {
       return "";
     }

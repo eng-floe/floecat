@@ -222,7 +222,7 @@ final class IcebergConnectorFactory {
   }
 
   private static void normalizeAwsRegionProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
+    if (props.isEmpty()) {
       return;
     }
     String region = props.get("client.region");
