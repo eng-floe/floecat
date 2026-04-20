@@ -1612,21 +1612,25 @@ public class UserObjectBundleService {
         return;
       }
       long cursorNs = 0L;
-      cursorNs = emitPhaseSpan(parentSpan, "resolve", cursorNs, resolveNanos, outcome, "");
-      cursorNs = emitPhaseSpan(parentSpan, "base_inject", cursorNs, baseInjectNanos, outcome, "");
-      cursorNs = emitPhaseSpan(parentSpan, "pin_collect", cursorNs, pinCollectNanos, outcome, "");
-      cursorNs = emitPhaseSpan(parentSpan, "pin_commit", cursorNs, pinCommitNanos, outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "resolve", 0L, cursorNs, resolveNanos, outcome, "");
       cursorNs =
-          emitPhaseSpan(parentSpan, "relation_build", cursorNs, relationBuildNanos, outcome, "");
+          emitPhaseSpan(parentSpan, "base_inject", 0L, cursorNs, baseInjectNanos, outcome, "");
+      cursorNs =
+          emitPhaseSpan(parentSpan, "pin_collect", 0L, cursorNs, pinCollectNanos, outcome, "");
+      cursorNs = emitPhaseSpan(parentSpan, "pin_commit", 0L, cursorNs, pinCommitNanos, outcome, "");
+      cursorNs =
+          emitPhaseSpan(
+              parentSpan, "relation_build", 0L, cursorNs, relationBuildNanos, outcome, "");
 
       long decorationStartNs = cursorNs;
       Span decorationSpan =
-          startPhaseSpan(parentSpan, "decoration", decorationStartNs, outcome, "");
+          startPhaseSpan(parentSpan, "decoration", 0L, decorationStartNs, outcome, "");
       long decorationCursorNs = 0L;
       decorationCursorNs =
           emitPhaseSpan(
               decorationSpan,
               "decoration_relation",
+              decorationStartNs,
               decorationCursorNs,
               timings.decorateRelationNanos(),
               outcome,
@@ -1635,6 +1639,7 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               decorationSpan,
               "decoration_view",
+              decorationStartNs,
               decorationCursorNs,
               timings.decorateViewNanos(),
               outcome,
@@ -1642,7 +1647,12 @@ public class UserObjectBundleService {
       long columnsStartNs = decorationCursorNs;
       Span decorationColumnsSpan =
           startPhaseSpan(
-              decorationSpan, "decoration_columns", columnsStartNs, outcome, "decoration");
+              decorationSpan,
+              "decoration_columns",
+              decorationStartNs,
+              columnsStartNs,
+              outcome,
+              "decoration");
       long columnsInvokeNanos = timings.decorateColumnInvokeNanos();
       long columnsPostprocessNanos =
           Math.max(0L, timings.decorateColumnsNanos() - timings.decorateColumnInvokeNanos());
@@ -1651,6 +1661,7 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               decorationColumnsSpan,
               "decoration_columns_invoke",
+              decorationStartNs + columnsStartNs,
               columnsCursorNs,
               columnsInvokeNanos,
               outcome,
@@ -1659,16 +1670,23 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               decorationColumnsSpan,
               "decoration_columns_postprocess",
+              decorationStartNs + columnsStartNs,
               columnsCursorNs,
               columnsPostprocessNanos,
               outcome,
               "decoration_columns");
-      endPhaseSpan(decorationColumnsSpan, columnsStartNs, timings.decorateColumnsNanos());
+      endPhaseSpan(
+          decorationColumnsSpan, decorationStartNs, columnsStartNs, timings.decorateColumnsNanos());
       decorationCursorNs += timings.decorateColumnsNanos();
       long completeStartNs = decorationCursorNs;
       Span completeSpan =
           startPhaseSpan(
-              decorationSpan, "decoration_complete", completeStartNs, outcome, "decoration");
+              decorationSpan,
+              "decoration_complete",
+              decorationStartNs,
+              completeStartNs,
+              outcome,
+              "decoration");
       long completeCursorNs = 0L;
       long relationPersistNanos = timings.decoratePersistRelationNanos();
       long columnPersistNanos = timings.decoratePersistColumnsNanos();
@@ -1676,6 +1694,7 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               completeSpan,
               "decoration_persist_relation",
+              decorationStartNs + completeStartNs,
               completeCursorNs,
               relationPersistNanos,
               outcome,
@@ -1684,6 +1703,7 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               completeSpan,
               "decoration_persist_columns",
+              decorationStartNs + completeStartNs,
               completeCursorNs,
               columnPersistNanos,
               outcome,
@@ -1694,19 +1714,22 @@ public class UserObjectBundleService {
           emitPhaseSpan(
               completeSpan,
               "decoration_complete_other",
+              decorationStartNs + completeStartNs,
               completeCursorNs,
               decorationCompleteOtherNanos,
               outcome,
               "decoration_complete");
-      endPhaseSpan(completeSpan, completeStartNs, timings.decorateCompleteNanos());
+      endPhaseSpan(
+          completeSpan, decorationStartNs, completeStartNs, timings.decorateCompleteNanos());
       decorationCursorNs += timings.decorateCompleteNanos();
-      endPhaseSpan(decorationSpan, decorationStartNs, decorationNanos);
+      endPhaseSpan(decorationSpan, 0L, decorationStartNs, decorationNanos);
       cursorNs += decorationNanos;
 
       cursorNs =
           emitPhaseSpan(
-              parentSpan, "stats_lookup", cursorNs, timings.statsLookupNanos(), outcome, "");
-      cursorNs = emitPhaseSpan(parentSpan, "scheduling", cursorNs, schedulingNanos, outcome, "");
+              parentSpan, "stats_lookup", 0L, cursorNs, timings.statsLookupNanos(), outcome, "");
+      cursorNs =
+          emitPhaseSpan(parentSpan, "scheduling", 0L, cursorNs, schedulingNanos, outcome, "");
 
       parentSpan.addEvent(
           "floecat.get_user_objects.summary",
@@ -1727,12 +1750,18 @@ public class UserObjectBundleService {
     }
 
     private Span startPhaseSpan(
-        Span parent, String phase, long startOffsetNs, String outcome, String parentPhase) {
+        Span parent,
+        String phase,
+        long baseOffsetNs,
+        long startOffsetNs,
+        String outcome,
+        String parentPhase) {
       if (parent == null || !parent.getSpanContext().isValid()) {
         return Span.getInvalid();
       }
+      long safeBaseOffset = Math.max(0L, baseOffsetNs);
       long safeStartOffset = Math.max(0L, startOffsetNs);
-      long startTimestampNs = streamStartEpochNs + safeStartOffset;
+      long startTimestampNs = streamStartEpochNs + safeBaseOffset + safeStartOffset;
       var builder =
           GlobalOpenTelemetry.getTracer("floecat.service")
               .spanBuilder("floecat.get_user_objects.phase." + phase)
@@ -1748,13 +1777,15 @@ public class UserObjectBundleService {
       return builder.startSpan();
     }
 
-    private void endPhaseSpan(Span phaseSpan, long startOffsetNs, long elapsedNanos) {
+    private void endPhaseSpan(
+        Span phaseSpan, long baseOffsetNs, long startOffsetNs, long elapsedNanos) {
       if (phaseSpan == null || !phaseSpan.getSpanContext().isValid()) {
         return;
       }
+      long safeBaseOffset = Math.max(0L, baseOffsetNs);
       long safeStartOffset = Math.max(0L, startOffsetNs);
       long safeElapsed = Math.max(0L, elapsedNanos);
-      long endTimestampNs = streamStartEpochNs + safeStartOffset + safeElapsed;
+      long endTimestampNs = streamStartEpochNs + safeBaseOffset + safeStartOffset + safeElapsed;
       phaseSpan.setAttribute("elapsed_ns", safeElapsed);
       phaseSpan.setAttribute("elapsed_ms", safeElapsed / 1_000_000.0);
       phaseSpan.end(endTimestampNs, TimeUnit.NANOSECONDS);
@@ -1763,12 +1794,14 @@ public class UserObjectBundleService {
     private long emitPhaseSpan(
         Span parent,
         String phase,
+        long baseOffsetNs,
         long startOffsetNs,
         long elapsedNanos,
         String outcome,
         String parentPhase) {
-      Span phaseSpan = startPhaseSpan(parent, phase, startOffsetNs, outcome, parentPhase);
-      endPhaseSpan(phaseSpan, startOffsetNs, elapsedNanos);
+      Span phaseSpan =
+          startPhaseSpan(parent, phase, baseOffsetNs, startOffsetNs, outcome, parentPhase);
+      endPhaseSpan(phaseSpan, baseOffsetNs, startOffsetNs, elapsedNanos);
       return Math.max(0L, startOffsetNs) + Math.max(0L, elapsedNanos);
     }
 
