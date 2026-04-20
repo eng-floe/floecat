@@ -29,6 +29,16 @@ final class IcebergRestConnector extends IcebergConnector {
   private final RESTCatalog catalog;
   private final Catalog tableCatalog;
   private final boolean closeCatalogOnClose;
+  private final Runnable closeHook;
+
+  IcebergRestConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles) {
+    this(connectorId, catalog, catalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true, null);
+  }
 
   IcebergRestConnector(
       String connectorId,
@@ -37,7 +47,15 @@ final class IcebergRestConnector extends IcebergConnector {
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
-    this(connectorId, catalog, tableCatalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true);
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        true,
+        null);
   }
 
   IcebergRestConnector(
@@ -48,10 +66,31 @@ final class IcebergRestConnector extends IcebergConnector {
       double ndvSampleFraction,
       long ndvMaxFiles,
       boolean closeCatalogOnClose) {
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        closeCatalogOnClose,
+        null);
+  }
+
+  IcebergRestConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      Catalog tableCatalog,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose,
+      Runnable closeHook) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.catalog = Objects.requireNonNull(catalog, "catalog");
     this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
     this.closeCatalogOnClose = closeCatalogOnClose;
+    this.closeHook = closeHook;
   }
 
   @Override
@@ -104,12 +143,18 @@ final class IcebergRestConnector extends IcebergConnector {
 
   @Override
   protected void closeCatalog() {
-    if (!closeCatalogOnClose) {
-      return;
-    }
     try {
-      catalog.close();
+      if (closeCatalogOnClose) {
+        catalog.close();
+      }
     } catch (Exception ignore) {
+    } finally {
+      if (closeHook != null) {
+        try {
+          closeHook.run();
+        } catch (RuntimeException ignore) {
+        }
+      }
     }
   }
 }

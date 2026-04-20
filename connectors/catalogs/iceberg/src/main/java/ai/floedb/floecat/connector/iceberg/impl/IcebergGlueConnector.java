@@ -30,6 +30,7 @@ final class IcebergGlueConnector extends IcebergConnector {
   private final RESTCatalog catalog;
   private final Catalog tableCatalog;
   private final boolean closeCatalogOnClose;
+  private final Runnable closeHook;
 
   IcebergGlueConnector(
       String connectorId,
@@ -47,7 +48,8 @@ final class IcebergGlueConnector extends IcebergConnector {
         ndvEnabled,
         ndvSampleFraction,
         ndvMaxFiles,
-        true);
+        true,
+        null);
   }
 
   IcebergGlueConnector(
@@ -59,11 +61,34 @@ final class IcebergGlueConnector extends IcebergConnector {
       double ndvSampleFraction,
       long ndvMaxFiles,
       boolean closeCatalogOnClose) {
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        glueFilter,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        closeCatalogOnClose,
+        null);
+  }
+
+  IcebergGlueConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      Catalog tableCatalog,
+      GlueIcebergFilter glueFilter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose,
+      Runnable closeHook) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.glueFilter = Objects.requireNonNull(glueFilter, "glueFilter");
     this.catalog = Objects.requireNonNull(catalog, "catalog");
     this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
     this.closeCatalogOnClose = closeCatalogOnClose;
+    this.closeHook = closeHook;
   }
 
   @Override
@@ -116,12 +141,18 @@ final class IcebergGlueConnector extends IcebergConnector {
 
   @Override
   protected void closeCatalog() {
-    if (!closeCatalogOnClose) {
-      return;
-    }
     try {
-      catalog.close();
+      if (closeCatalogOnClose) {
+        catalog.close();
+      }
     } catch (Exception ignore) {
+    } finally {
+      if (closeHook != null) {
+        try {
+          closeHook.run();
+        } catch (RuntimeException ignore) {
+        }
+      }
     }
   }
 }

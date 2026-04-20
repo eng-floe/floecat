@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.apache.iceberg.Table;
@@ -101,58 +102,75 @@ final class IcebergConnectorFactory {
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
-        CatalogCacheEntry catalog = acquireRestCatalog(props);
-        RESTCatalog rawCatalog = catalog.rawCatalog();
-        Catalog tableCatalog = catalog.tableCatalog();
-        if (source == IcebergSource.GLUE) {
-          var glue = AwsGlueClientFactory.create(props, authProps);
-          var glueFilter = new GlueIcebergFilter(glue);
-          yield new IcebergGlueConnector(
-              "iceberg-glue",
+        CatalogLease catalogLease = acquireRestCatalog(props);
+        RESTCatalog rawCatalog = catalogLease.rawCatalog();
+        Catalog tableCatalog = catalogLease.tableCatalog();
+        try {
+          if (source == IcebergSource.GLUE) {
+            var glue = AwsGlueClientFactory.create(props, authProps);
+            var glueFilter = new GlueIcebergFilter(glue);
+            yield new IcebergGlueConnector(
+                "iceberg-glue",
+                rawCatalog,
+                tableCatalog,
+                glueFilter,
+                ndvEnabled,
+                ndvSampleFraction,
+                ndvMaxFiles,
+                false,
+                catalogLease::release);
+          }
+          yield new IcebergRestConnector(
+              "iceberg-rest",
               rawCatalog,
               tableCatalog,
-              glueFilter,
               ndvEnabled,
               ndvSampleFraction,
               ndvMaxFiles,
-              false);
+              false,
+              catalogLease::release);
+        } catch (RuntimeException e) {
+          catalogLease.release();
+          throw e;
         }
-        yield new IcebergRestConnector(
-            "iceberg-rest",
-            rawCatalog,
-            tableCatalog,
-            ndvEnabled,
-            ndvSampleFraction,
-            ndvMaxFiles,
-            false);
       }
     };
   }
 
-  private static CatalogCacheEntry acquireRestCatalog(Map<String, String> props) {
+  private static CatalogLease acquireRestCatalog(Map<String, String> props) {
     long now = System.currentTimeMillis();
     evictExpiredCatalogs(now);
     CatalogCacheKey key = CatalogCacheKey.of(props);
     CatalogCacheEntry cached = REST_CATALOG_CACHE.get(key);
     if (cached != null && !cached.isExpired(now)) {
-      cached.touch(now + REST_CATALOG_TTL_MS);
-      return cached;
+      CatalogLease lease = cached.tryAcquire(now + REST_CATALOG_TTL_MS);
+      if (lease != null) {
+        return lease;
+      }
     }
-    return REST_CATALOG_CACHE.compute(
-        key,
-        (ignored, existing) -> {
-          long refreshNow = System.currentTimeMillis();
-          if (existing != null && !existing.isExpired(refreshNow)) {
-            existing.touch(refreshNow + REST_CATALOG_TTL_MS);
-            return existing;
-          }
-          if (existing != null) {
-            closeQuietly(existing.rawCatalog());
-          }
-          RESTCatalog created = new RESTCatalog();
-          created.initialize("floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
-          return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
-        });
+    while (true) {
+      CatalogCacheEntry entry =
+          REST_CATALOG_CACHE.compute(
+              key,
+              (ignored, existing) -> {
+                long refreshNow = System.currentTimeMillis();
+                if (existing != null && !existing.isExpired(refreshNow)) {
+                  existing.touch(refreshNow + REST_CATALOG_TTL_MS);
+                  return existing;
+                }
+                if (existing != null) {
+                  existing.retire();
+                }
+                RESTCatalog created = new RESTCatalog();
+                created.initialize(
+                    "floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
+                return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
+              });
+      CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
+      if (lease != null) {
+        return lease;
+      }
+    }
   }
 
   private static void evictExpiredCatalogs(long now) {
@@ -162,12 +180,15 @@ final class IcebergConnectorFactory {
         continue;
       }
       if (REST_CATALOG_CACHE.remove(entry.getKey(), cached)) {
-        closeQuietly(cached.rawCatalog());
+        cached.retire();
       }
     }
   }
 
   private static void closeQuietly(RESTCatalog catalog) {
+    if (catalog == null) {
+      return;
+    }
     try {
       catalog.close();
     } catch (Exception ignore) {
@@ -273,6 +294,9 @@ final class IcebergConnectorFactory {
     private final RESTCatalog rawCatalog;
     private final Catalog catalog;
     private volatile long expiresAtMs;
+    private int activeLeases;
+    private boolean retired;
+    private boolean closed;
 
     private CatalogCacheEntry(RESTCatalog rawCatalog, Catalog catalog, long expiresAtMs) {
       this.rawCatalog = rawCatalog;
@@ -294,6 +318,69 @@ final class IcebergConnectorFactory {
 
     private void touch(long nextExpiryMs) {
       this.expiresAtMs = nextExpiryMs;
+    }
+
+    private CatalogLease tryAcquire(long nextExpiryMs) {
+      synchronized (this) {
+        if (retired || closed) {
+          return null;
+        }
+        this.expiresAtMs = nextExpiryMs;
+        activeLeases++;
+      }
+      return new CatalogLease(this);
+    }
+
+    private void release() {
+      RESTCatalog toClose = null;
+      synchronized (this) {
+        if (activeLeases > 0) {
+          activeLeases--;
+        }
+        if (retired && activeLeases == 0 && !closed) {
+          closed = true;
+          toClose = rawCatalog;
+        }
+      }
+      closeQuietly(toClose);
+    }
+
+    private void retire() {
+      RESTCatalog toClose = null;
+      synchronized (this) {
+        if (retired) {
+          return;
+        }
+        retired = true;
+        if (activeLeases == 0 && !closed) {
+          closed = true;
+          toClose = rawCatalog;
+        }
+      }
+      closeQuietly(toClose);
+    }
+  }
+
+  private static final class CatalogLease {
+    private final CatalogCacheEntry entry;
+    private final AtomicBoolean released = new AtomicBoolean(false);
+
+    private CatalogLease(CatalogCacheEntry entry) {
+      this.entry = entry;
+    }
+
+    private RESTCatalog rawCatalog() {
+      return entry.rawCatalog();
+    }
+
+    private Catalog tableCatalog() {
+      return entry.tableCatalog();
+    }
+
+    private void release() {
+      if (released.compareAndSet(false, true)) {
+        entry.release();
+      }
     }
   }
 }
