@@ -1,0 +1,8 @@
+mark_cusack:
+  name: "Mark Cusack"
+  bio: "Mark is the CTO at Floe. He has a long history in analytics going all the way back to Teradata. He was once a PhD physicist, and a researcher in parallel simulation."
+  avatar: "/images/cusack.png"
+  links:
+    - label: "GitHub"
+      icon: "fab fa-fw fa-github"
+      url: "https://github.com"

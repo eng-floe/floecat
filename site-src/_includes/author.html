@@ -1,0 +1,16 @@
+{% assign author = site.data.authors[include.author] %}
+{% if author %}
+  <div class="page__author" style="clear: both; display: flex; gap: 1rem; align-items: flex-start; width: 100%; margin: 1.5em 0 2em; padding: 1em; border-top: 1px solid var(--site-border); border-bottom: 1px solid var(--site-border);">
+    {% if author.avatar %}
+      <img src="{{ author.avatar | relative_url }}" alt="{{ author.name }}" style="width: 72px; height: 72px; border-radius: 999px; object-fit: cover; flex: 0 0 72px;">
+    {% endif %}
+    <div>
+      <h3 style="margin-top: 0; margin-bottom: 0.5em; color: var(--site-ink-strong);">
+        {{ author.name }}
+      </h3>
+      <p style="margin: 0; line-height: 1.5; color: var(--site-ink-soft);">
+        {{ author.bio }}
+      </p>
+    </div>
+  </div>
+{% endif %}

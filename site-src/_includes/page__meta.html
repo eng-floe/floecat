@@ -1,0 +1,15 @@
+{% if page.author %}
+  {% assign author = site.data.authors[page.author] %}
+  <p class="page__byline">
+    By
+    {% if author and author.name %}
+      {{ author.name }}
+    {% else %}
+      {{ page.author }}
+    {% endif %}
+    {% if page.date %}
+      <span class="page__byline-separator">|</span>
+      <time datetime="{{ page.date | date_to_xmlschema }}">{{ page.date | date: "%B %-d, %Y" }}</time>
+    {% endif %}
+  </p>
+{% endif %}
