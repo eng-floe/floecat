@@ -149,6 +149,12 @@ Limits/Follow-ups:
 - `ViewMetadataService` builds Iceberg-compatible view metadata blobs (schemas, versions, version logs, representations) and stores them along with user properties.
 - REST view requests/responses mirror the OpenAPI contract (SQL text, schema JSON, properties, requirements/updates).
 - View rename/move paths map to `ViewService.UpdateView` by updating `namespace_id` + `display_name`.
+- `POST /register-view` populates the same canonical backend fields as normal create, including
+  SQL definitions, creation search path, and output columns.
+- View commit updates keep the backend’s canonical SQL/search-path/output-column fields in sync
+  with the Iceberg metadata payload when that information is present.
+- Floecat’s backend view record remains current-state only. Iceberg-style version history is stored
+  in the metadata JSON property for REST compatibility, not as first-class backend view versions.
 
 ---
 
@@ -217,8 +223,9 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
-- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
-  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
+- **Compose smoke:** `make compose-smoke` runs DuckDB table federation checks plus Trino table and
+  view lifecycle checks in LocalStack mode. The Trino block creates and replaces an Iceberg view
+  via SQL and verifies both definitions are queryable.
 
 ---
 

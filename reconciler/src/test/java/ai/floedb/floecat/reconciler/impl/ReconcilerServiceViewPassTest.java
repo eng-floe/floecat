@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -50,8 +51,9 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(capturingBackend.capturedViews).hasSize(1);
     ViewSpec spec = capturingBackend.capturedViews.get(0);
     assertThat(spec.getDisplayName()).isEqualTo("revenue_view");
-    assertThat(spec.getSql()).isEqualTo("SELECT amount FROM sales");
-    assertThat(spec.getDialect()).isEqualTo("spark");
+    assertThat(spec.getSqlDefinitionsList()).hasSize(1);
+    assertThat(spec.getSqlDefinitions(0).getSql()).isEqualTo("SELECT amount FROM sales");
+    assertThat(spec.getSqlDefinitions(0).getDialect()).isEqualTo("spark");
     assertThat(spec.getOutputColumnsCount()).isEqualTo(1);
     assertThat(spec.getOutputColumns(0).getName()).isEqualTo("amount");
     assertThat(spec.getOutputColumns(0).getLogicalType()).isEqualTo("DOUBLE");
@@ -196,6 +198,37 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void viewPassCountsUpdatedExistingViewAsChanged() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "existing_view",
+            "SELECT x FROM t",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"x\",\"type\":\"int\",\"nullable\":false}]}");
+
+    var capturingBackend =
+        new ViewCapturingBackend(activeConnector()) {
+          @Override
+          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+            capturedViews.add(spec);
+            capturedIdempotencyKeys.add(idempotencyKey);
+            return ResourceId.newBuilder().setId("updated-view").build();
+          }
+        };
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+  }
+
+  @Test
   void viewsOnlyNamespaceWithTableFilterSyncsViews() {
     var viewDesc =
         new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
@@ -218,5 +251,110 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.error.getMessage()).contains("No tables matched scope");
     assertThat(capturingBackend.capturedViews).hasSize(1);
     assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  @Test
+  void reconcileViewsOnlySkipsTableWorkAndStillSyncsViews() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of(viewDesc)) {
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                throw new AssertionError("views-only reconcile should not enumerate tables");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                throw new AssertionError("views-only reconcile should not describe tables");
+              }
+            };
+
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "some_table", List.of());
+    var result =
+        service.reconcileViewsOnly(
+            principal,
+            connectorId,
+            scope,
+            null,
+            () -> false,
+            (ts, tc, vs, vc, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.errors).isEqualTo(0);
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  @Test
+  void reconcileViewExecutesSinglePlannedViewTask() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result =
+        service.reconcileView(
+            principal,
+            connectorId,
+            ReconcileScope.empty(),
+            ReconcileViewTask.of("src_cat.src_ns", "revenue_view", "dest_ns", "revenue_view"),
+            null,
+            () -> false,
+            (ts, tc, vs, vc, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  @Test
+  void statsOnlyReconcileSkipsViewSync() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            true,
+            ReconcileScope.empty(),
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.errors).isEqualTo(0);
+    assertThat(capturingBackend.capturedViews).isEmpty();
   }
 }

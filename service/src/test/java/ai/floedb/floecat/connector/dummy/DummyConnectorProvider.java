@@ -32,7 +32,7 @@ public final class DummyConnectorProvider implements ConnectorProvider {
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
     LAST_CONFIG.set(cfg);
-    return DummyConnector.create();
+    return DummyConnector.create(cfg);
   }
 
   public static ConnectorConfig lastConfig() {

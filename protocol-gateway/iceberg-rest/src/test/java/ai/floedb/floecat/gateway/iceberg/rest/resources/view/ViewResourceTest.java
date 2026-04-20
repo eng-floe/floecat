@@ -117,7 +117,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
                   View.newBuilder()
                       .setResourceId(ResourceId.newBuilder().setId("cat:db:new_view"))
                       .setDisplayName(spec.getDisplayName())
-                      .setSql(spec.getSql())
+                      .addAllSqlDefinitions(spec.getSqlDefinitionsList())
                       .putAllProperties(spec.getPropertiesMap())
                       .build();
               return CreateViewResponse.newBuilder().setView(created).build();
@@ -180,7 +180,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
                   View.newBuilder()
                       .setResourceId(ResourceId.newBuilder().setId("cat:db:typed_view"))
                       .setDisplayName(spec.getDisplayName())
-                      .setSql(spec.getSql())
+                      .addAllSqlDefinitions(spec.getSqlDefinitionsList())
                       .putAllProperties(spec.getPropertiesMap())
                       .build();
               return CreateViewResponse.newBuilder().setView(created).build();
@@ -219,7 +219,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
         ArgumentCaptor.forClass(CreateViewRequest.class);
     verify(viewStub).createView(createCaptor.capture());
     ViewSpec capturedSpec = createCaptor.getValue().getSpec();
-    assertEquals("spark", capturedSpec.getDialect());
+    assertEquals("spark", capturedSpec.getSqlDefinitions(0).getDialect());
     assertEquals(List.of("db"), capturedSpec.getCreationSearchPathList());
     assertEquals(1, capturedSpec.getOutputColumnsCount());
     assertEquals("order_id", capturedSpec.getOutputColumns(0).getName());
@@ -263,7 +263,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
         View.newBuilder()
             .setResourceId(viewId)
             .setDisplayName("reports")
-            .setSql(context.sql())
+            .addAllSqlDefinitions(viewMetadataService.extractSqlDefinitions(context))
             .putAllProperties(props)
             .build();
     when(viewStub.getView(any())).thenReturn(GetViewResponse.newBuilder().setView(view).build());
@@ -275,6 +275,58 @@ class ViewResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("metadata-location", equalTo("s3://warehouse/views/db/reports/metadata.json"))
         .body("metadata.current-version-id", equalTo(1));
+  }
+
+  @Test
+  void getsViewContractWithAllRepresentations() throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    ViewRequests.ViewRepresentation ansiRep =
+        new ViewRequests.ViewRepresentation("sql", "select 1", "ansi");
+    ViewRequests.ViewRepresentation sparkRep =
+        new ViewRequests.ViewRepresentation("sql", "SELECT `id` FROM db.reports", "spark");
+    ViewRequests.ViewVersion version =
+        new ViewRequests.ViewVersion(
+            1,
+            1700000000L,
+            1,
+            Map.of("operation", "create"),
+            List.of(ansiRep, sparkRep),
+            List.of("db"),
+            null);
+    ViewRequests.Create createReq =
+        new ViewRequests.Create(
+            "reports",
+            "s3://warehouse/views/db/reports/metadata.json",
+            json.readTree("{\"schema-id\":1,\"type\":\"struct\",\"fields\":[]}"),
+            version,
+            Map.of("comment", "demo"));
+    MetadataContext context = viewMetadataService.fromCreate(List.of("db"), "reports", createReq);
+    Map<String, String> props = viewMetadataService.buildPropertyMap(context);
+    View view =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setDisplayName("reports")
+            .addAllSqlDefinitions(viewMetadataService.extractSqlDefinitions(context))
+            .putAllProperties(props)
+            .build();
+    when(viewStub.getView(any())).thenReturn(GetViewResponse.newBuilder().setView(view).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/views/reports")
+        .then()
+        .statusCode(200)
+        .body("metadata.current-version-id", equalTo(1))
+        .body("metadata.versions[0].representations.size()", equalTo(2))
+        .body("metadata.versions[0].representations[0].dialect", equalTo("ansi"))
+        .body("metadata.versions[0].representations[0].sql", equalTo("select 1"))
+        .body("metadata.versions[0].representations[1].dialect", equalTo("spark"))
+        .body(
+            "metadata.versions[0].representations[1].sql", equalTo("SELECT `id` FROM db.reports"));
   }
 
   @Test
@@ -300,7 +352,14 @@ class ViewResourceTest extends AbstractRestResourceTest {
         new ViewRequests.Create(
             "reports",
             null,
-            json.readTree("{\"schema-id\":1,\"type\":\"struct\",\"fields\":[]}"),
+            json.readTree(
+                """
+                {
+                  "schema-id":1,
+                  "type":"struct",
+                  "fields":[{"id":1,"name":"value","type":"int","required":true}]
+                }
+                """),
             version,
             Map.of("comment", "base"));
     MetadataContext baseContext =
@@ -310,7 +369,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
         View.newBuilder()
             .setResourceId(viewId)
             .setDisplayName("reports")
-            .setSql(baseContext.sql())
+            .addAllSqlDefinitions(viewMetadataService.extractSqlDefinitions(baseContext))
             .putAllProperties(baseProps)
             .build();
     when(viewStub.getView(any()))
@@ -324,7 +383,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
                   View.newBuilder()
                       .setResourceId(viewId)
                       .setDisplayName("reports")
-                      .setSql(request.getSpec().getSql())
+                      .addAllSqlDefinitions(request.getSpec().getSqlDefinitionsList())
                       .putAllProperties(request.getSpec().getPropertiesMap())
                       .build();
               return UpdateViewResponse.newBuilder().setView(updated).build();
@@ -359,6 +418,18 @@ class ViewResourceTest extends AbstractRestResourceTest {
         .body("metadata.current-version-id", equalTo(2))
         .body("metadata.versions.size()", equalTo(2))
         .body("metadata.versions[1].representations[0].sql", equalTo("select 2"));
+
+    ArgumentCaptor<UpdateViewRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateViewRequest.class);
+    verify(viewStub).updateView(updateCaptor.capture());
+    UpdateViewRequest sent = updateCaptor.getValue();
+    assertTrue(sent.getUpdateMask().getPathsList().contains("sql_definitions"));
+    assertTrue(sent.getUpdateMask().getPathsList().contains("properties"));
+    assertTrue(sent.getUpdateMask().getPathsList().contains("creation_search_path"));
+    assertTrue(sent.getUpdateMask().getPathsList().contains("output_columns"));
+    assertEquals(List.of("db"), sent.getSpec().getCreationSearchPathList());
+    assertEquals(1, sent.getSpec().getOutputColumnsCount());
+    assertEquals("value", sent.getSpec().getOutputColumns(0).getName());
   }
 
   @Test
@@ -386,7 +457,12 @@ class ViewResourceTest extends AbstractRestResourceTest {
                     List.of("db"),
                     null)),
             List.of(new ViewMetadataView.ViewHistoryEntry(0, 1700000000L)),
-            List.of(new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of())),
+            List.of(
+                new ViewMetadataView.SchemaSummary(
+                    0,
+                    "struct",
+                    List.of(Map.of("id", 1, "name", "id", "type", "int", "required", true)),
+                    List.of())),
             Map.of("comment", "registered"));
     writeMetadataFile(root, metadataLocation, metadata);
 
@@ -399,7 +475,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
                   View.newBuilder()
                       .setResourceId(ResourceId.newBuilder().setId("cat:db:registered"))
                       .setDisplayName(spec.getDisplayName())
-                      .setSql(spec.getSql())
+                      .addAllSqlDefinitions(spec.getSqlDefinitionsList())
                       .putAllProperties(spec.getPropertiesMap())
                       .build();
               return CreateViewResponse.newBuilder().setView(created).build();
@@ -432,6 +508,10 @@ class ViewResourceTest extends AbstractRestResourceTest {
             createdSpec
                 .getPropertiesMap()
                 .get(ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY)));
+    assertEquals(List.of("db"), createdSpec.getCreationSearchPathList());
+    assertEquals(1, createdSpec.getOutputColumnsCount());
+    assertEquals("id", createdSpec.getOutputColumns(0).getName());
+    assertEquals("INT", createdSpec.getOutputColumns(0).getLogicalType());
   }
 
   @Test

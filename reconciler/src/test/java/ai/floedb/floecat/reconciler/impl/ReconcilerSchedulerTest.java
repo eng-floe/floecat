@@ -23,10 +23,13 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +57,7 @@ class ReconcilerSchedulerTest {
     when(executor.enabled()).thenReturn(true);
     when(executor.supportedExecutionClasses())
         .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
     when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
 
     var scheduler = new ReconcilerScheduler();
@@ -77,8 +81,10 @@ class ReconcilerSchedulerTest {
     when(executor.enabled()).thenReturn(true);
     when(executor.supportedExecutionClasses())
         .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
     when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
     when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.id()).thenReturn("default_reconciler");
@@ -92,6 +98,7 @@ class ReconcilerSchedulerTest {
     when(scheduler.config.getOptionalValue(
             org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
         .thenReturn(Optional.empty());
+    when(jobStore.childJobs("acct", "job-1")).thenReturn(List.of());
 
     var lease =
         new ReconcileJobStore.LeasedJob(
@@ -125,6 +132,8 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.eq(2L),
             org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
             org.mockito.ArgumentMatchers.eq(3L),
             org.mockito.ArgumentMatchers.eq(4L));
     verify(jobStore, never())
@@ -133,6 +142,8 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.anyString(),
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
@@ -147,8 +158,10 @@ class ReconcilerSchedulerTest {
     when(executor.enabled()).thenReturn(true);
     when(executor.supportedExecutionClasses())
         .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
     when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
     when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.id()).thenReturn("default_reconciler");
@@ -201,6 +214,8 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.eq("connector missing"),
             org.mockito.ArgumentMatchers.eq(0L),
             org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
             org.mockito.ArgumentMatchers.eq(1L),
             org.mockito.ArgumentMatchers.eq(0L),
             org.mockito.ArgumentMatchers.eq(0L));
@@ -214,6 +229,180 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  @Test
+  void runLeaseCancelsChildJobsWhenPlanFailsAfterPartialEnqueue() {
+    var jobStore = mock(ReconcileJobStore.class);
+    var executor = mock(ReconcileExecutor.class);
+    when(executor.enabled()).thenReturn(true);
+    when(executor.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
+    when(executor.supportedLanes()).thenReturn(Set.of(""));
+    when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.id()).thenReturn("planner");
+    var registry = new ReconcileExecutorRegistry(List.of(executor));
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = registry;
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.config = mock(Config.class);
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "plan-1",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            "");
+
+    when(executor.execute(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            ReconcileExecutor.ExecutionResult.failure(
+                0,
+                0,
+                1,
+                0,
+                0,
+                "planning failed after partial enqueue",
+                new RuntimeException("planning failed after partial enqueue")));
+    when(jobStore.childJobs("acct", "plan-1"))
+        .thenReturn(List.of(childJob("child-1", "plan-1"), childJob("child-2", "plan-1")));
+    when(jobStore.cancel("acct", "child-1", "planning failed after partial enqueue"))
+        .thenReturn(Optional.of(cancelledJob("child-1", "JS_CANCELLED", "plan-1")));
+    when(jobStore.cancel("acct", "child-2", "planning failed after partial enqueue"))
+        .thenReturn(Optional.of(cancelledJob("child-2", "JS_CANCELLED", "plan-1")));
+
+    scheduler.runLease(lease);
+
+    verify(jobStore, times(1))
+        .markFailed(
+            org.mockito.ArgumentMatchers.eq("plan-1"),
+            org.mockito.ArgumentMatchers.eq("lease-1"),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.eq("planning failed after partial enqueue"),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L));
+    verify(jobStore, times(1)).cancel("acct", "child-1", "planning failed after partial enqueue");
+    verify(jobStore, times(1)).cancel("acct", "child-2", "planning failed after partial enqueue");
+    verify(jobStore, never())
+        .cancel("acct", "other-child", "planning failed after partial enqueue");
+  }
+
+  @Test
+  void runLeaseFallbackSelectionStillChecksJobKindCompatibility() {
+    var jobStore = mock(ReconcileJobStore.class);
+    var wrongKind = mock(ReconcileExecutor.class);
+    when(wrongKind.enabled()).thenReturn(true);
+    when(wrongKind.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(wrongKind.supportedLanes()).thenReturn(Set.of(""));
+    when(wrongKind.supportedJobKinds()).thenReturn(EnumSet.of(ReconcileJobKind.EXEC_TABLE));
+    when(wrongKind.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(wrongKind.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(wrongKind.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(wrongKind.id()).thenReturn("wrong-kind");
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = new ReconcileExecutorRegistry(List.of(wrongKind));
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.config = mock(Config.class);
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            "");
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalStateException.class, () -> scheduler.runLease(lease));
+    verify(wrongKind, never()).execute(org.mockito.ArgumentMatchers.any());
+  }
+
+  private static ReconcileJobStore.ReconcileJob childJob(String jobId, String parentJobId) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector",
+        "JS_QUEUED",
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        null,
+        0L,
+        0L,
+        null,
+        null,
+        "",
+        ReconcileJobKind.EXEC_TABLE,
+        null,
+        parentJobId);
+  }
+
+  private static ReconcileJobStore.ReconcileJob cancelledJob(
+      String jobId, String state, String parentJobId) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector",
+        state,
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        null,
+        0L,
+        0L,
+        null,
+        null,
+        "",
+        ReconcileJobKind.EXEC_TABLE,
+        null,
+        parentJobId);
   }
 }

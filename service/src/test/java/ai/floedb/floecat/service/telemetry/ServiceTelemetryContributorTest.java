@@ -45,6 +45,8 @@ class ServiceTelemetryContributorTest {
     MetricDef updateSettings = registry.metric(ServiceMetrics.Reconcile.UPDATE_SETTINGS.name());
     MetricDef reconcileJobs = registry.metric(ServiceMetrics.Reconcile.JOBS.name());
     MetricDef reconcileJobLatency = registry.metric(ServiceMetrics.Reconcile.JOB_LATENCY.name());
+    MetricDef viewsScanned = registry.metric(ServiceMetrics.Reconcile.VIEWS_SCANNED.name());
+    MetricDef viewsChanged = registry.metric(ServiceMetrics.Reconcile.VIEWS_CHANGED.name());
     MetricDef queued = registry.metric(ServiceMetrics.Reconcile.JOBS_QUEUED.name());
     MetricDef oldestAge = registry.metric(ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE.name());
     MetricDef plannerTicks = registry.metric(ServiceMetrics.Reconcile.PLANNER_TICKS.name());
@@ -108,6 +110,12 @@ class ServiceTelemetryContributorTest {
         .containsExactlyInAnyOrder(
             TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
     assertThat(reconcileJobLatency.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
+    assertThat(viewsScanned).isNotNull();
+    assertThat(viewsScanned.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
+    assertThat(viewsScanned.allowedTags()).isEqualTo(reconcileJobs.allowedTags());
+    assertThat(viewsChanged).isNotNull();
+    assertThat(viewsChanged.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
+    assertThat(viewsChanged.allowedTags()).isEqualTo(reconcileJobs.allowedTags());
 
     assertThat(queued).isNotNull();
     assertThat(queued.requiredTags()).containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
@@ -142,6 +150,8 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Reconcile.STATS_PROCESSED.name(),
                 ServiceMetrics.Reconcile.TABLES_SCANNED.name(),
                 ServiceMetrics.Reconcile.TABLES_CHANGED.name(),
+                ServiceMetrics.Reconcile.VIEWS_SCANNED.name(),
+                ServiceMetrics.Reconcile.VIEWS_CHANGED.name(),
                 ServiceMetrics.Reconcile.ERRORS.name(),
                 ServiceMetrics.Reconcile.JOBS_QUEUED.name(),
                 ServiceMetrics.Reconcile.JOBS_RUNNING.name(),

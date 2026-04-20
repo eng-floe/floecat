@@ -19,9 +19,12 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.EnumSet;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Default executor that preserves the existing in-process ReconcilerService execution path. */
@@ -50,6 +53,11 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<ReconcileJobKind> supportedJobKinds() {
+    return EnumSet.of(ReconcileJobKind.EXEC_TABLE, ReconcileJobKind.EXEC_VIEW);
+  }
+
+  @Override
   public ExecutionResult execute(ExecutionContext context) {
     var lease = context.lease();
     var connectorId =
@@ -67,20 +75,32 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
             .build();
 
     ReconcilerService.Result result =
-        reconcilerService.reconcile(
-            principal,
-            connectorId,
-            lease.fullRescan,
-            lease.scope,
-            lease.captureMode,
-            null,
-            context.shouldStop(),
-            context.progressListener()::onProgress);
+        lease.jobKind == ReconcileJobKind.EXEC_VIEW
+            ? reconcilerService.reconcileView(
+                principal,
+                connectorId,
+                lease.scope,
+                lease.viewTask,
+                null,
+                context.shouldStop(),
+                context.progressListener()::onProgress)
+            : reconcilerService.reconcile(
+                principal,
+                connectorId,
+                lease.fullRescan,
+                lease.scope,
+                lease.tableTask,
+                lease.captureMode,
+                null,
+                context.shouldStop(),
+                context.progressListener()::onProgress);
 
     if (result.cancelled()) {
       return ExecutionResult.cancelled(
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
@@ -88,8 +108,10 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
     }
     if (!result.ok()) {
       return ExecutionResult.failure(
-          result.scanned,
-          result.changed,
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
@@ -98,8 +120,10 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
           result.error);
     }
     return ExecutionResult.success(
-        result.scanned,
-        result.changed,
+        result.tablesScanned,
+        result.tablesChanged,
+        result.viewsScanned,
+        result.viewsChanged,
         result.errors,
         result.snapshotsProcessed,
         result.statsProcessed,

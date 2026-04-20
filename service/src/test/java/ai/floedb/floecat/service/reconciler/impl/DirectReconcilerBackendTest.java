@@ -28,6 +28,9 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -38,6 +41,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
@@ -47,6 +51,7 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
+import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -71,6 +76,7 @@ class DirectReconcilerBackendTest {
   private FakeCatalogRepository catalogRepo;
   private FakeNamespaceRepository namespaceRepo;
   private FakeTableRepository tableRepo;
+  private FakeViewRepository viewRepo;
   private SnapshotTestSupport.FakeSnapshotRepository snapshotRepo;
   private StatsRepository statsRepository;
   private SnapshotHelper snapshotHelper;
@@ -87,6 +93,7 @@ class DirectReconcilerBackendTest {
     catalogRepo = new FakeCatalogRepository();
     namespaceRepo = new FakeNamespaceRepository();
     tableRepo = new FakeTableRepository();
+    viewRepo = new FakeViewRepository();
     snapshotRepo = new SnapshotTestSupport.FakeSnapshotRepository();
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     snapshotHelper = new SnapshotHelper(snapshotRepo);
@@ -96,6 +103,7 @@ class DirectReconcilerBackendTest {
     backend.catalogRepo = catalogRepo;
     backend.namespaceRepo = namespaceRepo;
     backend.tableRepo = tableRepo;
+    backend.viewRepo = viewRepo;
     backend.snapshotRepo = snapshotRepo;
     backend.statsStore = statsRepository;
     backend.snapshotHelper = snapshotHelper;
@@ -166,6 +174,58 @@ class DirectReconcilerBackendTest {
     assertThat(table.getDisplayName()).isEqualTo("orders");
     assertThat(table.getSchemaJson()).isEqualTo("{}");
     assertThat(table.getUpstream().getConnectorId().getId()).isEqualTo(connectorId.getId());
+  }
+
+  @Test
+  void ensureViewUpdatesExistingDefinitionWhenItDrifts() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT)
+            .setId("view-1")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    View existing =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .addSqlDefinitions(
+                ViewSqlDefinition.newBuilder().setSql("SELECT 1").setDialect("ansi").build())
+            .addCreationSearchPath("parent")
+            .putProperties("comment", "before")
+            .build();
+    viewRepo.put(existing, MutationMeta.newBuilder().setPointerVersion(3).setEtag("v3").build());
+
+    ViewSpec spec =
+        ViewSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .addSqlDefinitions(
+                ViewSqlDefinition.newBuilder()
+                    .setSql("SELECT order_id FROM orders")
+                    .setDialect("spark")
+                    .build())
+            .addCreationSearchPath("child")
+            .addOutputColumns(
+                SchemaColumn.newBuilder()
+                    .setName("order_id")
+                    .setLogicalType("INT")
+                    .setNullable(false)
+                    .build())
+            .putProperties("comment", "after")
+            .build();
+
+    ResourceId changed = backend.ensureView(ctx, spec, "ns.orders_view");
+
+    assertThat(changed).isEqualTo(viewId);
+    View updated = viewRepo.getById(viewId).orElseThrow();
+    assertThat(updated.getSqlDefinitions(0).getSql()).isEqualTo("SELECT order_id FROM orders");
+    assertThat(updated.getSqlDefinitions(0).getDialect()).isEqualTo("spark");
+    assertThat(updated.getCreationSearchPathList()).containsExactly("child");
+    assertThat(updated.getOutputColumnsCount()).isEqualTo(1);
+    assertThat(updated.getPropertiesOrThrow("comment")).isEqualTo("after");
   }
 
   @Test

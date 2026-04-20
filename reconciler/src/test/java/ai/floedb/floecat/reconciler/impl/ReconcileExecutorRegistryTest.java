@@ -128,6 +128,52 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
+  void leaseRequestTreatsEmptySupportedLanesAsWildcard() {
+    ReconcileExecutor wildcardLaneExecutor =
+        new ReconcileExecutor() {
+          @Override
+          public String id() {
+            return "planner";
+          }
+
+          @Override
+          public java.util.Set<String> supportedLanes() {
+            return java.util.Set.of();
+          }
+
+          @Override
+          public ExecutionResult execute(ExecutionContext context) {
+            throw new UnsupportedOperationException();
+          }
+        };
+
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(wildcardLaneExecutor));
+
+    var request = registry.leaseRequest();
+
+    assertThat(request.lanes).containsExactly(ReconcileJobStore.LeaseRequest.anyLaneToken());
+    assertThat(
+            request.matches(
+                ReconcileExecutionPolicy.of(
+                    ReconcileExecutionClass.HEAVY, "planner-lane", Map.of()),
+                "",
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR))
+        .isTrue();
+  }
+
+  @Test
+  void reportsWhetherJobKindHasEnabledExecutor() {
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(new TestExecutor("default", 1, true)));
+
+    assertThat(
+            registry.hasExecutorForJobKind(
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR))
+        .isTrue();
+  }
+
+  @Test
   void disabledExecutorsAreExcludedFromRoutingAndLeaseAggregation() {
     ReconcileExecutorRegistry registry =
         new ReconcileExecutorRegistry(

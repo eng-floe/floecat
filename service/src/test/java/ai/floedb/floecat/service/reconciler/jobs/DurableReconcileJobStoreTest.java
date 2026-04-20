@@ -25,9 +25,12 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -106,6 +109,74 @@ class DurableReconcileJobStoreTest {
             "");
 
     assertNotEquals(first, second);
+  }
+
+  @Test
+  void childJobsUsesParentIndex() {
+    store.init();
+
+    String planJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            planJobId,
+            "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_STATS,
+        ReconcileScope.empty(),
+        ReconcileJobKind.EXEC_TABLE,
+        ReconcileTableTask.of("src.ns", "customers", "customers"),
+        ReconcileExecutionPolicy.defaults(),
+        "other-plan",
+        "");
+
+    var children = store.childJobs(ACCOUNT_ID, planJobId);
+
+    assertEquals(1, children.size());
+    assertEquals(childJobId, children.get(0).jobId);
+    assertEquals(planJobId, children.get(0).parentJobId);
+  }
+
+  @Test
+  void enqueueAndLeaseExecViewPreservesSourceNamespace() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of(List.of("analytics")), "", List.of()),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of("db", "events_summary", "analytics", "events_summary"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = store.leaseNext().orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals("db", lease.viewTask.sourceNamespace());
+    assertEquals("events_summary", lease.viewTask.sourceView());
+    assertEquals("analytics", lease.viewTask.destinationNamespace());
   }
 
   @Test
@@ -328,6 +399,36 @@ class DurableReconcileJobStoreTest {
         jobId, secondLease.leaseEpoch, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
     ReconcileJob failed = store.get(jobId).orElseThrow();
     assertEquals("JS_FAILED", failed.state);
+  }
+
+  @Test
+  void markFailedPreservesViewTaskContext() {
+    System.setProperty("floecat.reconciler.job-store.max-attempts", "1");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of("src_ns", "src_view", "dst_ns", "dst_view"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var lease = store.leaseNext().orElseThrow();
+
+    store.markFailed(jobId, lease.leaseEpoch, System.currentTimeMillis(), "boom", 0, 0, 1, 0, 1);
+
+    ReconcileJob failed = store.get(jobId).orElseThrow();
+    assertEquals("JS_FAILED", failed.state);
+    assertEquals("src_ns", failed.viewTask.sourceNamespace());
+    assertEquals("src_view", failed.viewTask.sourceView());
+    assertEquals("dst_ns", failed.viewTask.destinationNamespace());
+    assertEquals("dst_view", failed.viewTask.destinationViewDisplayName());
   }
 
   @Test

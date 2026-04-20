@@ -77,6 +77,12 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
+`connector job <id>` and `connector jobs` show split-job metadata when present:
+
+- `kind=plan_connector` or `kind=exec_table`
+- routing context such as `parent=<job-id>` and `executor=<executor-id>`
+- table-task detail for child execution jobs (`table=<source-ns>.<source-table>-><dest-table>`)
+
 ## Configuration & Extensibility
 
 - Build via `make cli`. Run with `make cli-run` (build + run) or `make cli-start` (run only, no

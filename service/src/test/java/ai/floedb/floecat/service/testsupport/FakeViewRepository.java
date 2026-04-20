@@ -48,6 +48,29 @@ public final class FakeViewRepository extends ViewRepository {
   }
 
   @Override
+  public void create(View view) {
+    entries.put(view.getResourceId(), view);
+    metas.putIfAbsent(
+        view.getResourceId(), MutationMeta.newBuilder().setPointerVersion(1).setEtag("v1").build());
+  }
+
+  @Override
+  public boolean update(View view, long expectedPointerVersion) {
+    MutationMeta current = metas.get(view.getResourceId());
+    if (current == null || current.getPointerVersion() != expectedPointerVersion) {
+      return false;
+    }
+    entries.put(view.getResourceId(), view);
+    metas.put(
+        view.getResourceId(),
+        MutationMeta.newBuilder()
+            .setPointerVersion(expectedPointerVersion + 1)
+            .setEtag("v" + (expectedPointerVersion + 1))
+            .build());
+    return true;
+  }
+
+  @Override
   public Optional<View> getById(ResourceId id) {
     return Optional.ofNullable(entries.get(id));
   }

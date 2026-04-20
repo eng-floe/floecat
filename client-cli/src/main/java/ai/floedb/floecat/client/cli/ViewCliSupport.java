@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
@@ -139,8 +140,11 @@ final class ViewCliSupport {
             ViewSpec.newBuilder()
                 .setCatalogId(catalogId)
                 .setNamespaceId(namespaceId)
-                .setDisplayName(ref.getName())
-                .setSql(CliUtils.nvl(sql, ""));
+                .setDisplayName(ref.getName());
+        if (sql != null) {
+          spec.addSqlDefinitions(
+              ViewSqlDefinition.newBuilder().setSql(CliUtils.nvl(sql, "")).setDialect("ansi"));
+        }
         if (desc != null && !desc.isBlank()) {
           spec.setDescription(desc);
         }
@@ -186,8 +190,8 @@ final class ViewCliSupport {
           mask.addPaths("namespace_id");
         }
         if (sql != null) {
-          spec.setSql(sql);
-          mask.addPaths("sql");
+          spec.addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql(sql).setDialect("ansi"));
+          mask.addPaths("sql_definitions");
         }
         if (desc != null) {
           spec.setDescription(desc);
@@ -266,7 +270,17 @@ final class ViewCliSupport {
     out.printf("  id:           %s%n", CliUtils.rid(view.getResourceId()));
     out.printf("  name:         %s%n", view.getDisplayName());
     out.printf("  description:  %s%n", view.hasDescription() ? view.getDescription() : "");
-    out.printf("  sql:          %s%n", view.getSql());
+    if (view.getSqlDefinitionsCount() == 0) {
+      out.printf("  sql:          %s%n", "");
+    } else {
+      out.println("  sql:");
+      view.getSqlDefinitionsList()
+          .forEach(
+              def ->
+                  out.printf(
+                      "    [%s] %s%n",
+                      def.getDialect().isBlank() ? "unspecified" : def.getDialect(), def.getSql()));
+    }
     out.printf("  created_at:   %s%n", CliUtils.ts(view.getCreatedAt()));
     if (!view.getPropertiesMap().isEmpty()) {
       out.println("  properties:");

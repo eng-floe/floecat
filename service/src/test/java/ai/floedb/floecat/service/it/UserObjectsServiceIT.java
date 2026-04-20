@@ -473,7 +473,10 @@ class UserObjectsServiceIT {
                             .setCatalogId(cat.getResourceId())
                             .setNamespaceId(ns.getResourceId())
                             .setDisplayName("eager_view")
-                            .setSql("SELECT order_id FROM " + baseFqn)
+                            .addSqlDefinitions(
+                                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT order_id FROM " + baseFqn)
+                                    .build())
                             .addBaseRelations(baseFqn)
                             .addOutputColumns(col))
                     .build())
@@ -564,7 +567,10 @@ class UserObjectsServiceIT {
                             .setCatalogId(cat.getResourceId())
                             .setNamespaceId(ns.getResourceId())
                             .setDisplayName("enrich_view")
-                            .setSql("SELECT order_id FROM enrich_orders")
+                            .addSqlDefinitions(
+                                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT order_id FROM enrich_orders")
+                                    .build())
                             .addAllCreationSearchPath(searchPath)
                             .addBaseRelations("enrich_orders")
                             .addOutputColumns(col))

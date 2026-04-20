@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -34,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
@@ -46,7 +48,9 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
@@ -582,12 +586,71 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     try {
       return view(ctx).createView(request.build()).getView().getResourceId();
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
-        // View already exists without a matching idempotency key; treat as success.
-        return ResourceId.getDefaultInstance();
+      if (e.getStatus().getCode() != Status.Code.ALREADY_EXISTS) {
+        throw e;
+      }
+    }
+
+    ResourceId existingId = resolveViewId(ctx, spec).orElse(ResourceId.getDefaultInstance());
+    if (existingId.getId().isBlank()) {
+      return ResourceId.getDefaultInstance();
+    }
+
+    View current =
+        view(ctx).getView(GetViewRequest.newBuilder().setViewId(existingId).build()).getView();
+    if (viewMatchesSpec(current, spec)) {
+      return ResourceId.getDefaultInstance();
+    }
+
+    FieldMask mask =
+        FieldMask.newBuilder()
+            .addPaths("properties")
+            .addPaths("sql_definitions")
+            .addPaths("base_relations")
+            .addPaths("creation_search_path")
+            .addPaths("output_columns")
+            .build();
+    return view(ctx)
+        .updateView(
+            UpdateViewRequest.newBuilder()
+                .setViewId(existingId)
+                .setSpec(spec)
+                .setUpdateMask(mask)
+                .build())
+        .getView()
+        .getResourceId();
+  }
+
+  private Optional<ResourceId> resolveViewId(ReconcileContext ctx, ViewSpec spec) {
+    String catalogName = lookupCatalogName(ctx, spec.getCatalogId());
+    String namespaceFq = resolveNamespaceFq(ctx, spec.getNamespaceId());
+    NameRef.Builder ref =
+        NameRef.newBuilder().setCatalog(catalogName).setName(spec.getDisplayName());
+    if (namespaceFq != null && !namespaceFq.isBlank()) {
+      ref.addAllPath(List.of(namespaceFq.split("\\.")));
+    }
+    try {
+      return Optional.of(
+          directory(ctx)
+              .resolveView(ResolveViewRequest.newBuilder().setRef(ref.build()).build())
+              .getResourceId());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
       }
       throw e;
     }
+  }
+
+  private static boolean viewMatchesSpec(View current, ViewSpec spec) {
+    return current.getCatalogId().equals(spec.getCatalogId())
+        && current.getNamespaceId().equals(spec.getNamespaceId())
+        && current.getDisplayName().equals(spec.getDisplayName())
+        && current.getPropertiesMap().equals(spec.getPropertiesMap())
+        && current.getSqlDefinitionsList().equals(spec.getSqlDefinitionsList())
+        && current.getBaseRelationsList().equals(spec.getBaseRelationsList())
+        && current.getCreationSearchPathList().equals(spec.getCreationSearchPathList())
+        && current.getOutputColumnsList().equals(spec.getOutputColumnsList());
   }
 
   @Override

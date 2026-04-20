@@ -16,22 +16,34 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
+import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import io.grpc.Status;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -238,5 +250,124 @@ class GrpcReconcilerBackendTest {
 
     assertThat(captured).isFalse();
     verifyNoInteractions(backend.statistics);
+  }
+
+  @Test
+  void ensureViewUpdatesExistingViewAfterAlreadyExistsConflict() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.view =
+        mock(ai.floedb.floecat.catalog.rpc.ViewServiceGrpc.ViewServiceBlockingStub.class);
+    backend.directory =
+        mock(ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+    backend.namespace =
+        mock(ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc.NamespaceServiceBlockingStub.class);
+    when(backend.view.withInterceptors(any())).thenReturn(backend.view);
+    when(backend.directory.withInterceptors(any())).thenReturn(backend.directory);
+    when(backend.namespace.withInterceptors(any())).thenReturn(backend.namespace);
+
+    ReconcileContext ctx =
+        new ReconcileContext(
+            "corr",
+            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
+            "svc",
+            Instant.now(),
+            Optional.empty());
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("view")
+            .build();
+
+    ViewSpec spec =
+        ViewSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .putProperties("comment", "after")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("SELECT order_id FROM orders")
+                    .setDialect("spark")
+                    .build())
+            .addCreationSearchPath("analytics")
+            .addOutputColumns(
+                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+                    .setName("order_id")
+                    .setLogicalType("INT")
+                    .setNullable(false)
+                    .build())
+            .build();
+
+    View existing =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .putProperties("comment", "before")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("SELECT 1")
+                    .setDialect("ansi")
+                    .build())
+            .build();
+    View updated =
+        existing.toBuilder()
+            .clearProperties()
+            .putAllProperties(spec.getPropertiesMap())
+            .clearSqlDefinitions()
+            .addAllSqlDefinitions(spec.getSqlDefinitionsList())
+            .clearCreationSearchPath()
+            .addAllCreationSearchPath(spec.getCreationSearchPathList())
+            .clearOutputColumns()
+            .addAllOutputColumns(spec.getOutputColumnsList())
+            .build();
+
+    when(backend.view.createView(any())).thenThrow(Status.ALREADY_EXISTS.asRuntimeException());
+    when(backend.directory.lookupCatalog(any()))
+        .thenReturn(LookupCatalogResponse.newBuilder().setDisplayName("dest_cat").build());
+    when(backend.namespace.getNamespace(any()))
+        .thenReturn(
+            GetNamespaceResponse.newBuilder()
+                .setNamespace(
+                    ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+                        .setCatalogId(catalogId)
+                        .setDisplayName("analytics")
+                        .build())
+                .build());
+    when(backend.directory.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+    when(backend.view.getView(any()))
+        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
+    when(backend.view.updateView(any()))
+        .thenReturn(UpdateViewResponse.newBuilder().setView(updated).build());
+
+    ResourceId result = backend.ensureView(ctx, spec, "analytics.orders_view");
+
+    assertThat(result).isEqualTo(viewId);
+    var updateCaptor = org.mockito.ArgumentCaptor.forClass(UpdateViewRequest.class);
+    verify(backend.view).updateView(updateCaptor.capture());
+    assertThat(updateCaptor.getValue().getUpdateMask().getPathsList())
+        .containsExactlyInAnyOrder(
+            "properties",
+            "sql_definitions",
+            "base_relations",
+            "creation_search_path",
+            "output_columns");
   }
 }

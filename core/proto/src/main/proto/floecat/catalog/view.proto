@@ -25,17 +25,18 @@ import "google/protobuf/field_mask.proto";
 
 // ----- VIEW -----
 
+message ViewSqlDefinition {
+  string sql = 1;
+  string dialect = 2;
+}
+
 message View {
   ai.floedb.floecat.common.ResourceId resource_id = 1;
   ai.floedb.floecat.common.ResourceId catalog_id = 2;
   ai.floedb.floecat.common.ResourceId namespace_id = 3;
   string display_name = 4;
   optional string description = 5;
-  string sql = 6;
-  google.protobuf.Timestamp created_at = 7;
-
-  /** SQL dialect the view is written in (e.g. "spark", "trino", "ansi"). */
-  string dialect = 8;
+  google.protobuf.Timestamp created_at = 6;
 
   /**
    * Fully-qualified names of relations this view directly depends on,
@@ -44,19 +45,20 @@ message View {
    * same response, saving a planner round-trip. Stored as names (not IDs)
    * so that a drop-and-recreate of a base relation does not invalidate the view.
    */
-  repeated string base_relations = 9;
+  repeated string base_relations = 7;
 
   /**
    * Namespace search path captured at view-creation time, used to
    * deterministically re-resolve unqualified names in the SQL text.
    */
-  repeated string creation_search_path = 10;
+  repeated string creation_search_path = 8;
 
   /**
    * Resolved output schema of the view. Required on CreateView so planners
    * never need to re-parse the SQL just to discover the column list.
    */
-  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 11;
+  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 9;
+  repeated ViewSqlDefinition sql_definitions = 10;
 
   map<string,string> properties = 99;
 }
@@ -82,19 +84,16 @@ message ViewSpec {
   ai.floedb.floecat.common.ResourceId namespace_id = 2;
   optional string display_name = 3;
   optional string description = 4;
-  optional string sql = 5;
-
-  /** See View.dialect. */
-  string dialect = 6;
 
   /** See View.base_relations. Optional. */
-  repeated string base_relations = 7;
+  repeated string base_relations = 5;
 
   /** See View.creation_search_path. */
-  repeated string creation_search_path = 8;
+  repeated string creation_search_path = 6;
 
   /** See View.output_columns. Required on CreateView. */
-  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 9;
+  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 7;
+  repeated ViewSqlDefinition sql_definitions = 8;
 
   map<string,string> properties = 99;
 }

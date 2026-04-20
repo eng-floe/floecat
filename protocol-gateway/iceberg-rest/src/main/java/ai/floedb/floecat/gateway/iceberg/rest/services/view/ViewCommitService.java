@@ -55,10 +55,19 @@ public class ViewCommitService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    ViewSpec.Builder spec = ViewSpec.newBuilder().setSql(updated.sql());
-    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("sql").addPaths("properties");
+    ViewSpec.Builder spec = ViewSpec.newBuilder();
+    FieldMask.Builder mask =
+        FieldMask.newBuilder().addPaths("sql_definitions").addPaths("properties");
     try {
+      viewMetadataService.extractSqlDefinitions(updated).forEach(spec::addSqlDefinitions);
+      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(updated));
+      var outputColumns = viewMetadataService.extractOutputColumns(updated);
+      if (!outputColumns.isEmpty()) {
+        spec.addAllOutputColumns(outputColumns);
+        mask.addPaths("output_columns");
+      }
       spec.putAllProperties(viewMetadataService.buildPropertyMap(updated));
+      mask.addPaths("creation_search_path");
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }

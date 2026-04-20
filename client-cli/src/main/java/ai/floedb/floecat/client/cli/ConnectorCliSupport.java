@@ -52,6 +52,7 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
@@ -886,18 +887,25 @@ final class ConnectorCliSupport {
 
   private static void printReconcileJobSummary(GetReconcileJobResponse job, PrintStream out) {
     out.printf(
-        "job_id=%s connector_id=%s state=%s mode=%s duration_ms=%d scanned=%d changed=%d"
+        "job_id=%s connector_id=%s state=%s kind=%s mode=%s duration_ms=%d"
+            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
             + " snapshots=%d stats=%d errors=%d%n",
         job.getJobId(),
         job.getConnectorId(),
         job.getState().name(),
+        formatJobKind(job.getKind()),
         job.getFullRescan() ? "full" : "incremental",
         job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
+        job.getViewsScanned(),
+        job.getViewsChanged(),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
         job.getErrors());
+    if (hasInterestingRouting(job)) {
+      out.println("routing: " + summarizeRouting(job));
+    }
     if (job.getMessage() != null && !job.getMessage().isBlank()) {
       out.println("message: " + job.getMessage());
     }
@@ -905,20 +913,27 @@ final class ConnectorCliSupport {
 
   private static void printReconcileJob(GetReconcileJobResponse job, PrintStream out) {
     out.printf(
-        "job_id=%s connector_id=%s state=%s mode=%s started=%s finished=%s duration_ms=%d"
-            + " scanned=%d changed=%d snapshots=%d stats=%d errors=%d%n",
+        "job_id=%s connector_id=%s state=%s kind=%s mode=%s started=%s finished=%s duration_ms=%d"
+            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
+            + " snapshots=%d stats=%d errors=%d%n",
         job.getJobId(),
         job.getConnectorId(),
         job.getState().name(),
+        formatJobKind(job.getKind()),
         job.getFullRescan() ? "full" : "incremental",
         CliUtils.ts(job.getStartedAt()),
         CliUtils.ts(job.getFinishedAt()),
         job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
+        job.getViewsScanned(),
+        job.getViewsChanged(),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
         job.getErrors());
+    if (hasInterestingRouting(job)) {
+      out.println("routing: " + summarizeRouting(job));
+    }
     if (job.getMessage() != null && !job.getMessage().isBlank()) {
       var lines = splitErrorLines(job.getMessage());
       if (lines.isEmpty()) {
@@ -932,6 +947,77 @@ final class ConnectorCliSupport {
         }
       }
     }
+  }
+
+  private static String formatJobKind(ReconcileJobKind kind) {
+    if (kind == null || kind == ReconcileJobKind.RJK_UNSPECIFIED) {
+      return "unspecified";
+    }
+    return kind.name().replace("RJK_", "").toLowerCase(Locale.ROOT);
+  }
+
+  private static boolean hasInterestingRouting(GetReconcileJobResponse job) {
+    return !summarizeRouting(job).isBlank();
+  }
+
+  private static String summarizeRouting(GetReconcileJobResponse job) {
+    List<String> parts = new ArrayList<>();
+    if (!job.getParentJobId().isBlank()) {
+      parts.add("parent=" + job.getParentJobId());
+    }
+    if (!job.getExecutorId().isBlank() && !"default_reconciler".equals(job.getExecutorId())) {
+      parts.add("executor=" + job.getExecutorId());
+    }
+    String tableTask = formatTableTask(job);
+    if (!tableTask.isBlank()) {
+      parts.add("table=" + tableTask);
+    }
+    String viewTask = formatViewTask(job);
+    if (!viewTask.isBlank()) {
+      parts.add("view=" + viewTask);
+    }
+    return String.join(" ", parts);
+  }
+
+  private static String formatTableTask(GetReconcileJobResponse job) {
+    if (!job.hasTableTask()) {
+      return "";
+    }
+    var tableTask = job.getTableTask();
+    String source =
+        tableTask.getSourceNamespace().isBlank()
+            ? tableTask.getSourceTable()
+            : tableTask.getSourceNamespace() + "." + tableTask.getSourceTable();
+    String destination = tableTask.getDestinationTableDisplayName();
+    if (source.isBlank()) {
+      return destination;
+    }
+    if (destination.isBlank() || source.equals(destination)) {
+      return source;
+    }
+    return source + "->" + destination;
+  }
+
+  private static String formatViewTask(GetReconcileJobResponse job) {
+    if (!job.hasViewTask()) {
+      return "";
+    }
+    var viewTask = job.getViewTask();
+    String source =
+        viewTask.getSourceNamespace().isBlank()
+            ? viewTask.getSourceView()
+            : viewTask.getSourceNamespace() + "." + viewTask.getSourceView();
+    String destination =
+        viewTask.getDestinationNamespace().isBlank()
+            ? viewTask.getDestinationViewDisplayName()
+            : viewTask.getDestinationNamespace() + "." + viewTask.getDestinationViewDisplayName();
+    if (source.isBlank()) {
+      return destination;
+    }
+    if (destination.isBlank() || source.equals(destination)) {
+      return source;
+    }
+    return source + "->" + destination;
   }
 
   private static void printReconcilerSettings(

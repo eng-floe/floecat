@@ -215,7 +215,10 @@ public final class TestSupport {
                         .setNamespaceId(namespaceId)
                         .setDisplayName(displayName)
                         .setDescription(desc)
-                        .setSql(sql)
+                        .addSqlDefinitions(
+                            ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                                .setSql(sql)
+                                .build())
                         .addOutputColumns(
                             SchemaColumn.newBuilder().setName("_col0").setNullable(true).build()))
                 .build());
@@ -232,9 +235,19 @@ public final class TestSupport {
 
   public static View updateViewSql(
       ViewServiceGrpc.ViewServiceBlockingStub mutation, ResourceId viewId, String newSql) {
-    var spec = ViewSpec.newBuilder().setSql(newSql).build();
+    var spec =
+        ViewSpec.newBuilder()
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder().setSql(newSql).build())
+            .build();
     return mutation
-        .updateView(UpdateViewRequest.newBuilder().setViewId(viewId).setSpec(spec).build())
+        .updateView(
+            UpdateViewRequest.newBuilder()
+                .setViewId(viewId)
+                .setSpec(spec)
+                .setUpdateMask(
+                    com.google.protobuf.FieldMask.newBuilder().addPaths("sql_definitions").build())
+                .build())
         .getView();
   }
 
