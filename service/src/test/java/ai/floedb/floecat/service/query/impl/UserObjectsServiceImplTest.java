@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -31,10 +32,14 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.grpc.Context;
 import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.subscription.MultiSubscriber;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import java.util.concurrent.Flow.Subscription;
 
 /**
  * Verifies that the gRPC principal context is propagated to the worker thread during streaming item
@@ -141,5 +146,118 @@ class UserObjectsServiceImplTest {
         ACCOUNT_ID,
         observedAccountId.get(),
         "principal.get() on the executor thread should see the gRPC context's accountId");
+  }
+
+  @Test
+  void cancellingOuterStreamCancelsInnerBundleSubscription() throws Exception {
+    // Set up a bundle service that emits items slowly, so we can cancel mid-stream.
+    // We track whether the inner subscription was cancelled.
+    CountDownLatch innerCancelled = new CountDownLatch(1);
+    CountDownLatch firstItemEmitted = new CountDownLatch(1);
+    PrincipalProvider principalProvider = new PrincipalProvider();
+
+    UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
+    Mockito.when(
+            mockBundles.stream(
+                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+        .thenReturn(
+            Multi.createFrom()
+                .<UserObjectsBundleChunk>emitter(
+                    innerEmitter -> {
+                      // Emit one item immediately, then wait — simulating a long-running stream.
+                      innerEmitter.emit(UserObjectsBundleChunk.getDefaultInstance());
+                      firstItemEmitted.countDown();
+                      // Register cancellation callback so we can assert it was called.
+                      innerEmitter.onTermination(innerCancelled::countDown);
+                    }));
+
+    // Set up query context store with an active context
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    QueryContext queryContext =
+        QueryContext.builder()
+            .queryId("q-cancel")
+            .principal(
+                PrincipalContext.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setSubject("tester")
+                    .addPermissions("catalog.read")
+                    .build())
+            .snapshotSet(new byte[0])
+            .createdAtMs(1)
+            .expiresAtMs(Long.MAX_VALUE)
+            .state(QueryContext.State.ACTIVE)
+            .version(1)
+            .queryDefaultCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setId("cat")
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .build())
+            .build();
+    store.seed(queryContext);
+
+    // Wire up the service
+    UserObjectsServiceImpl service = new UserObjectsServiceImpl();
+    service.principal = principalProvider;
+    service.authz = new Authorizer();
+    service.queryStore = store;
+    service.bundles = mockBundles;
+
+    // Build request
+    GetUserObjectsRequest request =
+        GetUserObjectsRequest.newBuilder()
+            .setQueryId("q-cancel")
+            .addTables(TableReferenceCandidate.getDefaultInstance())
+            .build();
+
+    // Subscribe within a gRPC context, then cancel after the first item arrives.
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setSubject("tester")
+            .addPermissions("catalog.read")
+            .build();
+    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context previous = grpcCtx.attach();
+    try {
+      AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+      CountDownLatch itemReceived = new CountDownLatch(1);
+
+      service
+          .getUserObjects(request)
+          .subscribe()
+          .withSubscriber(
+              new MultiSubscriber<UserObjectsBundleChunk>() {
+                @Override
+                public void onItem(UserObjectsBundleChunk item) {
+                  itemReceived.countDown();
+                }
+
+                @Override
+                public void onFailure(Throwable failure) {}
+
+                @Override
+                public void onCompletion() {}
+
+                @Override
+                public void onSubscribe(Subscription s) {
+                  subscriptionRef.set(s);
+                  s.request(Long.MAX_VALUE);
+                }
+              });
+
+      // Wait for the first item to be emitted, then cancel.
+      assertTrue(
+          itemReceived.await(5, TimeUnit.SECONDS), "Timed out waiting for first item emission");
+      subscriptionRef.get().cancel();
+
+      // Give cancellation a moment to propagate through the reactive pipeline.
+      assertTrue(
+          innerCancelled.await(5, TimeUnit.SECONDS),
+          "Inner bundle subscription should have been cancelled when the outer stream was cancelled");
+    } finally {
+      grpcCtx.detach(previous);
+    }
   }
 }
