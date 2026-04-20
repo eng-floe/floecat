@@ -1,0 +1,46 @@
+<div class="masthead">
+  <div class="masthead__inner-wrap">
+    <div class="masthead__menu">
+      <nav id="site-nav" class="greedy-nav">
+        <a class="site-title" href="{{ '/' | relative_url }}">
+          {{ site.title }}
+        </a>
+
+        <ul class="visible-links">
+          <li class="masthead__menu-item">
+            <a href="https://github.com/eng-floe/floecat/tree/main/docs">Documentation</a>
+          </li>
+          <li class="masthead__menu-item">
+            <a href="{{ '/blog/' | relative_url }}">Blog</a>
+          </li>
+          <li class="masthead__menu-item">
+            <a href="https://github.com/eng-floe/floecat/blob/main/CONTRIBUTING.md">Contribute</a>
+          </li>
+          <li class="masthead__menu-item masthead__menu-item--github">
+            <a href="https://github.com/eng-floe/floecat">
+              <span>GitHub</span>
+              <span class="github-star-symbol">★</span>
+              <img
+                class="github-stars-count"
+                alt="GitHub stars"
+                src="https://img.shields.io/github/stars/eng-floe/floecat?style=flat&label=&color=6c4f48&labelColor=e9dfdd">
+            </a>
+          </li>
+        </ul>
+
+        {% if site.search == true %}
+          <button class="search__toggle" type="button">
+            <span class="visually-hidden">Toggle search</span>
+            <i class="fas fa-search"></i>
+          </button>
+        {% endif %}
+
+        <button class="greedy-nav__toggle hidden" type="button">
+          <span class="visually-hidden">Toggle menu</span>
+          <div class="navicon"></div>
+        </button>
+        <ul class="hidden-links hidden"></ul>
+      </nav>
+    </div>
+  </div>
+</div>

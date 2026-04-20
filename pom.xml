@@ -403,6 +403,7 @@
             <inputExclude>.gitleaks.toml</inputExclude>
             <inputExclude>**/target/**</inputExclude>
             <inputExclude>**/*.md</inputExclude>
+            <inputExclude>**/site-src/**</inputExclude>
             <inputExclude>**/org.mockito.plugins.MockMaker</inputExclude>
           </inputExcludes>
         </configuration>
