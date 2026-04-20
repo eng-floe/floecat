@@ -87,25 +87,29 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                     String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
                     var ctxOpt = queryStore.get(queryId);
                     if (ctxOpt.isEmpty()) {
-                      throw GrpcErrors.notFound(
-                          correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
+                      emitter.fail(
+                          GrpcErrors.notFound(
+                              correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+                      return;
                     }
 
                     QueryContext ctx = ctxOpt.get();
                     if (!ctx.isActive()) {
-                      throw GrpcErrors.preconditionFailed(
-                          correlationId,
-                          QUERY_NOT_ACTIVE,
-                          Map.of("query_id", queryId, "state", ctx.getState().name()));
+                      emitter.fail(
+                          GrpcErrors.preconditionFailed(
+                              correlationId,
+                              QUERY_NOT_ACTIVE,
+                              Map.of("query_id", queryId, "state", ctx.getState().name())));
+                      return;
                     }
 
-                    try {
-                      bundles.stream(correlationId, ctx, request.getTablesList())
-                          .subscribe()
-                          .with(emitter::emit, emitter::fail, emitter::complete);
-                    } catch (Throwable t) {
-                      emitter.fail(t);
-                    }
+                    var subscription =
+                        bundles.stream(correlationId, ctx, request.getTablesList())
+                            .subscribe()
+                            .with(emitter::emit, emitter::fail, emitter::complete);
+
+                    emitter.onTermination(subscription::cancel);
+                    emitter.onCancellation(subscription::cancel);
                   });
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
