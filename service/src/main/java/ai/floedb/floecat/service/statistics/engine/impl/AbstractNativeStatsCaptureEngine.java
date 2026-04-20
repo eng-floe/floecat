@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -162,8 +163,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                 bundleRecord.hasTable()
                     ? canonicalRecord
                     : withCanonicalMetadata(bundleRecord, request);
-            String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
-            if (seenTargets.add(storageId)) {
+            String persistKey = persistInFlightKey(toPersist);
+            if (seenTargets.add(persistKey)) {
               persistCandidates.add(toPersist);
             }
           }
@@ -249,12 +250,12 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     int dedupedCount = 0;
     List<PersistEntry> accepted = new ArrayList<>();
     for (TargetStatsRecord record : records) {
-      String storageId = StatsTargetIdentity.storageId(record.getTarget());
-      if (!STATS_PERSIST_IN_FLIGHT.add(storageId)) {
+      String persistKey = persistInFlightKey(record);
+      if (!STATS_PERSIST_IN_FLIGHT.add(persistKey)) {
         dedupedCount++;
         continue;
       }
-      accepted.add(new PersistEntry(storageId, record));
+      accepted.add(new PersistEntry(persistKey, record));
     }
     if (accepted.isEmpty()) {
       return new PersistSchedule(System.nanoTime() - startNs, 0, dedupedCount);
@@ -317,6 +318,21 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
           record.getTarget());
       return false;
     }
+  }
+
+  private String persistInFlightKey(TargetStatsRecord record) {
+    return tableIdentity(record.getTableId())
+        + "#"
+        + record.getSnapshotId()
+        + "#"
+        + StatsTargetIdentity.storageId(record.getTarget());
+  }
+
+  private String tableIdentity(ResourceId tableId) {
+    if (tableId == null) {
+      return "unknown";
+    }
+    return tableId.getAccountId() + "|" + tableId.getKind().name() + "|" + tableId.getId();
   }
 
   private void publishStatsPersistTelemetry(
