@@ -26,6 +26,8 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.expr.ScanPrefilter;
+import ai.floedb.floecat.scanner.expr.ScanPrefilters;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
@@ -37,10 +39,8 @@ import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.EnumSet;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
@@ -62,6 +62,8 @@ import org.apache.arrow.vector.VarCharVector;
 abstract class AbstractStatsScanner implements SystemObjectScanner {
   static final int STATS_BATCH_SIZE = 4096;
   static final int STORE_PAGE_SIZE = 256;
+  private static final Set<String> PREFILTER_COLUMNS =
+      Set.of("table_id", "snapshot_id", "column_id", "engine_kind");
 
   enum TargetType {
     TABLE("TABLE"),
@@ -115,160 +117,6 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
         .setNullable(nullable)
         .build();
   }
-
-  record StatsPushdown(
-      boolean impossible,
-      boolean tableFiltered,
-      Set<String> tableIds,
-      OptionalLong snapshotId,
-      OptionalLong columnId,
-      Optional<String> engineKind) {
-
-    static final StatsPushdown NONE =
-        new StatsPushdown(
-            false, false, Set.of(), OptionalLong.empty(), OptionalLong.empty(), Optional.empty());
-
-    static StatsPushdown parse(Expr expr) {
-      if (expr == null) {
-        return NONE;
-      }
-      return switch (expr) {
-        case Expr.And and -> mergeAnd(parse(and.left()), parse(and.right()));
-        case Expr.Eq eq -> parseEq(eq.left(), eq.right());
-        default -> NONE;
-      };
-    }
-
-    private static StatsPushdown parseEq(Expr left, Expr right) {
-      ColumnLiteral pair = asColumnLiteral(left, right);
-      if (pair == null) {
-        return NONE;
-      }
-      String column = pair.column().toLowerCase(Locale.ROOT);
-      return switch (column) {
-        case "table_id" ->
-            new StatsPushdown(
-                false,
-                true,
-                Set.of(pair.literal()),
-                OptionalLong.empty(),
-                OptionalLong.empty(),
-                Optional.empty());
-        case "snapshot_id" -> buildLongConstraint(pair.literal(), true);
-        case "column_id" -> buildLongConstraint(pair.literal(), false);
-        case "engine_kind" ->
-            new StatsPushdown(
-                false,
-                false,
-                Set.of(),
-                OptionalLong.empty(),
-                OptionalLong.empty(),
-                Optional.of(pair.literal()));
-        default -> NONE;
-      };
-    }
-
-    private static StatsPushdown mergeAnd(StatsPushdown left, StatsPushdown right) {
-      if (left.impossible || right.impossible) {
-        return impossiblePushdown();
-      }
-      boolean tableFiltered = left.tableFiltered || right.tableFiltered;
-      Set<String> tableIds = mergeTableIds(left, right);
-      if (tableFiltered && tableIds.isEmpty()) {
-        return impossiblePushdown();
-      }
-      OptionalLong snapshotId = mergeLongConstraint(left.snapshotId, right.snapshotId);
-      if (snapshotId == null) {
-        return impossiblePushdown();
-      }
-      OptionalLong columnId = mergeLongConstraint(left.columnId, right.columnId);
-      if (columnId == null) {
-        return impossiblePushdown();
-      }
-      Optional<String> engineKind = mergeStringConstraint(left.engineKind, right.engineKind);
-      if (engineKind == null) {
-        return impossiblePushdown();
-      }
-      return new StatsPushdown(false, tableFiltered, tableIds, snapshotId, columnId, engineKind);
-    }
-
-    private static StatsPushdown impossiblePushdown() {
-      return new StatsPushdown(
-          true, false, Set.of(), OptionalLong.empty(), OptionalLong.empty(), Optional.empty());
-    }
-
-    private static StatsPushdown buildLongConstraint(String literal, boolean snapshot) {
-      OptionalLong parsed = parseLong(literal);
-      if (parsed.isEmpty()) {
-        return NONE;
-      }
-      return snapshot
-          ? new StatsPushdown(
-              false,
-              false,
-              Set.of(),
-              OptionalLong.of(parsed.getAsLong()),
-              OptionalLong.empty(),
-              Optional.empty())
-          : new StatsPushdown(
-              false,
-              false,
-              Set.of(),
-              OptionalLong.empty(),
-              OptionalLong.of(parsed.getAsLong()),
-              Optional.empty());
-    }
-
-    private static Set<String> mergeTableIds(StatsPushdown left, StatsPushdown right) {
-      if (left.tableFiltered && right.tableFiltered) {
-        Set<String> intersection = new HashSet<>(left.tableIds);
-        intersection.retainAll(right.tableIds);
-        return Set.copyOf(intersection);
-      }
-      if (left.tableFiltered) {
-        return left.tableIds;
-      }
-      if (right.tableFiltered) {
-        return right.tableIds;
-      }
-      return Set.of();
-    }
-
-    private static OptionalLong mergeLongConstraint(OptionalLong left, OptionalLong right) {
-      if (left.isPresent() && right.isPresent() && left.getAsLong() != right.getAsLong()) {
-        return null;
-      }
-      return left.isPresent() ? left : right;
-    }
-
-    private static Optional<String> mergeStringConstraint(
-        Optional<String> left, Optional<String> right) {
-      if (left.isPresent() && right.isPresent() && !left.get().equalsIgnoreCase(right.get())) {
-        return null;
-      }
-      return left.isPresent() ? left : right;
-    }
-
-    private static OptionalLong parseLong(String literal) {
-      try {
-        return OptionalLong.of(Long.parseLong(literal));
-      } catch (NumberFormatException e) {
-        return OptionalLong.empty();
-      }
-    }
-
-    private static ColumnLiteral asColumnLiteral(Expr left, Expr right) {
-      if (left instanceof Expr.ColumnRef columnRef && right instanceof Expr.Literal literal) {
-        return new ColumnLiteral(columnRef.name(), literal.value());
-      }
-      if (right instanceof Expr.ColumnRef columnRef && left instanceof Expr.Literal literal) {
-        return new ColumnLiteral(columnRef.name(), literal.value());
-      }
-      return null;
-    }
-  }
-
-  private record ColumnLiteral(String column, String literal) {}
 
   private record ResolvedTable(
       String accountId,
@@ -359,11 +207,27 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
   }
 
   final Iterator<StatsScanRecord> iterateRecords(SystemObjectScanContext ctx, Expr predicate) {
-    StatsPushdown pushdown = StatsPushdown.parse(predicate);
-    if (pushdown.impossible) {
+    ScanPrefilter prefilter = ScanPrefilters.fromPredicate(predicate, PREFILTER_COLUMNS);
+    emitPrefilterTelemetry(ctx, prefilter);
+    if (prefilter.impossible()) {
       return Collections.emptyIterator();
     }
-    return new StatsRecordIterator(ctx, pushdown, resolveTables(ctx, pushdown), targetType());
+    return new StatsRecordIterator(
+        ctx, resolveTables(ctx, prefilter), targetType(), prefilter.longFor("snapshot_id"));
+  }
+
+  private void emitPrefilterTelemetry(SystemObjectScanContext ctx, ScanPrefilter prefilter) {
+    String scanner = getClass().getSimpleName();
+    if (prefilter.impossible()) {
+      ctx.telemetryHook().onPrefilterImpossible(scanner);
+      return;
+    }
+    for (String column : PREFILTER_COLUMNS) {
+      long valueCount = prefilter.valuesFor(column).size();
+      if (valueCount > 0) {
+        ctx.telemetryHook().onPrefilterConstraint(scanner, column, valueCount);
+      }
+    }
   }
 
   /** Returns normalized completeness label from stats metadata, or {@code null} when absent. */
@@ -614,7 +478,8 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
     return Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray());
   }
 
-  private static List<ResolvedTable> resolveTables(SystemObjectScanContext ctx, StatsPushdown pd) {
+  private static List<ResolvedTable> resolveTables(
+      SystemObjectScanContext ctx, ScanPrefilter prefilter) {
     return ctx.listNamespaces().stream()
         .flatMap(
             namespace -> {
@@ -622,7 +487,7 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
               String schema =
                   NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
               return ctx.listTables(namespace.id()).stream()
-                  .filter(table -> !pd.tableFiltered || pd.tableIds.contains(table.id().getId()))
+                  .filter(table -> prefilter.matchesValue("table_id", table.id().getId()))
                   .map(
                       table ->
                           new ResolvedTable(
@@ -649,9 +514,9 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
   private static final class StatsRecordIterator implements Iterator<StatsScanRecord> {
 
     private final SystemObjectScanContext ctx;
-    private final StatsPushdown pushdown;
     private final List<ResolvedTable> tables;
     private final TargetType targetType;
+    private final OptionalLong pinnedSnapshotId;
     private final ai.floedb.floecat.scanner.spi.ScanTelemetryHook telemetryHook;
     private final long startedNanos;
     private final ArrayDeque<StatsScanRecord> buffered = new ArrayDeque<>();
@@ -666,13 +531,13 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
 
     private StatsRecordIterator(
         SystemObjectScanContext ctx,
-        StatsPushdown pushdown,
         List<ResolvedTable> tables,
-        TargetType targetType) {
+        TargetType targetType,
+        OptionalLong pinnedSnapshotId) {
       this.ctx = ctx;
-      this.pushdown = pushdown;
       this.tables = tables;
       this.targetType = targetType;
+      this.pinnedSnapshotId = pinnedSnapshotId;
       this.telemetryHook = ctx.telemetryHook();
       this.startedNanos = System.nanoTime();
     }
@@ -697,9 +562,6 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
         TargetStatsRecord nextRecord = pollRecord();
         if (nextRecord == null) {
           return;
-        }
-        if (!matches(nextRecord)) {
-          continue;
         }
         buffered.add(
             new StatsScanRecord(
@@ -734,15 +596,12 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
     private boolean advanceTable() {
       while (++tableIndex < tables.size()) {
         ResolvedTable next = tables.get(tableIndex);
-        OptionalLong snapshot;
-        if (pushdown.snapshotId.isPresent()) {
-          snapshot = OptionalLong.of(pushdown.snapshotId.getAsLong());
-        } else {
-          OptionalLong persistedSnapshot =
+        OptionalLong snapshot = pinnedSnapshotId;
+        if (snapshot.isEmpty()) {
+          snapshot =
               ctx.statsProvider()
                   .latestPersistedStatsSnapshotId(
                       next.node.id(), Optional.of(targetType.wireValue()));
-          snapshot = persistedSnapshot;
           if (snapshot.isEmpty()) {
             snapshot = ctx.statsProvider().latestSnapshotId(next.node.id());
           }
@@ -785,30 +644,6 @@ abstract class AbstractStatsScanner implements SystemObjectScanner {
         return true;
       }
       return !pageToken.isEmpty();
-    }
-
-    private boolean matches(TargetStatsRecord record) {
-      if (pushdown.columnId.isPresent()) {
-        if (!record.hasTarget() || !record.getTarget().hasColumn()) {
-          return false;
-        }
-        if (record.getTarget().getColumn().getColumnId() != pushdown.columnId.getAsLong()) {
-          return false;
-        }
-      }
-      if (pushdown.engineKind.isPresent()) {
-        if (!record.hasTarget() || !record.getTarget().hasExpression()) {
-          return false;
-        }
-        if (!record
-            .getTarget()
-            .getExpression()
-            .getEngineKind()
-            .equalsIgnoreCase(pushdown.engineKind.get())) {
-          return false;
-        }
-      }
-      return true;
     }
 
     private void completeIfNeeded() {

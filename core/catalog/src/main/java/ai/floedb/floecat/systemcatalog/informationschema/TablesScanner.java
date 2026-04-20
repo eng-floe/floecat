@@ -26,6 +26,8 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.expr.ScanPrefilter;
+import ai.floedb.floecat.scanner.expr.ScanPrefilters;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
@@ -52,6 +54,8 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.tables */
 public final class TablesScanner implements SystemObjectScanner {
+  private static final Set<String> PREFILTER_COLUMNS =
+      Set.of("table_catalog", "table_schema", "table_name", "table_type");
 
   public static final List<SchemaColumn> SCHEMA =
       List.of(
@@ -117,11 +121,16 @@ public final class TablesScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    if (predicate != null) {
-      // TODO: predicate handling is delegated to the arrow filter operator downstream
+    ScanPrefilter prefilter = ScanPrefilters.fromPredicate(predicate, PREFILTER_COLUMNS);
+    emitPrefilterTelemetry(ctx, prefilter);
+    if (prefilter.impossible()) {
+      return Stream.empty();
     }
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
+    List<NamespaceNode> namespaces =
+        ctx.listNamespaces().stream()
+            .filter(ns -> prefilter.matchesValue("table_schema", schemaName(ns)))
+            .toList();
     Map<ResourceId, String> schemaByNamespace =
         namespaces.stream().collect(Collectors.toMap(NamespaceNode::id, TablesScanner::schemaName));
     Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
@@ -147,9 +156,19 @@ public final class TablesScanner implements SystemObjectScanner {
                   String catalogName =
                       catalogNames.computeIfAbsent(
                           catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
+                  if (!prefilter.matchesValue("table_catalog", catalogName)) {
+                    continue;
+                  }
                   String schemaName = schemaByNamespace.getOrDefault(currentNamespace.id(), "");
-                  builder.append(
-                      catalogName, schemaName, relation.displayName(), relationKind(relation));
+                  String relationName = relation.displayName();
+                  if (!prefilter.matchesValue("table_name", relationName)) {
+                    continue;
+                  }
+                  String relationType = relationKind(relation);
+                  if (!prefilter.matchesValue("table_type", relationType)) {
+                    continue;
+                  }
+                  builder.append(catalogName, schemaName, relationName, relationType);
                   if (builder.isFull()) {
                     action.accept(builder.build());
                     return true;
@@ -181,6 +200,20 @@ public final class TablesScanner implements SystemObjectScanner {
           }
         };
     return StreamSupport.stream(spliterator, false);
+  }
+
+  private void emitPrefilterTelemetry(SystemObjectScanContext ctx, ScanPrefilter prefilter) {
+    String scanner = getClass().getSimpleName();
+    if (prefilter.impossible()) {
+      ctx.telemetryHook().onPrefilterImpossible(scanner);
+      return;
+    }
+    for (String column : PREFILTER_COLUMNS) {
+      long valueCount = prefilter.valuesFor(column).size();
+      if (valueCount > 0) {
+        ctx.telemetryHook().onPrefilterConstraint(scanner, column, valueCount);
+      }
+    }
   }
 
   private static SystemObjectRow rowForRelation(

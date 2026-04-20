@@ -89,6 +89,10 @@ This lists all metrics available in the repository right now:
 | floecat.service.reconcile.tables_changed.total | COUNTER |  | v1 | Tables changed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.tables_scanned.total | COUNTER |  | v1 | Tables scanned by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.update_settings.total | COUNTER |  | v1 | UpdateReconcilerSettings request outcomes. | component, operation, result | component, operation, reason, result |
+| floecat.service.stats.systable.batches_emitted.total | COUNTER |  | v1 | System-table stats scan Arrow batches emitted. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.build.latency | TIMER | ms | v1 | System-table stats scan build latency in milliseconds. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.rows_emitted.total | COUNTER |  | v1 | System-table stats scan rows emitted by scanners before transport-level filtering. | component, operation, resource | component, operation, resource |
+| floecat.service.stats.systable.rows_scanned.total | COUNTER |  | v1 | System-table stats scan rows read from persisted storage. | component, operation, resource | component, operation, resource |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 

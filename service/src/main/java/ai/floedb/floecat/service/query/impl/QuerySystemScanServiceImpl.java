@@ -46,6 +46,7 @@ import ai.floedb.floecat.service.query.system.StatsSystemTableTelemetry;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowMappers;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
+import ai.floedb.floecat.service.query.system.SystemScanTelemetry;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.system.rpc.OutputFormat;
@@ -129,13 +130,19 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
       EngineContext engineCtx = engineContext.engineContext();
       var statsProvider = statsFactory.forQuery(queryCtx, correlationIdHolder.get());
-      ScanTelemetryHook telemetryHook = ScanTelemetryHook.NOOP;
+      ScanTelemetryHook telemetryHook =
+          SystemScanTelemetry.hook(
+              observability,
+              "query_system_scan",
+              StatsSystemTableTelemetry.resourceName(graph, tableId));
       if (StatsSystemTableTelemetry.isStatsSystemTable(graph, tableId)) {
         telemetryHook =
-            StatsSystemTableTelemetry.hook(
-                observability,
-                "query_system_scan",
-                StatsSystemTableTelemetry.resourceName(graph, tableId));
+            SystemScanTelemetry.combine(
+                telemetryHook,
+                StatsSystemTableTelemetry.hook(
+                    observability,
+                    "query_system_scan",
+                    StatsSystemTableTelemetry.resourceName(graph, tableId)));
       }
       SystemObjectScanContext ctx =
           new SystemObjectScanContext(

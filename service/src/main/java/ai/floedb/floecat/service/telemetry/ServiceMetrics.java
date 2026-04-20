@@ -205,4 +205,21 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
   }
+
+  public static final class SystemScan {
+    public static final MetricId PREFILTER_CONSTRAINTS_TOTAL =
+        new MetricId(
+            "floecat.service.system_scan.prefilter.constraints.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId PREFILTER_IMPOSSIBLE_TOTAL =
+        new MetricId(
+            "floecat.service.system_scan.prefilter.impossible.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+  }
 }

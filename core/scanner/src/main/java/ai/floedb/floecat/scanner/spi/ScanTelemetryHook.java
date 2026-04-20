@@ -24,6 +24,10 @@ public interface ScanTelemetryHook {
 
   default void onBatchEmitted(long rows) {}
 
+  default void onPrefilterConstraint(String scanner, String column, long valueCount) {}
+
+  default void onPrefilterImpossible(String scanner) {}
+
   default void onComplete(long elapsedMs) {}
 
   ScanTelemetryHook NOOP = new ScanTelemetryHook() {};

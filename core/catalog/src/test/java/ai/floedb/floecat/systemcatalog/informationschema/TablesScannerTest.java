@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
@@ -139,6 +140,38 @@ class TablesScannerTest {
               .orElseThrow();
 
       assertThat(fields).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void scanArrow_prefiltersBySchemaAndName() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var publicNs = builder.addNamespace("public");
+    var salesNs = builder.addNamespace("sales");
+    builder.addTable(publicNs, "orders", Map.of(), Map.of());
+    builder.addTable(salesNs, "orders", Map.of(), Map.of());
+    builder.addTable(publicNs, "customers", Map.of(), Map.of());
+    SystemObjectScanContext ctx = builder.build();
+
+    Expr predicate =
+        new Expr.And(
+            new Expr.Eq(new Expr.ColumnRef("table_schema"), new Expr.Literal("public")),
+            new Expr.Eq(new Expr.ColumnRef("table_name"), new Expr.Literal("orders")));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<List<String>> rows =
+          new TablesScanner()
+              .scanArrow(ctx, predicate, List.of(), allocator)
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return toRows(batch.root());
+                    }
+                  })
+              .flatMap(List::stream)
+              .toList();
+
+      assertThat(rows).containsExactly(List.of("catalog", "public", "orders", "BASE TABLE"));
     }
   }
 

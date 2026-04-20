@@ -29,6 +29,8 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.expr.ScanPrefilter;
+import ai.floedb.floecat.scanner.expr.ScanPrefilters;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
@@ -57,6 +59,8 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.columns */
 public final class ColumnsScanner implements SystemObjectScanner {
+  private static final Set<String> PREFILTER_COLUMNS =
+      Set.of("table_catalog", "table_schema", "table_name", "column_name");
 
   public static final List<SchemaColumn> SCHEMA =
       List.of(
@@ -129,8 +133,16 @@ public final class ColumnsScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
+    ScanPrefilter prefilter = ScanPrefilters.fromPredicate(predicate, PREFILTER_COLUMNS);
+    emitPrefilterTelemetry(ctx, prefilter);
+    if (prefilter.impossible()) {
+      return Stream.empty();
+    }
     Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
+    List<NamespaceNode> namespaces =
+        ctx.listNamespaces().stream()
+            .filter(ns -> prefilter.matchesValue("table_schema", schemaName(ns)))
+            .toList();
     Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
     Spliterator<ColumnarBatch> spliterator =
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
@@ -165,8 +177,12 @@ public final class ColumnsScanner implements SystemObjectScanner {
                   action.accept(builder.build());
                   return true;
                 }
+                if (!prefilter.matchesValue("table_name", relation.displayName())) {
+                  continue;
+                }
                 columnIter =
-                    columnsForRelation(ctx, currentNamespace, relation, catalogNames).iterator();
+                    columnsForRelation(ctx, currentNamespace, relation, catalogNames, prefilter)
+                        .iterator();
               }
             } finally {
               if (builder != null) {
@@ -187,6 +203,20 @@ public final class ColumnsScanner implements SystemObjectScanner {
           }
         };
     return StreamSupport.stream(spliterator, false);
+  }
+
+  private void emitPrefilterTelemetry(SystemObjectScanContext ctx, ScanPrefilter prefilter) {
+    String scanner = getClass().getSimpleName();
+    if (prefilter.impossible()) {
+      ctx.telemetryHook().onPrefilterImpossible(scanner);
+      return;
+    }
+    for (String column : PREFILTER_COLUMNS) {
+      long valueCount = prefilter.valuesFor(column).size();
+      if (valueCount > 0) {
+        ctx.telemetryHook().onPrefilterConstraint(scanner, column, valueCount);
+      }
+    }
   }
 
   private Stream<SystemObjectRow> scanRelation(
@@ -293,10 +323,14 @@ public final class ColumnsScanner implements SystemObjectScanner {
       SystemObjectScanContext ctx,
       NamespaceNode namespace,
       RelationNode node,
-      Map<ResourceId, String> catalogNames) {
+      Map<ResourceId, String> catalogNames,
+      ScanPrefilter prefilter) {
     String catalogName =
         catalogNames.computeIfAbsent(
             namespace.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
+    if (!prefilter.matchesValue("table_catalog", catalogName)) {
+      return List.of();
+    }
     String schemaName = schemaName(namespace);
 
     if (node instanceof TableNode table) {
@@ -313,6 +347,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         col.getName(),
                         blankToNull(col.getLogicalType()),
                         col.getFieldId()))
+            .filter(entry -> prefilter.matchesValue("column_name", entry.columnName))
             .toList();
       }
       List<ColumnEntry> entries = new ArrayList<>(columns.size());
@@ -327,7 +362,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 blankToNull(col.getLogicalType()),
                 ordinal++));
       }
-      return entries;
+      return entries.stream()
+          .filter(entry -> prefilter.matchesValue("column_name", entry.columnName))
+          .toList();
     }
 
     if (node instanceof ViewNode view) {
@@ -344,7 +381,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 col.getLogicalType(),
                 i + 1));
       }
-      return entries;
+      return entries.stream()
+          .filter(entry -> prefilter.matchesValue("column_name", entry.columnName))
+          .toList();
     }
 
     return List.of();
