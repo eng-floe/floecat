@@ -604,7 +604,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     mutateByCanonicalPointer(
         loaded.get().canonicalPointerKey,
         existing -> {
-          if (isTerminalState(existing.state)) {
+          if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
             return existing;
           }
           if ("JS_RUNNING".equals(existing.state)) {

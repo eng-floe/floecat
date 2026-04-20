@@ -55,4 +55,25 @@ class InMemoryReconcileJobStoreTest {
     assertEquals("dst_ns", failed.viewTask.destinationNamespace());
     assertEquals("dst_view", failed.viewTask.destinationViewDisplayName());
   }
+
+  @Test
+  void cancelIsIdempotentForCancellingJobs() {
+    var store = new InMemoryReconcileJobStore();
+    String jobId =
+        store.enqueue(
+            "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+    var lease = store.leaseNext().orElseThrow();
+
+    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
+    store.cancel("acct", jobId, "first stop");
+    var cancelling = store.get("acct", jobId).orElseThrow();
+
+    assertEquals("JS_CANCELLING", cancelling.state);
+
+    store.cancel("acct", jobId, "second stop");
+    var stillCancelling = store.get("acct", jobId).orElseThrow();
+
+    assertEquals("JS_CANCELLING", stillCancelling.state);
+    assertEquals("first stop", stillCancelling.message);
+  }
 }

@@ -352,9 +352,109 @@ class ReconcilerSchedulerTest {
             null,
             "");
 
-    org.junit.jupiter.api.Assertions.assertThrows(
-        IllegalStateException.class, () -> scheduler.runLease(lease));
+    scheduler.runLease(lease);
+
+    verify(jobStore, times(1))
+        .markFailed(
+            org.mockito.ArgumentMatchers.eq("job-1"),
+            org.mockito.ArgumentMatchers.eq("lease-1"),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.contains(
+                "No reconcile executor available for lease job-1"),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L));
     verify(wrongKind, never()).execute(org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void runLeaseDoesNotTerminalizeJobWhenWorkerThreadIsInterrupted() {
+    var jobStore = mock(ReconcileJobStore.class);
+    var executor = mock(ReconcileExecutor.class);
+    when(executor.enabled()).thenReturn(true);
+    when(executor.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
+    when(executor.supportedLanes()).thenReturn(Set.of(""));
+    when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.id()).thenReturn("default_reconciler");
+    var registry = new ReconcileExecutorRegistry(List.of(executor));
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = registry;
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.config = mock(Config.class);
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "");
+
+    when(executor.execute(org.mockito.ArgumentMatchers.any()))
+        .thenAnswer(
+            ignored -> {
+              Thread.currentThread().interrupt();
+              throw new RuntimeException("interrupted");
+            });
+
+    scheduler.runLease(lease);
+
+    verify(jobStore, never())
+        .markCancelled(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong());
+    verify(jobStore, never())
+        .markFailed(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong());
+    verify(jobStore, never())
+        .markSucceeded(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong());
   }
 
   private static ReconcileJobStore.ReconcileJob childJob(String jobId, String parentJobId) {

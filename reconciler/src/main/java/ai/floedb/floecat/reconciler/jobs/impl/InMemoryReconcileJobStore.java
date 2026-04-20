@@ -441,7 +441,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           if ("JS_SUCCEEDED".equals(job.state)
               || "JS_FAILED".equals(job.state)
-              || "JS_CANCELLED".equals(job.state)) {
+              || "JS_CANCELLED".equals(job.state)
+              || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
           if ("JS_RUNNING".equals(job.state)) {

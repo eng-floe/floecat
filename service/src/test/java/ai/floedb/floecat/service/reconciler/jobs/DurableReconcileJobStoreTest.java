@@ -569,6 +569,31 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancelIsIdempotentForCancellingJobs() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(
+        lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
+
+    store.cancel(ACCOUNT_ID, jobId, "first stop");
+    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+
+    store.cancel(ACCOUNT_ID, jobId, "second stop");
+    var stillCancelling = store.get(jobId).orElseThrow();
+
+    assertEquals("JS_CANCELLING", stillCancelling.state);
+    assertEquals("first stop", stillCancelling.message);
+  }
+
+  @Test
   void renewLeaseExtendsLeaseAndDelaysReclaim() throws Exception {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "2000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
