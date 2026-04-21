@@ -91,16 +91,16 @@ jobs:
 
           git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
           if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
+              | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
             {
-              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/_posts/*.md' \
-                | sed -E 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#'
-              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/*.md' \
-                | sed -E \
-                    -e 's#^site-src/index\.md$#/floecat/#' \
-                    -e 's#^site-src/blog\.md$#/floecat/blog/#' \
-                    -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#'
-              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/**/index.md' \
-                | sed -E 's#^site-src/(.+)/index\.md$#/floecat/\1/#'
+              sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
+              sed -nE \
+                -e 's#^site-src/index\.md$#/floecat/#p' \
+                -e 's#^site-src/blog\.md$#/floecat/blog/#p' \
+                -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#p' \
+                /tmp/site-changed-paths.txt
+              sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
             } | awk 'NF' >> /tmp/page-validation-paths.txt
           fi
 
