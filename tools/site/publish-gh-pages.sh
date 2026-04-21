@@ -54,12 +54,14 @@ parse_args() {
 }
 
 init_branch_workdir() {
+  local auth_header
   BRANCH_ROOT="$(mktemp -d /tmp/floecat-gh-pages.XXXXXX)"
-  git init "${BRANCH_ROOT}" >/dev/null
+  git init -b gh-pages "${BRANCH_ROOT}" >/dev/null
   pushd "${BRANCH_ROOT}" >/dev/null
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-  git config "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GITHUB_TOKEN}"
+  auth_header="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+  git config "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
   git remote add origin "https://github.com/${REPO}.git"
 
   if git fetch origin gh-pages >/dev/null 2>&1; then
@@ -81,18 +83,28 @@ cleanup() {
 
 commit_and_push_if_changed() {
   local message="$1"
+  local push_output
   if [[ -n "$(git status --porcelain)" ]]; then
     git add -A
     git commit -m "${message}" >/dev/null
     local attempt
     for attempt in 1 2 3 4 5; do
-      if git push origin gh-pages >/dev/null 2>&1; then
+      push_output="$(GIT_TERMINAL_PROMPT=0 git push origin gh-pages 2>&1)" && {
         echo "Pushed gh-pages update: ${message}"
         return
+      }
+
+      if ! grep -Eq 'non-fast-forward|fetch first|\[rejected\]' <<<"${push_output}"; then
+        echo "ERROR: failed to push gh-pages (attempt ${attempt})." >&2
+        echo "${push_output}" >&2
+        exit 1
       fi
 
       echo "gh-pages push conflict (attempt ${attempt}), rebasing and retrying..." >&2
-      git fetch origin gh-pages >/dev/null
+      if ! GIT_TERMINAL_PROMPT=0 git fetch origin gh-pages >/dev/null 2>&1; then
+        echo "ERROR: failed to fetch gh-pages during retry." >&2
+        exit 1
+      fi
       if ! git rebase origin/gh-pages >/dev/null 2>&1; then
         git rebase --abort >/dev/null 2>&1 || true
         echo "ERROR: failed to rebase on latest gh-pages during retry." >&2
