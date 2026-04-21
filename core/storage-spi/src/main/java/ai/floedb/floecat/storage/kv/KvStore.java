@@ -33,11 +33,11 @@ public interface KvStore {
     @Override
     public String toString() {
       if (partitionKey == null || partitionKey.isEmpty() || partitionKey.equals(Keys.SEP)) {
-        return Keys.join(sortKey);
+        return Keys.SEP + sortKey;
       } else if (sortKey == null || sortKey.isEmpty() || sortKey.equals(Keys.SEP)) {
-        return Keys.join(partitionKey);
+        return Keys.SEP + partitionKey;
       }
-      return Keys.join(partitionKey, sortKey);
+      return Keys.SEP + partitionKey + Keys.SEP + sortKey;
     }
   }
 

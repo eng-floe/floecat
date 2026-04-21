@@ -1729,7 +1729,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (value == null || value.isBlank()) {
       return "";
     }
-    return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8);
+    return Keys.encodeSegment(value);
   }
 
   private static String parentPointerKey(String accountId, String parentJobId, String jobId) {

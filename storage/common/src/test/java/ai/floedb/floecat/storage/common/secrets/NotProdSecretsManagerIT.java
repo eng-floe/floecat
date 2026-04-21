@@ -72,6 +72,23 @@ class NotProdSecretsManagerIT {
         record.key().sortKey());
   }
 
+  @Test
+  void key_encodes_reserved_characters() {
+    Fixture fixture =
+        new Fixture(
+            new InMemoryKvStore(), "acct 1", "connectors+type", "conn/9%", "alpha".getBytes());
+    NotProdSecretsManager manager = fixture.manager();
+    manager.put(fixture.accountId, fixture.secretType, fixture.secretId, fixture.payload);
+
+    KvStore.Key expectedKey =
+        new KvStore.Key(
+            "secrets",
+            SecretsManager.buildSecretKey(fixture.accountId, fixture.secretType, fixture.secretId));
+    KvStore.Record record = fixture.kv.getRecord(expectedKey);
+    assertNotNull(record);
+    assertEquals("accounts/acct%201/connectors%2Btype/conn%2F9%25", record.key().sortKey());
+  }
+
   private static final class Fixture {
     final InMemoryKvStore kv;
     final String accountId;
