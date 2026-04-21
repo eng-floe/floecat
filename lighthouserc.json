@@ -1,7 +1,8 @@
 {
   "ci": {
     "collect": {
-      "startServerCommand": "python3 -m http.server 8082 --directory /tmp/floecat-preview-root",
+      "headful": true,
+      "startServerCommand": "python3 -u -m http.server 8082 --bind 127.0.0.1 --directory /tmp/floecat-preview-root 2>&1",
       "startServerReadyPattern": "Serving HTTP on",
       "startServerReadyTimeout": 30000,
       "url": [
@@ -9,17 +10,13 @@
         "http://127.0.0.1:8082/floecat/blog/",
         "http://127.0.0.1:8082/floecat/2026/04/16/getting-started-with-iceberg-rest-and-floecat.html"
       ],
-      "numberOfRuns": 2,
+      "numberOfRuns": 1,
       "settings": {
         "preset": "desktop",
-        "formFactor": "desktop",
         "throttlingMethod": "provided",
-        "screenEmulation": {
-          "disabled": true
-        },
         "maxWaitForFcp": 45000,
         "maxWaitForLoad": 90000,
-        "chromeFlags": "--headless=old --no-sandbox --disable-dev-shm-usage --disable-gpu"
+        "chromeFlags": "--no-sandbox --disable-dev-shm-usage"
       }
     },
     "assert": {

@@ -97,7 +97,8 @@ jobs:
         if: github.event.action != 'closed'
         run: |
           npm install -g @lhci/cli@0.15.x
-          lhci autorun --config=./lighthouserc.json
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+            lhci autorun --config=./lighthouserc.json
 
       - name: Upload Lighthouse Artifacts
         if: always() && github.event.action != 'closed'
