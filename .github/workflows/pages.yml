@@ -9,7 +9,7 @@ on:
       - "lighthouserc.json"
       - "tools/site/**"
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "site-src/**"
       - ".github/workflows/pages.yml"
@@ -17,52 +17,75 @@ on:
       - "tools/site/**"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
-
 jobs:
+  publish-main:
+    name: Publish main site to gh-pages
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-prod
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and sanity-check site
+        run: make test-site
+
+      - name: Deploy production site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: ./tools/site/publish-gh-pages.sh deploy-prod --source-dir site-src/_site
+
   pr-build-check:
     name: Pages build check
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages-pr-${{ github.event.number }}
+      cancel-in-progress: true
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Ruby
+        if: github.event.action != 'closed'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.1"
 
       - name: Setup Node
+        if: github.event.action != 'closed'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Build and sanity-check site
+        if: github.event.action != 'closed'
         run: make test-site
 
       - name: Prepare Preview Root
+        if: github.event.action != 'closed'
         run: |
           rm -rf /tmp/floecat-preview-root
           mkdir -p /tmp/floecat-preview-root/floecat
           cp -a ./site-src/_site/. /tmp/floecat-preview-root/floecat/
 
       - name: Playwright smoke check
+        if: github.event.action != 'closed'
         env:
           PLAYWRIGHT_CHANNEL: chrome
         run: ./tools/site/test-site-e2e.sh
 
       - name: Check HTML
+        if: github.event.action != 'closed'
         run: |
           gem install html-proofer -v "~> 5.0" --no-document
           htmlproofer /tmp/floecat-preview-root \
@@ -71,12 +94,13 @@ jobs:
             --allow-missing-href
 
       - name: Lighthouse CI
+        if: github.event.action != 'closed'
         run: |
           npm install -g @lhci/cli@0.15.x
           lhci autorun --config=./lighthouserc.json
 
       - name: Upload Lighthouse Artifacts
-        if: always()
+        if: always() && github.event.action != 'closed'
         uses: actions/upload-artifact@v4
         with:
           name: lighthouse-reports
@@ -85,7 +109,7 @@ jobs:
 
       - name: Upload PR Preview Artifact
         id: upload_pr_preview
-        if: always()
+        if: always() && github.event.action != 'closed'
         uses: actions/upload-artifact@v4
         with:
           name: pages-preview
@@ -93,25 +117,75 @@ jobs:
           path: /tmp/floecat-preview-root
           retention-days: 7
 
+      - name: Build PR Preview Site
+        if: always() && github.event.action != 'closed'
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          JEKYLL_PAGES_IMAGE: jekyll/jekyll:pages
+        run: |
+          set -euo pipefail
+          PREVIEW_BASEURL="/floecat/pr-preview/pr-${PR_NUMBER}"
+          PREVIEW_OUT="/tmp/floecat-pr-preview-site"
+          rm -rf "${PREVIEW_OUT}"
+          mkdir -p "${PREVIEW_OUT}"
+
+          docker run --rm \
+            -e "JEKYLL_UID=$(id -u)" \
+            -e "JEKYLL_GID=$(id -g)" \
+            -v "${PWD}/site-src:/srv/jekyll" \
+            -v "${PREVIEW_OUT}:/srv/output" \
+            "${JEKYLL_PAGES_IMAGE}" \
+            jekyll build \
+              --config /srv/jekyll/_config.yml,/srv/jekyll/_config.pr-preview.yml \
+              --source /srv/jekyll \
+              --destination /srv/output \
+              --baseurl "${PREVIEW_BASEURL}"
+
+      - name: Deploy PR Preview
+        if: always() && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh deploy-pr --source-dir /tmp/floecat-pr-preview-site --pr-number "${PR_NUMBER}"
+
+      - name: Remove PR Preview
+        if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh remove-pr --pr-number "${PR_NUMBER}"
+
       - name: Comment PR Preview Link
-        if: always()
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         env:
           PREVIEW_ARTIFACT_URL: ${{ steps.upload_pr_preview.outputs.artifact-url }}
+          PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-preview/pr-${{ github.event.number }}/
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
         with:
           script: |
             const marker = '<!-- floecat-pages-preview -->';
             const artifactUrl = process.env.PREVIEW_ARTIFACT_URL;
+            const previewUrl = process.env.PREVIEW_URL;
+            const isClosed = process.env.GITHUB_EVENT_ACTION === 'closed';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const previewLine = artifactUrl
-              ? `- Preview artifact: [Open pages-preview](${artifactUrl})`
-              : `- Preview artifact: open [this workflow run](${runUrl}) and download \`pages-preview\` from Artifacts.`;
+            const previewLine = isClosed
+              ? '- Preview artifact: skipped for closed PR event.'
+              : (artifactUrl
+                ? `- Preview artifact: [Open pages-preview](${artifactUrl})`
+                : `- Preview artifact: open [this workflow run](${runUrl}) and download \`pages-preview\` from Artifacts.`);
+            const livePreviewLine = isClosed
+              ? '- Live preview: PR closed, preview teardown requested.'
+              : `- Live preview: [Open site](${previewUrl})`;
 
             const body = [
               marker,
               '### PR Website Preview',
               'The live site is still merge-gated. This is a PR-only build preview.',
               '',
+              livePreviewLine,
               previewLine,
               `- Workflow run: [Open run](${runUrl})`,
             ].join('\n');
@@ -145,36 +219,3 @@ jobs:
                 body,
               });
             }
-
-  build:
-    name: pages-build
-    if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./site-src
-          destination: ./_site
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./_site
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
