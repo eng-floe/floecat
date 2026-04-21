@@ -417,6 +417,7 @@ class DeltaNativeStatsCaptureEngineTest {
           openCount.incrementAndGet();
           return floecatConnector;
         };
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();

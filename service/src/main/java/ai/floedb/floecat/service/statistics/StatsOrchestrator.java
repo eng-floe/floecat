@@ -42,12 +42,19 @@ import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.jboss.logging.Logger;
 
 /**
@@ -69,11 +76,17 @@ public class StatsOrchestrator {
   private static final Logger LOG = Logger.getLogger(StatsOrchestrator.class);
   private static final String COMPONENT = "service";
   private static final String OPERATION = "stats_orchestrator";
+  private static final Duration DEFAULT_SYNC_IN_FLIGHT_WAIT = Duration.ofMillis(20);
+  private static final Duration MAX_SYNC_IN_FLIGHT_WAIT = Duration.ofMillis(250);
+  private static final Duration DEFAULT_SYNC_POST_CAPTURE_HOLD = Duration.ofMillis(250);
+  private static final Duration MAX_SYNC_POST_CAPTURE_HOLD = Duration.ofSeconds(1);
 
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
   private final TableRepository tableRepository;
   private final StatsEngineRegistry statsEngineRegistry;
+  private final ConcurrentMap<SyncCaptureKey, InFlightCapture> syncCaptureInFlight =
+      new ConcurrentHashMap<>();
   private final Observability observability;
 
   @Inject
@@ -106,7 +119,24 @@ public class StatsOrchestrator {
    * for misses that have at least one registry-capable ASYNC engine candidate.
    */
   public Optional<TargetStatsRecord> resolve(StatsCaptureRequest request) {
-    return resolveBatch(StatsCaptureBatchRequest.of(request)).getFirst();
+    Optional<TargetStatsRecord> stored = readStore(request);
+    if (stored.isPresent()) {
+      return stored;
+    }
+
+    if (request.executionMode() == StatsExecutionMode.SYNC) {
+      CaptureAttempt attempt = captureAttemptSingleflight(request);
+      if (attempt.result().isPresent()) {
+        return attempt.result().map(StatsCaptureResult::record);
+      }
+      if (attempt.enqueueEligible()) {
+        tryEnqueueAsyncCaptureBatch(List.of(request));
+      }
+      return Optional.empty();
+    }
+
+    tryEnqueueAsyncCaptureBatch(List.of(request));
+    return Optional.empty();
   }
 
   /**
@@ -145,16 +175,17 @@ public class StatsOrchestrator {
           1,
           Tag.of(TagKey.TRIGGER, "sync_capture"),
           Tag.of(TagKey.SCOPE, "orchestrator"));
-      StatsCaptureBatchResult syncCaptureResult =
-          triggerBatch(StatsCaptureBatchRequest.of(syncMissingRequests));
-      for (int i = 0; i < syncCaptureResult.results().size(); i++) {
-        StatsCaptureBatchItemResult item = syncCaptureResult.results().get(i);
+      List<CaptureAttempt> attempts = captureAttemptsSingleflightBatch(syncMissingRequests);
+      for (int i = 0; i < attempts.size(); i++) {
         int resolvedIndex = syncMissingIndexes.get(i);
-        if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
-          resolved.set(resolvedIndex, item.captureResult().map(StatsCaptureResult::record));
+        CaptureAttempt attempt = attempts.get(i);
+        if (attempt.result().isPresent()) {
+          resolved.set(resolvedIndex, attempt.result().map(StatsCaptureResult::record));
           continue;
         }
-        unresolvedForAsync.add(item.request());
+        if (attempt.enqueueEligible()) {
+          unresolvedForAsync.add(syncMissingRequests.get(i));
+        }
       }
     }
 
@@ -363,6 +394,184 @@ public class StatsOrchestrator {
     return registryResult;
   }
 
+  private CaptureAttempt captureAttempt(StatsCaptureRequest request) {
+    StatsCaptureBatchItemResult item =
+        triggerBatch(StatsCaptureBatchRequest.of(request)).results().getFirst();
+    return captureAttemptFromItem(item);
+  }
+
+  private CaptureAttempt captureAttemptFromItem(StatsCaptureBatchItemResult item) {
+    return switch (item.outcome()) {
+      case CAPTURED -> new CaptureAttempt(item.captureResult(), false);
+      case QUEUED -> CaptureAttempt.emptyNotEnqueueEligible();
+      case UNCAPTURABLE, DEGRADED -> CaptureAttempt.emptyEnqueueEligible();
+    };
+  }
+
+  private List<CaptureAttempt> captureAttemptsSingleflightBatch(
+      List<StatsCaptureRequest> requests) {
+    if (requests.isEmpty()) {
+      return List.of();
+    }
+
+    List<SyncCaptureKey> keysByIndex = new ArrayList<>(requests.size());
+    Map<SyncCaptureKey, StatsCaptureRequest> uniqueRequests = new LinkedHashMap<>();
+    for (StatsCaptureRequest request : requests) {
+      SyncCaptureKey key = SyncCaptureKey.of(request);
+      keysByIndex.add(key);
+      uniqueRequests.putIfAbsent(key, request);
+    }
+
+    Map<SyncCaptureKey, CompletableFuture<CaptureAttempt>> futuresByKey = new LinkedHashMap<>();
+    Map<SyncCaptureKey, InFlightCapture> createdByKey = new LinkedHashMap<>();
+    List<StatsCaptureRequest> toCapture = new ArrayList<>();
+    for (Map.Entry<SyncCaptureKey, StatsCaptureRequest> entry : uniqueRequests.entrySet()) {
+      SyncCaptureKey key = entry.getKey();
+      while (true) {
+        InFlightCapture inFlight = syncCaptureInFlight.get(key);
+        if (inFlight != null) {
+          if (inFlight.isExpired(System.nanoTime())) {
+            syncCaptureInFlight.remove(key, inFlight);
+            continue;
+          }
+          futuresByKey.put(key, inFlight.future());
+          break;
+        }
+        InFlightCapture created = InFlightCapture.inFlight();
+        InFlightCapture prior = syncCaptureInFlight.putIfAbsent(key, created);
+        if (prior != null) {
+          continue;
+        }
+        createdByKey.put(key, created);
+        futuresByKey.put(key, created.future());
+        toCapture.add(entry.getValue());
+        break;
+      }
+    }
+
+    if (!toCapture.isEmpty()) {
+      try {
+        StatsCaptureBatchResult batchResult = triggerBatch(StatsCaptureBatchRequest.of(toCapture));
+        for (int i = 0; i < batchResult.results().size(); i++) {
+          StatsCaptureBatchItemResult item = batchResult.results().get(i);
+          StatsCaptureRequest request = toCapture.get(i);
+          SyncCaptureKey key = SyncCaptureKey.of(request);
+          InFlightCapture created = createdByKey.get(key);
+          if (created == null) {
+            continue;
+          }
+          CaptureAttempt attempt = captureAttemptFromItem(item);
+          created.complete(attempt);
+          if (attempt.result().isPresent()) {
+            long holdNanos = syncPostCaptureHoldNanos(request);
+            created.extendHold(holdNanos);
+            scheduleInFlightEviction(key, created, holdNanos);
+          } else {
+            created.expireNow();
+          }
+          if (created.isExpired(System.nanoTime())) {
+            syncCaptureInFlight.remove(key, created);
+          }
+        }
+      } catch (RuntimeException e) {
+        for (Map.Entry<SyncCaptureKey, InFlightCapture> createdEntry : createdByKey.entrySet()) {
+          InFlightCapture created = createdEntry.getValue();
+          created.completeExceptionally(e);
+          created.expireNow();
+          syncCaptureInFlight.remove(createdEntry.getKey(), created);
+        }
+        throw e;
+      }
+    }
+
+    List<CaptureAttempt> attempts = new ArrayList<>(requests.size());
+    for (int i = 0; i < requests.size(); i++) {
+      attempts.add(awaitInFlightCapture(requests.get(i), futuresByKey.get(keysByIndex.get(i))));
+    }
+    return List.copyOf(attempts);
+  }
+
+  private CaptureAttempt captureAttemptSingleflight(StatsCaptureRequest request) {
+    SyncCaptureKey key = SyncCaptureKey.of(request);
+    while (true) {
+      InFlightCapture inFlight = syncCaptureInFlight.get(key);
+      if (inFlight != null) {
+        if (inFlight.isExpired(System.nanoTime())) {
+          syncCaptureInFlight.remove(key, inFlight);
+          continue;
+        }
+        return awaitInFlightCapture(request, inFlight.future());
+      }
+      InFlightCapture created = InFlightCapture.inFlight();
+      InFlightCapture prior = syncCaptureInFlight.putIfAbsent(key, created);
+      if (prior != null) {
+        continue;
+      }
+      try {
+        CaptureAttempt attempt = captureAttempt(request);
+        created.complete(attempt);
+        if (attempt.result().isPresent()) {
+          long holdNanos = syncPostCaptureHoldNanos(request);
+          created.extendHold(holdNanos);
+          scheduleInFlightEviction(key, created, holdNanos);
+        } else {
+          created.expireNow();
+        }
+        return attempt;
+      } catch (RuntimeException e) {
+        created.completeExceptionally(e);
+        created.expireNow();
+        throw e;
+      } finally {
+        if (created.isExpired(System.nanoTime())) {
+          syncCaptureInFlight.remove(key, created);
+        }
+      }
+    }
+  }
+
+  private CaptureAttempt awaitInFlightCapture(
+      StatsCaptureRequest request, CompletableFuture<CaptureAttempt> inFlight) {
+    long waitMillis = syncInFlightWaitMillis(request);
+    try {
+      return inFlight.get(waitMillis, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return CaptureAttempt.emptyEnqueueEligible();
+    } catch (ExecutionException | TimeoutException ignored) {
+      return CaptureAttempt.emptyEnqueueEligible();
+    }
+  }
+
+  private long syncInFlightWaitMillis(StatsCaptureRequest request) {
+    Duration wait = request.latencyBudget().orElse(DEFAULT_SYNC_IN_FLIGHT_WAIT);
+    if (wait.isNegative() || wait.isZero()) {
+      wait = DEFAULT_SYNC_IN_FLIGHT_WAIT;
+    }
+    if (wait.compareTo(MAX_SYNC_IN_FLIGHT_WAIT) > 0) {
+      wait = MAX_SYNC_IN_FLIGHT_WAIT;
+    }
+    return Math.max(1L, wait.toMillis());
+  }
+
+  private long syncPostCaptureHoldNanos(StatsCaptureRequest request) {
+    Duration hold = request.latencyBudget().orElse(DEFAULT_SYNC_POST_CAPTURE_HOLD);
+    if (hold.isNegative() || hold.isZero()) {
+      hold = DEFAULT_SYNC_POST_CAPTURE_HOLD;
+    }
+    if (hold.compareTo(MAX_SYNC_POST_CAPTURE_HOLD) > 0) {
+      hold = MAX_SYNC_POST_CAPTURE_HOLD;
+    }
+    return hold.toNanos();
+  }
+
+  private void scheduleInFlightEviction(
+      SyncCaptureKey key, InFlightCapture capture, long holdNanos) {
+    long delayMillis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(holdNanos));
+    CompletableFuture.delayedExecutor(delayMillis, TimeUnit.MILLISECONDS)
+        .execute(() -> syncCaptureInFlight.remove(key, capture));
+  }
+
   private void logTriggerOutcome(StatsCaptureBatchItemResult item) {
     StatsCaptureRequest request = item.request();
     if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
@@ -385,6 +594,60 @@ public class StatsOrchestrator {
     System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
     System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
     observability.counter(metric, amount, merged);
+  }
+
+  private record CaptureAttempt(Optional<StatsCaptureResult> result, boolean enqueueEligible) {
+    private static CaptureAttempt emptyEnqueueEligible() {
+      return new CaptureAttempt(Optional.empty(), true);
+    }
+
+    private static CaptureAttempt emptyNotEnqueueEligible() {
+      return new CaptureAttempt(Optional.empty(), false);
+    }
+  }
+
+  private static final class InFlightCapture {
+    private final CompletableFuture<CaptureAttempt> future = new CompletableFuture<>();
+    private volatile long validUntilNanos = Long.MAX_VALUE;
+
+    private static InFlightCapture inFlight() {
+      return new InFlightCapture();
+    }
+
+    private CompletableFuture<CaptureAttempt> future() {
+      return future;
+    }
+
+    private boolean isExpired(long nowNanos) {
+      return nowNanos >= validUntilNanos;
+    }
+
+    private void extendHold(long holdNanos) {
+      validUntilNanos = System.nanoTime() + Math.max(1L, holdNanos);
+    }
+
+    private void expireNow() {
+      validUntilNanos = 0L;
+    }
+
+    private void complete(CaptureAttempt attempt) {
+      future.complete(attempt);
+    }
+
+    private void completeExceptionally(Throwable throwable) {
+      future.completeExceptionally(throwable);
+    }
+  }
+
+  private record SyncCaptureKey(
+      ai.floedb.floecat.common.rpc.ResourceId tableId,
+      long snapshotId,
+      ai.floedb.floecat.catalog.rpc.StatsTarget target,
+      String connectorType) {
+    private static SyncCaptureKey of(StatsCaptureRequest request) {
+      return new SyncCaptureKey(
+          request.tableId(), request.snapshotId(), request.target(), request.connectorType());
+    }
   }
 
   private record TableKey(String accountId, String tableId) {}

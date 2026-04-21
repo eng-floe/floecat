@@ -74,7 +74,8 @@ class IcebergNativeStatsCaptureEngineTest {
         new IcebergNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
-    engine.persistExecutor = Runnable::run;
+    List<Runnable> queuedWrites = new CopyOnWriteArrayList<>();
+    engine.persistExecutor = queuedWrites::add;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
@@ -152,6 +153,9 @@ class IcebergNativeStatsCaptureEngineTest {
     verify(floecatConnector)
         .captureSnapshotTargetStats(
             any(), any(), any(), anyLong(), argThat(selectors -> selectors.contains("c7")), any());
+    assertThat(queuedWrites).hasSize(1);
+    verify(statsStore, never()).putTargetStats(any());
+    queuedWrites.getFirst().run();
     verify(statsStore, times(1))
         .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
     verify(statsStore, times(1))
@@ -457,6 +461,7 @@ class IcebergNativeStatsCaptureEngineTest {
           openCount.incrementAndGet();
           return floecatConnector;
         };
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();

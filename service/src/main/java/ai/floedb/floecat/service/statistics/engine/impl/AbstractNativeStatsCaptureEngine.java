@@ -292,11 +292,21 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
       StatsCaptureRequest tableRequest,
       TargetStatsRecord canonicalTable,
       Set<String> persisted) {
+    List<TargetStatsRecord> persistCandidates = new ArrayList<>();
     for (TargetStatsRecord record : records) {
       TargetStatsRecord toPersist =
           record.hasTable() ? canonicalTable : withCanonicalMetadata(record, tableRequest);
-      persistOnce(toPersist, tableRequest, persisted);
+      String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
+      if (persisted.add(storageId)) {
+        persistCandidates.add(toPersist);
+      }
     }
+    if (persistCandidates.isEmpty()) {
+      return;
+    }
+    PersistSchedule schedule = enqueueStatsPersistence(persistCandidates);
+    publishStatsPersistTelemetry(
+        tableRequest, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
   }
 
   private void persistOnce(
