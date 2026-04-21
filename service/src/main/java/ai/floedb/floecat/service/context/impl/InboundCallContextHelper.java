@@ -442,7 +442,9 @@ public final class InboundCallContextHelper {
       return defaultDevAccountId();
     }
     if (looksLikeUuid(value)) {
-      validateAccount(value);
+      if (validateAccount) {
+        validateAccount(value);
+      }
       return value;
     }
 
