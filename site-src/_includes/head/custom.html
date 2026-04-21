@@ -1,3 +1,7 @@
+{% if site.preview_noindex %}
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="googlebot" content="noindex,nofollow,noarchive">
+{% endif %}
 <link rel="icon" type="image/png" sizes="64x64" href="{{ '/images/favicon-64.png?v=2' | relative_url }}">
 <link rel="shortcut icon" type="image/png" sizes="64x64" href="{{ '/images/favicon-64.png?v=2' | relative_url }}">
 <link rel="apple-touch-icon" sizes="180x180" href="{{ '/images/apple-touch-icon-180.png?v=2' | relative_url }}">
