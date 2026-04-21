@@ -16,11 +16,66 @@
 
 html {
   font-size: 20px;
+  background: #f4f0f0;
 }
 
 body {
   color: var(--site-ink);
   background: #f4f0f0;
+}
+
+/* Lightweight icon fallbacks so the site doesn't need external icon-font CSS. */
+i.fas,
+i.far {
+  font-style: normal;
+  font-variant: normal;
+  line-height: 1;
+}
+
+i.fa-fw {
+  display: inline-block;
+  width: 1.25em;
+  text-align: center;
+}
+
+i.fa-search::before {
+  content: "\1F50D";
+}
+
+i.fa-file-alt::before {
+  content: "\1F5CE";
+}
+
+i.fa-calendar-alt::before {
+  content: "\1F4C5";
+}
+
+i.fa-link::before {
+  content: "\1F517";
+}
+
+i.fa-copy::before {
+  content: "\2398";
+}
+
+i.fa-check::before {
+  content: "\2713";
+}
+
+body.layout--home,
+body.layout--single {
+  width: 100%;
+  min-width: 100%;
+  overflow-x: hidden;
+}
+
+body.layout--home #main,
+body.layout--home .archive,
+body.layout--home .initial-content,
+body.layout--single #main,
+body.layout--single .archive,
+body.layout--single .initial-content {
+  width: 100%;
 }
 
 .page {
@@ -231,6 +286,11 @@ body {
 
 .masthead .search__toggle {
   color: var(--site-ink-soft);
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .masthead .search__toggle:hover,
@@ -242,6 +302,14 @@ body {
 .masthead .greedy-nav__toggle .navicon::before,
 .masthead .greedy-nav__toggle .navicon::after {
   background: var(--site-ink-soft);
+}
+
+.masthead .greedy-nav__toggle {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .masthead .greedy-nav__toggle:hover .navicon,
@@ -296,7 +364,7 @@ body {
   letter-spacing: 0.08em;
   font-size: 0.72rem;
   font-weight: 700;
-  color: var(--site-accent-strong);
+  color: #0b5f80;
 }
 
 .home-hero h1 {
@@ -391,6 +459,10 @@ body {
 
 .home-btn {
   margin-bottom: 0 !important;
+  min-height: 44px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
 }
 
 .home-hero__brand {
@@ -406,7 +478,7 @@ body {
 
 .trust-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.75rem;
   margin: 0.25rem 0 1.3rem;
 }
@@ -431,7 +503,7 @@ body {
 
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
   margin: 1rem 0 1.6rem;
 }
@@ -502,7 +574,7 @@ body {
 
 .home-latest-post__label {
   margin: 0 0 0.35rem;
-  color: var(--site-accent-strong);
+  color: #0b5f80;
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -535,7 +607,8 @@ body {
   background: #fff;
   color: var(--site-ink-strong);
   border-radius: 999px;
-  padding: 0.35rem 0.7rem;
+  padding: 0.5rem 0.9rem;
+  min-height: 44px;
   font-weight: 700;
   font-size: 0.86rem;
   cursor: pointer;
@@ -560,6 +633,7 @@ body {
 }
 
 .install-code {
+  position: relative;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.95rem;
   line-height: 1.45;
@@ -577,9 +651,39 @@ body {
   color: inherit;
 }
 
+.install-code .clipboard-copy-button {
+  color: #eef6ff;
+}
+
+pre .clipboard-copy-button::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  inset-inline-end: 2.4rem;
+  top: 0.2rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+  background: #1f2937;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+pre:hover .clipboard-copy-button::after,
+pre .clipboard-copy-button:focus-visible::after,
+pre .clipboard-copy-button.copied::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .stack-groups {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 0.9rem;
   margin-bottom: 1.6rem;
 }
@@ -622,7 +726,7 @@ body {
 
 .try-now-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 0.9rem;
   margin-bottom: 1.6rem;
 }
@@ -670,7 +774,7 @@ body {
 
 .community-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 0.9rem;
   margin: 0.9rem 0 1.2rem;
 }
@@ -716,7 +820,7 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: 700;
-  color: var(--site-accent-strong);
+  color: #0b5f80;
 }
 
 .featured-post__meta,
@@ -727,7 +831,7 @@ body {
 
 .blog-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
 }
 
@@ -740,6 +844,16 @@ body {
 
 .post-card h3 {
   margin-top: 0;
+}
+
+.post-card a {
+  color: var(--site-ink-strong);
+  font-weight: 600;
+}
+
+.post-card a:hover,
+.post-card a:focus {
+  color: var(--site-accent-strong);
 }
 
 .post-tags {
@@ -761,13 +875,17 @@ body {
 
 .site-footer-strip {
   margin-top: 2.4rem;
-  margin-bottom: 0;
-  width: 100%;
+  margin-bottom: 1rem;
+  width: min(1160px, calc(100% - 1.5rem));
+  margin-left: auto;
+  margin-right: auto;
   float: none;
   padding: 0;
   background: #3f2c2a;
   color: #f7eded;
-  border-top: 1px solid #2f211f;
+  border: 1px solid #2f211f;
+  border-radius: 14px;
+  overflow: hidden;
   animation: none;
 }
 
@@ -776,7 +894,7 @@ body {
   margin: 0 auto;
   padding: 1.3rem 1rem 1.45rem;
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1fr);
   align-items: center;
   column-gap: 1.2rem;
   row-gap: 0.65rem;
@@ -800,6 +918,7 @@ body {
 .site-footer-strip__links {
   display: flex;
   flex-wrap: wrap;
+  min-width: 0;
   justify-content: flex-end;
   gap: 0.95rem;
 }
@@ -830,18 +949,6 @@ body {
     grid-template-columns: 1fr;
     gap: 1rem;
     padding: 1.2rem;
-  }
-
-  .feature-grid,
-  .blog-grid,
-  .community-actions,
-  .stack-groups,
-  .try-now-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .trust-strip {
-    grid-template-columns: 1fr;
   }
 
   .site-footer-strip__inner {

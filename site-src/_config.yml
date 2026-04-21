@@ -38,3 +38,7 @@ defaults:
       author_profile: false
       toc: false
       toc_sticky: false
+      classes: wide
+
+sass:
+  style: compressed

@@ -23,7 +23,7 @@ classes: wide
     </div>
   </div>
   <div class="home-hero__brand">
-    <img src="{{ '/images/floecat.png' | relative_url }}" alt="Floecat logo">
+    <img src="{{ '/images/floecat-hero.jpg' | relative_url }}" alt="Floecat logo" width="439" height="440" fetchpriority="high" loading="eager" decoding="async">
   </div>
 </section>
 
@@ -78,30 +78,30 @@ classes: wide
 
 <section class="install-switcher" data-install-switcher>
   <div class="install-switcher__tabs" role="tablist" aria-label="Install methods">
-    <button type="button" class="active" data-install-tab="docker" role="tab" aria-selected="true">Docker</button>
-    <button type="button" data-install-tab="source" role="tab" aria-selected="false">Source</button>
-    <button type="button" data-install-tab="cli" role="tab" aria-selected="false">CLI</button>
-    <button type="button" data-install-tab="duckdb" role="tab" aria-selected="false">DuckDB</button>
+    <button type="button" id="install-tab-docker" class="active" data-install-tab="docker" role="tab" aria-selected="true" aria-controls="install-panel-docker" tabindex="0">Docker</button>
+    <button type="button" id="install-tab-source" data-install-tab="source" role="tab" aria-selected="false" aria-controls="install-panel-source" tabindex="-1">Source</button>
+    <button type="button" id="install-tab-cli" data-install-tab="cli" role="tab" aria-selected="false" aria-controls="install-panel-cli" tabindex="-1">CLI</button>
+    <button type="button" id="install-tab-duckdb" data-install-tab="duckdb" role="tab" aria-selected="false" aria-controls="install-panel-duckdb" tabindex="-1">DuckDB</button>
   </div>
 
-  <article class="install-switcher__panel active" data-install-panel="docker" role="tabpanel">
+  <article id="install-panel-docker" class="install-switcher__panel active" data-install-panel="docker" role="tabpanel" aria-labelledby="install-tab-docker">
     <pre class="install-code"><code>cd docker
 FLOECAT_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack,trino \
   docker compose -f docker-compose.yml up -d --wait</code></pre>
   </article>
 
-  <article class="install-switcher__panel" data-install-panel="source" role="tabpanel">
+  <article id="install-panel-source" class="install-switcher__panel" data-install-panel="source" role="tabpanel" aria-labelledby="install-tab-source" hidden>
     <pre class="install-code"><code>git clone https://github.com/eng-floe/floecat.git
 cd floecat
 make run</code></pre>
   </article>
 
-  <article class="install-switcher__panel" data-install-panel="cli" role="tabpanel">
+  <article id="install-panel-cli" class="install-switcher__panel" data-install-panel="cli" role="tabpanel" aria-labelledby="install-tab-cli" hidden>
     <pre class="install-code"><code>cd docker
 FLOECAT_ENV_FILE=./env.localstack docker compose -f docker-compose.yml run --rm cli</code></pre>
   </article>
 
-  <article class="install-switcher__panel" data-install-panel="duckdb" role="tabpanel">
+  <article id="install-panel-duckdb" class="install-switcher__panel" data-install-panel="duckdb" role="tabpanel" aria-labelledby="install-tab-duckdb" hidden>
     <pre class="install-code"><code>duckdb -init tools/duckdb-localstack-init.sql
 SELECT * FROM iceberg_floecat.iceberg.orders;</code></pre>
   </article>
@@ -176,6 +176,7 @@ Clone, start the service, and open the CLI:
 
 ```bash
 git clone https://github.com/eng-floe/floecat.git
+cd floecat
 make run
 make cli-run
 ```
