@@ -932,6 +932,10 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
     assertThat(batchCaptor.getValue().requests())
         .extracting(StatsCaptureRequest::target)
         .anyMatch(target -> target.hasColumn() && target.getColumn().getColumnId() == 9L);
+    assertThat(batchCaptor.getValue().requests())
+        .filteredOn(request -> request.target().hasTable())
+        .extracting(StatsCaptureRequest::columnSelectors)
+        .allSatisfy(selectors -> assertThat(selectors).containsExactlyInAnyOrder("c7", "#9"));
     assertThat(result.statsProcessed).isEqualTo(2L);
     assertThat(backend.putTargetStatsCalls).isZero();
   }
