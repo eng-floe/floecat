@@ -104,85 +104,6 @@
     });
   }
 
-  function formatGitHubStars(count) {
-    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) {
-      return '...';
-    }
-
-    if (count < 10000) {
-      return String(count);
-    }
-
-    return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  }
-
-  function bindGitHubStars() {
-    var stars = document.querySelector('[data-github-stars]');
-    if (!stars) {
-      return;
-    }
-
-    var repo = stars.getAttribute('data-github-stars');
-    if (!repo) {
-      return;
-    }
-
-    var cacheKey = 'floecat:stars:' + repo;
-    var cacheTtlMs = 6 * 60 * 60 * 1000;
-
-    function setStars(count) {
-      stars.textContent = formatGitHubStars(count);
-      if (typeof count === 'number' && Number.isFinite(count)) {
-        stars.setAttribute('title', count.toLocaleString('en-US') + ' stars');
-      }
-    }
-
-    try {
-      var cachedRaw = window.localStorage.getItem(cacheKey);
-      if (cachedRaw) {
-        var cached = JSON.parse(cachedRaw);
-        if (cached && typeof cached.count === 'number') {
-          setStars(cached.count);
-          if (Date.now() - cached.fetchedAt < cacheTtlMs) {
-            return;
-          }
-        }
-      }
-    } catch (error) {
-      // Ignore cache parsing/storage errors.
-    }
-
-    fetch('https://api.github.com/repos/' + repo, {
-      headers: {
-        Accept: 'application/vnd.github+json'
-      }
-    })
-      .then(function (response) {
-        if (!response.ok) {
-          throw new Error('GitHub API request failed');
-        }
-        return response.json();
-      })
-      .then(function (data) {
-        if (!data || typeof data.stargazers_count !== 'number') {
-          return;
-        }
-
-        setStars(data.stargazers_count);
-        try {
-          window.localStorage.setItem(cacheKey, JSON.stringify({
-            count: data.stargazers_count,
-            fetchedAt: Date.now()
-          }));
-        } catch (error) {
-          // Ignore storage write errors.
-        }
-      })
-      .catch(function () {
-        // Keep current fallback/cached value.
-      });
-  }
-
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       return navigator.clipboard.writeText(text);
@@ -263,7 +184,6 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
-    bindGitHubStars();
     bindCmdK();
     bindInstallSwitcher();
     bindCodeCopyButtons();
