@@ -6,7 +6,6 @@ comments: true
 author: mark_cusack
 toc: true
 toc_sticky: true
-classes: wide
 
 header:
   image: /images/2026-04-20-graph-theme.jpg

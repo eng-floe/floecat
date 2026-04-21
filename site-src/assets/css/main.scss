@@ -16,15 +16,11 @@
 
 html {
   font-size: 20px;
-  width: 100%;
-  overflow-x: hidden;
 }
 
 body {
   color: var(--site-ink);
   background: #f4f0f0;
-  width: 100%;
-  overflow-x: hidden;
 }
 
 .page {
@@ -37,44 +33,12 @@ body {
   margin: 0 auto;
   padding-left: 1rem;
   padding-right: 1rem;
-  width: 100%;
-  overflow-x: hidden;
-}
-
-#main,
-.layout--single .page,
-.layout--single .page__inner-wrap,
-.layout--single .page__hero,
-.layout--single .page__content {
-  max-width: 100%;
-  overflow-x: hidden;
 }
 
 .layout--home .page,
 .layout--home .archive {
   float: none;
   width: 100%;
-}
-
-.layout--single .page {
-  float: none;
-  width: 100%;
-}
-
-@media (min-width: 64em) {
-  .wide .page,
-  .wide .page__related {
-    width: 100%;
-    padding-inline-end: 0;
-  }
-}
-
-@media (min-width: 80em) {
-  .wide .page,
-  .wide .page__related {
-    width: 100%;
-    padding-inline-end: 0;
-  }
 }
 
 .layout--home .page__inner-wrap,
