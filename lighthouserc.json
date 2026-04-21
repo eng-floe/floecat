@@ -1,0 +1,46 @@
+{
+  "ci": {
+    "collect": {
+      "startServerCommand": "python3 -m http.server 8082 --directory /tmp/floecat-preview-root",
+      "startServerReadyPattern": "Serving HTTP on",
+      "startServerReadyTimeout": 30000,
+      "url": [
+        "http://127.0.0.1:8082/floecat/",
+        "http://127.0.0.1:8082/floecat/blog/",
+        "http://127.0.0.1:8082/floecat/2026/04/16/getting-started-with-iceberg-rest-and-floecat.html"
+      ],
+      "numberOfRuns": 2,
+      "settings": {
+        "preset": "desktop",
+        "formFactor": "desktop",
+        "throttlingMethod": "provided",
+        "screenEmulation": {
+          "disabled": true
+        },
+        "maxWaitForFcp": 45000,
+        "maxWaitForLoad": 90000,
+        "chromeFlags": "--headless=old --no-sandbox --disable-dev-shm-usage --disable-gpu"
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": [
+          "error",
+          {
+            "minScore": 0.9
+          }
+        ],
+        "categories:accessibility": [
+          "error",
+          {
+            "minScore": 0.95
+          }
+        ]
+      }
+    },
+    "upload": {
+      "target": "filesystem",
+      "outputDir": "./.lighthouseci"
+    }
+  }
+}

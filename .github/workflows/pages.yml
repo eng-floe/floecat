@@ -3,6 +3,18 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: ["main"]
+    paths:
+      - "site-src/**"
+      - ".github/workflows/pages.yml"
+      - "lighthouserc.json"
+      - "tools/site/**"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "site-src/**"
+      - ".github/workflows/pages.yml"
+      - "lighthouserc.json"
+      - "tools/site/**"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +27,126 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pr-build-check:
+    name: Pages build check
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and sanity-check site
+        run: make test-site
+
+      - name: Prepare Preview Root
+        run: |
+          rm -rf /tmp/floecat-preview-root
+          mkdir -p /tmp/floecat-preview-root/floecat
+          cp -a ./site-src/_site/. /tmp/floecat-preview-root/floecat/
+
+      - name: Playwright smoke check
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
+        run: ./tools/site/test-site-e2e.sh
+
+      - name: Check HTML
+        run: |
+          gem install html-proofer -v "~> 5.0" --no-document
+          htmlproofer /tmp/floecat-preview-root \
+            --disable-external \
+            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/" \
+            --allow-missing-href
+
+      - name: Lighthouse CI
+        run: |
+          npm install -g @lhci/cli@0.15.x
+          lhci autorun --config=./lighthouserc.json
+
+      - name: Upload Lighthouse Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          if-no-files-found: ignore
+          path: ./.lighthouseci
+
+      - name: Upload PR Preview Artifact
+        id: upload_pr_preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-preview
+          if-no-files-found: error
+          path: /tmp/floecat-preview-root
+          retention-days: 7
+
+      - name: Comment PR Preview Link
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_ARTIFACT_URL: ${{ steps.upload_pr_preview.outputs.artifact-url }}
+        with:
+          script: |
+            const marker = '<!-- floecat-pages-preview -->';
+            const artifactUrl = process.env.PREVIEW_ARTIFACT_URL;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const previewLine = artifactUrl
+              ? `- Preview artifact: [Open pages-preview](${artifactUrl})`
+              : `- Preview artifact: open [this workflow run](${runUrl}) and download \`pages-preview\` from Artifacts.`;
+
+            const body = [
+              marker,
+              '### PR Website Preview',
+              'The live site is still merge-gated. This is a PR-only build preview.',
+              '',
+              previewLine,
+              `- Workflow run: [Open run](${runUrl})`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                comment.body &&
+                comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
   build:
+    name: pages-build
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -45,4 +176,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
