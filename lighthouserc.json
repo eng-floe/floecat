@@ -1,7 +1,6 @@
 {
   "ci": {
     "collect": {
-      "headful": true,
       "startServerCommand": "python3 -u -m http.server 8082 --bind 127.0.0.1 --directory /tmp/floecat-preview-root 2>&1",
       "startServerReadyPattern": "Serving HTTP on",
       "startServerReadyTimeout": 30000,

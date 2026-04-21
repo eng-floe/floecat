@@ -21,6 +21,7 @@ PREVIEW_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/floecat-e2e.XXXXXX")"
 PORT="${SITE_E2E_PORT:-8084}"
 HOST="${SITE_E2E_HOST:-127.0.0.1}"
 BASE_URL="http://${HOST}:${PORT}/floecat/"
+PATHS_FILE="${SITE_E2E_PATHS_FILE:-}"
 SERVER_LOG="${PREVIEW_ROOT}/http-server.log"
 
 cleanup() {
@@ -74,25 +75,42 @@ if [[ -n "${PLAYWRIGHT_CHANNEL}" ]]; then
   PLAYWRIGHT_CHANNEL_ARGS=(--channel "${PLAYWRIGHT_CHANNEL}")
 fi
 
-npm exec --yes --package=playwright@1.49.1 -- \
-  playwright screenshot \
-  --browser chromium \
-  "${PLAYWRIGHT_CHANNEL_ARGS[@]}" \
-  --timeout 45000 \
-  --wait-for-selector "#main" \
-  "${BASE_URL}" \
-  "${PREVIEW_ROOT}/home.png"
+PATHS=()
+if [[ -n "${PATHS_FILE}" && -f "${PATHS_FILE}" ]]; then
+  while IFS= read -r path; do
+    path="$(echo "${path}" | tr -d '\r')"
+    [[ -z "${path}" ]] && continue
+    PATHS+=("${path}")
+  done < "${PATHS_FILE}"
+fi
 
-npm exec --yes --package=playwright@1.49.1 -- \
-  playwright screenshot \
-  --browser chromium \
-  "${PLAYWRIGHT_CHANNEL_ARGS[@]}" \
-  --timeout 45000 \
-  --wait-for-selector "#main" \
-  "${BASE_URL}blog/" \
-  "${PREVIEW_ROOT}/blog.png"
+if [[ "${#PATHS[@]}" -eq 0 ]]; then
+  PATHS=("/floecat/" "/floecat/blog/")
+fi
 
-test -s "${PREVIEW_ROOT}/home.png" || { echo "missing ${PREVIEW_ROOT}/home.png"; exit 1; }
-test -s "${PREVIEW_ROOT}/blog.png" || { echo "missing ${PREVIEW_ROOT}/blog.png"; exit 1; }
+PASS_COUNT=0
+for path in "${PATHS[@]}"; do
+  url="http://${HOST}:${PORT}${path}"
+  if [[ "${path}" == "/" ]]; then
+    safe_name="root"
+  else
+    safe_name="$(echo "${path}" | sed -E 's#^/##; s#/$##; s#[^a-zA-Z0-9._-]+#-#g')"
+  fi
+  output_png="${PREVIEW_ROOT}/${safe_name}.png"
+
+  npm exec --yes --package=playwright@1.49.1 -- \
+    playwright screenshot \
+    --browser chromium \
+    "${PLAYWRIGHT_CHANNEL_ARGS[@]}" \
+    --timeout 45000 \
+    --wait-for-selector "#main" \
+    "${url}" \
+    "${output_png}"
+
+  test -s "${output_png}" || { echo "missing ${output_png}"; exit 1; }
+  PASS_COUNT=$((PASS_COUNT + 1))
+done
+
+echo "==> [SITE-E2E] validated ${PASS_COUNT} page(s)"
 
 echo "==> [SITE-E2E] smoke checks passed"

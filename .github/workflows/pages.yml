@@ -78,10 +78,44 @@ jobs:
           mkdir -p /tmp/floecat-preview-root/floecat
           cp -a ./site-src/_site/. /tmp/floecat-preview-root/floecat/
 
+      - name: Resolve Page Validation Paths
+        if: github.event.action != 'closed'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "/floecat/"
+            echo "/floecat/blog/"
+          } > /tmp/page-validation-paths.txt
+
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
+          if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            {
+              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/_posts/*.md' \
+                | sed -E 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#'
+              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/*.md' \
+                | sed -E \
+                    -e 's#^site-src/index\.md$#/floecat/#' \
+                    -e 's#^site-src/blog\.md$#/floecat/blog/#' \
+                    -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#'
+              git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- 'site-src/**/index.md' \
+                | sed -E 's#^site-src/(.+)/index\.md$#/floecat/\1/#'
+            } | awk 'NF' >> /tmp/page-validation-paths.txt
+          fi
+
+          LC_ALL=C sort -u -o /tmp/page-validation-paths.txt /tmp/page-validation-paths.txt
+          echo "Page validation paths:"
+          cat /tmp/page-validation-paths.txt
+
+          sed -E 's#^#http://127.0.0.1:8082#' /tmp/page-validation-paths.txt > /tmp/lighthouse-urls.txt
+          node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('lighthouserc.json','utf8'));const urls=fs.readFileSync('/tmp/lighthouse-urls.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);cfg.ci.collect.url=urls;fs.writeFileSync('/tmp/lighthouserc.pr.json', JSON.stringify(cfg,null,2));"
+
       - name: Playwright smoke check
         if: github.event.action != 'closed'
         env:
           PLAYWRIGHT_CHANNEL: chrome
+          SITE_E2E_PATHS_FILE: /tmp/page-validation-paths.txt
         run: ./tools/site/test-site-e2e.sh
 
       - name: Check HTML
@@ -97,8 +131,7 @@ jobs:
         if: github.event.action != 'closed'
         run: |
           npm install -g @lhci/cli@0.15.x
-          xvfb-run -a --server-args="-screen 0 1920x1080x24" \
-            lhci autorun --config=./lighthouserc.json
+          lhci autorun --config=/tmp/lighthouserc.pr.json
 
       - name: Upload Lighthouse Artifacts
         if: always() && github.event.action != 'closed'

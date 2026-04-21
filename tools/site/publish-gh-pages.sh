@@ -59,9 +59,10 @@ init_branch_workdir() {
   pushd "${BRANCH_ROOT}" >/dev/null
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  git config "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GITHUB_TOKEN}"
   git remote add origin "https://github.com/${REPO}.git"
 
-  if git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --depth=1 origin gh-pages >/dev/null 2>&1; then
+  if git fetch origin gh-pages >/dev/null 2>&1; then
     git checkout -B gh-pages FETCH_HEAD >/dev/null
   else
     git checkout --orphan gh-pages >/dev/null
@@ -85,13 +86,13 @@ commit_and_push_if_changed() {
     git commit -m "${message}" >/dev/null
     local attempt
     for attempt in 1 2 3 4 5; do
-      if git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" push origin gh-pages >/dev/null 2>&1; then
+      if git push origin gh-pages >/dev/null 2>&1; then
         echo "Pushed gh-pages update: ${message}"
         return
       fi
 
       echo "gh-pages push conflict (attempt ${attempt}), rebasing and retrying..." >&2
-      git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --depth=1 origin gh-pages >/dev/null
+      git fetch origin gh-pages >/dev/null
       if ! git rebase origin/gh-pages >/dev/null 2>&1; then
         git rebase --abort >/dev/null 2>&1 || true
         echo "ERROR: failed to rebase on latest gh-pages during retry." >&2
