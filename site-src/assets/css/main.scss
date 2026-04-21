@@ -16,11 +16,15 @@
 
 html {
   font-size: 20px;
+  width: 100%;
+  overflow-x: hidden;
 }
 
 body {
   color: var(--site-ink);
   background: #f4f0f0;
+  width: 100%;
+  overflow-x: hidden;
 }
 
 .page {
@@ -33,6 +37,17 @@ body {
   margin: 0 auto;
   padding-left: 1rem;
   padding-right: 1rem;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+#main,
+.layout--single .page,
+.layout--single .page__inner-wrap,
+.layout--single .page__hero,
+.layout--single .page__content {
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .layout--home .page,
@@ -44,6 +59,22 @@ body {
 .layout--single .page {
   float: none;
   width: 100%;
+}
+
+@media (min-width: 64em) {
+  .wide .page,
+  .wide .page__related {
+    width: 100%;
+    padding-inline-end: 0;
+  }
+}
+
+@media (min-width: 80em) {
+  .wide .page,
+  .wide .page__related {
+    width: 100%;
+    padding-inline-end: 0;
+  }
 }
 
 .layout--home .page__inner-wrap,
@@ -860,6 +891,27 @@ body {
 }
 
 @media (max-width: 640px) {
+  .page__title {
+    font-size: clamp(1.7rem, 7vw, 2.2rem);
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .page__title a {
+    display: block;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .toc__menu a {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .home-hero h1 {
     font-size: 2rem;
     line-height: 1.2;

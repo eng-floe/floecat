@@ -9,7 +9,7 @@ toc_sticky: true
 classes: wide
 
 header:
-  image: /images/2026-04-20-graph-theme.png
+  image: /images/2026-04-20-graph-theme.jpg
   image_description: "Lake"
 ---
 
