@@ -130,6 +130,8 @@ class InMemoryReconcileJobStoreTest {
 
       var reclaimed = store.leaseNext().orElseThrow();
       assertEquals(jobId, reclaimed.jobId);
+      store.markRunning(
+          reclaimed.jobId, reclaimed.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
       var job = store.get("acct", jobId).orElseThrow();
       assertEquals("JS_CANCELLING", job.state);
       assertEquals("Lease expired while cancelling", job.message);

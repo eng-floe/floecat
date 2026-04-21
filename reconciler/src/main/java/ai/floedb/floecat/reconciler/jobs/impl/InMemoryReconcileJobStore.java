@@ -312,12 +312,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           if (!hasActiveLease(id, leaseEpoch)) {
             return job;
           }
+          boolean cancelling = "JS_CANCELLING".equals(job.state);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
               job.connectorId,
-              "JS_RUNNING",
-              "Running",
+              cancelling ? "JS_CANCELLING" : "JS_RUNNING",
+              cancelling ? job.message : "Running",
               startedAtMs,
               0L,
               job.tablesScanned,

@@ -566,6 +566,15 @@ class DurableReconcileJobStoreTest {
     var secondLease = store.leaseNext().orElseThrow();
     assertEquals(jobId, secondLease.jobId);
     assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+
+    store.markRunning(
+        secondLease.jobId,
+        secondLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "default_reconciler");
+    var stillCancelling = store.get(jobId).orElseThrow();
+    assertEquals("JS_CANCELLING", stillCancelling.state);
+    assertEquals("stop", stillCancelling.message);
   }
 
   @Test

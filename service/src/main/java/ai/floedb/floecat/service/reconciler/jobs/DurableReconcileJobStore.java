@@ -431,8 +431,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           if (!hasActiveLease(jobId, leaseEpoch, existing, "markRunning", false, true)) {
             return null;
           }
-          existing.state = "JS_RUNNING";
-          existing.message = "Running";
+          boolean cancelling = "JS_CANCELLING".equals(existing.state);
+          if (!cancelling) {
+            existing.state = "JS_RUNNING";
+            existing.message = "Running";
+          }
           if (existing.startedAtMs <= 0L) {
             existing.startedAtMs = startedAtMs;
           }
