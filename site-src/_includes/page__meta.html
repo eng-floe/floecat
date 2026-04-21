@@ -1,0 +1,16 @@
+{% assign document = post | default: page %}
+{% if document.author %}
+  {% assign author = site.data.authors[document.author] %}
+  <p class="page__byline">
+    By
+    {% if author and author.name %}
+      {{ author.name }}
+    {% else %}
+      {{ document.author }}
+    {% endif %}
+    {% if document.date %}
+      <span class="page__byline-separator">|</span>
+      <time datetime="{{ document.date | date_to_xmlschema }}">{{ document.date | date: "%B %-d, %Y" }}</time>
+    {% endif %}
+  </p>
+{% endif %}

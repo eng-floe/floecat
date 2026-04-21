@@ -3,22 +3,33 @@ layout: single
 title: "Getting Started with Iceberg REST Catalog and Floecat"
 date: 2026-04-16
 comments: true
-author_profile: false
+author: mark_cusack
 toc: true
 toc_sticky: true
-classes: wide
 
 header:
   image: /images/icefloe.png
   image_description: "Lake"
-  overlay_filter: 0.3
-  caption: ""
 ---
 
 The Iceberg REST catalog gives query engines a standard way to read and update table metadata.
 Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That removes a lot of integration friction. It doesn’t solve every cross-engine compatibility issue, but it eliminates the need for engine-specific catalog integrations.
 
 Floecat implements the [Apache Iceberg REST catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and uses it as the foundation of a control plane that can enrich metadata across Iceberg and Delta catalogs.
+
+## What You'll Do
+
+In this guide, you'll start a local Floecat environment backed by LocalStack, attach DuckDB to the Floecat Iceberg REST catalog, and verify that query engines can access the same table metadata through the REST interface.
+
+## Prerequisites
+
+Before starting, make sure you have:
+
+- Docker and Docker Compose installed
+- DuckDB installed locally
+- network access to pull the required container images from GHCR
+
+By the end, you should be able to query the same Iceberg catalog through Floecat and confirm that the REST catalog is working end to end.
 
 ## What the Iceberg REST Catalog Buys You
 
@@ -68,6 +79,8 @@ It also handles protocol-specific behavior like metadata hydration, credential v
 ## Starting a LocalStack-Based Floecat Setup
 
 For the examples below, start the published GHCR images with LocalStack and Trino enabled in Docker Compose:
+
+If the stack fails to start, the most common causes are missing GHCR access, Docker not running, or port conflicts on your machine.
 
 ```bash
 FLOECAT_SERVICE_IMAGE=ghcr.io/eng-floe/floecat-service:main \

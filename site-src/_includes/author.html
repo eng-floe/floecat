@@ -1,0 +1,16 @@
+{% assign author = site.data.authors[include.author] %}
+{% if author %}
+  <div class="page__author">
+    {% if author.avatar %}
+      <img src="{{ author.avatar | relative_url }}" alt="{{ author.name }}" class="page__author-avatar">
+    {% endif %}
+    <div class="page__author-body">
+      <h3 class="page__author-name">
+        {{ author.name }}
+      </h3>
+      <p class="page__author-bio">
+        {{ author.bio }}
+      </p>
+    </div>
+  </div>
+{% endif %}
