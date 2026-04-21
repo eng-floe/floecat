@@ -1,0 +1,26 @@
+name: Cleanup PR Preview
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  remove-pr-preview:
+    name: Remove PR preview from gh-pages
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    concurrency:
+      group: pages-pr-close-${{ github.event.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Remove PR Preview
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh remove-pr --pr-number "${PR_NUMBER}"
