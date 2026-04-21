@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "site-src/**"
+      - "Makefile"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -12,6 +13,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "site-src/**"
+      - "Makefile"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
