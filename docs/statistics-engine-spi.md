@@ -107,8 +107,12 @@ order.
 `StatsOrchestrator.resolve(request)`:
 
 1. checks `StatsStore` for an existing record
-2. for `SYNC`, calls `StatsEngineRegistry.capture(request)` on miss
-3. if still missing, enqueues table-scoped `STATS_ONLY` capture for the requested snapshot and
+2. for `SYNC`, runs capture through a singleflight key (`table_id + snapshot_id + target +
+   connector_type`) so concurrent identical misses share one capture attempt
+3. `SYNC` callers that did not start capture wait briefly for the in-flight result (bounded by
+   request latency budget, clamped to a small max); timeout/failure returns miss without immediate
+   recapture
+4. if still missing, enqueues table-scoped `STATS_ONLY` capture for the requested snapshot and
    returns empty
 
 Current enqueue policy:
@@ -118,6 +122,13 @@ Current enqueue policy:
   candidate for the requested target
 - async enqueue scope is currently table+snapshot (not target-granular follow-up yet)
 - target-level async follow-up reasons/scopes are planned in later PRs
+
+Execution mode behavior summary:
+
+- `SYNC`: attempts to return captured stats in-band; if async persistence queueing fails inside an
+  engine, persistence falls back to caller thread to preserve read-after-write behavior.
+- `ASYNC`: does not block for capture completion in `resolve`; it only schedules follow-up work and
+  returns empty on miss.
 
 `StatsEngineRegistry.capture(request)`:
 
@@ -169,8 +180,10 @@ Guidelines:
 ## Existing baseline behavior
 
 `StatsRepository` is the default OSS authoritative `StatsStore` implementation.
-Both native engines persist captured records back into `StatsStore` before returning.
-This keeps reads and writes aligned to one authoritative store contract.
+Native engines persist captured records into `StatsStore` through an async persistence path with
+in-flight dedupe by target identity. For `SYNC` capture calls, if async queue submission is
+rejected, engines persist on caller thread as a safety fallback. This keeps reads/writes aligned
+to one authoritative store contract while reducing hot-path write blocking in the common case.
 
 ## Plugging your own StatsStore
 

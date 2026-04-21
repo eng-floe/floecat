@@ -63,6 +63,7 @@ final class IcebergPlanner implements Planner<Integer> {
   private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
   private final List<PlannedFile<Integer>> files = new ArrayList<>();
+  private final List<DeleteFileStat> deleteFiles = new ArrayList<>();
   private final Map<Integer, String> idToName = new HashMap<>();
   private final Map<Integer, LogicalType> idToLogical = new HashMap<>();
   private final Map<Integer, Type> idToIceType = new HashMap<>();
@@ -104,6 +105,20 @@ final class IcebergPlanner implements Planner<Integer> {
       try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
         for (FileScanTask task : tasks) {
           files.add(toPlanned(task.file()));
+          for (var deleteFile : task.deletes()) {
+            List<Integer> equalityFieldIds =
+                deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                    ? List.copyOf(deleteFile.equalityFieldIds())
+                    : List.of();
+            deleteFiles.add(
+                new DeleteFileStat(
+                    deleteFile.location().toString(),
+                    deleteFile.recordCount(),
+                    deleteFile.fileSizeInBytes(),
+                    deleteFile.content(),
+                    deleteFile.fileSequenceNumber(),
+                    equalityFieldIds));
+          }
         }
       } catch (Exception e) {
         throw new RuntimeException("Iceberg planning failed (snapshot " + snapshotId + ")", e);
@@ -134,6 +149,10 @@ final class IcebergPlanner implements Planner<Integer> {
     return files.iterator();
   }
 
+  List<DeleteFileStat> deleteFiles() {
+    return List.copyOf(deleteFiles);
+  }
+
   @Override
   public void close() {}
 
@@ -156,6 +175,14 @@ final class IcebergPlanner implements Planner<Integer> {
   public Set<Integer> columns() {
     return columnSet;
   }
+
+  record DeleteFileStat(
+      String location,
+      long recordCount,
+      long fileSizeInBytes,
+      org.apache.iceberg.FileContent content,
+      Long fileSequenceNumber,
+      List<Integer> equalityFieldIds) {}
 
   private PlannedFile<Integer> toPlanned(DataFile dataFile) {
     Map<Integer, Long> valueCounts = dataFile.valueCounts();

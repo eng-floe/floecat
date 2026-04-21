@@ -41,8 +41,15 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import com.google.protobuf.ByteString;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -90,6 +97,152 @@ class StatsOrchestratorTest {
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).contains(record);
+    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+  }
+
+  @Test
+  void syncConcurrentMissesShareInFlightCapture() throws Exception {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+                42L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .latencyBudget(Optional.of(Duration.ofSeconds(1)))
+            .build();
+
+    TargetStatsRecord record = tableRecord(request);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+
+    AtomicInteger captureCalls = new AtomicInteger();
+    CountDownLatch captureStarted = new CountDownLatch(1);
+    CountDownLatch releaseCapture = new CountDownLatch(1);
+    when(registry.capture(request))
+        .thenAnswer(
+            ignored -> {
+              captureCalls.incrementAndGet();
+              captureStarted.countDown();
+              assertThat(releaseCapture.await(2, TimeUnit.SECONDS)).isTrue();
+              return Optional.of(
+                  StatsCaptureResult.forRecord("native", record, java.util.Map.of()));
+            });
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      CompletableFuture<Optional<TargetStatsRecord>> first =
+          CompletableFuture.supplyAsync(() -> orchestrator.resolve(request), pool);
+      assertThat(captureStarted.await(2, TimeUnit.SECONDS)).isTrue();
+      CompletableFuture<Optional<TargetStatsRecord>> second =
+          CompletableFuture.supplyAsync(() -> orchestrator.resolve(request), pool);
+
+      releaseCapture.countDown();
+
+      assertThat(first.get(2, TimeUnit.SECONDS)).contains(record);
+      assertThat(second.get(2, TimeUnit.SECONDS)).contains(record);
+      assertThat(captureCalls.get()).isEqualTo(1);
+      verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  void syncSequentialMissesReuseRecentCaptureResultWithoutRecapture() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request = request(StatsExecutionMode.SYNC);
+    TargetStatsRecord record = tableRecord(request);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    AtomicInteger captureCalls = new AtomicInteger();
+    when(registry.capture(request))
+        .thenAnswer(
+            ignored -> {
+              captureCalls.incrementAndGet();
+              return Optional.of(
+                  StatsCaptureResult.forRecord("native", record, java.util.Map.of()));
+            });
+
+    Optional<TargetStatsRecord> first = orchestrator.resolve(request);
+    Optional<TargetStatsRecord> second = orchestrator.resolve(request);
+
+    assertThat(first).contains(record);
+    assertThat(second).contains(record);
+    assertThat(captureCalls.get()).isEqualTo(1);
+    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+  }
+
+  @Test
+  void syncTimeoutWhileCaptureInFlightDoesNotFallbackRecapture() throws Exception {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+                42L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .latencyBudget(Optional.of(Duration.ofMillis(5)))
+            .build();
+
+    TargetStatsRecord record = tableRecord(request);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+
+    AtomicInteger captureCalls = new AtomicInteger();
+    CountDownLatch captureStarted = new CountDownLatch(1);
+    CountDownLatch releaseCapture = new CountDownLatch(1);
+    when(registry.capture(request))
+        .thenAnswer(
+            ignored -> {
+              captureCalls.incrementAndGet();
+              captureStarted.countDown();
+              assertThat(releaseCapture.await(2, TimeUnit.SECONDS)).isTrue();
+              return Optional.of(
+                  StatsCaptureResult.forRecord("native", record, java.util.Map.of()));
+            });
+
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      CompletableFuture<Optional<TargetStatsRecord>> first =
+          CompletableFuture.supplyAsync(() -> orchestrator.resolve(request), pool);
+      assertThat(captureStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+      Optional<TargetStatsRecord> second = orchestrator.resolve(request);
+      assertThat(second).isEmpty();
+      assertThat(captureCalls.get()).isEqualTo(1);
+
+      releaseCapture.countDown();
+      assertThat(first.get(2, TimeUnit.SECONDS)).contains(record);
+
+      Optional<TargetStatsRecord> third = orchestrator.resolve(request);
+      assertThat(third).contains(record);
+      assertThat(captureCalls.get()).isEqualTo(1);
+    } finally {
+      pool.shutdownNow();
+    }
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
   }
 

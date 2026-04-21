@@ -51,6 +51,8 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.RejectedExecutionException;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -68,6 +70,7 @@ class IcebergNativeStatsCaptureEngineTest {
         new IcebergNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
@@ -169,6 +172,7 @@ class IcebergNativeStatsCaptureEngineTest {
         new IcebergNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
@@ -237,6 +241,145 @@ class IcebergNativeStatsCaptureEngineTest {
   }
 
   @Test
+  void suppressesDuplicateInFlightPersistenceForSameTarget() {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    CredentialResolver credentialResolver = Mockito.mock(CredentialResolver.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    FloecatConnector floecatConnector = Mockito.mock(FloecatConnector.class);
+
+    IcebergNativeStatsCaptureEngine engine =
+        new IcebergNativeStatsCaptureEngine(
+            tableRepository, connectorRepository, credentialResolver, statsStore);
+    engine.connectorOpener = config -> floecatConnector;
+    List<Runnable> queuedWrites = new CopyOnWriteArrayList<>();
+    engine.persistExecutor = queuedWrites::add;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
+    when(tableRepository.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(connectorId)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+    when(connectorRepository.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("iceberg-main")
+                    .setKind(ConnectorKind.CK_ICEBERG)
+                    .setUri("s3://warehouse")
+                    .build()));
+
+    StatsTarget tableTarget =
+        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
+    TargetStatsRecord tableRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(101L)
+            .setTarget(tableTarget)
+            .setTable(TableValueStats.newBuilder().setRowCount(11L).build())
+            .build();
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of(tableRecord));
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(tableId, 101L, tableTarget)
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+
+    assertThat(engine.capture(request)).isPresent();
+    assertThat(queuedWrites).hasSize(1);
+
+    assertThat(engine.capture(request)).isPresent();
+    assertThat(queuedWrites).hasSize(1);
+    verify(statsStore, never()).putTargetStats(any());
+
+    queuedWrites.get(0).run();
+
+    verify(statsStore, times(1))
+        .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
+  }
+
+  @Test
+  void fallsBackToCallerThreadPersistenceWhenQueueRejects() {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    CredentialResolver credentialResolver = Mockito.mock(CredentialResolver.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    FloecatConnector floecatConnector = Mockito.mock(FloecatConnector.class);
+
+    IcebergNativeStatsCaptureEngine engine =
+        new IcebergNativeStatsCaptureEngine(
+            tableRepository, connectorRepository, credentialResolver, statsStore);
+    engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor =
+        runnable -> {
+          throw new RejectedExecutionException("queue full");
+        };
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();
+    when(tableRepository.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(connectorId)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+    when(connectorRepository.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("iceberg-main")
+                    .setKind(ConnectorKind.CK_ICEBERG)
+                    .setUri("s3://warehouse")
+                    .build()));
+
+    StatsTarget tableTarget =
+        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
+    TargetStatsRecord tableRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(101L)
+            .setTarget(tableTarget)
+            .setTable(TableValueStats.newBuilder().setRowCount(11L).build())
+            .build();
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of(tableRecord));
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(tableId, 101L, tableTarget)
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+
+    assertThat(engine.capture(request)).isPresent();
+
+    verify(statsStore, times(1))
+        .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
+  }
+
+  @Test
   void returnsEmptyWhenSnapshotNotFoundInConnectorCapture() {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
@@ -248,6 +391,7 @@ class IcebergNativeStatsCaptureEngineTest {
         new IcebergNativeStatsCaptureEngine(
             tableRepository, connectorRepository, credentialResolver, statsStore);
     engine.connectorOpener = config -> floecatConnector;
+    engine.persistExecutor = Runnable::run;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-1").build();

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
@@ -27,17 +28,67 @@ import org.apache.iceberg.rest.RESTCatalog;
 final class IcebergGlueConnector extends IcebergConnector {
   private final GlueIcebergFilter glueFilter;
   private final RESTCatalog catalog;
+  private final Catalog tableCatalog;
+  private final boolean closeCatalogOnClose;
+  private final Runnable closeHook;
 
   IcebergGlueConnector(
       String connectorId,
       RESTCatalog catalog,
+      Catalog tableCatalog,
       GlueIcebergFilter glueFilter,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        glueFilter,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        true,
+        null);
+  }
+
+  IcebergGlueConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      Catalog tableCatalog,
+      GlueIcebergFilter glueFilter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose) {
+    this(
+        connectorId,
+        catalog,
+        tableCatalog,
+        glueFilter,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        closeCatalogOnClose,
+        null);
+  }
+
+  IcebergGlueConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      Catalog tableCatalog,
+      GlueIcebergFilter glueFilter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      boolean closeCatalogOnClose,
+      Runnable closeHook) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.glueFilter = Objects.requireNonNull(glueFilter, "glueFilter");
-    this.catalog = catalog;
+    this.catalog = Objects.requireNonNull(catalog, "catalog");
+    this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
+    this.closeCatalogOnClose = closeCatalogOnClose;
+    this.closeHook = closeHook;
   }
 
   @Override
@@ -85,14 +136,23 @@ final class IcebergGlueConnector extends IcebergConnector {
         namespace.isEmpty()
             ? TableIdentifier.of(tableName)
             : TableIdentifier.of(namespace, tableName);
-    return catalog.loadTable(tableId);
+    return tableCatalog.loadTable(tableId);
   }
 
   @Override
   protected void closeCatalog() {
     try {
-      catalog.close();
+      if (closeCatalogOnClose) {
+        catalog.close();
+      }
     } catch (Exception ignore) {
+    } finally {
+      if (closeHook != null) {
+        try {
+          closeHook.run();
+        } catch (RuntimeException ignore) {
+        }
+      }
     }
   }
 }

@@ -19,16 +19,25 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.AwsProfileSupport;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
 
 final class IcebergConnectorFactory {
+
+  private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
+  private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
+      new ConcurrentHashMap<>();
 
   private IcebergConnectorFactory() {}
 
@@ -53,14 +62,12 @@ final class IcebergConnectorFactory {
     boolean ndvEnabled = IcebergConnector.parseNdvEnabled(cleanOpts);
     double ndvSampleFraction = IcebergConnector.parseNdvSampleFraction(cleanOpts);
     long ndvMaxFiles = 0L;
-    if (cleanOpts != null) {
-      try {
-        ndvMaxFiles = Long.parseLong(cleanOpts.getOrDefault("stats.ndv.max_files", "0"));
-        if (ndvMaxFiles < 0) {
-          ndvMaxFiles = 0;
-        }
-      } catch (NumberFormatException ignore) {
+    try {
+      ndvMaxFiles = Long.parseLong(cleanOpts.getOrDefault("stats.ndv.max_files", "0"));
+      if (ndvMaxFiles < 0) {
+        ndvMaxFiles = 0;
       }
+    } catch (NumberFormatException ignore) {
     }
 
     validateOptions(source, uri, cleanOpts);
@@ -95,25 +102,104 @@ final class IcebergConnectorFactory {
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
-        RESTCatalog cat = new RESTCatalog();
-        cat.initialize("floecat-iceberg", Collections.unmodifiableMap(props));
-        if (source == IcebergSource.GLUE) {
-          var glue = AwsGlueClientFactory.create(props, authProps);
-          var glueFilter = new GlueIcebergFilter(glue);
-          yield new IcebergGlueConnector(
-              "iceberg-glue", cat, glueFilter, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+        CatalogLease catalogLease = acquireRestCatalog(props);
+        RESTCatalog rawCatalog = catalogLease.rawCatalog();
+        Catalog tableCatalog = catalogLease.tableCatalog();
+        try {
+          if (source == IcebergSource.GLUE) {
+            var glue = AwsGlueClientFactory.create(props, authProps);
+            var glueFilter = new GlueIcebergFilter(glue);
+            yield new IcebergGlueConnector(
+                "iceberg-glue",
+                rawCatalog,
+                tableCatalog,
+                glueFilter,
+                ndvEnabled,
+                ndvSampleFraction,
+                ndvMaxFiles,
+                false,
+                catalogLease::release);
+          }
+          yield new IcebergRestConnector(
+              "iceberg-rest",
+              rawCatalog,
+              tableCatalog,
+              ndvEnabled,
+              ndvSampleFraction,
+              ndvMaxFiles,
+              false,
+              catalogLease::release);
+        } catch (RuntimeException e) {
+          catalogLease.release();
+          throw e;
         }
-        yield new IcebergRestConnector(
-            "iceberg-rest", cat, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
       }
     };
+  }
+
+  private static CatalogLease acquireRestCatalog(Map<String, String> props) {
+    long now = System.currentTimeMillis();
+    evictExpiredCatalogs(now);
+    CatalogCacheKey key = CatalogCacheKey.of(props);
+    CatalogCacheEntry cached = REST_CATALOG_CACHE.get(key);
+    if (cached != null && !cached.isExpired(now)) {
+      CatalogLease lease = cached.tryAcquire(now + REST_CATALOG_TTL_MS);
+      if (lease != null) {
+        return lease;
+      }
+    }
+    while (true) {
+      CatalogCacheEntry entry =
+          REST_CATALOG_CACHE.compute(
+              key,
+              (ignored, existing) -> {
+                long refreshNow = System.currentTimeMillis();
+                if (existing != null && !existing.isExpired(refreshNow)) {
+                  existing.touch(refreshNow + REST_CATALOG_TTL_MS);
+                  return existing;
+                }
+                if (existing != null) {
+                  existing.retire();
+                }
+                RESTCatalog created = new RESTCatalog();
+                created.initialize(
+                    "floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
+                return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
+              });
+      CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
+      if (lease != null) {
+        return lease;
+      }
+    }
+  }
+
+  private static void evictExpiredCatalogs(long now) {
+    for (Map.Entry<CatalogCacheKey, CatalogCacheEntry> entry : REST_CATALOG_CACHE.entrySet()) {
+      CatalogCacheEntry cached = entry.getValue();
+      if (!cached.isExpired(now)) {
+        continue;
+      }
+      if (REST_CATALOG_CACHE.remove(entry.getKey(), cached)) {
+        cached.retire();
+      }
+    }
+  }
+
+  private static void closeQuietly(RESTCatalog catalog) {
+    if (catalog == null) {
+      return;
+    }
+    try {
+      catalog.close();
+    } catch (Exception ignore) {
+    }
   }
 
   private static Map<String, String> buildRestProps(String uri, Map<String, String> cleanOpts) {
     Map<String, String> props = new HashMap<>();
     props.put("type", "rest");
     props.put("uri", uri);
-    if (cleanOpts != null && !cleanOpts.isEmpty()) {
+    if (!cleanOpts.isEmpty()) {
       props.putAll(cleanOpts);
     }
     normalizeAwsRegionProperties(props);
@@ -122,12 +208,13 @@ final class IcebergConnectorFactory {
 
   private static void applyAuth(
       Map<String, String> props, String authScheme, Map<String, String> authProps) {
+    Map<String, String> safeAuthProps = authProps == null ? Collections.emptyMap() : authProps;
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
-        String signingName = authProps.getOrDefault("signing-name", "glue");
+        String signingName = safeAuthProps.getOrDefault("signing-name", "glue");
         String signingRegion =
-            authProps.getOrDefault(
+            safeAuthProps.getOrDefault(
                 "signing-region",
                 props.getOrDefault(
                     "rest.signing-region", props.getOrDefault("s3.region", "us-east-1")));
@@ -139,12 +226,13 @@ final class IcebergConnectorFactory {
         props.putIfAbsent("s3.region", signingRegion);
         props.putIfAbsent("client.region", signingRegion);
 
-        AwsProfileSupport.applyProfileProperties(props, authProps);
+        AwsProfileSupport.applyProfileProperties(props, safeAuthProps);
       }
 
       case "oauth2" -> {
         String token =
-            Objects.requireNonNull(authProps.get("token"), "authProps.token required for oauth2");
+            Objects.requireNonNull(
+                safeAuthProps.get("token"), "authProps.token required for oauth2");
         props.put("token", token);
       }
 
@@ -155,7 +243,7 @@ final class IcebergConnectorFactory {
   }
 
   private static void normalizeAwsRegionProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
+    if (props.isEmpty()) {
       return;
     }
     String region = props.get("client.region");
@@ -193,6 +281,106 @@ final class IcebergConnectorFactory {
     boolean hasFilesystemUri = uri != null && !uri.isBlank();
     if (source == IcebergSource.FILESYSTEM && !hasFilesystemUri) {
       throw new IllegalArgumentException("uri is required for iceberg.source=filesystem");
+    }
+  }
+
+  private record CatalogCacheKey(Map<String, String> props) {
+    static CatalogCacheKey of(Map<String, String> props) {
+      return new CatalogCacheKey(Map.copyOf(props));
+    }
+  }
+
+  private static final class CatalogCacheEntry {
+    private final RESTCatalog rawCatalog;
+    private final Catalog catalog;
+    private volatile long expiresAtMs;
+    private int activeLeases;
+    private boolean retired;
+    private boolean closed;
+
+    private CatalogCacheEntry(RESTCatalog rawCatalog, Catalog catalog, long expiresAtMs) {
+      this.rawCatalog = rawCatalog;
+      this.catalog = catalog;
+      this.expiresAtMs = expiresAtMs;
+    }
+
+    private RESTCatalog rawCatalog() {
+      return rawCatalog;
+    }
+
+    private Catalog tableCatalog() {
+      return catalog;
+    }
+
+    private boolean isExpired(long now) {
+      return now >= expiresAtMs;
+    }
+
+    private void touch(long nextExpiryMs) {
+      this.expiresAtMs = nextExpiryMs;
+    }
+
+    private CatalogLease tryAcquire(long nextExpiryMs) {
+      synchronized (this) {
+        if (retired || closed) {
+          return null;
+        }
+        this.expiresAtMs = nextExpiryMs;
+        activeLeases++;
+      }
+      return new CatalogLease(this);
+    }
+
+    private void release() {
+      RESTCatalog toClose = null;
+      synchronized (this) {
+        if (activeLeases > 0) {
+          activeLeases--;
+        }
+        if (retired && activeLeases == 0 && !closed) {
+          closed = true;
+          toClose = rawCatalog;
+        }
+      }
+      closeQuietly(toClose);
+    }
+
+    private void retire() {
+      RESTCatalog toClose = null;
+      synchronized (this) {
+        if (retired) {
+          return;
+        }
+        retired = true;
+        if (activeLeases == 0 && !closed) {
+          closed = true;
+          toClose = rawCatalog;
+        }
+      }
+      closeQuietly(toClose);
+    }
+  }
+
+  private static final class CatalogLease {
+    private final CatalogCacheEntry entry;
+    private final AtomicBoolean released = new AtomicBoolean(false);
+
+    private CatalogLease(CatalogCacheEntry entry) {
+      this.entry = entry;
+    }
+
+    private RESTCatalog rawCatalog() {
+      return entry.rawCatalog();
+    }
+
+    private Catalog tableCatalog() {
+      return entry.tableCatalog();
+    }
+
+    private void release() {
+      if (released.compareAndSet(false, true)) {
+        entry.release();
+      }
     }
   }
 }

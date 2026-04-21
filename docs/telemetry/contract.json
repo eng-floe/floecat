@@ -660,6 +660,16 @@
     "allowedTags": ["component", "mode", "operation", "reason", "result"]
   },
   {
+    "name": "floecat.service.reconcile.update_settings.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "UpdateReconcilerSettings request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
     "name": "floecat.service.reconcile.views_changed.total",
     "type": "COUNTER",
     "unit": "",
@@ -678,16 +688,6 @@
     "description": "Views scanned by reconcile jobs.",
     "requiredTags": ["component", "mode", "operation", "result"],
     "allowedTags": ["component", "mode", "operation", "reason", "result"]
-  },
-  {
-    "name": "floecat.service.reconcile.update_settings.total",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "UpdateReconcilerSettings request outcomes.",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["component", "operation", "reason", "result"]
   },
   {
     "name": "floecat.service.storage.account.bytes",
