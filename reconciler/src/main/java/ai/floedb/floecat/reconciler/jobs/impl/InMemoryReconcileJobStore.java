@@ -23,8 +23,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -40,12 +43,61 @@ import java.util.stream.Collectors;
     stringValue = "memory",
     enableIfMissing = true)
 public class InMemoryReconcileJobStore implements ReconcileJobStore {
+  private static final long DEFAULT_LEASE_MS = 30_000L;
+  private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
+  private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
+
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
+  private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
+  private volatile long leaseMs = DEFAULT_LEASE_MS;
+  private volatile long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
+  private volatile long lastReclaimAtMs;
+
+  public InMemoryReconcileJobStore() {
+    reloadConfig();
+  }
+
+  @PostConstruct
+  void init() {
+    reloadConfig();
+  }
+
+  private void reloadConfig() {
+    leaseMs = Math.max(1_000L, readLong("floecat.reconciler.job-store.lease-ms", DEFAULT_LEASE_MS));
+    reclaimIntervalMs =
+        Math.max(
+            1_000L,
+            readLong(
+                "floecat.reconciler.job-store.reclaim-interval-ms", DEFAULT_RECLAIM_INTERVAL_MS));
+  }
+
+  private long readLong(String key, long defaultValue) {
+    try {
+      var container = Arc.container();
+      if (container != null) {
+        var config = container.instance(org.eclipse.microprofile.config.Config.class);
+        if (config.isAvailable()) {
+          return config.get().getOptionalValue(key, Long.class).orElse(defaultValue);
+        }
+      }
+    } catch (RuntimeException ignored) {
+      // Fall back to system properties for plain unit construction.
+    }
+    String raw = System.getProperty(key);
+    if (raw == null || raw.isBlank()) {
+      return defaultValue;
+    }
+    try {
+      return Long.parseLong(raw.trim());
+    } catch (NumberFormatException ignored) {
+      return defaultValue;
+    }
+  }
 
   @Override
   public String enqueue(
@@ -184,6 +236,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
+    reclaimExpiredLeasesIfDue(System.currentTimeMillis());
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     int attempts = Math.max(1, ready.size());
     for (int i = 0; i < attempts; i++) {
@@ -198,7 +251,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         continue;
       }
 
-      if (!"JS_QUEUED".equals(job.state)) {
+      if (!"JS_QUEUED".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
         continue;
       }
 
@@ -209,8 +262,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       }
 
       if (leased.add(jobId)) {
+        long now = System.currentTimeMillis();
         String leaseEpoch = UUID.randomUUID().toString();
         leaseEpochs.put(jobId, leaseEpoch);
+        leaseExpiresAtMs.put(jobId, now + leaseMs);
         return Optional.of(
             new LeasedJob(
                 job.jobId,
@@ -234,6 +289,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public boolean renewLease(String jobId, String leaseEpoch) {
+    long now = System.currentTimeMillis();
     var job = jobs.get(jobId);
     if (job == null) {
       return false;
@@ -241,7 +297,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
       return false;
     }
-    return hasActiveLease(jobId, leaseEpoch);
+    if (!hasActiveLease(jobId, leaseEpoch, now)) {
+      return false;
+    }
+    leaseExpiresAtMs.put(jobId, now + leaseMs);
+    return true;
   }
 
   @Override
@@ -351,6 +411,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          leaseExpiresAtMs.remove(id);
           pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
@@ -403,6 +464,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          leaseExpiresAtMs.remove(id);
           pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
@@ -446,6 +508,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           if ("JS_RUNNING".equals(job.state)) {
+            long now = System.currentTimeMillis();
+            long cancelPokeExpiry = now + CANCEL_POKE_MAX_DELAY_MS;
+            leaseExpiresAtMs.compute(
+                id,
+                (ignored, expiry) ->
+                    expiry == null || expiry <= 0L
+                        ? cancelPokeExpiry
+                        : Math.min(expiry, cancelPokeExpiry));
+            ready.add(id);
             return new ReconcileJob(
                 job.jobId,
                 job.accountId,
@@ -473,6 +544,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          leaseExpiresAtMs.remove(id);
           pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
@@ -542,6 +614,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          leaseExpiresAtMs.remove(id);
           ready.remove(id);
           pinnedExecutors.remove(id);
           return new ReconcileJob(
@@ -571,8 +644,94 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         });
   }
 
-  private boolean hasActiveLease(String jobId, String leaseEpoch) {
+  private boolean hasActiveLease(String jobId, String leaseEpoch, long nowMs) {
     String expected = leaseEpochs.get(jobId);
-    return expected != null && !expected.isBlank() && expected.equals(leaseEpoch);
+    Long expiry = leaseExpiresAtMs.get(jobId);
+    return expected != null
+        && !expected.isBlank()
+        && expected.equals(leaseEpoch)
+        && expiry != null
+        && expiry > nowMs;
+  }
+
+  private boolean hasActiveLease(String jobId, String leaseEpoch) {
+    return hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis());
+  }
+
+  private synchronized void reclaimExpiredLeasesIfDue(long nowMs) {
+    if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
+      return;
+    }
+    lastReclaimAtMs = nowMs;
+    for (String jobId : new HashSet<>(leased)) {
+      Long expiry = leaseExpiresAtMs.get(jobId);
+      if (expiry == null || expiry <= 0L || expiry > nowMs) {
+        continue;
+      }
+      jobs.computeIfPresent(
+          jobId,
+          (id, job) -> {
+            if (!leased.remove(id)) {
+              return job;
+            }
+            leaseEpochs.remove(id);
+            leaseExpiresAtMs.remove(id);
+            if ("JS_RUNNING".equals(job.state)) {
+              ready.add(id);
+              return new ReconcileJob(
+                  job.jobId,
+                  job.accountId,
+                  job.connectorId,
+                  "JS_QUEUED",
+                  "Lease expired; requeued",
+                  job.startedAtMs,
+                  0L,
+                  job.tablesScanned,
+                  job.tablesChanged,
+                  job.viewsScanned,
+                  job.viewsChanged,
+                  job.errors,
+                  job.fullRescan,
+                  job.captureMode,
+                  job.snapshotsProcessed,
+                  job.statsProcessed,
+                  job.scope,
+                  job.executionPolicy,
+                  "",
+                  job.jobKind,
+                  job.tableTask,
+                  job.viewTask,
+                  job.parentJobId);
+            }
+            if ("JS_CANCELLING".equals(job.state)) {
+              ready.add(id);
+              return new ReconcileJob(
+                  job.jobId,
+                  job.accountId,
+                  job.connectorId,
+                  "JS_CANCELLING",
+                  "Lease expired while cancelling",
+                  job.startedAtMs,
+                  0L,
+                  job.tablesScanned,
+                  job.tablesChanged,
+                  job.viewsScanned,
+                  job.viewsChanged,
+                  job.errors,
+                  job.fullRescan,
+                  job.captureMode,
+                  job.snapshotsProcessed,
+                  job.statsProcessed,
+                  job.scope,
+                  job.executionPolicy,
+                  job.executorId,
+                  job.jobKind,
+                  job.tableTask,
+                  job.viewTask,
+                  job.parentJobId);
+            }
+            return job;
+          });
+    }
   }
 }
