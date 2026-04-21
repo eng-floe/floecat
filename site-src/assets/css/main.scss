@@ -24,6 +24,16 @@ body {
   background: #f4f0f0;
 }
 
+@keyframes intro {
+  0% {
+    opacity: 0.01;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
 /* Lightweight icon fallbacks so the site doesn't need external icon-font CSS. */
 i.fas,
 i.far {
@@ -170,6 +180,19 @@ body.layout--single .initial-content {
   display: block;
   width: min(100%, 620px);
   margin: 1.5rem auto;
+}
+
+.layout--single .page__content a {
+  color: #0b5f80;
+}
+
+.layout--single .page__content a:hover,
+.layout--single .page__content a:focus {
+  color: #084860;
+}
+
+.layout--single .page__content .toc > header {
+  display: none;
 }
 
 .page__content h2,
