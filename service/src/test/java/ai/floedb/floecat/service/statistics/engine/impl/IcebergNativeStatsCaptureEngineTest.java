@@ -293,7 +293,7 @@ class IcebergNativeStatsCaptureEngineTest {
             .setTarget(tableTarget)
             .setTable(TableValueStats.newBuilder().setRowCount(11L).build())
             .build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(tableRecord));
 
     StatsCaptureRequest request =
@@ -367,7 +367,7 @@ class IcebergNativeStatsCaptureEngineTest {
             .setTarget(tableTarget)
             .setTable(TableValueStats.newBuilder().setRowCount(11L).build())
             .build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(tableRecord));
 
     StatsCaptureRequest request =
