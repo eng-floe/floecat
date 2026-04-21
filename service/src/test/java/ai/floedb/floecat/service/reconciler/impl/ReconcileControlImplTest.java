@@ -271,6 +271,48 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void captureNowCancelsActiveChildrenWhenPlanJobAlreadySucceeded() {
+    var planJob = job("job-1", "JS_SUCCEEDED", 0, 0, 0, "");
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1")).thenReturn(Optional.of(planJob), Optional.of(planJob));
+    when(service.jobs.cancel("acct", "job-1", "capture_now timed out while waiting for completion"))
+        .thenReturn(Optional.empty());
+    when(service.jobs.childJobs("acct", "job-1"))
+        .thenReturn(
+            java.util.List.of(
+                childJob("child-1", "JS_RUNNING", 0, 0, 0, "", "job-1"),
+                childJob("child-2", "JS_QUEUED", 0, 0, 0, "", "job-1")));
+    when(service.jobs.cancel(
+            "acct", "child-1", "capture_now timed out while waiting for completion"))
+        .thenReturn(
+            Optional.of(childJob("child-1", "JS_CANCELLING", 0, 0, 0, "timing out", "job-1")));
+    when(service.jobs.cancel(
+            "acct", "child-2", "capture_now timed out while waiting for completion"))
+        .thenReturn(
+            Optional.of(childJob("child-2", "JS_CANCELLED", 0, 0, 0, "timing out", "job-1")));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .captureNow(
+                    CaptureNowRequest.newBuilder()
+                        .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                        .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(service.jobs, times(1))
+        .cancel("acct", "child-1", "capture_now timed out while waiting for completion");
+    verify(service.jobs, times(1))
+        .cancel("acct", "child-2", "capture_now timed out while waiting for completion");
+    verify(service.cancellations, times(1)).requestCancel("child-1");
+  }
+
+  @Test
   void getReconcileJobPrefersFailedPlanStateOverQueuedChildren() {
     when(service.jobs.get("acct", "plan-1"))
         .thenReturn(Optional.of(job("plan-1", "JS_FAILED", 0, 0, 0, "planning failed")));

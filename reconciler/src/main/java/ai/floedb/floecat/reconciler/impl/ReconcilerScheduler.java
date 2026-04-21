@@ -195,25 +195,6 @@ public class ReconcilerScheduler {
   }
 
   void runLease(ReconcileJobStore.LeasedJob lease) {
-    ReconcileExecutor executor =
-        executorRegistry
-            .executorFor(lease)
-            .or(
-                () ->
-                    executorRegistry.orderedExecutors().stream()
-                        .filter(candidate -> candidate.supportsJobKind(lease.jobKind))
-                        .filter(
-                            candidate ->
-                                candidate.supportsExecutionClass(
-                                    lease.executionPolicy.executionClass()))
-                        .filter(candidate -> candidate.supportsLane(lease.executionPolicy.lane()))
-                        .filter(candidate -> candidate.supports(lease))
-                        .findFirst())
-            .orElseThrow(
-                () ->
-                    new IllegalStateException(
-                        "No reconcile executor available for lease " + lease.jobId));
-    cancellations.register(lease.jobId, Thread.currentThread());
     long started = System.currentTimeMillis();
     long leaseMs =
         Math.max(
@@ -235,6 +216,7 @@ public class ReconcilerScheduler {
     AtomicBoolean leaseValid = new AtomicBoolean(true);
     AtomicBoolean interrupted = new AtomicBoolean(false);
     ProgressSnapshot progress = new ProgressSnapshot();
+    ReconcileExecutor executor = null;
     BooleanSupplier heartbeat =
         () -> {
           if (!leaseValid.get()) {
@@ -255,12 +237,8 @@ public class ReconcilerScheduler {
           return true;
         };
 
-    BooleanSupplier cancelRequested =
+    BooleanSupplier cancellationRequestedInStore =
         () -> {
-          if (Thread.currentThread().isInterrupted()) {
-            interrupted.set(true);
-            return true;
-          }
           long now = System.currentTimeMillis();
           if (now >= nextCancelCheckAtMs[0]) {
             cancellationRequested[0] = jobs.isCancellationRequested(lease.jobId);
@@ -268,12 +246,39 @@ public class ReconcilerScheduler {
           }
           return cancellationRequested[0];
         };
+    BooleanSupplier cancelRequested =
+        () -> {
+          if (Thread.currentThread().isInterrupted()) {
+            interrupted.set(true);
+            return true;
+          }
+          return cancellationRequestedInStore.getAsBoolean();
+        };
     if (!heartbeat.getAsBoolean()) {
       long now = System.currentTimeMillis();
       emitOutcome(lease, "lease_lost", now - started, 0, 0, 0, 0, 0, 0, 0, "lease_lost");
       return;
     }
     try {
+      executor =
+          executorRegistry
+              .executorFor(lease)
+              .or(
+                  () ->
+                      executorRegistry.orderedExecutors().stream()
+                          .filter(candidate -> candidate.supportsJobKind(lease.jobKind))
+                          .filter(
+                              candidate ->
+                                  candidate.supportsExecutionClass(
+                                      lease.executionPolicy.executionClass()))
+                          .filter(candidate -> candidate.supportsLane(lease.executionPolicy.lane()))
+                          .filter(candidate -> candidate.supports(lease))
+                          .findFirst())
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "No reconcile executor available for lease " + lease.jobId));
+      cancellations.register(lease.jobId, Thread.currentThread());
       jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), executor.id());
       jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, 0, 0, "Running reconcile");
       BooleanSupplier shouldStop =
@@ -287,7 +292,7 @@ public class ReconcilerScheduler {
             }
             return cancelRequested.getAsBoolean();
           };
-      if (cancelRequested.getAsBoolean()) {
+      if (cancellationRequestedInStore.getAsBoolean()) {
         long now = System.currentTimeMillis();
         jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0, 0, 0);
         emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, 0, 0, null);
@@ -349,8 +354,24 @@ public class ReconcilerScheduler {
             "lease_lost");
         return;
       }
-      boolean cancelledNow = cancelRequested.getAsBoolean();
+      boolean interruptedNow = Thread.currentThread().isInterrupted() || interrupted.get();
+      boolean cancelledNow = cancellationRequestedInStore.getAsBoolean();
       if (result.cancelled || cancelledNow) {
+        if (!cancelledNow && interruptedNow) {
+          emitOutcome(
+              lease,
+              "lease_lost",
+              finished - started,
+              result.tablesScanned,
+              result.tablesChanged,
+              result.viewsScanned,
+              result.viewsChanged,
+              result.errors,
+              totalSnapshots,
+              totalStats,
+              "interrupted");
+          return;
+        }
         jobs.markCancelled(
             lease.jobId,
             lease.leaseEpoch,
@@ -474,7 +495,8 @@ public class ReconcilerScheduler {
             progress.statsProcessed,
             "lease_lost");
       } else {
-        boolean cancelledOnError = cancelRequested.getAsBoolean();
+        boolean interruptedNow = Thread.currentThread().isInterrupted() || interrupted.get();
+        boolean cancelledOnError = cancellationRequestedInStore.getAsBoolean();
         if (cancelledOnError) {
           long now = System.currentTimeMillis();
           jobs.markCancelled(
@@ -502,11 +524,11 @@ public class ReconcilerScheduler {
               progress.snapshotsProcessed,
               progress.statsProcessed,
               null);
-        } else if (Thread.currentThread().isInterrupted() || interrupted.get()) {
+        } else if (interruptedNow) {
           long now = System.currentTimeMillis();
           emitOutcome(
               lease,
-              "interrupted",
+              "lease_lost",
               now - started,
               progress.tablesScanned,
               progress.tablesChanged,

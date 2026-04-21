@@ -726,9 +726,30 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private void requestCaptureNowCancellation(String accountId, String jobId, String reason) {
-    jobs.cancel(accountId, jobId, reason)
-        .filter(cancelled -> "JS_CANCELLING".equals(cancelled.state))
-        .ifPresent(cancelled -> cancellations.requestCancel(cancelled.jobId));
+    var cancelled = jobs.cancel(accountId, jobId, reason);
+    boolean cancelledViaActiveChildren = false;
+    if (cancelled.isEmpty()) {
+      var existing = jobs.get(accountId, jobId).orElse(null);
+      var effective = aggregateIfPlanJob(accountId, existing);
+      if (canCancelViaActiveChildren(existing, effective)) {
+        cancelChildJobs(accountId, existing, reason);
+        cancelledViaActiveChildren = true;
+        cancelled = jobs.get(accountId, jobId).map(job -> aggregateIfPlanJob(accountId, job));
+        if (cancelled.isEmpty()) {
+          cancelled = Optional.ofNullable(effective);
+        }
+      }
+    }
+    if (!cancelledViaActiveChildren) {
+      cancelled
+          .filter(job -> "JS_CANCELLING".equals(job.state))
+          .ifPresent(job -> cancellations.requestCancel(job.jobId));
+    }
+    if (!cancelledViaActiveChildren) {
+      cancelled
+          .filter(job -> job.jobKind == ReconcileJobKind.PLAN_CONNECTOR)
+          .ifPresent(job -> cancelChildJobs(accountId, job, reason));
+    }
   }
 
   private Duration effectiveCaptureNowWait(CaptureNowRequest request) {
