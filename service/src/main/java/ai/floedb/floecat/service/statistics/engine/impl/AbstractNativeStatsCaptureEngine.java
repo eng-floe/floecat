@@ -242,6 +242,12 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     };
   }
 
+  /**
+   * Schedules persistence for captured records with best-effort in-flight dedupe.
+   *
+   * <p>Scheduling prefers asynchronous execution. If the async queue rejects, persistence falls
+   * back to caller-thread execution to preserve SYNC read-after-write behavior.
+   */
   private PersistSchedule enqueueStatsPersistence(List<TargetStatsRecord> records) {
     if (records == null || records.isEmpty()) {
       return PersistSchedule.EMPTY;
@@ -263,20 +269,25 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     try {
       persistExecutor.execute(() -> persistAccepted(accepted));
     } catch (RuntimeException e) {
-      for (PersistEntry entry : accepted) {
-        STATS_PERSIST_IN_FLIGHT.remove(entry.storageId());
-      }
       log.warnf(
           e,
-          "Dropping async stats persistence engine=%s enqueued=%d deduped_inflight=%d",
+          "Async stats persistence rejected engine=%s enqueued=%d deduped_inflight=%d"
+              + " fallback=caller_thread",
           id(),
           accepted.size(),
           dedupedCount);
-      return new PersistSchedule(System.nanoTime() - startNs, 0, dedupedCount);
+      persistAccepted(accepted);
+      return new PersistSchedule(System.nanoTime() - startNs, accepted.size(), dedupedCount);
     }
     return new PersistSchedule(System.nanoTime() - startNs, accepted.size(), dedupedCount);
   }
 
+  /**
+   * Persists accepted records and always releases their in-flight guards.
+   *
+   * <p>Failures are logged per record and summarized at DEBUG level; they do not propagate to
+   * query-time callers.
+   */
   private void persistAccepted(List<PersistEntry> accepted) {
     long startNs = System.nanoTime();
     int persistedCount = 0;
@@ -306,6 +317,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     }
   }
 
+  /** Writes a single record into the authoritative {@link StatsStore}. */
   private boolean persistRecord(TargetStatsRecord record) {
     try {
       statsStore.putTargetStats(record);
@@ -320,6 +332,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     }
   }
 
+  /** Returns the process-local dedupe key for in-flight persistence of a record identity. */
   private String persistInFlightKey(TargetStatsRecord record) {
     return tableIdentity(record.getTableId())
         + "#"
@@ -328,6 +341,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
         + StatsTargetIdentity.storageId(record.getTarget());
   }
 
+  /** Canonical table identity used as part of async persistence dedupe keys. */
   private String tableIdentity(ResourceId tableId) {
     if (tableId == null) {
       return "unknown";
@@ -335,6 +349,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
     return tableId.getAccountId() + "|" + tableId.getKind().name() + "|" + tableId.getId();
   }
 
+  /** Emits span attributes/events for persistence scheduling overhead and dedupe outcome. */
   private void publishStatsPersistTelemetry(
       StatsCaptureRequest request, long statsPersistNanos, int persistedCount, int dedupedCount) {
     if (persistedCount <= 0 && dedupedCount <= 0) {
