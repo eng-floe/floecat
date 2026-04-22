@@ -210,6 +210,14 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
         run: ./tools/site/publish-gh-pages.sh deploy-pr --source-dir /tmp/floecat-pr-preview-site --pr-number "${PR_NUMBER}"
 
+      - name: Remove PR Preview
+        if: always() && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh remove-pr --pr-number "${PR_NUMBER}"
+
       - name: Comment PR Preview Link
         if: always() && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
