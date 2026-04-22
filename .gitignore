@@ -106,3 +106,4 @@ dynamodb-local/
 
 # Jekyll build output
 site-src/_site/
+site-src/.jekyll-cache/

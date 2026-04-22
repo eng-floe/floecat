@@ -8,7 +8,7 @@ toc: true
 toc_sticky: true
 
 header:
-  image: /images/icefloe.png
+  image: /images/icefloe-hero.jpg
   image_description: "Lake"
 ---
 

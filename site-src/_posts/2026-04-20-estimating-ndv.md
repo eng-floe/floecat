@@ -14,8 +14,8 @@ header:
 
 This post describes the NDV estimation work within the broader statistics capture system in Floecat. The focus here is on how NDV estimates are generated under strict latency constraints, how multiple estimators are reconciled, and how those estimates behave across different datasets and sampling regimes.
 
-I presented these results to Andy Pavlo's CMU Database Group, and a recording of the session is 
-available [here](https://www.youtube.com/watch?v=Kq3csHJqgJQ). It's a joint presentation, with my colleague,
+I presented these results to Andy Pavlo's CMU Database Group, and [a recording of the session](https://www.youtube.com/watch?v=Kq3csHJqgJQ)
+is available. It's a joint presentation, with my colleague,
 Kurt Westerfeld, providing an overall introduction to Floe, our SQL compute service, and then me covering
 Floecat.
 

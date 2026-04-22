@@ -3,46 +3,248 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: ["main"]
+    paths:
+      - "site-src/**"
+      - "Makefile"
+      - ".github/workflows/pages.yml"
+      - "lighthouserc.json"
+      - "tools/site/**"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "site-src/**"
+      - "Makefile"
+      - ".github/workflows/pages.yml"
+      - "lighthouserc.json"
+      - "tools/site/**"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
-
 jobs:
-  build:
+  publish-main:
+    name: Publish main site to gh-pages
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages-prod
+      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+      - name: Build and sanity-check site
+        run: make test-site
 
-      - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./site-src
-          destination: ./_site
+      - name: Deploy production site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: ./tools/site/publish-gh-pages.sh deploy-prod --source-dir site-src/_site
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./_site
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  pr-build-check:
+    name: Pages build check
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    needs: build
+    concurrency:
+      group: pages-pr-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Setup Ruby
+        if: github.event.action != 'closed'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.1"
+
+      - name: Setup Node
+        if: github.event.action != 'closed'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and sanity-check site
+        if: github.event.action != 'closed'
+        run: make test-site
+
+      - name: Prepare Preview Root
+        if: github.event.action != 'closed'
+        run: |
+          rm -rf /tmp/floecat-preview-root
+          mkdir -p /tmp/floecat-preview-root/floecat
+          cp -a ./site-src/_site/. /tmp/floecat-preview-root/floecat/
+
+      - name: Resolve Page Validation Paths
+        if: github.event.action != 'closed'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "/floecat/"
+            echo "/floecat/blog/"
+          } > /tmp/page-validation-paths.txt
+
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
+          if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
+              | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
+            {
+              sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
+              sed -nE \
+                -e 's#^site-src/index\.md$#/floecat/#p' \
+                -e 's#^site-src/blog\.md$#/floecat/blog/#p' \
+                -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#p' \
+                /tmp/site-changed-paths.txt
+              sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
+            } | awk 'NF' >> /tmp/page-validation-paths.txt
+          fi
+
+          LC_ALL=C sort -u -o /tmp/page-validation-paths.txt /tmp/page-validation-paths.txt
+          echo "Page validation paths:"
+          cat /tmp/page-validation-paths.txt
+
+          sed -E 's#^#http://127.0.0.1:8082#' /tmp/page-validation-paths.txt > /tmp/lighthouse-urls.txt
+          node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('lighthouserc.json','utf8'));const urls=fs.readFileSync('/tmp/lighthouse-urls.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);cfg.ci.collect.url=urls;fs.writeFileSync('/tmp/lighthouserc.pr.json', JSON.stringify(cfg,null,2));"
+
+      - name: Playwright smoke check
+        if: github.event.action != 'closed'
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
+          SITE_E2E_PATHS_FILE: /tmp/page-validation-paths.txt
+        run: ./tools/site/test-site-e2e.sh
+
+      - name: Check HTML
+        if: github.event.action != 'closed'
+        run: |
+          gem install html-proofer -v "~> 5.0" --no-document
+          htmlproofer /tmp/floecat-preview-root \
+            --disable-external \
+            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/" \
+            --allow-missing-href
+
+      - name: Lighthouse CI
+        if: github.event.action != 'closed'
+        run: |
+          npm install -g @lhci/cli@0.15.x
+          lhci autorun --config=/tmp/lighthouserc.pr.json
+
+      - name: Upload Lighthouse Artifacts
+        if: always() && github.event.action != 'closed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          if-no-files-found: ignore
+          path: ./.lighthouseci
+
+      - name: Upload PR Preview Artifact
+        id: upload_pr_preview
+        if: always() && github.event.action != 'closed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-preview
+          if-no-files-found: warn
+          path: /tmp/floecat-preview-root
+          retention-days: 7
+
+      - name: Build PR Preview Site
+        id: build_pr_preview
+        if: always() && github.event.action != 'closed'
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          JEKYLL_PAGES_IMAGE: jekyll/jekyll:pages
+        run: |
+          set -euo pipefail
+          PREVIEW_BASEURL="/floecat/pr-preview/pr-${PR_NUMBER}"
+          PREVIEW_OUT="/tmp/floecat-pr-preview-site"
+          rm -rf "${PREVIEW_OUT}"
+          mkdir -p "${PREVIEW_OUT}"
+
+          docker run --rm \
+            -e "JEKYLL_UID=$(id -u)" \
+            -e "JEKYLL_GID=$(id -g)" \
+            -v "${PWD}/site-src:/srv/jekyll" \
+            -v "${PREVIEW_OUT}:/srv/output" \
+            "${JEKYLL_PAGES_IMAGE}" \
+            jekyll build \
+              --config /srv/jekyll/_config.yml,/srv/jekyll/_config.pr-preview.yml \
+              --source /srv/jekyll \
+              --destination /srv/output \
+              --baseurl "${PREVIEW_BASEURL}"
+
+      - name: Deploy PR Preview
+        if: always() && github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh deploy-pr --source-dir /tmp/floecat-pr-preview-site --pr-number "${PR_NUMBER}"
+
+      - name: Comment PR Preview Link
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_ARTIFACT_URL: ${{ steps.upload_pr_preview.outputs.artifact-url }}
+          PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-preview/pr-${{ github.event.number }}/
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        with:
+          script: |
+            const marker = '<!-- floecat-pages-preview -->';
+            const artifactUrl = process.env.PREVIEW_ARTIFACT_URL;
+            const previewUrl = process.env.PREVIEW_URL;
+            const isClosed = process.env.GITHUB_EVENT_ACTION === 'closed';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const previewLine = isClosed
+              ? '- Preview artifact: skipped for closed PR event.'
+              : (artifactUrl
+                ? `- Preview artifact: [Open pages-preview](${artifactUrl})`
+                : `- Preview artifact: open [this workflow run](${runUrl}) and download \`pages-preview\` from Artifacts.`);
+            const livePreviewLine = isClosed
+              ? '- Live preview: PR closed, preview teardown requested.'
+              : `- Live preview: [Open site](${previewUrl})`;
+
+            const body = [
+              marker,
+              '### PR Website Preview',
+              'The live site is still merge-gated. This is a PR-only build preview.',
+              '',
+              livePreviewLine,
+              previewLine,
+              `- Workflow run: [Open run](${runUrl})`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                comment.body &&
+                comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
