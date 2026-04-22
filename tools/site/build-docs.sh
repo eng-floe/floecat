@@ -57,7 +57,7 @@ fi
 
 if [[ -z "${DOCS_EDIT_URI}" ]]; then
   # Prefer CI branch context when available so PR preview edit links do not
-  # point to main and produce 404s for branch-only docs.
+  # point to default branch and produce 404s for branch-only docs.
   branch="${DOCS_EDIT_BRANCH:-}"
   if [[ -z "${branch}" && -n "${GITHUB_HEAD_REF:-}" ]]; then
     branch="${GITHUB_HEAD_REF}"
@@ -69,6 +69,16 @@ if [[ -z "${DOCS_EDIT_URI}" ]]; then
     branch="$(git -C "${ROOT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
   if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+    # Allow explicit default-branch override for CI/repo rename resilience.
+    branch="${DOCS_DEFAULT_BRANCH:-}"
+  fi
+  if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+    # Resolve origin/HEAD when available (for example after default-branch
+    # rename where "main" is no longer valid).
+    branch="$(git -C "${ROOT_DIR}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  fi
+  if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+    # Last-resort fallback for detached/no-remote environments.
     branch="main"
   fi
   DOCS_EDIT_URI="https://github.com/eng-floe/floecat/edit/${branch}/docs/"

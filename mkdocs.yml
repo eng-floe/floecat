@@ -1,7 +1,7 @@
 site_name: Floecat Documentation
 site_description: Reference and operational guides for Floecat
 site_url: https://eng-floe.github.io/floecat/documentation/
-edit_uri: !ENV [DOCS_EDIT_URI, "https://github.com/eng-floe/floecat/edit/main/docs/"]
+edit_uri: !ENV [DOCS_EDIT_URI, "https://github.com/eng-floe/floecat/edit/HEAD/docs/"]
 
 docs_dir: docs
 # Snippet fragments are included into real pages and should not be rendered as

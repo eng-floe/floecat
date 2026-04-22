@@ -2,7 +2,7 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: ["**"]
     paths:
       - "site-src/**"
       - "docs/**"
@@ -27,9 +27,11 @@ on:
 
 jobs:
   publish-main:
-    name: Publish main site to gh-pages
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    name: Publish default-branch site to gh-pages
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     concurrency:
       group: pages-prod
       cancel-in-progress: false
@@ -61,6 +63,8 @@ jobs:
     name: Pages build check
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     concurrency:
       group: pages-pr-${{ github.event.number }}
       cancel-in-progress: true
