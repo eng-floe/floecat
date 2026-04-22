@@ -6,7 +6,6 @@ on:
     paths:
       - "site-src/**"
       - "docs/**"
-      - "Makefile"
       - "mkdocs.yml"
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
@@ -17,7 +16,6 @@ on:
     paths:
       - "site-src/**"
       - "docs/**"
-      - "Makefile"
       - "mkdocs.yml"
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
@@ -99,7 +97,7 @@ jobs:
             changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
 
             # Shared website/docs infrastructure -> run both area checks.
-            if echo "${changed}" | grep -qE '^(tools/site/|Makefile$|lighthouserc\.json$|\.github/workflows/pages\.yml$|\.markdownlint-cli2\.yaml$)'; then
+            if echo "${changed}" | grep -qE '^(tools/site/|lighthouserc\.json$|\.github/workflows/pages\.yml$|\.markdownlint-cli2\.yaml$)'; then
               site=true
               docs=true
             fi
@@ -119,9 +117,34 @@ jobs:
           echo "docs=${docs}" >> "${GITHUB_OUTPUT}"
           echo "Detected: site=${site} docs=${docs}"
 
+  pr-markdown-lint:
+    name: Markdown lint
+    needs: changes
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action != 'closed' &&
+          (needs.changes.outputs.site == 'true' || needs.changes.outputs.docs == 'true') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-pr-lint-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Markdown lint
+        run: ./tools/site/lint-markdown.sh
+
   pr-site-check:
     name: Site checks
-    needs: changes
+    needs: [changes, pr-markdown-lint]
     if: >-
       ${{ github.event_name == 'pull_request' &&
           github.event.action != 'closed' &&
@@ -147,9 +170,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Markdown lint
-        run: ./tools/site/lint-markdown.sh
 
       - name: Build Jekyll site
         run: make test-site-jekyll
@@ -223,7 +243,7 @@ jobs:
 
   pr-docs-check:
     name: Docs checks
-    needs: changes
+    needs: [changes, pr-markdown-lint]
     if: >-
       ${{ github.event_name == 'pull_request' &&
           github.event.action != 'closed' &&
@@ -249,9 +269,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Markdown lint
-        run: ./tools/site/lint-markdown.sh
 
       - name: Build docs
         run: make test-site-docs
@@ -319,11 +336,12 @@ jobs:
 
   pr-preview:
     name: PR preview deploy
-    needs: [changes, pr-site-check, pr-docs-check]
+    needs: [changes, pr-markdown-lint, pr-site-check, pr-docs-check]
     if: |
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.pr-markdown-lint.result != 'failure' &&
       needs.pr-site-check.result != 'failure' &&
       needs.pr-docs-check.result != 'failure'
     runs-on: ubuntu-latest
