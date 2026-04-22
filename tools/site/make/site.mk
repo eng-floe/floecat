@@ -16,10 +16,16 @@
 # documentation and website automation can evolve independently from
 # core runtime/build targets.
 
-.PHONY: test-site test-site-e2e lint-markdown site-preview
+.PHONY: test-site test-site-jekyll test-site-docs test-site-e2e lint-markdown site-preview
 
 test-site: # website sanity build (Jekyll + docs output checks)
 	@./tools/site/test-site.sh
+
+test-site-jekyll: # Jekyll-only build + website output checks
+	@./tools/site/test-site-jekyll.sh
+
+test-site-docs: # docs-only build + documentation output checks
+	@./tools/site/test-site-docs.sh
 
 test-site-e2e: test-site # Playwright smoke checks for rendered site pages
 	@./tools/site/test-site-e2e.sh

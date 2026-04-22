@@ -16,14 +16,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SITE_OUT_DIR="${ROOT_DIR}/site-src/_site"
+DOCS_OUT_DIR="${SITE_OUT_DIR}/documentation"
 
-# Full site validation = Jekyll site + rendered docs tree.
-"${ROOT_DIR}/tools/site/test-site-jekyll.sh"
-"${ROOT_DIR}/tools/site/test-site-docs.sh"
+echo "==> [DOCS] building repository docs under /documentation/"
+"${ROOT_DIR}/tools/site/build-docs.sh" --output-dir "${DOCS_OUT_DIR}"
 
-echo "==> [SITE] checking combined output"
-test -f "${SITE_OUT_DIR}/documentation/index.html" || {
-  echo "missing ${SITE_OUT_DIR}/documentation/index.html"
-  exit 1
-}
-echo "==> [SITE] basic checks passed"
+echo "==> [DOCS] checking expected docs output files"
+test -f "${DOCS_OUT_DIR}/index.html" || { echo "missing ${DOCS_OUT_DIR}/index.html"; exit 1; }
+echo "==> [DOCS] docs checks passed"
