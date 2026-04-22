@@ -1,0 +1,118 @@
+:root {
+  --md-primary-fg-color: #5b3f38;
+  --md-primary-fg-color--light: #6c4f48;
+  --md-primary-fg-color--dark: #3f2823;
+  --md-accent-fg-color: #0b5f80;
+}
+
+/* Keep docs palette close to Floecat site tones. */
+.md-header,
+.md-tabs {
+  border-bottom: 1px solid #d5c4c0;
+}
+
+.md-header__source {
+  display: none;
+}
+
+.md-main {
+  background: #f4f0f0;
+}
+
+.md-content,
+.md-sidebar {
+  background: #f4f0f0;
+}
+
+.md-content__inner {
+  background: #f0ecec;
+  border: 1px solid #d5c4c0;
+  border-radius: 14px;
+  padding: 1.2rem 1.3rem;
+}
+
+.md-nav__title {
+  font-weight: 700;
+}
+
+.md-nav__item .md-nav__link,
+.md-nav__item .md-nav__link:visited,
+.md-nav__item .md-nav__link .md-ellipsis,
+.md-nav label.md-nav__link .md-ellipsis {
+  color: #3f2823;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: #2d1713;
+}
+
+.md-typeset a {
+  color: #0b5f80;
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: #084860;
+}
+
+/* Header shortcut to jump back to Floecat site root. */
+.floecat-home-option {
+  margin-right: 0.35rem;
+}
+
+.floecat-home-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.floecat-home-link:hover,
+.floecat-home-link:focus {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.floecat-home-link__icon {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background-image: url("../images/floecat-mark.png");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+@media (max-width: 76.2344em) {
+  .floecat-home-link {
+    padding: 0.22rem;
+  }
+
+  .floecat-home-link__label {
+    display: none;
+  }
+}
+
+/* Increase contrast in footer/nav areas for accessibility checks. */
+.md-footer-meta {
+  background: #3f2823;
+}
+
+.md-footer-meta,
+.md-footer-meta .md-footer-meta__inner,
+.md-footer-meta .md-copyright,
+.md-footer-meta a,
+.md-footer-meta a:visited {
+  color: #f8f2ef;
+}
