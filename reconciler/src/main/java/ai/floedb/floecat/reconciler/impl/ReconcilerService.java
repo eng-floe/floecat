@@ -21,6 +21,7 @@ import static ai.floedb.floecat.reconciler.util.NameParts.split;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -685,7 +686,7 @@ public class ReconcilerService {
                     knownSnapshotIds,
                     snapshotId ->
                         isStatsCaptureCompleteForScope(
-                            ctx, destTableId, snapshotId, includeSelectors));
+                            ctx, destTableId, snapshotId, includeSelectors, targetSpecs));
             if (captureMode == CaptureMode.STATS_ONLY) {
               IngestCounts ingestCounts =
                   captureStatsOnlyViaControlPlane(
@@ -1364,7 +1365,8 @@ public class ReconcilerService {
       if (!fullRescan
           && knownSnapshotIds != null
           && knownSnapshotIds.contains(snapshotId)
-          && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors)) {
+          && isStatsCaptureCompleteForScope(
+              ctx, tableId, snapshotId, includeSelectors, targetSpecs)) {
         continue;
       }
 
@@ -1681,7 +1683,25 @@ public class ReconcilerService {
   }
 
   private boolean isStatsCaptureCompleteForScope(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> includeSelectors) {
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      Set<String> includeSelectors,
+      Set<String> targetSpecs) {
+    Set<StatsTarget> scopedTargets = decodeTargetSpecs(targetSpecs);
+    if (!scopedTargets.isEmpty()) {
+      if (!backend.statsCapturedForTargets(ctx, tableId, snapshotId, scopedTargets)) {
+        return false;
+      }
+      boolean tableRequested =
+          scopedTargets.stream()
+              .anyMatch(target -> target.getTargetCase() == StatsTarget.TargetCase.TABLE);
+      if (tableRequested && includeSelectors != null && !includeSelectors.isEmpty()) {
+        return backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, includeSelectors);
+      }
+      return true;
+    }
+
     if (!backend.statsAlreadyCapturedForTargetKind(
         ctx, tableId, snapshotId, StatsTargetKind.STK_TABLE)) {
       return false;
@@ -1695,6 +1715,18 @@ public class ReconcilerService {
             ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
         || backend.statsAlreadyCapturedForTargetKind(
             ctx, tableId, snapshotId, StatsTargetKind.STK_EXPRESSION);
+  }
+
+  private Set<StatsTarget> decodeTargetSpecs(Set<String> targetSpecs) {
+    if (targetSpecs == null || targetSpecs.isEmpty()) {
+      return Set.of();
+    }
+    LinkedHashSet<StatsTarget> decodedTargets = new LinkedHashSet<>();
+    for (String targetSpec : targetSpecs) {
+      ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(targetSpec)
+          .ifPresent(decodedTargets::add);
+    }
+    return decodedTargets;
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {

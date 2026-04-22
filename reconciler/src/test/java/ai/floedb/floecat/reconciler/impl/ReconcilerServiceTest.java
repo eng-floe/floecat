@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -1363,6 +1364,159 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.snapshotsProcessed).isEqualTo(2L);
     assertThat(result.statsProcessed).isZero();
     assertThat(result.errors).isZero();
+  }
+
+  @Test
+  void statsOnlyKnownSnapshotWithMissingExplicitTargetIsNotSkipped() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-stats-only-explicit-target")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    StatsTarget explicitTarget = StatsTargetIdentity.columnTarget(9L);
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        ResourceId destCatalogId =
+            ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+        ResourceId destNamespaceId =
+            ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+        return Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(
+                        NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId)
+                    .setTableId(tableId))
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(201L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return true;
+      }
+
+      @Override
+      public boolean statsCapturedForColumnSelectors(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        return true;
+      }
+
+      @Override
+      public boolean statsCapturedForTargets(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          Set<StatsTarget> targets) {
+        return false;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class SnapshotOnlyConnector extends FakeConnector {
+      SnapshotOnlyConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("tbl");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            namespaceFq,
+            tableName,
+            "s3://bucket/path",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(
+                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+      }
+    }
+
+    StatsCaptureControlPlane controlPlane = Mockito.mock(StatsCaptureControlPlane.class);
+    ArgumentCaptor<StatsCaptureBatchRequest> batchCaptor =
+        ArgumentCaptor.forClass(StatsCaptureBatchRequest.class);
+    Mockito.when(controlPlane.triggerBatch(batchCaptor.capture()))
+        .thenAnswer(
+            invocation -> {
+              StatsCaptureBatchRequest batchRequest = invocation.getArgument(0);
+              return StatsCaptureBatchResult.of(
+                  batchRequest.requests().stream()
+                      .map(ReconcilerServiceTest::capturedItem)
+                      .toList());
+            });
+
+    @SuppressWarnings("unchecked")
+    Instance<StatsCaptureControlPlane> instance = Mockito.mock(Instance.class);
+    Mockito.when(instance.isUnsatisfied()).thenReturn(false);
+    Mockito.when(instance.get()).thenReturn(controlPlane);
+
+    service.backend = new Backend();
+    service.statsCaptureControlPlane = instance;
+    service.connectorOpener = cfg -> new SnapshotOnlyConnector();
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.of(
+                List.of(List.of("dest_ns")),
+                "tbl",
+                List.of("#9"),
+                List.of(),
+                List.of(StatsTargetScopeCodec.encode(explicitTarget))),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    Mockito.verify(controlPlane).triggerBatch(Mockito.any());
+    assertThat(batchCaptor.getValue().requests()).hasSize(1);
+    assertThat(batchCaptor.getValue().requests().getFirst().snapshotId()).isEqualTo(201L);
+    assertThat(batchCaptor.getValue().requests().getFirst().target()).isEqualTo(explicitTarget);
   }
 
   private static StatsCaptureBatchItemResult capturedItem(StatsCaptureRequest request) {

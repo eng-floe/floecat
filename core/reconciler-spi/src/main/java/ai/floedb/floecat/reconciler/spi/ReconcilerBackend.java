@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.spi;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -67,6 +68,15 @@ public interface ReconcilerBackend {
    */
   boolean statsCapturedForColumnSelectors(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors);
+
+  /**
+   * Returns whether all requested explicit stats targets are present for the snapshot.
+   *
+   * <p>Each target is checked by exact identity ({@code table_id, snapshot_id, target}).
+   * Implementations should return {@code false} when any target is missing.
+   */
+  boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets);
 
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -216,6 +217,12 @@ abstract class AbstractReconcilerServiceTestBase {
     public boolean statsCapturedForColumnSelectors(
         ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
       throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean statsCapturedForTargets(
+        ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
+      return false;
     }
 
     @Override

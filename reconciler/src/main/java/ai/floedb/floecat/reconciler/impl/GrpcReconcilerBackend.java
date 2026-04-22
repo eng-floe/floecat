@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -452,6 +454,38 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       throw e;
     }
     return required.isSatisfiedBy(presentIds, presentNames);
+  }
+
+  @Override
+  public boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return true;
+    }
+    try {
+      for (StatsTarget target : targets) {
+        if (target == null || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
+          return false;
+        }
+        var response =
+            statistics(ctx)
+                .getTargetStats(
+                    GetTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                        .setTarget(target)
+                        .build());
+        if (response == null || !response.hasStats()) {
+          return false;
+        }
+      }
+      return true;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
   }
 
   @Override

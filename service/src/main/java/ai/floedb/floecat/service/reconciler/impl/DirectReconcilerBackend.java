@@ -23,6 +23,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -433,6 +434,23 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     } while (pageToken != null && !pageToken.isBlank());
 
     return required.isSatisfiedBy(presentIds, presentNames);
+  }
+
+  @Override
+  public boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return true;
+    }
+    for (StatsTarget target : targets) {
+      if (target == null || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
+        return false;
+      }
+      if (statsStore.getTargetStats(tableId, snapshotId, target).isEmpty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override
