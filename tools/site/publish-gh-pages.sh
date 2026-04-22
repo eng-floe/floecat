@@ -53,6 +53,21 @@ parse_args() {
   done
 }
 
+resolve_source_dir() {
+  if [[ -z "${SOURCE_DIR}" ]]; then
+    return
+  fi
+
+  if [[ ! -d "${SOURCE_DIR}" ]]; then
+    echo "ERROR: source directory does not exist: ${SOURCE_DIR}" >&2
+    exit 1
+  fi
+
+  # Deploy commands execute from a temporary gh-pages workdir. Normalize to an
+  # absolute path up front so relative source dirs still resolve correctly.
+  SOURCE_DIR="$(cd "${SOURCE_DIR}" && pwd)"
+}
+
 init_branch_workdir() {
   local auth_header
   BRANCH_ROOT="$(mktemp -d /tmp/floecat-gh-pages.XXXXXX)"
@@ -172,6 +187,7 @@ main() {
     exit 1
   fi
 
+  resolve_source_dir
   require_env GITHUB_TOKEN
   require_env REPO
   trap cleanup EXIT
