@@ -60,6 +60,7 @@ extra:
 nav:
   - Documentation Home: index.md
   - Contributing to Docs: CONTRIBUTING.md
+  - Docs Style Guide: style-guide.md
   - Getting Started:
       - Docker Local Stack: docker.md
       - Architecture: architecture.md
