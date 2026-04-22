@@ -71,7 +71,7 @@
 #   make clean-dev               # remove dev pids/logs/isolated repos
 #   make test-site               # basic website checks (build + expected output files)
 #   make test-site-e2e           # Playwright smoke test for the website
-#   make site-preview            # build + serve site preview at /floecat/ and /floecat/documentation/
+#   make site-preview            # build + serve live preview (auto-rebuild on refresh) at /floecat/ and /floecat/documentation/
 #   make docker                  # build service container images
 #   make docker-clean-cache      # clear local Jib temp caches (fixes cache corruption errors)
 #   make fmt                     # format Java sources (google-java-format)
