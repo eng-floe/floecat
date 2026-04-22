@@ -1,0 +1,7 @@
+- [Run Local Stack](docker.md)
+- [Architecture](architecture.md)
+- [Service API](service.md)
+- [Iceberg REST Gateway](iceberg-rest-gateway.md)
+- [Client CLI](client-cli.md)
+- [Operations](operations.md)
+- [Troubleshooting](troubleshooting-errors.md)

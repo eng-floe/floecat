@@ -1,0 +1,4 @@
+- **Core platform**: architecture, service, metadata graph, reconciler
+- **Integrations**: connectors (Iceberg, Delta), Arrow Flight, client CLI
+- **Storage and security**: storage backends, secrets manager, external authentication
+- **Operations and observability**: operations, telemetry, troubleshooting

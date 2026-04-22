@@ -17,6 +17,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOCS_OUT_DIR="${ROOT_DIR}/site-src/_site/documentation"
 MKDOCS_IMAGE="${MKDOCS_IMAGE:-squidfunk/mkdocs-material:9.6.14}"
+# Optional override; if empty we derive a branch-aware default for edit links.
+DOCS_EDIT_URI="${DOCS_EDIT_URI:-}"
 
 usage() {
   cat <<'EOF'
@@ -53,12 +55,34 @@ if [[ ! -f "${ROOT_DIR}/mkdocs.yml" ]]; then
   exit 1
 fi
 
+if [[ -z "${DOCS_EDIT_URI}" ]]; then
+  # Prefer CI branch context when available so PR preview edit links do not
+  # point to main and produce 404s for branch-only docs.
+  branch="${DOCS_EDIT_BRANCH:-}"
+  if [[ -z "${branch}" && -n "${GITHUB_HEAD_REF:-}" ]]; then
+    branch="${GITHUB_HEAD_REF}"
+  fi
+  if [[ -z "${branch}" && -n "${GITHUB_REF_NAME:-}" ]]; then
+    branch="${GITHUB_REF_NAME}"
+  fi
+  if [[ -z "${branch}" ]]; then
+    branch="$(git -C "${ROOT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+    branch="main"
+  fi
+  DOCS_EDIT_URI="https://github.com/eng-floe/floecat/edit/${branch}/docs/"
+fi
+
 rm -rf "${DOCS_OUT_DIR}"
 mkdir -p "${DOCS_OUT_DIR}"
 
 echo "==> [DOCS] building docs with MkDocs Material (${MKDOCS_IMAGE})"
+echo "==> [DOCS] edit links target: ${DOCS_EDIT_URI}"
 docker run --rm \
   -u "$(id -u):$(id -g)" \
+  -w /work \
+  -e "DOCS_EDIT_URI=${DOCS_EDIT_URI}" \
   -v "${ROOT_DIR}:/work" \
   -v "${DOCS_OUT_DIR}:/out" \
   "${MKDOCS_IMAGE}" \

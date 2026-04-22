@@ -1,11 +1,13 @@
 site_name: Floecat Documentation
 site_description: Reference and operational guides for Floecat
 site_url: https://eng-floe.github.io/floecat/documentation/
-repo_url: https://github.com/eng-floe/floecat
-repo_name: eng-floe/floecat
-edit_uri: edit/main/docs/
+edit_uri: !ENV [DOCS_EDIT_URI, "https://github.com/eng-floe/floecat/edit/main/docs/"]
 
 docs_dir: docs
+# Snippet fragments are included into real pages and should not be rendered as
+# standalone pages.
+exclude_docs: |
+  _snippets/**
 
 theme:
   name: material
@@ -34,13 +36,23 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.highlight
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path:
+        - docs
+      check_paths: true
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
 
 extra_css:
   - assets/stylesheets/extra.css
+
+# Runs after MkDocs loads so docs header links stay correct in:
+# - local preview (/floecat/documentation/)
+# - PR preview (/floecat/pr-preview/pr-<n>/documentation/)
+# - production (/floecat/documentation/)
+extra_javascript:
+  - assets/javascripts/docs-navigation.js
 
 extra:
   homepage: ..

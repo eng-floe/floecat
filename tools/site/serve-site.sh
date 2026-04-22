@@ -22,6 +22,7 @@ SERVER_LOG="${PREVIEW_ROOT}/http-server.log"
 HOST="${SITE_PREVIEW_HOST:-127.0.0.1}"
 PORT="${SITE_PREVIEW_PORT:-4000}"
 SKIP_BUILD=0
+# Watch mode is default so regular browser refresh picks up rebuilt output.
 WATCH=1
 POLL_SECONDS="${SITE_PREVIEW_POLL_SECONDS:-2}"
 
@@ -98,6 +99,7 @@ choose_hasher() {
 }
 
 build_sources_fingerprint() {
+  # Hash all source files that influence the rendered preview.
   local manifest tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/floecat-preview-manifest.XXXXXX")"
   while IFS= read -r path; do
@@ -116,6 +118,7 @@ build_sources_fingerprint() {
 }
 
 sync_preview_root() {
+  # Swap the rendered output atomically to avoid serving half-copied files.
   local next_dir old_dir
   next_dir="${PREVIEW_ROOT}/floecat.next"
   old_dir="${PREVIEW_ROOT}/floecat.prev"
