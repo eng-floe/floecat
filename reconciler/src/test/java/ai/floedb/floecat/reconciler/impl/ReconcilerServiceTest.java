@@ -33,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -248,6 +249,154 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
     assertThat(backend.putConstraints).isNotNull();
     assertThat(backend.putConstraints.getConstraintsCount()).isEqualTo(1);
     assertThat(backend.putConstraints.getConstraints(0).getName()).isEqualTo("pk_tbl");
+  }
+
+  @Test
+  void metadataAndStatsFollowUpEnqueuePreservesScopedColumns() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-follow-up-columns")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public ResourceId ensureNamespace(
+          ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
+        return ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("dest-ns")
+            .build();
+      }
+
+      @Override
+      public ResourceId ensureTable(
+          ReconcileContext ctx,
+          ResourceId namespaceId,
+          NameRef table,
+          TableSpecDescriptor descriptor) {
+        return tableId;
+      }
+
+      @Override
+      public Optional<Snapshot> fetchSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return Optional.empty();
+      }
+
+      @Override
+      public void ingestSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class SingleSnapshotConnector extends FakeConnector {
+      SingleSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("tbl");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            namespaceFq,
+            tableName,
+            "s3://bucket/path",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(
+                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new SingleSnapshotConnector();
+
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    Mockito.when(
+            jobStore.enqueue(
+                Mockito.anyString(),
+                Mockito.anyString(),
+                Mockito.anyBoolean(),
+                Mockito.any(),
+                Mockito.any()))
+        .thenReturn("job-1");
+    @SuppressWarnings("unchecked")
+    Instance<ReconcileJobStore> jobStoreInstance = Mockito.mock(Instance.class);
+    Mockito.when(jobStoreInstance.isUnsatisfied()).thenReturn(false);
+    Mockito.when(jobStoreInstance.get()).thenReturn(jobStore);
+    service.reconcileJobStore = jobStoreInstance;
+
+    ReconcileScope scope =
+        ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of("#7", "customer_id"));
+    var result = service.reconcile(principal, connectorId, true, scope);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.degraded()).isFalse();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    Mockito.verify(jobStore)
+        .enqueue(
+            Mockito.eq("acct"),
+            Mockito.eq("connector-1"),
+            Mockito.eq(false),
+            Mockito.eq(ReconcilerService.CaptureMode.STATS_ONLY),
+            scopeCaptor.capture());
+
+    ReconcileScope queuedScope = scopeCaptor.getValue();
+    assertThat(queuedScope.destinationTableColumns()).containsExactly("#7", "customer_id");
+    assertThat(queuedScope.destinationSnapshotIds()).containsExactly(42L);
+    assertThat(queuedScope.destinationStatsTargets())
+        .containsExactly(StatsTargetScopeCodec.encode(StatsTargetIdentity.tableTarget()));
   }
 
   @Test

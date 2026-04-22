@@ -735,6 +735,7 @@ public class ReconcilerService {
                     fullRescan,
                     includeCoreMetadata,
                     includeStats,
+                    includeSelectors,
                     targetSpecs,
                     knownSnapshotIds,
                     enumerationKnownSnapshotIds,
@@ -1508,6 +1509,7 @@ public class ReconcilerService {
       ResourceId connectorId,
       String namespaceFq,
       String tableDisplayName,
+      Set<String> includeSelectors,
       Set<String> targetSpecs,
       Set<Long> snapshotIds) {
     if (reconcileJobStore == null || reconcileJobStore.isUnsatisfied()) {
@@ -1543,15 +1545,17 @@ public class ReconcilerService {
           "stats_followup_unavailable scope_identity_missing connector=" + connectorId.getId());
     }
     List<List<String>> namespacePaths = List.of(namespacePath(namespaceFq));
+    List<String> sortedColumns =
+        includeSelectors == null ? List.of() : includeSelectors.stream().sorted().toList();
     List<Long> sortedSnapshotIds =
         snapshotIds == null ? List.of() : snapshotIds.stream().sorted().toList();
     List<String> sortedTargets =
         targetSpecs == null ? List.of() : targetSpecs.stream().sorted().toList();
-    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, List.of());
+    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, sortedColumns);
     if (!sortedSnapshotIds.isEmpty() || !sortedTargets.isEmpty()) {
       scope =
           ReconcileScope.of(
-              namespacePaths, tableDisplayName, List.of(), sortedSnapshotIds, sortedTargets);
+              namespacePaths, tableDisplayName, sortedColumns, sortedSnapshotIds, sortedTargets);
     }
     String jobId =
         reconcileJobStore
@@ -1590,6 +1594,7 @@ public class ReconcilerService {
       boolean fullRescan,
       boolean includeCoreMetadata,
       boolean includeStats,
+      Set<String> includeSelectors,
       Set<String> targetSpecs,
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
@@ -1636,6 +1641,7 @@ public class ReconcilerService {
               connectorId,
               scopeNamespaceFq,
               destTableDisplay,
+              includeSelectors,
               targetSpecs,
               snapshotIdsFromBundles(bundles));
     }
