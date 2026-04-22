@@ -2,7 +2,7 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths:
       - "site-src/**"
       - "docs/**"
@@ -63,6 +63,8 @@ jobs:
     name: Detect changed content areas
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       site: ${{ steps.detect.outputs.site }}
       docs: ${{ steps.detect.outputs.docs }}
@@ -341,6 +343,11 @@ jobs:
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action == 'closed' ||
+        needs.changes.outputs.site == 'true' ||
+        needs.changes.outputs.docs == 'true'
+      ) &&
       needs.pr-markdown-lint.result != 'failure' &&
       needs.pr-site-check.result != 'failure' &&
       needs.pr-docs-check.result != 'failure'
