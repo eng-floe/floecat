@@ -124,7 +124,8 @@ jobs:
               sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
               sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/site-changed-paths.txt
               sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
-              sed -nE '/^docs\/index\.md$/! /^docs\/.+\/index\.md$/! s#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt \
+                | grep -vE '^/floecat/documentation/index/$|^/floecat/documentation/.+/index/$'
             } | awk 'NF' >> /tmp/page-validation-paths.txt
           fi
 
