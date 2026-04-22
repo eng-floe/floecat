@@ -12,18 +12,13 @@ header:
   image_description: "Lake"
 ---
 
-This post describes the NDV estimation work within the broader statistics capture system in Floecat. The focus here is on how NDV estimates are generated under strict latency constraints, how multiple estimators are reconciled, and how those estimates behave across different datasets and sampling regimes.
+NDV (number of distinct values) is one of the most important statistics in cost-based query optimization. It affects selectivity estimates, join ordering, and intermediate cardinality predictions, so bad NDV estimates can quickly cascade into poor plans.
 
-I presented these results to Andy Pavlo's CMU Database Group, and [a recording of the session](https://www.youtube.com/watch?v=Kq3csHJqgJQ)
-is available. It's a joint presentation, with my colleague,
-Kurt Westerfeld, providing an overall introduction to Floe, our SQL compute service, and then me covering
-Floecat.
+The problem is that NDV is hard to estimate under strict latency constraints. In Floecat, synchronous statistics capture has roughly one second to inspect an Iceberg table, sample a subset of Parquet row groups, and return something useful to the planner. That means the system must make decisions from partial and sometimes unrepresentative data.
 
-The statistics capture system operates in two modes. Synchronous capture is used when a query requires statistics that are not yet available, and must return results within a strict time budget. Asynchronous capture runs in the background to reconcile and refine statistics over time. NDV estimation sits directly on the boundary between these two modes. It must provide useful estimates within approximately one second, while also supporting progressive refinement through deeper asynchronous analysis.
+This post looks at how NDV behaves under that kind of sampling pressure. Rather than trusting a single estimator, Floecat evaluates multiple estimators over the same sampled data, compares their behavior, and selects the most plausible result while tracking confidence. The goal is not perfect accuracy on the first pass, but a fast estimate that is useful immediately and can be refined asynchronously as more evidence becomes available.
 
-This “one second problem” is the central constraint. Query planners need statistics early in planning, not after execution has already started. That forces a design where statistics are derived from partial information and must still be useful enough to influence join ordering, cardinality estimation, and access path selection.
-
-NDV is one of the most important statistics for cost-based planning, and also one of the least stable under partial observation. The system therefore does not rely on a single estimator, but instead evaluates multiple estimators against the same sampled data and selects a result based on observed behavior.
+I presented an earlier version of this work to Andy Pavlo's CMU Database Group; if you want additional context, [a recording of that session](https://www.youtube.com/watch?v=Kq3csHJqgJQ) is available.
 
 ## Constraints of NDV Estimation Under Sampling
 
@@ -85,9 +80,13 @@ The evaluation uses two datasets with different characteristics:
 
 These datasets were chosen to expose different NDV regimes: low-cardinality identifiers, medium-cardinality dimensions, and high-cardinality keys.
 
+The core experiments were run on an AWS `i8g.4xlarge` node (16 vCPUs, 128 GB DRAM) with the Iceberg tables stored in Amazon S3. These single-node measurements are used to characterize estimator behavior and execution cost; meeting the planner's tighter latency budget depends on distributing row-group sampling across the execution layer.
+
 ### TPC-DS SF1000
 
-On the store_sales table (2.8B rows), low-cardinality columns such as `ss_sold_date_sk` converge immediately with exact plateau detection. Medium-cardinality columns such as `ss_customer_sk` stabilize within approximately 10–15 percent error under frequency-of-frequencies. High-cardinality columns such as `ss_ticket_number` initially behave like subset estimates before transitioning to linear extrapolation as sampling reaches approximately 5 percent. The behavior for `ss_ticket_number` is shown below. The discovery curve remains effectively linear through early sampling, which drives the estimator toward linear extrapolation.
+On the `store_sales` table (2.8B rows), the estimator exhibits three distinct behaviors. Low-cardinality columns such as `ss_sold_date_sk` converge almost immediately. Medium-cardinality columns such as `ss_customer_sk` stabilize within approximately 10-15 percent error under frequency-of-frequencies. High-cardinality columns such as `ss_ticket_number` remain unsaturated much longer and eventually transition into a linear extrapolation regime.
+
+The behavior for `ss_ticket_number` is shown below. The discovery curve remains effectively linear through early sampling, which drives the estimator toward linear extrapolation.
 
 ![NDV discovery curve for ss_ticket_number]({{ site.baseurl }}/images/2026-04-tpcds-ss_ticket_number.png){: .post-chart }
 
@@ -119,23 +118,9 @@ This is a failure mode of sampling rather than estimation. In particular, metada
 
 This example highlights why NDV estimation cannot rely on a single method or a single sample. The system must be able to detect when the observed discovery curve is misleading and treat early results with appropriate caution.
 
-## Implementation: Rust vs Java
-
-The NDV estimation pipeline was implemented in both Rust and Java to evaluate which execution model is better suited to sampling-based statistics capture under strict latency constraints. The goal was to make a language and runtime choice for the production system based on measured performance.
-
-Both implementations follow the same logical pipeline: snapshot resolution, file enumeration, row-group sampling, and NDV sketch computation.
-
-The Java implementation uses a Parquet-native scan path with column readers and record iteration. It relies on Apache DataSketches for sketch merging and achieves parallelism primarily across files. Rust is more deeply asynchronous within each file, while Java is parallel across files.
-
-On TPC-DS SF1000 at 5 percent sampling, Rust completes in ~3.6 seconds versus ~3.9 seconds for Java, while using significantly less CPU (7.3s vs 41.7s total CPU time) and memory (~0.8 GB vs ~9.5 GB), along with improved effective I/O throughput.
-
-The difference is not marginal. While wall-clock time is similar, the Rust implementation achieves this with significantly lower CPU usage and memory consumption, along with more efficient I/O behavior. Under sustained load or concurrent query execution, these differences become decisive.
-
-Based on these results, the Rust implementation was selected for the production path, as it provides significantly better resource efficiency under the same latency constraints.
-
 ## The One-Second Problem
 
-The defining constraint for this system is that statistics must be available within the planning window. On a single node, 5 percent sampling produces approximately 9 percent error in roughly 4 seconds. In a distributed setting, row-group sampling scales horizontally, allowing this to be reduced to sub-second latency.
+The defining constraint for this system is that statistics must be available within the planning window. On the AWS `i8g.4xlarge` baseline, 5 percent sampling produces approximately 9 percent error in roughly 4 seconds. Those single-node results establish that the estimator pipeline is efficient enough to be viable; production fits within the stricter planner budget by distributing row-group sampling horizontally across workers.
 
 This is what makes the approach viable. The system is not trying to compute perfect statistics. It is trying to compute good enough statistics fast enough to influence planning.
 
@@ -153,7 +138,7 @@ Extending the approach beyond single-column NDV is significantly harder. Multiva
 
 Finally, consistency across datasets depends on factors outside the control of the system. Without controlling how data is written, including ordering, partitioning, and clustering, the estimator must operate under arbitrary layouts. Designing statistics that are robust to these variations without requiring changes to the write path remains an open challenge.
 
-## Next Steps
+## Next Steps and Closing Observations
 
 There are a few clear directions for improving this system.
 
@@ -165,8 +150,22 @@ Finally, asynchronous refinement can be used more aggressively. Synchronous esti
 
 The goal is not to eliminate uncertainty, but to manage it explicitly and reduce it where it matters most for planning.
 
-## Closing Observations
-
 NDV estimation under sampling is fundamentally about interpreting incomplete evidence under time constraints. Different estimators perform well under different regimes, and the system must adapt dynamically based on observed behavior.
 
 The combination of sampling, multi-estimator evaluation, and confidence scoring allows the system to produce useful planner statistics within strict latency budgets. Asynchronous reconciliation then improves those estimates over time, allowing the system to balance responsiveness and accuracy without blocking query execution.
+
+## Engineering Appendix: Rust vs Java
+
+The NDV estimation pipeline was implemented in both Rust and Java to evaluate which execution model is better suited to sampling-based statistics capture under strict latency constraints. The goal was to make a language and runtime choice for the production system based on measured performance.
+
+These experiments were run on an AWS `i8g.4xlarge` node (16 vCPUs, 128 GB DRAM) with the Iceberg tables stored in Amazon S3.
+
+Both implementations follow the same logical pipeline: snapshot resolution, file enumeration, row-group sampling, and NDV sketch computation.
+
+The Java implementation uses a Parquet-native scan path with column readers and record iteration. It relies on Apache DataSketches for sketch merging and achieves parallelism primarily across files. Rust is more deeply asynchronous within each file, while Java is parallel across files.
+
+On TPC-DS SF1000 at 5 percent sampling, the single-node Rust implementation completes in ~3.6 seconds versus ~3.9 seconds for Java, while using significantly less CPU (7.3s vs 41.7s total CPU time) and memory (~0.8 GB vs ~9.5 GB), along with improved effective I/O throughput.
+
+The difference is not marginal. While wall-clock time is similar, the Rust implementation achieves this with significantly lower CPU usage and memory consumption, along with more efficient I/O behavior. Under sustained load or concurrent query execution, these differences become decisive.
+
+Based on these results, the Rust implementation was selected for the production path, as it provides significantly better resource efficiency under the same latency constraints.
