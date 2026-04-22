@@ -43,8 +43,8 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "${SITE_OUT_DIR}/index.html" ]]; then
-  echo "ERROR: ${SITE_OUT_DIR}/index.html missing. Run 'make test-site' first."
+if [[ ! -f "${SITE_OUT_DIR}/index.html" && ! -f "${SITE_OUT_DIR}/documentation/index.html" ]]; then
+  echo "ERROR: expected site output missing (need index.html or documentation/index.html). Run 'make test-site' or area-specific build first."
   exit 1
 fi
 
