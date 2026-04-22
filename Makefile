@@ -95,6 +95,7 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+SITE_MAKEFILE ?= tools/site/make/site.mk
 
 DOCKER_COMPOSE ?= docker compose
 DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
@@ -288,6 +289,10 @@ SEED_PROPS := \
 	-Dfloecat.fixtures.use-aws-s3=false
 endif
 
+# Site/docs targets are maintained in a separate fragment so website workflow
+# changes stay isolated from core Java/runtime targets.
+include $(SITE_MAKEFILE)
+
 # ===================================================
 # Aggregates
 # ===================================================
@@ -331,19 +336,7 @@ $(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.jav
 # - test: in-memory stores (fast default)
 # - test-localstack: fixtures + catalog LocalStack
 # ===================================================
-.PHONY: test-site test-site-e2e lint-markdown site-preview test test-localstack unit-test integration-test verify
-
-test-site:
-	@./tools/site/test-site.sh
-
-test-site-e2e: test-site
-	@./tools/site/test-site-e2e.sh
-
-lint-markdown:
-	@./tools/site/lint-markdown.sh
-
-site-preview:
-	@./tools/site/serve-site.sh
+.PHONY: test test-localstack unit-test integration-test verify
 
 test: $(PROTO_JAR) keycloak-up
 	@bash -c 'set -euo pipefail; \

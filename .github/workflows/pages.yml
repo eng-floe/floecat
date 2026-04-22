@@ -2,11 +2,10 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths:
       - "site-src/**"
       - "docs/**"
-      - "Makefile"
       - "mkdocs.yml"
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
@@ -17,7 +16,6 @@ on:
     paths:
       - "site-src/**"
       - "docs/**"
-      - "Makefile"
       - "mkdocs.yml"
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
@@ -61,64 +59,144 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: ./tools/site/publish-gh-pages.sh deploy-prod --source-dir site-src/_site
 
-  pr-build-check:
-    name: Pages build check
+  changes:
+    name: Detect changed content areas
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    env:
-      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-    concurrency:
-      group: pages-pr-${{ github.event.number }}
-      cancel-in-progress: true
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      site: ${{ steps.detect.outputs.site }}
+      docs: ${{ steps.detect.outputs.docs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Ruby
-        if: github.event.action != 'closed'
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.1"
+      - name: Detect changed areas
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+
+          site=false
+          docs=false
+
+          if [[ "${PR_ACTION}" == "closed" ]]; then
+            echo "site=false" >> "${GITHUB_OUTPUT}"
+            echo "docs=false" >> "${GITHUB_OUTPUT}"
+            echo "Detected: site=false docs=false (closed PR event)"
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
+          if ! git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            site=true
+            docs=true
+          else
+            changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
+
+            # Shared website/docs infrastructure -> run both area checks.
+            if echo "${changed}" | grep -qE '^(tools/site/|lighthouserc\.json$|\.github/workflows/pages\.yml$|\.markdownlint-cli2\.yaml$)'; then
+              site=true
+              docs=true
+            fi
+
+            # Website/Jekyll content.
+            if echo "${changed}" | grep -qE '^site-src/'; then
+              site=true
+            fi
+
+            # Repository docs/MkDocs content.
+            if echo "${changed}" | grep -qE '^(docs/|mkdocs\.yml$)'; then
+              docs=true
+            fi
+          fi
+
+          echo "site=${site}" >> "${GITHUB_OUTPUT}"
+          echo "docs=${docs}" >> "${GITHUB_OUTPUT}"
+          echo "Detected: site=${site} docs=${docs}"
+
+  pr-markdown-lint:
+    name: Markdown lint
+    needs: changes
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action != 'closed' &&
+          (needs.changes.outputs.site == 'true' || needs.changes.outputs.docs == 'true') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-pr-lint-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node
-        if: github.event.action != 'closed'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Markdown lint
-        if: github.event.action != 'closed'
         run: ./tools/site/lint-markdown.sh
 
-      - name: Build and sanity-check site
-        if: github.event.action != 'closed'
-        run: make test-site
+  pr-site-check:
+    name: Site checks
+    needs: [changes, pr-markdown-lint]
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action != 'closed' &&
+          needs.changes.outputs.site == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    concurrency:
+      group: pages-pr-site-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Prepare Preview Root
-        if: github.event.action != 'closed'
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.1"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Jekyll site
+        run: make test-site-jekyll
+
+      - name: Prepare Site Preview Root
         run: |
           rm -rf /tmp/floecat-preview-root
           mkdir -p /tmp/floecat-preview-root/floecat
           cp -a ./site-src/_site/. /tmp/floecat-preview-root/floecat/
 
-      - name: Resolve Page Validation Paths
-        if: github.event.action != 'closed'
+      - name: Resolve Site Validation Paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+
           {
             echo "/floecat/"
             echo "/floecat/blog/"
-            echo "/floecat/documentation/"
-          } > /tmp/page-validation-paths.txt
+          } > /tmp/site-validation-paths.txt
 
           git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
           if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src docs mkdocs.yml \
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
               | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
             {
               sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
@@ -128,29 +206,23 @@ jobs:
                 -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#p' \
                 /tmp/site-changed-paths.txt
               sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
-              sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/site-changed-paths.txt
-              sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
-              sed -nE 's#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt \
-                | grep -vE '^/floecat/documentation/index/$|^/floecat/documentation/.+/index/$'
-            } | awk 'NF' >> /tmp/page-validation-paths.txt
+            } | awk 'NF' >> /tmp/site-validation-paths.txt
           fi
 
-          LC_ALL=C sort -u -o /tmp/page-validation-paths.txt /tmp/page-validation-paths.txt
-          echo "Page validation paths:"
-          cat /tmp/page-validation-paths.txt
+          LC_ALL=C sort -u -o /tmp/site-validation-paths.txt /tmp/site-validation-paths.txt
+          echo "Site validation paths:"
+          cat /tmp/site-validation-paths.txt
 
-          sed -E 's#^#http://127.0.0.1:8082#' /tmp/page-validation-paths.txt > /tmp/lighthouse-urls.txt
-          node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('lighthouserc.json','utf8'));const urls=fs.readFileSync('/tmp/lighthouse-urls.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);cfg.ci.collect.url=urls;fs.writeFileSync('/tmp/lighthouserc.pr.json', JSON.stringify(cfg,null,2));"
+          sed -E 's#^#http://127.0.0.1:8082#' /tmp/site-validation-paths.txt > /tmp/lighthouse-site-urls.txt
+          node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('lighthouserc.json','utf8'));const urls=fs.readFileSync('/tmp/lighthouse-site-urls.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);cfg.ci.collect.url=urls;fs.writeFileSync('/tmp/lighthouserc.site.pr.json',JSON.stringify(cfg,null,2));"
 
-      - name: Playwright smoke check
-        if: github.event.action != 'closed'
+      - name: Playwright smoke check (site)
         env:
           PLAYWRIGHT_CHANNEL: chrome
-          SITE_E2E_PATHS_FILE: /tmp/page-validation-paths.txt
+          SITE_E2E_PATHS_FILE: /tmp/site-validation-paths.txt
         run: ./tools/site/test-site-e2e.sh
 
-      - name: Check HTML
-        if: github.event.action != 'closed'
+      - name: Check HTML (site)
         run: |
           gem install html-proofer -v "~> 5.0" --no-document
           htmlproofer /tmp/floecat-preview-root \
@@ -158,33 +230,143 @@ jobs:
             --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/,/^\.\.\//" \
             --allow-missing-href
 
-      - name: Lighthouse CI
-        if: github.event.action != 'closed'
+      - name: Lighthouse CI (site)
         run: |
           npm install -g @lhci/cli@0.15.x
-          lhci autorun --config=/tmp/lighthouserc.pr.json
+          lhci autorun --config=/tmp/lighthouserc.site.pr.json
 
-      - name: Upload Lighthouse Artifacts
-        if: always() && github.event.action != 'closed'
+      - name: Upload Lighthouse Artifacts (site)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lighthouse-reports
+          name: lighthouse-reports-site
           if-no-files-found: ignore
           path: ./.lighthouseci
 
-      - name: Upload PR Preview Artifact
-        id: upload_pr_preview
-        if: always() && github.event.action != 'closed'
+  pr-docs-check:
+    name: Docs checks
+    needs: [changes, pr-markdown-lint]
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action != 'closed' &&
+          needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    concurrency:
+      group: pages-pr-docs-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.1"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build docs
+        run: make test-site-docs
+
+      - name: Prepare Docs Preview Root
+        run: |
+          rm -rf /tmp/floecat-preview-root
+          mkdir -p /tmp/floecat-preview-root/floecat/documentation
+          cp -a ./site-src/_site/documentation/. /tmp/floecat-preview-root/floecat/documentation/
+
+      - name: Resolve Docs Validation Paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "/floecat/documentation/" > /tmp/docs-validation-paths.txt
+
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
+          if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- docs mkdocs.yml \
+              | awk 'NF {print $NF}' > /tmp/docs-changed-paths.txt
+            {
+              sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/docs-changed-paths.txt
+              sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/docs-changed-paths.txt
+              sed -nE 's#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/docs-changed-paths.txt \
+                | grep -vE '^/floecat/documentation/index/$|^/floecat/documentation/.+/index/$' || true
+            } | awk 'NF' >> /tmp/docs-validation-paths.txt
+          fi
+
+          LC_ALL=C sort -u -o /tmp/docs-validation-paths.txt /tmp/docs-validation-paths.txt
+          echo "Docs validation paths:"
+          cat /tmp/docs-validation-paths.txt
+
+          sed -E 's#^#http://127.0.0.1:8082#' /tmp/docs-validation-paths.txt > /tmp/lighthouse-docs-urls.txt
+          node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('lighthouserc.json','utf8'));const urls=fs.readFileSync('/tmp/lighthouse-docs-urls.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);cfg.ci.collect.url=urls;fs.writeFileSync('/tmp/lighthouserc.docs.pr.json',JSON.stringify(cfg,null,2));"
+
+      - name: Playwright smoke check (docs)
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
+          SITE_E2E_PATHS_FILE: /tmp/docs-validation-paths.txt
+        run: ./tools/site/test-site-e2e.sh
+
+      - name: Check HTML (docs)
+        run: |
+          gem install html-proofer -v "~> 5.0" --no-document
+          htmlproofer /tmp/floecat-preview-root \
+            --disable-external \
+            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/,/^\.\.\//" \
+            --allow-missing-href
+
+      - name: Lighthouse CI (docs)
+        run: |
+          npm install -g @lhci/cli@0.15.x
+          lhci autorun --config=/tmp/lighthouserc.docs.pr.json
+
+      - name: Upload Lighthouse Artifacts (docs)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pages-preview
-          if-no-files-found: warn
-          path: /tmp/floecat-preview-root
-          retention-days: 7
+          name: lighthouse-reports-docs
+          if-no-files-found: ignore
+          path: ./.lighthouseci
 
-      - name: Build PR Preview Site
+  pr-preview:
+    name: PR preview deploy
+    needs: [changes, pr-markdown-lint, pr-site-check, pr-docs-check]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action == 'closed' ||
+        needs.changes.outputs.site == 'true' ||
+        needs.changes.outputs.docs == 'true'
+      ) &&
+      needs.pr-markdown-lint.result != 'failure' &&
+      needs.pr-site-check.result != 'failure' &&
+      needs.pr-docs-check.result != 'failure'
+    runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    concurrency:
+      group: pages-pr-preview-${{ github.event.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build PR Preview Site (with PR baseurl)
         id: build_pr_preview
-        if: always() && github.event.action != 'closed'
+        if: github.event.action != 'closed'
         env:
           PR_NUMBER: ${{ github.event.number }}
           JEKYLL_PAGES_IMAGE: jekyll/jekyll:pages
@@ -209,8 +391,18 @@ jobs:
 
           ./tools/site/build-docs.sh --output-dir "${PREVIEW_OUT}/documentation"
 
+      - name: Upload PR Preview Artifact
+        id: upload_pr_preview
+        if: github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-preview
+          if-no-files-found: warn
+          path: /tmp/floecat-pr-preview-site
+          retention-days: 7
+
       - name: Deploy PR Preview
-        if: always() && github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -218,7 +410,7 @@ jobs:
         run: ./tools/site/publish-gh-pages.sh deploy-pr --source-dir /tmp/floecat-pr-preview-site --pr-number "${PR_NUMBER}"
 
       - name: Remove PR Preview
-        if: always() && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event.action == 'closed'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -226,7 +418,7 @@ jobs:
         run: ./tools/site/publish-gh-pages.sh remove-pr --pr-number "${PR_NUMBER}"
 
       - name: Comment PR Preview Link
-        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        if: always()
         uses: actions/github-script@v7
         env:
           PREVIEW_ARTIFACT_URL: ${{ steps.upload_pr_preview.outputs.artifact-url }}

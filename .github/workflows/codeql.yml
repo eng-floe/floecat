@@ -20,7 +20,27 @@ on:
     - cron: '27 23 * * 2'
 
 jobs:
+  detect-core-changes:
+    name: detect-core-changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      core_changed: ${{ steps.detect.outputs.core_changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect core-code changes
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: ./tools/ci/detect-core-changes.sh
+
   analyze:
+    needs: detect-core-changes
+    if: github.event_name == 'schedule' || needs.detect-core-changes.outputs.core_changed == 'true'
     name: Analyze (${{ matrix.language }})
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
