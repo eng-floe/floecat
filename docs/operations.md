@@ -101,7 +101,7 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   `/q/metrics` endpoint (see the telemetry hub contract in `docs/telemetry/contract.md`).
 - **Tracing** – OpenTelemetry (TraceContext propagator) is always enabled for MDC correlation
   (`traceId`/`spanId`). The OTLP exporter is built-in; activate the `telemetry-otlp` profile to
-  ship spans to a collector. See [`telemetry-demo.md`](https://github.com/eng-floe/floecat/blob/main/examples/telemetry/telemetry-demo.md)
+  ship spans to a collector. See [`telemetry-demo.md`][telemetry-demo-doc]
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
 ### Telemetry hub configuration
@@ -123,6 +123,8 @@ when metrics violate their contract. Run the docgen tool if you change any metri
 ```
 mvn -pl telemetry-hub/tool-docgen -am process-classes
 ```
+
+[telemetry-demo-doc]: https://github.com/eng-floe/floecat/blob/main/examples/telemetry/telemetry-demo.md
 
 Documented metrics are listed in `docs/telemetry/contract.md` and generated JSON `docs/telemetry/contract.json`.
 

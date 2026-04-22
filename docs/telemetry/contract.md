@@ -98,8 +98,7 @@ This lists all metrics available in the repository right now:
 
 ## Standard JVM metrics
 
-Quarkus enables the standard Micrometer JVM binders (`JvmMemoryMetrics`, `JvmThreadMetrics`, `JvmGcMetrics`, `ProcessorMetrics`, etc.) by default, so the `jvm.*`, `process_cpu_usage`, `system_cpu_usage`, and related runtime gauges are still emitted alongside Floecat’s custom GC live-data metrics. Refer to the OpenTelemetry JVM runtime semantic conventions for the full list of names and tags: https://opentelemetry.io/docs/specs/semconv/runtime/jvm-metrics/.
-
+Quarkus enables the standard Micrometer JVM binders (`JvmMemoryMetrics`, `JvmThreadMetrics`, `JvmGcMetrics`, `ProcessorMetrics`, etc.) by default, so the `jvm.*`, `process_cpu_usage`, `system_cpu_usage`, and related runtime gauges are still emitted alongside Floecat’s custom GC live-data metrics. Refer to the [OpenTelemetry JVM runtime semantic conventions](https://opentelemetry.io/docs/specs/semconv/runtime/jvm-metrics/) for the full list of names and tags.
 
 ## Correlation contract
 

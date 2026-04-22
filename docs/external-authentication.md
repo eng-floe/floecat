@@ -149,7 +149,7 @@ Environment equivalents:
 - QUARKUS_OIDC_PUBLIC_KEY
 
 Further documentation on integration to external OpenID Connect IDPs can be found here:
-https://quarkus.io/guides/security-oidc-configuration-properties-reference
+[Quarkus OIDC configuration reference](https://quarkus.io/guides/security-oidc-configuration-properties-reference)
 
 ## Dev vs Production Configuration
 

@@ -54,7 +54,7 @@ make site-preview
 
 ## Maintenance Rules
 
-- When adding a new page, add it to `nav:` in [`mkdocs.yml`](https://github.com/eng-floe/floecat/blob/main/mkdocs.yml).
+- When adding a new page, add it to `nav:` in `mkdocs.yml` at the repository root.
 - Run local validation before opening a PR:
 
 ```bash

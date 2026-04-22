@@ -81,7 +81,7 @@ builtins/
     …
 ```
 
-The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`](https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto)). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger` (which now merges builder→builder to avoid extra allocations). The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
+The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger` (which now merges builder→builder to avoid extra allocations). The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
 
 The loader always applies `floecat_internal` first, then overlays the engine-specific catalog (for instance, `floedb`), and finally allows scanner-provided overlays from `SystemObjectScannerProvider` implementations when the request carried engine headers. Overrides happen deterministically because each stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
 
@@ -383,7 +383,7 @@ Both Layer 1 and Layer 2 use `ConcurrentHashMap` with atomic `computeIfAbsent()`
 - **PG-scale benefit**: With 8,000+ objects, preventing duplicate parses saves 100-200ms per redundant load
 
 ### Scalability Assessment
- 
+
 **PG-scale catalogs scale well** if:
 - Planner requests stable set of engine versions (typical: 3-5 versions per engine)
 - Service runs for hours/days (cache warm)
@@ -593,3 +593,5 @@ When adding a new plugin or modifying .pbtxt files:
 - **Dynamic Reload** – Hot-reload plugins without restarting service
 - **Compression** – Compress payload bytes for large catalogs
 - **Pre-warming** – Load all expected versions at startup for PG-scale catalogs
+
+[system-objects-registry-proto]: https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto

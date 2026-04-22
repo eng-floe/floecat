@@ -71,6 +71,7 @@
 #   make clean-dev               # remove dev pids/logs/isolated repos
 #   make test-site               # basic website checks (build + expected output files)
 #   make test-site-e2e           # Playwright smoke test for the website
+#   make lint-markdown           # markdown lint for docs + site markdown sources
 #   make site-preview            # build + serve live preview (auto-rebuild on refresh) at /floecat/ and /floecat/documentation/
 #   make docker                  # build service container images
 #   make docker-clean-cache      # clear local Jib temp caches (fixes cache corruption errors)
@@ -330,13 +331,16 @@ $(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.jav
 # - test: in-memory stores (fast default)
 # - test-localstack: fixtures + catalog LocalStack
 # ===================================================
-.PHONY: test-site test-site-e2e site-preview test test-localstack unit-test integration-test verify
+.PHONY: test-site test-site-e2e lint-markdown site-preview test test-localstack unit-test integration-test verify
 
 test-site:
 	@./tools/site/test-site.sh
 
 test-site-e2e: test-site
 	@./tools/site/test-site-e2e.sh
+
+lint-markdown:
+	@./tools/site/lint-markdown.sh
 
 site-preview:
 	@./tools/site/serve-site.sh

@@ -26,7 +26,7 @@ Preview URLs:
 ## Add a New Documentation Page
 
 1. Create a new file in `docs/` (for example `docs/new-feature.md`).
-2. Add it to `nav:` in [`mkdocs.yml`](https://github.com/eng-floe/floecat/blob/main/mkdocs.yml) so it appears in the left navigation.
+2. Add it to `nav:` in `mkdocs.yml` at the repository root so it appears in the left navigation.
 3. Link it from at least one existing page (usually `docs/index.md` or a topic hub page).
 4. Run `make test-site` and confirm the page renders in local preview.
 
@@ -48,6 +48,7 @@ Snippet files are excluded from nav/rendering as standalone pages by `mkdocs.yml
 - Before opening a PR, run:
 
 ```bash
+make lint-markdown
 make test-site
 ```
 

@@ -190,9 +190,9 @@ the graph defines the single source of truth for list/prefix resolution.
 
 ## Query Catalog Service
 `UserObjectsService.GetUserObjects` now streams `UserObjectsBundleChunk`s directly from the metadata
-graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final 
-summary, so planners can start binding as soon as the service resolves each relation. The service 
-shares the same `QueryContext` as the other query RPCs and relies on `CatalogOverlay.resolve`, 
+graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final
+summary, so planners can start binding as soon as the service resolves each relation. The service
+shares the same `QueryContext` as the other query RPCs and relies on `CatalogOverlay.resolve`,
 `snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into

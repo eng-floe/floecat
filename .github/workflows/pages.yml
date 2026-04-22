@@ -8,6 +8,7 @@ on:
       - "docs/**"
       - "Makefile"
       - "mkdocs.yml"
+      - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -18,6 +19,7 @@ on:
       - "docs/**"
       - "Makefile"
       - "mkdocs.yml"
+      - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -36,6 +38,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Markdown lint
+        run: ./tools/site/lint-markdown.sh
 
       - name: Build and sanity-check site
         run: make test-site
@@ -72,6 +82,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Markdown lint
+        if: github.event.action != 'closed'
+        run: ./tools/site/lint-markdown.sh
 
       - name: Build and sanity-check site
         if: github.event.action != 'closed'

@@ -1,0 +1,15 @@
+config:
+  # Start with a small, low-noise baseline so linting can be enforced in CI.
+  default: false
+  # No trailing spaces in source markdown.
+  MD009: true
+  # No accidental multi-blank sections.
+  MD012: true
+  # Avoid bare URLs; prefer labeled markdown links.
+  MD034: true
+globs:
+  - "docs/**/*.md"
+  - "site-src/**/*.md"
+ignores:
+  - "site-src/_site/**"
+  - "site-src/.jekyll-cache/**"
