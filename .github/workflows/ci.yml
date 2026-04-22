@@ -22,6 +22,8 @@ jobs:
   detect-core-changes:
     name: detect-core-changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       core_changed: ${{ steps.detect.outputs.core_changed }}
     steps:
