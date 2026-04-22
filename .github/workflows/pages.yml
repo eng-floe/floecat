@@ -2,10 +2,13 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: ["**"]
     paths:
       - "site-src/**"
+      - "docs/**"
       - "Makefile"
+      - "mkdocs.yml"
+      - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -13,7 +16,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "site-src/**"
+      - "docs/**"
       - "Makefile"
+      - "mkdocs.yml"
+      - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -21,9 +27,11 @@ on:
 
 jobs:
   publish-main:
-    name: Publish main site to gh-pages
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    name: Publish default-branch site to gh-pages
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     concurrency:
       group: pages-prod
       cancel-in-progress: false
@@ -32,6 +40,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Markdown lint
+        run: ./tools/site/lint-markdown.sh
 
       - name: Build and sanity-check site
         env:
@@ -49,6 +65,8 @@ jobs:
     name: Pages build check
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    env:
+      DOCS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     concurrency:
       group: pages-pr-${{ github.event.number }}
       cancel-in-progress: true
@@ -71,6 +89,10 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Markdown lint
+        if: github.event.action != 'closed'
+        run: ./tools/site/lint-markdown.sh
+
       - name: Build and sanity-check site
         if: github.event.action != 'closed'
         run: make test-site
@@ -91,11 +113,12 @@ jobs:
           {
             echo "/floecat/"
             echo "/floecat/blog/"
+            echo "/floecat/documentation/"
           } > /tmp/page-validation-paths.txt
 
           git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
           if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src docs mkdocs.yml \
               | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
             {
               sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
@@ -105,6 +128,10 @@ jobs:
                 -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#p' \
                 /tmp/site-changed-paths.txt
               sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt \
+                | grep -vE '^/floecat/documentation/index/$|^/floecat/documentation/.+/index/$'
             } | awk 'NF' >> /tmp/page-validation-paths.txt
           fi
 
@@ -128,7 +155,7 @@ jobs:
           gem install html-proofer -v "~> 5.0" --no-document
           htmlproofer /tmp/floecat-preview-root \
             --disable-external \
-            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/" \
+            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/,/^\.\.\//" \
             --allow-missing-href
 
       - name: Lighthouse CI
@@ -180,6 +207,8 @@ jobs:
               --destination /srv/output \
               --baseurl "${PREVIEW_BASEURL}"
 
+          ./tools/site/build-docs.sh --output-dir "${PREVIEW_OUT}/documentation"
+
       - name: Deploy PR Preview
         if: always() && github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -187,6 +216,14 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.number }}
         run: ./tools/site/publish-gh-pages.sh deploy-pr --source-dir /tmp/floecat-pr-preview-site --pr-number "${PR_NUMBER}"
+
+      - name: Remove PR Preview
+        if: always() && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./tools/site/publish-gh-pages.sh remove-pr --pr-number "${PR_NUMBER}"
 
       - name: Comment PR Preview Link
         if: always() && github.event.pull_request.head.repo.full_name == github.repository

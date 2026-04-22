@@ -7,6 +7,7 @@
       "url": [
         "http://127.0.0.1:8082/floecat/",
         "http://127.0.0.1:8082/floecat/blog/",
+        "http://127.0.0.1:8082/floecat/documentation/",
         "http://127.0.0.1:8082/floecat/2026/04/16/getting-started-with-iceberg-rest-and-floecat.html"
       ],
       "numberOfRuns": 1,

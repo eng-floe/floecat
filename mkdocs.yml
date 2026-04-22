@@ -1,0 +1,106 @@
+site_name: Floecat Documentation
+site_description: Reference and operational guides for Floecat
+site_url: https://eng-floe.github.io/floecat/documentation/
+edit_uri: !ENV [DOCS_EDIT_URI, "https://github.com/eng-floe/floecat/edit/HEAD/docs/"]
+
+docs_dir: docs
+# Snippet fragments are included into real pages and should not be rendered as
+# standalone pages.
+exclude_docs: |
+  _snippets/**
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - scheme: default
+      primary: brown
+      accent: cyan
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - docs
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+# Runs after MkDocs loads so docs header links stay correct in:
+# - local preview (/floecat/documentation/)
+# - PR preview (/floecat/pr-preview/pr-<n>/documentation/)
+# - production (/floecat/documentation/)
+extra_javascript:
+  - assets/javascripts/docs-navigation.js
+
+extra:
+  homepage: ..
+
+nav:
+  - Documentation Home: index.md
+  - Contributing to Docs: CONTRIBUTING.md
+  - Docs Style Guide: style-guide.md
+  - Getting Started:
+      - Docker Local Stack: docker.md
+      - Architecture: architecture.md
+      - Service Runtime: service.md
+      - Operations: operations.md
+      - Troubleshooting: troubleshooting-errors.md
+  - APIs and Clients:
+      - API Access: api-access.md
+      - Client CLI: client-cli.md
+      - CLI Reference: cli-reference.md
+      - Iceberg REST Gateway: iceberg-rest-gateway.md
+      - Arrow Flight: arrow-flight.md
+  - Catalog and Metadata:
+      - Metadata Graph: metadata-graph.md
+      - System Objects: system-objects.md
+      - System Scans: system-scans.md
+      - System Scans gRPC: system-scans-grpc.md
+      - Reconciler: reconciler.md
+      - Transactions: transactions.md
+  - Connectors:
+      - Connector Common: connectors-common.md
+      - Iceberg Connector: connectors-iceberg.md
+      - Delta Connector: connectors-delta.md
+      - Connector SPI: connectors-spi.md
+      - Example Catalog Extension: extension-example.md
+  - Types and Builtins:
+      - Types: types.md
+      - Builtin Catalog Architecture: builtin-catalog.md
+      - Protobuf and RPC Contracts: proto.md
+      - Statistics Engine SPI: statistics-engine-spi.md
+  - Storage and Security:
+      - Storage Layout: storage-layout.md
+      - Storage SPI: storage-spi.md
+      - Storage AWS: storage-aws.md
+      - Storage Memory: storage-memory.md
+      - Secrets Manager: secrets-manager.md
+      - External Authentication: external-authentication.md
+      - Fixed Roles: fixed-roles.md
+  - Observability:
+      - Logging Directory: log.md
+      - Telemetry Overview: telemetry/overview.md
+      - Telemetry Contract: telemetry/contract.md
+      - Grafana Demo: telemetry/demo-grafana.md

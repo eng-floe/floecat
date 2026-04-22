@@ -34,8 +34,12 @@ docker run --rm \
   "${JEKYLL_PAGES_IMAGE}" \
   jekyll build
 
+echo "==> [SITE] building repository docs under /documentation/"
+"${ROOT_DIR}/tools/site/build-docs.sh" --output-dir "${SITE_OUT_DIR}/documentation"
+
 echo "==> [SITE] checking expected output files"
 test -f "${SITE_OUT_DIR}/index.html" || { echo "missing ${SITE_OUT_DIR}/index.html"; exit 1; }
 test -f "${SITE_OUT_DIR}/blog/index.html" || { echo "missing ${SITE_OUT_DIR}/blog/index.html"; exit 1; }
+test -f "${SITE_OUT_DIR}/documentation/index.html" || { echo "missing ${SITE_OUT_DIR}/documentation/index.html"; exit 1; }
 test -f "${SITE_OUT_DIR}/robots.txt" || { echo "missing ${SITE_OUT_DIR}/robots.txt"; exit 1; }
 echo "==> [SITE] basic checks passed"

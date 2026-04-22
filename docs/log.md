@@ -51,4 +51,4 @@ from `log/` via sidecars.
   compliance.
 
 ## Cross-References
-- Service observability configuration: [`docs/service.md`](service.md#configuration--extensibility)
+- Service observability configuration: [`docs/service.md`](service.md)

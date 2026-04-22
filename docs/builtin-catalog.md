@@ -63,6 +63,8 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
 ┌────────────────────────────────────────────────────────────┐
 │ SystemCatalogData + SystemEngineCatalog (immutable snapshot)│
 └────────────────────────────────────────────────────────────┘
+```
+
 ### Builtin-loading details
 
 Builtins live on the classpath under `builtins/<engineKind>/`. Each engine directory contains a lexically-ordered `_index.txt` file plus one or more `.pbtxt` fragments:
@@ -79,7 +81,7 @@ builtins/
     …
 ```
 
-The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`proto/floecat/query/system_objects_registry.proto`](../core/proto/src/main/proto/floecat/query/system_objects_registry.proto)). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger` (which now merges builder→builder to avoid extra allocations). The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
+The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger` (which now merges builder→builder to avoid extra allocations). The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
 
 The loader always applies `floecat_internal` first, then overlays the engine-specific catalog (for instance, `floedb`), and finally allows scanner-provided overlays from `SystemObjectScannerProvider` implementations when the request carried engine headers. Overrides happen deterministically because each stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
 
@@ -106,16 +108,6 @@ When headers are absent or the engine kind is unknown, `EngineContext.effectiveE
 ### Engine-specific hint contract
 
 Every `EngineSpecificRule` with a `payloadType` is mapped to a metagraph `EngineHint` whose key is `(engineKind, engineVersion, payloadType)` and whose value contains the payload bytes plus properties. The `EngineHintsMapper` replaces null payloads with an empty byte array to avoid NPEs, and it throws `IllegalStateException` if two rules share the same `(engineKind, engineVersion, payloadType)` triple. Column-level hints are grouped per column name; duplicate column names are already rejected by `SystemTableDef` so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each `EngineSpecificRule` has a unique payload type per engine/version.
-
-       │
-       ▼
-┌────────────────────────────────────────────────────────────┐
-│ SystemGraph (service/metagraph)                             │
-│ - reuses SystemNodeRegistry nodes to build _system graph     │
-│ - snapshots per (engineKind, version) cached with LRU        │
-│ - supplies CatalogOverlay/SystemObjectGraphView             │
-└────────────────────────────────────────────────────────────┘
-```
 
 `ServiceLoaderSystemCatalogProvider` is the gatekeeper for engine plugins: it discovers every `EngineSystemCatalogExtension`, loads the normalized catalog snapshot for each engine kind, and fingerprints the raw data without applying any provider overlays. `SystemDefinitionRegistry` caches those snapshots keyed by `EngineContext.effectiveEngineKind()` (so blank headers collapse to `floecat_internal`) so the kind-level catalog only needs to parse once. The real layering happens in `SystemNodeRegistry`: on a cache miss it seeds the result with `FloecatInternalProvider` (the `floecat_internal` base that always brings `information_schema`), overlays the plugin catalog, and finally applies `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries when overlays are enabled (i.e., headers are present and the plugin exists). The floecat_internal layer only contributes namespace/table/view metadata (the shared `information_schema`/`pg_catalog` relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine plugins/providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal` and overlays are skipped, but the base definitions (and the shared `information_schema`) remain available. `SystemGraph` continues to reuse the merged `BuiltinNodes` to build `_system` snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogOverlay`/`SystemObjectGraphView`. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
@@ -391,7 +383,7 @@ Both Layer 1 and Layer 2 use `ConcurrentHashMap` with atomic `computeIfAbsent()`
 - **PG-scale benefit**: With 8,000+ objects, preventing duplicate parses saves 100-200ms per redundant load
 
 ### Scalability Assessment
- 
+
 **PG-scale catalogs scale well** if:
 - Planner requests stable set of engine versions (typical: 3-5 versions per engine)
 - Service runs for hours/days (cache warm)
@@ -601,3 +593,5 @@ When adding a new plugin or modifying .pbtxt files:
 - **Dynamic Reload** – Hot-reload plugins without restarting service
 - **Compression** – Compress payload bytes for large catalogs
 - **Pre-warming** – Load all expected versions at startup for PG-scale catalogs
+
+[system-objects-registry-proto]: https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto
