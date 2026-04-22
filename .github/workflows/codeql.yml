@@ -34,38 +34,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # Non-core files owned by website/docs workflows. If all changed files
-          # match this set, CodeQL can skip PR/push runs for faster turnaround.
-          non_core_re='^(site-src/|docs/|mkdocs\.yml$|\.markdownlint-cli2\.yaml$|lighthouserc\.json$|tools/site/|\.github/workflows/pages\.yml$)'
-
-          core_changed=true
-          changed_files=""
-
-          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
-            if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-              changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
-            fi
-          elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
-            git fetch --no-tags --depth=1 origin "${BEFORE_SHA}" || true
-            if git cat-file -e "${BEFORE_SHA}^{commit}" >/dev/null 2>&1; then
-              changed_files="$(git diff --name-only "${BEFORE_SHA}...${HEAD_SHA}" || true)"
-            fi
-          fi
-
-          if [[ -n "${changed_files}" ]]; then
-            if echo "${changed_files}" | grep -qEv "${non_core_re}"; then
-              core_changed=true
-            else
-              core_changed=false
-            fi
-          fi
-
-          echo "core_changed=${core_changed}" >> "${GITHUB_OUTPUT}"
-          echo "Detected core_changed=${core_changed}"
+        run: ./tools/ci/detect-core-changes.sh
 
   analyze:
     needs: detect-core-changes
