@@ -32,7 +32,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
-import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import ai.floedb.floecat.telemetry.MetricId;
@@ -218,7 +217,6 @@ public class StatsOrchestrator {
       return;
     }
     Map<TableKey, List<StatsCaptureRequest>> groupedByTable = new LinkedHashMap<>();
-    Map<AsyncCandidateKey, Boolean> asyncCandidateCache = new LinkedHashMap<>();
     for (StatsCaptureRequest request : requests) {
       if (request.snapshotId() < 0L) {
         recordAsyncSkip(
@@ -228,11 +226,7 @@ public class StatsOrchestrator {
         continue;
       }
       StatsCaptureRequest asyncRequest = toAsyncRequest(request);
-      AsyncCandidateKey candidateKey = AsyncCandidateKey.from(asyncRequest);
-      boolean hasCandidates =
-          asyncCandidateCache.computeIfAbsent(
-              candidateKey, ignored -> hasAsyncCandidates(asyncRequest));
-      if (!hasCandidates) {
+      if (!hasAsyncCandidates(asyncRequest)) {
         recordAsyncSkip(
             asyncRequest,
             "no_async_candidates",
@@ -651,22 +645,4 @@ public class StatsOrchestrator {
   }
 
   private record TableKey(String accountId, String tableId) {}
-
-  private record AsyncCandidateKey(
-      String connectorType,
-      String targetCase,
-      StatsExecutionMode mode,
-      List<StatsKind> requestedKinds,
-      boolean samplingRequested) {
-    private static AsyncCandidateKey from(StatsCaptureRequest request) {
-      List<StatsKind> sortedKinds = new ArrayList<>(request.requestedKinds());
-      sortedKinds.sort(java.util.Comparator.comparing(Enum::name));
-      return new AsyncCandidateKey(
-          request.connectorType(),
-          request.target().getTargetCase().name(),
-          request.executionMode(),
-          List.copyOf(sortedKinds),
-          request.samplingRequested());
-    }
-  }
 }

@@ -461,6 +461,85 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void asyncCandidateEvaluationIsPerRequestForDynamicEngineSupport() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest supportedRequest =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+                42L,
+                StatsTargetIdentity.columnTarget(3L))
+            .requestedKinds(Set.of(StatsKind.NDV))
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+    StatsCaptureRequest unsupportedRequest =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-2").build(),
+                42L,
+                StatsTargetIdentity.columnTarget(5L))
+            .requestedKinds(Set.of(StatsKind.NDV))
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+
+    when(statsStore.getTargetStats(
+            supportedRequest.tableId(), supportedRequest.snapshotId(), supportedRequest.target()))
+        .thenReturn(Optional.empty());
+    when(statsStore.getTargetStats(
+            unsupportedRequest.tableId(),
+            unsupportedRequest.snapshotId(),
+            unsupportedRequest.target()))
+        .thenReturn(Optional.empty());
+    when(registry.candidates(
+            Mockito.argThat(
+                req ->
+                    req != null
+                        && req.tableId().equals(supportedRequest.tableId())
+                        && req.requestedKinds().equals(Set.of(StatsKind.NDV)))))
+        .thenReturn(List.of(Mockito.mock(StatsCaptureEngine.class)));
+    when(registry.candidates(
+            Mockito.argThat(
+                req ->
+                    req != null
+                        && req.tableId().equals(unsupportedRequest.tableId())
+                        && req.requestedKinds().equals(Set.of(StatsKind.NDV)))))
+        .thenReturn(List.of());
+    when(tableRepository.getById(supportedRequest.tableId()))
+        .thenReturn(Optional.of(tableWithUpstream(supportedRequest.tableId())));
+    when(tableRepository.getById(unsupportedRequest.tableId()))
+        .thenReturn(Optional.of(tableWithUpstream(unsupportedRequest.tableId())));
+
+    List<Optional<TargetStatsRecord>> out =
+        orchestrator.resolveBatch(
+            StatsCaptureBatchRequest.of(List.of(supportedRequest, unsupportedRequest)));
+
+    assertThat(out).hasSize(2);
+    assertThat(out.get(0)).isEmpty();
+    assertThat(out.get(1)).isEmpty();
+    verify(registry, Mockito.times(2)).candidates(any());
+
+    ArgumentCaptor<ai.floedb.floecat.reconciler.jobs.ReconcileScope> scopeCaptor =
+        ArgumentCaptor.forClass(ai.floedb.floecat.reconciler.jobs.ReconcileScope.class);
+    verify(jobStore)
+        .enqueue(
+            Mockito.eq(supportedRequest.tableId().getAccountId()),
+            Mockito.eq("conn-1"),
+            Mockito.eq(false),
+            Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
+            scopeCaptor.capture());
+    assertThat(scopeCaptor.getValue().destinationStatsTargets())
+        .containsExactly(StatsTargetScopeCodec.encode(supportedRequest.target()));
+  }
+
+  @Test
   void syncUncapturableExpressionTargetEnqueuesAsync() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
