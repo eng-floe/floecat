@@ -5,7 +5,9 @@ on:
     branches: ["main"]
     paths:
       - "site-src/**"
+      - "docs/**"
       - "Makefile"
+      - "mkdocs.yml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -13,7 +15,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "site-src/**"
+      - "docs/**"
       - "Makefile"
+      - "mkdocs.yml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
       - "tools/site/**"
@@ -89,11 +93,12 @@ jobs:
           {
             echo "/floecat/"
             echo "/floecat/blog/"
+            echo "/floecat/documentation/"
           } > /tmp/page-validation-paths.txt
 
           git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
           if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
+            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src docs mkdocs.yml \
               | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
             {
               sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
@@ -103,6 +108,9 @@ jobs:
                 -e 's#^site-src/([^_/][^/]*)\.md$#/floecat/\1/#p' \
                 /tmp/site-changed-paths.txt
               sed -nE 's#^site-src/(.+)/index\.md$#/floecat/\1/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/site-changed-paths.txt
+              sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
+              sed -nE '/^docs\/index\.md$/! /^docs\/.+\/index\.md$/! s#^docs/(.+)\.md$#/floecat/documentation/\1/#p' /tmp/site-changed-paths.txt
             } | awk 'NF' >> /tmp/page-validation-paths.txt
           fi
 
@@ -126,7 +134,7 @@ jobs:
           gem install html-proofer -v "~> 5.0" --no-document
           htmlproofer /tmp/floecat-preview-root \
             --disable-external \
-            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/" \
+            --ignore-urls "/^#/,/^mailto:/,/^tel:/,/^javascript:/,/^\.\.\//" \
             --allow-missing-href
 
       - name: Lighthouse CI
@@ -177,6 +185,8 @@ jobs:
               --source /srv/jekyll \
               --destination /srv/output \
               --baseurl "${PREVIEW_BASEURL}"
+
+          ./tools/site/build-docs.sh --output-dir "${PREVIEW_OUT}/documentation"
 
       - name: Deploy PR Preview
         if: always() && github.event.action != 'closed' && steps.build_pr_preview.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository

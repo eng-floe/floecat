@@ -47,6 +47,7 @@ grpcurl -plaintext \
   ai.floedb.floecat.catalog.CatalogService/ListCatalogs
 ```
 
+```bash
 grpcurl -plaintext -d '{
   "catalog_id": {"account_id":"5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
                  "id":"109c1761-323a-3f72-83da-ff4f89c3b581","kind":"RK_CATALOG"}

@@ -18,8 +18,8 @@ classes: wide
       Developed by <a href="https://floedb.ai/">FloeDB</a>.
     </p>
     <div class="home-actions">
-      <a class="btn btn--primary home-btn" href="https://github.com/eng-floe/floecat/tree/main/docs/docker.md">Run Local Stack</a>
-      <a class="btn btn--inverse home-btn" href="https://github.com/eng-floe/floecat/tree/main/docs">Read Docs</a>
+      <a class="btn btn--primary home-btn" href="{{ '/documentation/docker/' | relative_url }}">Run Local Stack</a>
+      <a class="btn btn--inverse home-btn" href="{{ '/documentation/' | relative_url }}">Read Docs</a>
     </div>
   </div>
   <div class="home-hero__brand">
@@ -145,7 +145,7 @@ SELECT * FROM iceberg_floecat.iceberg.orders;</code></pre>
   <article class="try-card">
     <h3>Start local stack</h3>
     <p>Run Floecat with LocalStack and Trino in minutes via Docker Compose.</p>
-    <a class="btn btn--primary" href="https://github.com/eng-floe/floecat/blob/main/docs/docker.md">Open local setup</a>
+    <a class="btn btn--primary" href="{{ '/documentation/docker/' | relative_url }}">Open local setup</a>
   </article>
   <article class="try-card">
     <h3>Query with DuckDB</h3>
@@ -155,7 +155,7 @@ SELECT * FROM iceberg_floecat.iceberg.orders;</code></pre>
   <article class="try-card">
     <h3>Explore APIs</h3>
     <p>Inspect service endpoints and gateway behavior for integration work.</p>
-    <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/blob/main/docs/service.md">Read API docs</a>
+    <a class="btn btn--inverse" href="{{ '/documentation/service/' | relative_url }}">Read API docs</a>
   </article>
 </section>
 
@@ -182,9 +182,9 @@ make cli-run
 ```
 
 <section class="quickstart-actions">
-  <a class="btn btn--primary" href="https://github.com/eng-floe/floecat/tree/main/docs/docker.md">Run Local Stack</a>
-  <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/tree/main/docs/architecture.md">Read Architecture</a>
-  <a class="btn btn--inverse" href="https://github.com/eng-floe/floecat/tree/main/docs/iceberg-rest-gateway.md">Iceberg REST Guide</a>
+  <a class="btn btn--primary" href="{{ '/documentation/docker/' | relative_url }}">Run Local Stack</a>
+  <a class="btn btn--inverse" href="{{ '/documentation/architecture/' | relative_url }}">Read Architecture</a>
+  <a class="btn btn--inverse" href="{{ '/documentation/iceberg-rest-gateway/' | relative_url }}">Iceberg REST Guide</a>
 </section>
 
 Then point Floecat at an Iceberg or Delta catalog and query through its APIs

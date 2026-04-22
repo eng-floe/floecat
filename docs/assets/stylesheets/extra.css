@@ -1,0 +1,50 @@
+:root {
+  --md-primary-fg-color: #5b3f38;
+  --md-primary-fg-color--light: #6c4f48;
+  --md-primary-fg-color--dark: #3f2823;
+  --md-accent-fg-color: #0b5f80;
+}
+
+.md-header,
+.md-tabs {
+  border-bottom: 1px solid #d5c4c0;
+}
+
+.md-header__source {
+  display: none;
+}
+
+.md-main {
+  background: #f4f0f0;
+}
+
+.md-content,
+.md-sidebar {
+  background: #f4f0f0;
+}
+
+.md-content__inner {
+  background: #f0ecec;
+  border: 1px solid #d5c4c0;
+  border-radius: 14px;
+  padding: 1.2rem 1.3rem;
+}
+
+.md-nav__title {
+  font-weight: 700;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: #2d1713;
+}
+
+.md-typeset a {
+  color: #0b5f80;
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: #084860;
+}

@@ -85,7 +85,7 @@ if [[ -n "${PATHS_FILE}" && -f "${PATHS_FILE}" ]]; then
 fi
 
 if [[ "${#PATHS[@]}" -eq 0 ]]; then
-  PATHS=("/floecat/" "/floecat/blog/")
+  PATHS=("/floecat/" "/floecat/blog/" "/floecat/documentation/")
 fi
 
 PASS_COUNT=0
@@ -103,7 +103,7 @@ for path in "${PATHS[@]}"; do
     --browser chromium \
     "${PLAYWRIGHT_CHANNEL_ARGS[@]}" \
     --timeout 45000 \
-    --wait-for-selector "#main" \
+    --wait-for-selector "#main, .md-main, main" \
     "${url}" \
     "${output_png}"
 
