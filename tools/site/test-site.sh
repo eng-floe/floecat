@@ -18,6 +18,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SITE_DIR="${ROOT_DIR}/site-src"
 SITE_OUT_DIR="${SITE_DIR}/_site"
 JEKYLL_PAGES_IMAGE="${JEKYLL_PAGES_IMAGE:-jekyll/jekyll:pages}"
+JEKYLL_ENVIRONMENT="${JEKYLL_ENV:-}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is required for test-site"
@@ -28,6 +29,7 @@ echo "==> [SITE] building website with Jekyll (${JEKYLL_PAGES_IMAGE})"
 docker run --rm \
   -e "JEKYLL_UID=$(id -u)" \
   -e "JEKYLL_GID=$(id -g)" \
+  ${JEKYLL_ENVIRONMENT:+-e "JEKYLL_ENV=${JEKYLL_ENVIRONMENT}"} \
   -v "${SITE_DIR}:/srv/jekyll" \
   "${JEKYLL_PAGES_IMAGE}" \
   jekyll build

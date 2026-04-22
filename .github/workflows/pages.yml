@@ -34,6 +34,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build and sanity-check site
+        env:
+          JEKYLL_ENV: production
         run: make test-site
 
       - name: Deploy production site
