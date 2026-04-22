@@ -6,7 +6,7 @@ var store = [{
         "teaser": null
       },{
         "title": "Sampling-Based NDV Estimation in Iceberg Tables",
-        "excerpt":"This post describes the NDV estimation work within the broader statistics capture system in Floecat. The focus here is on how NDV estimates are generated under strict latency constraints, how multiple estimators are reconciled, and how those estimates behave across different datasets and sampling regimes. I presented these results to...","categories": [],
+        "excerpt":"NDV (number of distinct values) is one of the most important statistics in cost-based query optimization. It affects selectivity estimates, join ordering, and intermediate cardinality predictions, so bad NDV estimates can quickly cascade into poor plans. The problem is that NDV is hard to estimate under strict latency constraints. In...","categories": [],
         "tags": [],
         "url": "/floecat/2026/04/20/estimating-ndv.html",
         "teaser": null
