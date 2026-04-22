@@ -19,6 +19,53 @@ on:
         type: string
 
 jobs:
+  detect-core-changes:
+    name: detect-core-changes
+    runs-on: ubuntu-latest
+    outputs:
+      core_changed: ${{ steps.detect.outputs.core_changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect core-code changes
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Non-core files owned by website/docs workflows. If all changed files
+          # match this set, core CI jobs can be skipped safely.
+          non_core_re='^(site-src/|docs/|mkdocs\.yml$|\.markdownlint-cli2\.yaml$|lighthouserc\.json$|tools/site/|\.github/workflows/pages\.yml$)'
+
+          core_changed=true
+          changed_files=""
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
+            if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+              changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
+            fi
+          elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+            git fetch --no-tags --depth=1 origin "${BEFORE_SHA}" || true
+            if git cat-file -e "${BEFORE_SHA}^{commit}" >/dev/null 2>&1; then
+              changed_files="$(git diff --name-only "${BEFORE_SHA}...${HEAD_SHA}" || true)"
+            fi
+          fi
+
+          if [[ -n "${changed_files}" ]]; then
+            if echo "${changed_files}" | grep -qEv "${non_core_re}"; then
+              core_changed=true
+            else
+              core_changed=false
+            fi
+          fi
+
+          echo "core_changed=${core_changed}" >> "${GITHUB_OUTPUT}"
+          echo "Detected core_changed=${core_changed}"
+
   gitleaks:
     if: false
     name: gitleaks
@@ -43,6 +90,8 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   ci-core:
+    needs: detect-core-changes
+    if: needs.detect-core-changes.outputs.core_changed == 'true'
     name: ci-core
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -83,6 +132,8 @@ jobs:
         run: make check-pbtxt-format
 
   ci-localstack:
+    needs: detect-core-changes
+    if: needs.detect-core-changes.outputs.core_changed == 'true'
     name: ci-localstack
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -166,6 +217,8 @@ jobs:
         run: make localstack-down
 
   docker-smoke:
+    needs: detect-core-changes
+    if: needs.detect-core-changes.outputs.core_changed == 'true'
     name: docker-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -209,10 +262,13 @@ jobs:
 
   publish-images:
     name: publish-images
-    needs: [ci-core, ci-localstack, docker-smoke]
+    needs: [detect-core-changes, ci-core, ci-localstack, docker-smoke]
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_preview == 'true')
+      needs.detect-core-changes.outputs.core_changed == 'true' &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_preview == 'true')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
