@@ -1,7 +1,7 @@
 # Example Catalog Extension
 
 `floecat-extension-example` is a zero-code, file-based
-[`EngineSystemCatalogExtension`](../extensions/example/src/main/java/ai/floedb/floecat/extensions/example/ExampleCatalogExtension.java)
+[`EngineSystemCatalogExtension`](https://github.com/eng-floe/floecat/blob/main/extensions/example/src/main/java/ai/floedb/floecat/extensions/example/ExampleCatalogExtension.java)
 that serves any engine's catalog from user-authored `.pbtxt` files — no Java required.
 
 ## Overview
@@ -329,5 +329,5 @@ reference a namespace declared in a `system_namespaces` block within the same ca
 
 - [Builtin catalog architecture](builtin-catalog.md) — SPI contracts, `ServiceLoader` discovery,
   caching layers, version matching, and the full request flow from planner to gRPC response
-- [`ExampleCatalogExtension.java`](../extensions/example/src/main/java/ai/floedb/floecat/extensions/example/ExampleCatalogExtension.java) — config key constants and loading implementation
-- [Bundled format-reference files](../extensions/example/src/main/resources/builtins/example/) — annotated PBtxt templates for every object type
+- [`ExampleCatalogExtension.java`](https://github.com/eng-floe/floecat/blob/main/extensions/example/src/main/java/ai/floedb/floecat/extensions/example/ExampleCatalogExtension.java) — config key constants and loading implementation
+- [Bundled format-reference files](https://github.com/eng-floe/floecat/tree/main/extensions/example/src/main/resources/builtins/example) — annotated PBtxt templates for every object type
