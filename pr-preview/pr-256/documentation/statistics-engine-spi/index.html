@@ -1848,15 +1848,15 @@ order.</p>
 <li>for <code>SYNC</code>, calls <code>StatsEngineRegistry.captureBatch()</code> on miss (single-item requests are
    wrapped via <code>StatsCaptureBatchRequest.of(request)</code>)</li>
 <li>if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped <code>STATS_ONLY</code> follow-up carrying the
-   unresolved snapshot + target set and returns empty for unresolved items</li>
+   unresolved table-scoped stats requests and returns empty for unresolved items</li>
 </ol>
 <p>Current enqueue policy:</p>
 <ul>
 <li>enqueue fallback is currently miss-based</li>
 <li>enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
   candidate for the requested target</li>
-<li>async enqueue scope is table-scoped with explicit unresolved target payload:
-  <code>destination_snapshot_ids</code> + <code>destination_stats_targets</code></li>
+<li>async enqueue scope is table-scoped and uses reconcile <code>ScopedStatsRequest</code> payloads:
+  <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code></li>
 </ul>
 <p><code>StatsEngineRegistry.captureBatch(batchRequest)</code>:</p>
 <ol>
@@ -1872,6 +1872,12 @@ order.</p>
 <li>in service runtime, delegates to <code>StatsOrchestrator.triggerBatch(...)</code></li>
 <li>executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)</li>
 </ol>
+<p>Reconciler policy on top of control-plane results:</p>
+<ul>
+<li>all items non-captured (<code>UNCAPTURABLE</code> / <code>DEGRADED</code>) =&gt; reconcile table execution fails</li>
+<li>mixed captured + non-captured =&gt; reconcile table execution succeeds in degraded state</li>
+<li><code>statsProcessed</code> counts captured snapshots, not attempted requests</li>
+</ul>
 <p>Result model:</p>
 <ul>
 <li><code>StatsCaptureResult</code> returns one canonical <code>TargetStatsRecord</code> plus engine attributes.</li>

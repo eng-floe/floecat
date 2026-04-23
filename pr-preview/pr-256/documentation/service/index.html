@@ -2039,8 +2039,12 @@ populates demo data when <code>floecat.seed.enabled=true</code>.</p>
 using <code>METADATA_AND_STATS</code>.</p>
 <p>This ingests metadata/snapshots first and enqueues scoped <code>STATS_ONLY</code> follow-up capture for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
-Follow-up payloads now include explicit unresolved <code>snapshot_id + target</code> sets so background capture
-can stay targeted instead of table-wide recompute.</p>
+Follow-up payloads now use reconcile scoped stats requests
+(<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>, <code>column_selectors</code>) so background capture stays targeted
+without depending on separate unresolved snapshot-id and target lists.
+When a <code>STATS_ONLY</code> follow-up batch captures only a subset of requested items, the reconcile result
+is degraded; when none of the requested items are captured, the reconcile result fails instead of
+silently reporting zero processed stats.</p>
 <h3 id="statistics-streaming-semantics">Statistics streaming semantics<a class="headerlink" href="#statistics-streaming-semantics" title="Permanent link">&para;</a></h3>
 <p><code>TableStatisticsServiceImpl</code> enforces a single <code>table_id</code> + <code>snapshot_id</code> per streamed call to
 <code>PutTargetStats</code>, rejects mixed idempotency keys within a stream, and applies
