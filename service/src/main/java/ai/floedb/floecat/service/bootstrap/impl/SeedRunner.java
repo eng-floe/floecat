@@ -666,10 +666,22 @@ public class SeedRunner {
         namespaces
             .getByPath(accountId.getId(), catalogId.getId(), destinationNamespace)
             .orElse(null);
-    var scope =
+    var table =
         namespace == null
-            ? ReconcileScope.empty()
-            : ReconcileScope.of(List.of(namespace.getResourceId().getId()), null);
+            ? null
+            : tables
+                .getByName(
+                    accountId.getId(),
+                    catalogId.getId(),
+                    namespace.getResourceId().getId(),
+                    tableName)
+                .orElse(null);
+    var scope =
+        table != null
+            ? ReconcileScope.of(List.of(), table.getResourceId().getId())
+            : namespace == null
+                ? ReconcileScope.empty()
+                : ReconcileScope.of(List.of(namespace.getResourceId().getId()), null);
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {

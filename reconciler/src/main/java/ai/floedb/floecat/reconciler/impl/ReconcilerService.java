@@ -2641,7 +2641,7 @@ public class ReconcilerService {
     } catch (IllegalArgumentException e) {
       throw e;
     } catch (RuntimeException e) {
-      if (isMissingTableFailure(e)) {
+      if (isMissingObjectFailure(e)) {
         throw new IllegalArgumentException(
             "Table not found: " + sourceBinding.namespace() + "." + sourceBinding.name(), e);
       }
@@ -2667,12 +2667,22 @@ public class ReconcilerService {
           "Destination view id " + destinationViewId + " is missing persisted source identity");
     }
     validateSourceConnector(metadata.sourceConnectorId(), connectorId, "destination view id");
-    connector
-        .describeView(sourceBinding.namespace(), sourceBinding.name())
-        .orElseThrow(
-            () ->
-                new IllegalArgumentException(
-                    "View not found: " + sourceBinding.namespace() + "." + sourceBinding.name()));
+    try {
+      connector
+          .describeView(sourceBinding.namespace(), sourceBinding.name())
+          .orElseThrow(
+              () ->
+                  new IllegalArgumentException(
+                      "View not found: " + sourceBinding.namespace() + "." + sourceBinding.name()));
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw new IllegalArgumentException(
+            "View not found: " + sourceBinding.namespace() + "." + sourceBinding.name(), e);
+      }
+      throw e;
+    }
     return ReconcileViewTask.of(
         sourceBinding.namespace(),
         sourceBinding.name(),
@@ -2903,12 +2913,13 @@ public class ReconcilerService {
     return cls + ": " + m;
   }
 
-  private static boolean isMissingTableFailure(Throwable t) {
+  private static boolean isMissingObjectFailure(Throwable t) {
     if (t == null) {
       return false;
     }
     String className = t.getClass().getName();
     if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchViewException")
         || className.endsWith("NoSuchObjectException")
         || className.endsWith("NotFoundException")) {
       return true;
@@ -3467,6 +3478,9 @@ public class ReconcilerService {
       snapshotsProcessed += result.snapshotsProcessed;
       statsProcessed += result.statsProcessed;
       degradedReasons.addAll(result.degradedReasons);
+      if (result.cancelled()) {
+        return;
+      }
       if (!result.ok()) {
         if (result.errors == 0) {
           errors++;
