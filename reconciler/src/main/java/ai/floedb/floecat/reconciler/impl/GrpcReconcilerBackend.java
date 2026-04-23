@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -50,6 +51,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
@@ -173,6 +175,23 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespace) {
+    NameRef normalizedNamespace = NameRefNormalizer.normalize(namespace);
+    try {
+      return Optional.of(
+          directory(ctx)
+              .resolveNamespace(
+                  ResolveNamespaceRequest.newBuilder().setRef(normalizedNamespace).build())
+              .getResourceId());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  @Override
   public ResourceId ensureTable(
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
@@ -225,6 +244,50 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
   }
 
+  @Override
+  public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(
+          table(ctx)
+              .getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+              .getTable()
+              .getDisplayName());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+      ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      var resolved =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      return Optional.of(
+          new DestinationTableMetadata(
+              resolved.getCatalogId(),
+              resolved.getNamespaceId(),
+              resolved.getDisplayName(),
+              sourceNamespace(resolved.hasUpstream() ? resolved.getUpstream() : null),
+              sourceName(resolved.hasUpstream() ? resolved.getUpstream() : null),
+              sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null)));
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
   private void maybeUpdateTable(
       ReconcileContext ctx,
       ResourceId tableId,
@@ -233,6 +296,49 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     // Reconciler must not advance table core OCC version for existing tables.
     // Existing table shape updates are intentionally skipped here; only creation-on-miss
     // is allowed through ensureTable().
+  }
+
+  @Override
+  public boolean updateTableById(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      ResourceId namespaceId,
+      NameRef tableRef,
+      TableSpecDescriptor descriptor) {
+    var before =
+        table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    if (!before.getNamespaceId().equals(namespaceId)) {
+      throw new IllegalArgumentException(
+          "Destination table namespace mismatch for id: " + tableId.getId());
+    }
+    NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
+    if (!before.getDisplayName().equals(normalizedTable.getName())) {
+      throw new IllegalArgumentException(
+          "Destination table display name mismatch for id: " + tableId.getId());
+    }
+
+    TableSpec spec =
+        TableSpec.newBuilder()
+            .setDisplayName(descriptor.displayName())
+            .setSchemaJson(descriptor.schemaJson())
+            .setUpstream(buildUpstream(descriptor))
+            .putAllProperties(safeProperties(descriptor))
+            .build();
+    var response =
+        table(ctx)
+            .updateTable(
+                UpdateTableRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSpec(spec)
+                    .setUpdateMask(
+                        FieldMask.newBuilder()
+                            .addPaths("schema_json")
+                            .addPaths("upstream")
+                            .addPaths("properties")
+                            .build())
+                    .build())
+            .getTable();
+    return !response.equals(before);
   }
 
   @Override
@@ -500,17 +606,18 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public void putSnapshotConstraints(
+  public boolean putSnapshotConstraints(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
       SnapshotConstraints snapshotConstraints) {
     if (snapshotConstraints == null || snapshotId < 0) {
-      return;
+      return false;
     }
-    constraintsStub(ctx)
+    return constraintsStub(ctx)
         .putTableConstraints(
-            buildPutTableConstraintsRequest(tableId, snapshotId, snapshotConstraints));
+            buildPutTableConstraintsRequest(tableId, snapshotId, snapshotConstraints))
+        .getChanged();
   }
 
   static PutTableConstraintsRequest buildPutTableConstraintsRequest(
@@ -612,28 +719,29 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+  public ViewMutationResult ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
     CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
     }
     try {
-      return view(ctx).createView(request.build()).getView().getResourceId();
+      return new ViewMutationResult(
+          view(ctx).createView(request.build()).getView().getResourceId(), true);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.ALREADY_EXISTS) {
         throw e;
       }
     }
 
-    ResourceId existingId = resolveViewId(ctx, spec).orElse(ResourceId.getDefaultInstance());
-    if (existingId.getId().isBlank()) {
-      return ResourceId.getDefaultInstance();
-    }
+    ResourceId existingId =
+        resolveViewId(ctx, spec)
+            .orElseThrow(
+                () -> new IllegalStateException("Existing view could not be resolved by id"));
 
     View current =
         view(ctx).getView(GetViewRequest.newBuilder().setViewId(existingId).build()).getView();
     if (viewMatchesSpec(current, spec)) {
-      return ResourceId.getDefaultInstance();
+      return new ViewMutationResult(existingId, false);
     }
 
     FieldMask mask =
@@ -644,15 +752,57 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .addPaths("creation_search_path")
             .addPaths("output_columns")
             .build();
-    return view(ctx)
+    ResourceId updatedId =
+        view(ctx)
+            .updateView(
+                UpdateViewRequest.newBuilder()
+                    .setViewId(existingId)
+                    .setSpec(spec)
+                    .setUpdateMask(mask)
+                    .build())
+            .getView()
+            .getResourceId();
+    return new ViewMutationResult(updatedId, true);
+  }
+
+  @Override
+  public boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      throw new IllegalArgumentException("viewId is required");
+    }
+    View current =
+        view(ctx).getView(GetViewRequest.newBuilder().setViewId(viewId).build()).getView();
+    if (!current.getCatalogId().equals(spec.getCatalogId())) {
+      throw new IllegalArgumentException("Destination view catalog does not match requested spec");
+    }
+    if (!current.getNamespaceId().equals(spec.getNamespaceId())) {
+      throw new IllegalArgumentException(
+          "Destination view namespace does not match requested spec");
+    }
+    if (!current.getDisplayName().equals(spec.getDisplayName())) {
+      throw new IllegalArgumentException(
+          "Destination view display name does not match requested spec");
+    }
+    if (viewMatchesSpec(current, spec)) {
+      return false;
+    }
+
+    FieldMask mask =
+        FieldMask.newBuilder()
+            .addPaths("properties")
+            .addPaths("sql_definitions")
+            .addPaths("base_relations")
+            .addPaths("creation_search_path")
+            .addPaths("output_columns")
+            .build();
+    view(ctx)
         .updateView(
             UpdateViewRequest.newBuilder()
-                .setViewId(existingId)
+                .setViewId(viewId)
                 .setSpec(spec)
                 .setUpdateMask(mask)
-                .build())
-        .getView()
-        .getResourceId();
+                .build());
+    return true;
   }
 
   private Optional<ResourceId> resolveViewId(ReconcileContext ctx, ViewSpec spec) {
@@ -699,6 +849,66 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build());
+  }
+
+  @Override
+  public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view) {
+    try {
+      return Optional.of(
+          directory(ctx)
+              .resolveView(ResolveViewRequest.newBuilder().setRef(view).build())
+              .getResourceId());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(
+          view(ctx)
+              .getView(GetViewRequest.newBuilder().setViewId(viewId).build())
+              .getView()
+              .getDisplayName());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+      ReconcileContext ctx, ResourceId viewId) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      var resolved =
+          view(ctx).getView(GetViewRequest.newBuilder().setViewId(viewId).build()).getView();
+      return Optional.of(
+          new DestinationViewMetadata(
+              resolved.getCatalogId(),
+              resolved.getNamespaceId(),
+              resolved.getDisplayName(),
+              resolved.getPropertiesOrDefault(SOURCE_NAMESPACE_PROPERTY, ""),
+              resolved.getPropertiesOrDefault(SOURCE_NAME_PROPERTY, ""),
+              sourceConnectorId(
+                  resolved.getPropertiesOrDefault(SOURCE_CONNECTOR_ID_PROPERTY, ""))));
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
   }
 
   private TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics(
@@ -848,6 +1058,24 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       builder.addAllPartitionKeys(descriptor.partitionKeys());
     }
     return builder.build();
+  }
+
+  private static String sourceNamespace(UpstreamRef upstream) {
+    return upstream == null ? "" : String.join(".", upstream.getNamespacePathList());
+  }
+
+  private static String sourceName(UpstreamRef upstream) {
+    return upstream == null ? "" : upstream.getTableDisplayName();
+  }
+
+  private static ResourceId sourceConnectorId(UpstreamRef upstream) {
+    return upstream != null && upstream.hasConnectorId() ? upstream.getConnectorId() : null;
+  }
+
+  private static ResourceId sourceConnectorId(String connectorId) {
+    return connectorId == null || connectorId.isBlank()
+        ? null
+        : ResourceId.newBuilder().setKind(ResourceKind.RK_CONNECTOR).setId(connectorId).build();
   }
 
   private TableFormat toTableFormat(ConnectorFormat format) {

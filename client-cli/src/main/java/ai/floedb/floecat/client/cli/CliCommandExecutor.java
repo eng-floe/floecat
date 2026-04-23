@@ -368,6 +368,7 @@ public final class CliCommandExecutor {
               out,
               connectors,
               reconcileControl,
+              snapshots,
               directory,
               getAccountId);
       case "snapshots", "snapshot" ->
@@ -383,6 +384,7 @@ public final class CliCommandExecutor {
               CliArgs.tail(tokens),
               out,
               statistics,
+              snapshots,
               tables,
               namespaces,
               reconcileControl,
@@ -401,6 +403,7 @@ public final class CliCommandExecutor {
               CliArgs.tail(tokens),
               out,
               statistics,
+              snapshots,
               tables,
               namespaces,
               reconcileControl,

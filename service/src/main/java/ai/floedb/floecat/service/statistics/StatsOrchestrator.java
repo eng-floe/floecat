@@ -24,7 +24,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -273,29 +272,18 @@ public class StatsOrchestrator {
             "Skipping async enqueue because upstream connector id is blank");
         return;
       }
-      List<List<String>> namespaceScope =
-          table.get().getUpstream().getNamespacePathCount() == 0
-              ? List.of()
-              : List.of(table.get().getUpstream().getNamespacePathList());
-      String tableDisplay =
-          table.get().getUpstream().getTableDisplayName().isBlank()
-              ? table.get().getDisplayName()
-              : table.get().getUpstream().getTableDisplayName();
-      LinkedHashSet<Long> snapshotIds = new LinkedHashSet<>();
-      LinkedHashSet<String> statsTargets = new LinkedHashSet<>();
-      LinkedHashSet<String> scopedColumns = new LinkedHashSet<>();
+      LinkedHashSet<ReconcileScope.ScopedStatsRequest> statsRequests = new LinkedHashSet<>();
       for (StatsCaptureRequest request : groupedRequests) {
-        snapshotIds.add(request.snapshotId());
-        statsTargets.add(StatsTargetScopeCodec.encode(request.target()));
-        scopedColumns.addAll(request.columnSelectors());
+        statsRequests.add(
+            new ReconcileScope.ScopedStatsRequest(
+                table.get().getResourceId().getId(),
+                request.snapshotId(),
+                ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
+                List.copyOf(request.columnSelectors())));
       }
       ReconcileScope scope =
           ReconcileScope.of(
-              namespaceScope,
-              tableDisplay,
-              List.copyOf(scopedColumns),
-              List.copyOf(snapshotIds),
-              List.copyOf(statsTargets));
+              List.of(), table.get().getResourceId().getId(), List.copyOf(statsRequests));
       reconcileJobStore.enqueue(
           first.tableId().getAccountId(),
           table.get().getUpstream().getConnectorId().getId(),
@@ -306,8 +294,12 @@ public class StatsOrchestrator {
           "stats_enqueue outcome=%s table=%s snapshots=%d targets=%d reason=%s group_size=%d",
           StatsTriggerOutcome.QUEUED,
           first.tableId(),
-          snapshotIds.size(),
-          statsTargets.size(),
+          (int)
+              statsRequests.stream()
+                  .map(ReconcileScope.ScopedStatsRequest::snapshotId)
+                  .distinct()
+                  .count(),
+          statsRequests.size(),
           "missing_or_degraded_sync_capture",
           groupedRequests.size());
     } catch (RuntimeException e) {

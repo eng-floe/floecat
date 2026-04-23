@@ -26,17 +26,26 @@ import "google/protobuf/timestamp.proto";
 message CaptureScope {
   // Connector to execute the reconcile against.
   ai.floedb.floecat.common.ResourceId connector_id = 1;
-  // Optional destination namespaces to limit the reconcile to.
+  // Optional destination namespace ids to limit the reconcile to.
   // When empty, the reconcile uses the connector's full configured destination scope.
-  repeated ai.floedb.floecat.connector.NamespacePath destination_namespace_paths = 2;
-  // Optional destination table display name used to narrow the scope to a single table.
-  string destination_table_display_name = 3;
-  // Optional destination columns to process for the selected table.
-  repeated string destination_table_columns = 4;
-  // Optional explicit destination snapshot ids to reconcile.
-  repeated uint64 destination_snapshot_ids = 5;
-  // Optional explicit stats targets for STATS_ONLY and async follow-up execution.
-  repeated string destination_stats_targets = 6;
+  repeated string destination_namespace_ids = 2;
+  // Optional destination table id used to narrow the scope to a single table.
+  string destination_table_id = 3;
+  // Optional exact stats capture requests for STATS_ONLY and async follow-up execution.
+  repeated ScopedStatsRequest destination_stats_requests = 4;
+  // Optional destination view id used to narrow the scope to a single view.
+  string destination_view_id = 5;
+}
+
+message ScopedStatsRequest {
+  // Immutable destination table id for this scoped request.
+  string table_id = 1;
+  // Snapshot to capture for this scoped request.
+  uint64 snapshot_id = 2;
+  // Encoded stats target identity for this request.
+  string target_spec = 3;
+  // Optional selectors used when the target is TABLE and column scope is needed.
+  repeated string column_selectors = 4;
 }
 
 // Controls whether reconcile should refresh metadata, persisted statistics, or both.
@@ -82,8 +91,14 @@ message ReconcileTableTask {
   string source_namespace = 1;
   // Upstream source table name.
   string source_table = 2;
-  // Destination display name to persist/use for this table execution.
-  string destination_table_display_name = 3;
+  // Stable destination table id used as the authoritative execution identity when available.
+  string destination_table_id = 3;
+  // Optional display name used for operator-facing messages or table creation when needed.
+  string destination_table_display_name = 4;
+  // Stable destination namespace id used as the authoritative discovery scope.
+  string destination_namespace_id = 5;
+  // Explicit execution mode: STRICT uses destination_table_id, DISCOVERY uses namespace + name.
+  string mode = 6;
 }
 
 // One view-scoped unit of reconcile work emitted by a planner job.
@@ -92,10 +107,14 @@ message ReconcileViewTask {
   string source_namespace = 1;
   // Upstream source view name.
   string source_view = 2;
-  // Fully qualified destination namespace.
-  string destination_namespace = 3;
-  // Destination display name to persist/use for this view execution.
-  string destination_view_display_name = 4;
+  // Stable destination namespace id used as the authoritative execution scope.
+  string destination_namespace_id = 3;
+  // Stable destination view id used as the authoritative execution identity.
+  string destination_view_id = 4;
+  // Optional display name used for view creation or lookup during discovery execution.
+  string destination_view_display_name = 5;
+  // Explicit execution mode: STRICT uses destination_view_id, DISCOVERY uses namespace + name.
+  string mode = 6;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.

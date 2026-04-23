@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
@@ -570,21 +569,26 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (scope == null) {
       return ReconcileScope.empty();
     }
-    var namespaces =
-        scope.getDestinationNamespacePathsList().stream()
-            .map(NamespacePath::getSegmentsList)
-            .map(List::copyOf)
-            .toList();
     return ReconcileScope.of(
-        namespaces,
-        scope.getDestinationTableDisplayName(),
-        scope.getDestinationTableColumnsList(),
-        scope.getDestinationSnapshotIdsList().stream().map(Long::valueOf).toList(),
-        scope.getDestinationStatsTargetsList());
+        scope.getDestinationNamespaceIdsList(),
+        scope.getDestinationTableId(),
+        scope.getDestinationViewId(),
+        scope.getDestinationStatsRequestsList().stream()
+            .map(
+                request ->
+                    new ReconcileScope.ScopedStatsRequest(
+                        request.getTableId(),
+                        request.getSnapshotId(),
+                        request.getTargetSpec(),
+                        request.getColumnSelectorsList()))
+            .toList());
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {
-    return scope == null ? ResourceId.getDefaultInstance() : scope.getConnectorId();
+    if (scope == null) {
+      throw new IllegalArgumentException("capture scope is required");
+    }
+    return scope.getConnectorId();
   }
 
   private static CaptureMode mapCaptureMode(ai.floedb.floecat.reconciler.rpc.CaptureMode mode) {
@@ -1014,7 +1018,10 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return ai.floedb.floecat.reconciler.rpc.ReconcileTableTask.newBuilder()
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
+        .setDestinationTableId(blankToEmpty(effective.destinationTableId()))
         .setDestinationTableDisplayName(effective.destinationTableDisplayName())
+        .setDestinationNamespaceId(effective.destinationNamespaceId())
+        .setMode(effective.mode().name())
         .build();
   }
 
@@ -1024,8 +1031,10 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return ai.floedb.floecat.reconciler.rpc.ReconcileViewTask.newBuilder()
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceView(effective.sourceView())
-        .setDestinationNamespace(effective.destinationNamespace())
+        .setDestinationNamespaceId(effective.destinationNamespaceId())
+        .setDestinationViewId(blankToEmpty(effective.destinationViewId()))
         .setDestinationViewDisplayName(effective.destinationViewDisplayName())
+        .setMode(effective.mode().name())
         .build();
   }
 
@@ -1119,10 +1128,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (scope == null) {
       return false;
     }
-    return !scope.getDestinationNamespacePathsList().isEmpty()
-        || (scope.getDestinationTableDisplayName() != null
-            && !scope.getDestinationTableDisplayName().isBlank())
-        || !scope.getDestinationTableColumnsList().isEmpty();
+    return !scope.getDestinationNamespaceIdsList().isEmpty()
+        || (scope.getDestinationTableId() != null && !scope.getDestinationTableId().isBlank())
+        || (scope.getDestinationViewId() != null && !scope.getDestinationViewId().isBlank())
+        || !scope.getDestinationStatsRequestsList().isEmpty();
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
   }
 
   private static String normalizeReason(Throwable t) {

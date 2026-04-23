@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -323,7 +322,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return ai.floedb.floecat.reconciler.rpc.ReconcileTableTask.newBuilder()
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
+        .setDestinationTableId(blankToEmpty(effective.destinationTableId()))
         .setDestinationTableDisplayName(effective.destinationTableDisplayName())
+        .setDestinationNamespaceId(effective.destinationNamespaceId())
+        .setMode(effective.mode().name())
         .build();
   }
 
@@ -333,8 +335,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return ai.floedb.floecat.reconciler.rpc.ReconcileViewTask.newBuilder()
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceView(effective.sourceView())
-        .setDestinationNamespace(effective.destinationNamespace())
+        .setDestinationNamespaceId(effective.destinationNamespaceId())
+        .setDestinationViewId(blankToEmpty(effective.destinationViewId()))
         .setDestinationViewDisplayName(effective.destinationViewDisplayName())
+        .setMode(effective.mode().name())
         .build();
   }
 
@@ -376,14 +380,26 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .setKind(ResourceKind.RK_CONNECTOR)
                     .setId(lease.connectorId)
                     .build())
-            .setDestinationTableDisplayName(scope.destinationTableDisplayName());
-    for (var namespacePath : scope.destinationNamespacePaths()) {
-      builder.addDestinationNamespacePaths(
-          NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+            .setDestinationTableId(
+                scope.destinationTableId() == null ? "" : scope.destinationTableId())
+            .setDestinationViewId(
+                scope.destinationViewId() == null ? "" : scope.destinationViewId());
+    for (String namespaceId : scope.destinationNamespaceIds()) {
+      builder.addDestinationNamespaceIds(namespaceId);
     }
-    builder.addAllDestinationTableColumns(scope.destinationTableColumns());
-    builder.addAllDestinationSnapshotIds(scope.destinationSnapshotIds());
-    builder.addAllDestinationStatsTargets(scope.destinationStatsTargets());
+    for (ReconcileScope.ScopedStatsRequest request : scope.destinationStatsRequests()) {
+      builder.addDestinationStatsRequests(
+          ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+              .setTableId(request.tableId())
+              .setSnapshotId(request.snapshotId())
+              .setTargetSpec(request.targetSpec())
+              .addAllColumnSelectors(request.columnSelectors())
+              .build());
+    }
     return builder.build();
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
   }
 }

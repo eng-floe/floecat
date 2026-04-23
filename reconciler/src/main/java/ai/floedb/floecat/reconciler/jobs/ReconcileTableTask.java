@@ -17,35 +17,113 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 public record ReconcileTableTask(
-    String sourceNamespace, String sourceTable, String destinationTableDisplayName) {
+    Mode mode,
+    String sourceNamespace,
+    String sourceTable,
+    String destinationNamespaceId,
+    String destinationTableId,
+    String destinationTableDisplayName) {
+  public enum Mode {
+    STRICT,
+    DISCOVERY
+  }
+
   public ReconcileTableTask {
+    mode = mode == null ? Mode.STRICT : mode;
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
+    destinationNamespaceId = destinationNamespaceId == null ? "" : destinationNamespaceId.trim();
+    destinationTableId =
+        mode == Mode.DISCOVERY && destinationTableId == null
+            ? null
+            : blankToEmpty(destinationTableId);
     destinationTableDisplayName =
         destinationTableDisplayName == null ? "" : destinationTableDisplayName.trim();
   }
 
   public static ReconcileTableTask of(String sourceNamespace, String sourceTable) {
-    return of(sourceNamespace, sourceTable, "");
+    return of(sourceNamespace, sourceTable, "", "");
   }
 
   public static ReconcileTableTask of(
-      String sourceNamespace, String sourceTable, String destinationTableDisplayName) {
+      String sourceNamespace,
+      String sourceTable,
+      String destinationTableId,
+      String destinationTableDisplayName) {
+    return of(sourceNamespace, sourceTable, "", destinationTableId, destinationTableDisplayName);
+  }
+
+  public static ReconcileTableTask of(
+      String sourceNamespace,
+      String sourceTable,
+      String destinationNamespaceId,
+      String destinationTableId,
+      String destinationTableDisplayName) {
     if ((sourceNamespace == null || sourceNamespace.isBlank())
         && (sourceTable == null || sourceTable.isBlank())
+        && (destinationNamespaceId == null || destinationNamespaceId.isBlank())
+        && (destinationTableId == null || destinationTableId.isBlank())
         && (destinationTableDisplayName == null || destinationTableDisplayName.isBlank())) {
       return empty();
     }
-    return new ReconcileTableTask(sourceNamespace, sourceTable, destinationTableDisplayName);
+    return new ReconcileTableTask(
+        Mode.STRICT,
+        sourceNamespace,
+        sourceTable,
+        destinationNamespaceId,
+        destinationTableId,
+        destinationTableDisplayName);
+  }
+
+  public static ReconcileTableTask discovery(
+      String sourceNamespace,
+      String sourceTable,
+      String destinationNamespaceId,
+      String destinationTableDisplayName) {
+    return discovery(
+        sourceNamespace, sourceTable, destinationNamespaceId, null, destinationTableDisplayName);
+  }
+
+  public static ReconcileTableTask discovery(
+      String sourceNamespace,
+      String sourceTable,
+      String destinationNamespaceId,
+      String destinationTableId,
+      String destinationTableDisplayName) {
+    return new ReconcileTableTask(
+        Mode.DISCOVERY,
+        sourceNamespace,
+        sourceTable,
+        destinationNamespaceId,
+        destinationTableId,
+        destinationTableDisplayName);
   }
 
   public static ReconcileTableTask empty() {
-    return new ReconcileTableTask("", "", "");
+    return new ReconcileTableTask(Mode.STRICT, "", "", "", "", "");
   }
 
   public boolean isEmpty() {
     return sourceNamespace.isBlank()
         && sourceTable.isBlank()
+        && destinationNamespaceId.isBlank()
+        && blank(destinationTableId)
         && destinationTableDisplayName.isBlank();
+  }
+
+  public boolean strict() {
+    return !isEmpty() && mode == Mode.STRICT;
+  }
+
+  public boolean discoveryMode() {
+    return !isEmpty() && mode == Mode.DISCOVERY;
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value.trim();
+  }
+
+  private static boolean blank(String value) {
+    return value == null || value.isBlank();
   }
 }

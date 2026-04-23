@@ -18,35 +18,13 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalsTest {
-
-  @Test
-  void effectiveSelectorsPreferScopeColumnsOverConnectorSourceColumns() {
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("barf", "#2"));
-    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
-
-    Set<String> selectors = ReconcilerService.effectiveSelectors(scope, source);
-
-    assertThat(selectors).containsExactlyInAnyOrder("barf", "#2");
-  }
-
-  @Test
-  void effectiveSelectorsFallbackToConnectorSourceColumnsWhenScopeHasNoColumns() {
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
-    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
-
-    Set<String> selectors = ReconcilerService.effectiveSelectors(scope, source);
-
-    assertThat(selectors).containsExactlyInAnyOrder("i", "#1");
-  }
 
   @Test
   void filterBundlesForModeSkipsAlreadyIngestedSnapshotsForIncremental() {
@@ -132,16 +110,6 @@ class ReconcilerServiceInternalsTest {
             false, true, Set.of(10L, 11L), id -> id == 10L);
 
     assertThat(statsOnly).containsExactly(10L);
-  }
-
-  @Test
-  void tableChangedIsFalseWhenNoBundlesRemain() {
-    assertThat(ReconcilerService.tableChanged(List.of())).isFalse();
-  }
-
-  @Test
-  void tableChangedIsTrueWhenBundlesRemain() {
-    assertThat(ReconcilerService.tableChanged(List.of(bundle(11L, 10L, 2L)))).isTrue();
   }
 
   private static FloecatConnector.SnapshotBundle bundle(

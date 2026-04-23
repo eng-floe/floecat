@@ -20,8 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import com.google.protobuf.ByteString;
 import java.time.Instant;
@@ -73,26 +71,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .containsEntry("meta-key", ByteString.copyFromUtf8("new"));
     assertThat(result.getFormatMetadataMap())
         .containsEntry("extra", ByteString.copyFromUtf8("value"));
-  }
-
-  @Test
-  void effectiveSelectorsPreferScopeColumnsOverConnectorSourceColumns() {
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("barf", "#2"));
-    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
-
-    Set<String> selectors = ReconcilerService.effectiveSelectors(scope, source);
-
-    assertThat(selectors).containsExactlyInAnyOrder("barf", "#2");
-  }
-
-  @Test
-  void effectiveSelectorsFallbackToConnectorSourceColumnsWhenScopeHasNoColumns() {
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
-    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
-
-    Set<String> selectors = ReconcilerService.effectiveSelectors(scope, source);
-
-    assertThat(selectors).containsExactlyInAnyOrder("i", "#1");
   }
 
   @Test
@@ -190,20 +168,5 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(metadataAndStats).containsExactly(10L);
     assertThat(statsOnly).isEmpty();
     assertThat(fullRescan).isEmpty();
-  }
-
-  @Test
-  void tableChangedIsFalseWhenNoBundlesRemain() {
-    assertThat(ReconcilerService.tableChanged(List.of())).isFalse();
-  }
-
-  @Test
-  void tableChangedIsTrueWhenBundlesRemain() {
-    assertThat(
-            ReconcilerService.tableChanged(
-                List.of(
-                    new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                        11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()))))
-        .isTrue();
   }
 }

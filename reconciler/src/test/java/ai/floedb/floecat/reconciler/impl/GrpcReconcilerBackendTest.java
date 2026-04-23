@@ -357,9 +357,10 @@ class GrpcReconcilerBackendTest {
     when(backend.view.updateView(any()))
         .thenReturn(UpdateViewResponse.newBuilder().setView(updated).build());
 
-    ResourceId result = backend.ensureView(ctx, spec, "analytics.orders_view");
+    var result = backend.ensureView(ctx, spec, "analytics.orders_view");
 
-    assertThat(result).isEqualTo(viewId);
+    assertThat(result.viewId()).isEqualTo(viewId);
+    assertThat(result.changed()).isTrue();
     var updateCaptor = org.mockito.ArgumentCaptor.forClass(UpdateViewRequest.class);
     verify(backend.view).updateView(updateCaptor.capture());
     assertThat(updateCaptor.getValue().getUpdateMask().getPathsList())

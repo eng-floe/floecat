@@ -394,7 +394,12 @@ public class TransactionCommitService {
       List<Long> removedSnapshotIds = parsedUpdates.removedSnapshotIds();
       if (connectorId != null && connectorId.getId() != null && !connectorId.getId().isBlank()) {
         postCommitCaptures.add(
-            new PostCommitCaptureRequest(plan.namespacePath(), plan.tableName(), connectorId));
+            new PostCommitCaptureRequest(
+                plan.namespaceId(),
+                plan.tableId(),
+                plan.namespacePath(),
+                plan.tableName(),
+                connectorId));
       }
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
@@ -516,7 +521,11 @@ public class TransactionCommitService {
   private record PreMaterializedTable(ai.floedb.floecat.catalog.rpc.Table table, Response error) {}
 
   private record PostCommitCaptureRequest(
-      List<String> namespacePath, String tableName, ResourceId connectorId) {}
+      ResourceId namespaceId,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      ResourceId connectorId) {}
 
   private record PlannedChange(
       List<String> namespacePath,
@@ -536,10 +545,9 @@ public class TransactionCommitService {
           || request.connectorId() == null
           || request.connectorId().getId() == null
           || request.connectorId().getId().isBlank()
-          || request.namespacePath() == null
-          || request.namespacePath().isEmpty()
-          || request.tableName() == null
-          || request.tableName().isBlank()) {
+          || request.tableId() == null
+          || request.tableId().getId() == null
+          || request.tableId().getId().isBlank()) {
         continue;
       }
       try {
@@ -549,18 +557,14 @@ public class TransactionCommitService {
                 .setScope(
                     CaptureScope.newBuilder()
                         .setConnectorId(request.connectorId())
-                        .addDestinationNamespacePaths(
-                            ai.floedb.floecat.connector.rpc.NamespacePath.newBuilder()
-                                .addAllSegments(request.namespacePath())
-                                .build())
-                        .setDestinationTableDisplayName(request.tableName()))
+                        .setDestinationTableId(request.tableId().getId()))
                 .build());
       } catch (RuntimeException e) {
         LOG.warnf(
             e,
-            "Failed to enqueue post-commit reconcile for %s.%s connector=%s",
-            String.join(".", request.namespacePath()),
-            request.tableName(),
+            "Failed to enqueue post-commit reconcile for tableId=%s namespaceId=%s connector=%s",
+            request.tableId().getId(),
+            request.namespaceId() == null ? "" : request.namespaceId().getId(),
             request.connectorId().getId());
       }
     }

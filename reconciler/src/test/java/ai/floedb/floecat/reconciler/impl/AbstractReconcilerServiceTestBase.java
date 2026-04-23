@@ -162,6 +162,11 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespace) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public ResourceId ensureTable(
         ReconcileContext ctx,
         ResourceId namespaceId,
@@ -171,12 +176,75 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public boolean updateTableById(
+        ReconcileContext ctx,
+        ResourceId tableId,
+        ResourceId namespaceId,
+        NameRef table,
+        TableSpecDescriptor descriptor) {
+      return false;
+    }
+
+    @Override
     public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
       throw new UnsupportedOperationException();
     }
 
-    public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+    @Override
+    public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view) {
       throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+      return tableId == null || tableId.getId().isBlank() ? Optional.empty() : Optional.of("tbl");
+    }
+
+    @Override
+    public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+        ReconcileContext ctx, ResourceId tableId) {
+      if (tableId == null || tableId.getId().isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          new DestinationTableMetadata(
+              ResourceId.newBuilder()
+                  .setAccountId(tableId.getAccountId())
+                  .setKind(ResourceKind.RK_CATALOG)
+                  .setId("cat-1")
+                  .build(),
+              ResourceId.newBuilder()
+                  .setAccountId(tableId.getAccountId())
+                  .setKind(ResourceKind.RK_NAMESPACE)
+                  .setId("ns-1")
+                  .build(),
+              "tbl"));
+    }
+
+    @Override
+    public Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+      return viewId == null || viewId.getId().isBlank() ? Optional.empty() : Optional.of("view");
+    }
+
+    @Override
+    public Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+        ReconcileContext ctx, ResourceId viewId) {
+      if (viewId == null || viewId.getId().isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          new DestinationViewMetadata(
+              ResourceId.newBuilder()
+                  .setAccountId(viewId.getAccountId())
+                  .setKind(ResourceKind.RK_CATALOG)
+                  .setId("cat-1")
+                  .build(),
+              ResourceId.newBuilder()
+                  .setAccountId(viewId.getAccountId())
+                  .setKind(ResourceKind.RK_NAMESPACE)
+                  .setId("ns-1")
+                  .build(),
+              "view"));
     }
 
     @Override
@@ -232,7 +300,10 @@ abstract class AbstractReconcilerServiceTestBase {
 
     @Override
     public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
-      throw new UnsupportedOperationException();
+      if (catalogId == null || catalogId.getId().isBlank()) {
+        throw new IllegalArgumentException("catalogId is required");
+      }
+      return "cat-1";
     }
 
     @Override
@@ -252,7 +323,13 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    public ReconcilerBackend.ViewMutationResult ensureView(
+        ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec) {
       throw new UnsupportedOperationException();
     }
   }
@@ -305,10 +382,39 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    public ReconcilerBackend.ViewMutationResult ensureView(
+        ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       capturedViews.add(spec);
       capturedIdempotencyKeys.add(idempotencyKey);
-      return ResourceId.newBuilder().setId("view-1").build();
+      return new ReconcilerBackend.ViewMutationResult(
+          ResourceId.newBuilder().setId("view-1").build(), true);
+    }
+
+    @Override
+    public boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec) {
+      capturedViews.add(spec);
+      capturedIdempotencyKeys.add(viewId.getId());
+      return true;
+    }
+
+    @Override
+    public Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+      return viewId == null || viewId.getId().isBlank()
+          ? Optional.empty()
+          : Optional.of("revenue_view");
+    }
+
+    @Override
+    public Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+        ReconcileContext ctx, ResourceId viewId) {
+      if (viewId == null || viewId.getId().isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          new DestinationViewMetadata(
+              connector.getDestination().getCatalogId(),
+              connector.getDestination().getNamespaceId(),
+              "revenue_view"));
     }
 
     @Override

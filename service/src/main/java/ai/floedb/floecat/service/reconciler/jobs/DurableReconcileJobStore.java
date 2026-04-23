@@ -141,11 +141,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
-    ReconcileScope scope = incomingScope == null ? ReconcileScope.empty() : incomingScope;
     ReconcileJobKind effectiveJobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
     ReconcileTableTask effectiveTableTask =
         tableTask == null ? ReconcileTableTask.empty() : tableTask;
     ReconcileViewTask effectiveViewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    ReconcileScope scope =
+        normalizeScopeForJobKind(
+            incomingScope == null ? ReconcileScope.empty() : incomingScope,
+            effectiveJobKind,
+            effectiveTableTask,
+            effectiveViewTask);
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     String laneKey =
@@ -1578,6 +1583,57 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     };
   }
 
+  private static ReconcileScope normalizeScopeForJobKind(
+      ReconcileScope scope,
+      ReconcileJobKind jobKind,
+      ReconcileTableTask tableTask,
+      ReconcileViewTask viewTask) {
+    ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
+    if (jobKind == ReconcileJobKind.EXEC_TABLE
+        && tableTask != null
+        && tableTask.strict()
+        && !blank(tableTask.destinationTableId())) {
+      if (effectiveScope.hasTableFilter()
+          && !tableTask.destinationTableId().equals(effectiveScope.destinationTableId())) {
+        throw new IllegalArgumentException(
+            "table task destinationTableId does not match scope destinationTableId");
+      }
+      if (effectiveScope.hasViewFilter() || effectiveScope.hasNamespaceFilter()) {
+        throw new IllegalArgumentException(
+            "table task destinationTableId cannot be combined with namespace or view scope");
+      }
+      return effectiveScope.hasTableFilter()
+          ? effectiveScope
+          : ReconcileScope.of(
+              List.of(), tableTask.destinationTableId(), effectiveScope.destinationStatsRequests());
+    }
+    if (jobKind == ReconcileJobKind.EXEC_VIEW
+        && viewTask != null
+        && viewTask.strict()
+        && !blank(viewTask.destinationViewId())) {
+      if (effectiveScope.hasViewFilter()
+          && !viewTask.destinationViewId().equals(effectiveScope.destinationViewId())) {
+        throw new IllegalArgumentException(
+            "view task destinationViewId does not match scope destinationViewId");
+      }
+      if (effectiveScope.hasNamespaceFilter()
+          && !effectiveScope
+              .destinationNamespaceIds()
+              .contains(viewTask.destinationNamespaceId())) {
+        throw new IllegalArgumentException(
+            "view task destinationNamespaceId does not match scope destinationNamespaceIds");
+      }
+      if (effectiveScope.hasTableFilter() || effectiveScope.hasStatsRequestFilter()) {
+        throw new IllegalArgumentException(
+            "view task destinationViewId cannot be combined with table or stats scope");
+      }
+      return effectiveScope.hasViewFilter()
+          ? effectiveScope
+          : ReconcileScope.ofView(List.of(), viewTask.destinationViewId());
+    }
+    return effectiveScope;
+  }
+
   private static String laneKey(
       String connectorId,
       ReconcileScope scope,
@@ -1585,42 +1641,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask) {
     String namespaces =
-        scope.destinationNamespacePaths().stream()
-            .map(path -> String.join(".", path))
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("*");
+        scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     if (jobKind == ReconcileJobKind.EXEC_TABLE && tableTask != null) {
-      String namespace =
-          tableTask.sourceNamespace() == null || tableTask.sourceNamespace().isBlank()
-              ? namespaces
-              : tableTask.sourceNamespace();
-      String table =
-          tableTask.destinationTableDisplayName() != null
-                  && !tableTask.destinationTableDisplayName().isBlank()
-              ? tableTask.destinationTableDisplayName()
-              : (tableTask.sourceTable() == null || tableTask.sourceTable().isBlank()
-                  ? "*"
-                  : tableTask.sourceTable());
-      return namespace + "|" + table;
+      return scope.destinationTableId() == null || scope.destinationTableId().isBlank()
+          ? "tables|" + namespaces
+          : "table|" + scope.destinationTableId();
     }
     if (jobKind == ReconcileJobKind.EXEC_VIEW && viewTask != null) {
-      String namespace =
-          viewTask.destinationNamespace() == null || viewTask.destinationNamespace().isBlank()
-              ? namespaces
-              : viewTask.destinationNamespace();
-      String view =
-          viewTask.destinationViewDisplayName() != null
-                  && !viewTask.destinationViewDisplayName().isBlank()
-              ? viewTask.destinationViewDisplayName()
-              : (viewTask.sourceView() == null || viewTask.sourceView().isBlank()
-                  ? "*"
-                  : viewTask.sourceView());
-      return namespace + "|" + view;
+      return scope.destinationViewId() == null || scope.destinationViewId().isBlank()
+          ? "views|" + namespaces
+          : "view|" + scope.destinationViewId();
     }
-    String table =
-        scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
-    return namespaces + "|" + table;
+    String resource =
+        scope.destinationTableId() != null
+            ? scope.destinationTableId()
+            : (scope.destinationViewId() == null ? "*" : scope.destinationViewId());
+    return namespaces + "|" + resource;
   }
 
   private static String dedupeKey(
@@ -1636,23 +1672,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String parentJobId,
       String pinnedExecutorId) {
     String namespaces =
-        scope.destinationNamespacePaths().stream()
-            .map(path -> String.join(".", path))
+        scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
+    String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
+    String statsRequests =
+        scope.destinationStatsRequests().stream()
+            .map(DurableReconcileJobStore::canonicalStatsRequest)
             .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("*");
-    String table =
-        scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
-    String columns =
-        scope.destinationTableColumns().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
-    String snapshotIds =
-        scope.destinationSnapshotIds().stream()
-            .sorted()
-            .map(String::valueOf)
             .reduce((a, b) -> a + "," + b)
             .orElse("");
-    String statsTargets =
-        scope.destinationStatsTargets().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
+    String canonicalTableDisplayName =
+        tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
+            ? ""
+            : (tableTask == null ? "" : tableTask.destinationTableDisplayName());
+    String canonicalViewDisplayName =
+        viewTask != null && viewTask.strict() && !blank(viewTask.destinationViewId())
+            ? ""
+            : (viewTask == null ? "" : viewTask.destinationViewDisplayName());
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     Canonicalizer canonicalizer = new Canonicalizer();
@@ -1668,21 +1703,27 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .scalar("table_task.source_namespace", tableTask == null ? "" : tableTask.sourceNamespace())
         .scalar("table_task.source_table", tableTask == null ? "" : tableTask.sourceTable())
         .scalar(
-            "table_task.destination_table_display_name",
-            tableTask == null ? "" : tableTask.destinationTableDisplayName())
+            "table_task.destination_table_id",
+            tableTask == null ? "" : blankToEmpty(tableTask.destinationTableId()))
+        .scalar(
+            "table_task.destination_namespace_id",
+            tableTask == null ? "" : tableTask.destinationNamespaceId())
+        .scalar("table_task.destination_table_display_name", canonicalTableDisplayName)
+        .scalar("table_task.mode", tableTask == null ? "" : tableTask.mode().name())
         .scalar("view_task.source_namespace", viewTask == null ? "" : viewTask.sourceNamespace())
         .scalar("view_task.source_view", viewTask == null ? "" : viewTask.sourceView())
         .scalar(
-            "view_task.destination_namespace",
-            viewTask == null ? "" : viewTask.destinationNamespace())
+            "view_task.destination_namespace_id",
+            viewTask == null ? "" : viewTask.destinationNamespaceId())
         .scalar(
-            "view_task.destination_view_display_name",
-            viewTask == null ? "" : viewTask.destinationViewDisplayName())
+            "view_task.destination_view_id",
+            viewTask == null ? "" : blankToEmpty(viewTask.destinationViewId()))
+        .scalar("view_task.destination_view_display_name", canonicalViewDisplayName)
+        .scalar("view_task.mode", viewTask == null ? "" : viewTask.mode().name())
         .scalar("scope.namespaces", namespaces)
         .scalar("scope.table", table)
-        .scalar("scope.columns", columns)
-        .scalar("scope.snapshot_ids", snapshotIds)
-        .scalar("scope.stats_targets", statsTargets)
+        .scalar("scope.view", scope.destinationViewId() == null ? "" : scope.destinationViewId())
+        .scalar("scope.stats_requests", statsRequests)
         .scalar("policy.execution_class", policy.executionClass().name())
         .scalar("policy.lane", policy.lane())
         .map("policy.attributes", policy.attributes())
@@ -1738,11 +1779,38 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  private static String canonicalStatsRequest(ReconcileScope.ScopedStatsRequest request) {
+    if (request == null) {
+      return "";
+    }
+    String selectors =
+        request.columnSelectors().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
+    return request.tableId()
+        + "|"
+        + request.snapshotId()
+        + "|"
+        + request.targetSpec()
+        + "|"
+        + selectors;
+  }
+
   private static String urlEncode(String value) {
     if (value == null || value.isBlank()) {
       return "";
     }
     return Keys.encodeSegment(value);
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value.trim();
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value.trim();
+  }
+
+  private static boolean blank(String value) {
+    return value == null || value.isBlank();
   }
 
   private static String parentPointerKey(String accountId, String parentJobId, String jobId) {
@@ -1786,15 +1854,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String executorId;
     public String sourceNamespace;
     public String sourceTable;
+    public String taskMode;
+    public String taskDestinationNamespaceId;
+    public String taskDestinationTableId;
     public String taskDestinationTableDisplayName;
     public String sourceView;
-    public String taskDestinationNamespace;
+    public String taskDestinationViewId;
     public String taskDestinationViewDisplayName;
-    public String destinationTableDisplayName;
-    public List<List<String>> destinationNamespacePaths = List.of();
-    public List<String> destinationTableColumns = List.of();
-    public List<Long> destinationSnapshotIds = List.of();
-    public List<String> destinationStatsTargets = List.of();
+    public String destinationTableId;
+    public String destinationViewId;
+    public List<String> destinationNamespaceIds = List.of();
+    public List<ReconcileScope.ScopedStatsRequest> destinationStatsRequests = List.of();
     public String state;
     public String message;
     public long startedAtMs;
@@ -1862,15 +1932,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               ? effectiveViewTask.sourceNamespace()
               : effectiveTask.sourceNamespace();
       rec.sourceTable = effectiveTask.sourceTable();
+      rec.taskMode =
+          jobKind == ReconcileJobKind.EXEC_VIEW
+              ? effectiveViewTask.mode().name()
+              : effectiveTask.mode().name();
+      rec.taskDestinationNamespaceId =
+          jobKind == ReconcileJobKind.EXEC_VIEW
+              ? effectiveViewTask.destinationNamespaceId()
+              : effectiveTask.destinationNamespaceId();
+      rec.taskDestinationTableId = blankToEmpty(effectiveTask.destinationTableId());
       rec.taskDestinationTableDisplayName = effectiveTask.destinationTableDisplayName();
       rec.sourceView = effectiveViewTask.sourceView();
-      rec.taskDestinationNamespace = effectiveViewTask.destinationNamespace();
+      rec.taskDestinationViewId = blankToEmpty(effectiveViewTask.destinationViewId());
       rec.taskDestinationViewDisplayName = effectiveViewTask.destinationViewDisplayName();
-      rec.destinationNamespacePaths = scope.destinationNamespacePaths();
-      rec.destinationTableDisplayName = scope.destinationTableDisplayName();
-      rec.destinationTableColumns = scope.destinationTableColumns();
-      rec.destinationSnapshotIds = scope.destinationSnapshotIds();
-      rec.destinationStatsTargets = scope.destinationStatsTargets();
+      rec.destinationNamespaceIds = scope.destinationNamespaceIds();
+      rec.destinationTableId = scope.destinationTableId();
+      rec.destinationViewId = scope.destinationViewId();
+      rec.destinationStatsRequests = scope.destinationStatsRequests();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -1896,11 +1974,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     ReconcileScope toScope() {
       return ReconcileScope.of(
-          destinationNamespacePaths,
-          destinationTableDisplayName,
-          destinationTableColumns,
-          destinationSnapshotIds,
-          destinationStatsTargets);
+          destinationNamespaceIds, destinationTableId, destinationViewId, destinationStatsRequests);
     }
 
     ReconcileJobKind jobKind() {
@@ -1908,12 +1982,37 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     ReconcileTableTask tableTask() {
-      return ReconcileTableTask.of(sourceNamespace, sourceTable, taskDestinationTableDisplayName);
+      if (ReconcileTableTask.Mode.DISCOVERY.name().equals(taskMode)) {
+        return ReconcileTableTask.discovery(
+            sourceNamespace,
+            sourceTable,
+            taskDestinationNamespaceId,
+            blankToNull(taskDestinationTableId),
+            taskDestinationTableDisplayName);
+      }
+      return ReconcileTableTask.of(
+          sourceNamespace,
+          sourceTable,
+          taskDestinationNamespaceId,
+          taskDestinationTableId,
+          taskDestinationTableDisplayName);
     }
 
     ReconcileViewTask viewTask() {
+      if (ReconcileViewTask.Mode.DISCOVERY.name().equals(taskMode)) {
+        return ReconcileViewTask.discovery(
+            sourceNamespace,
+            sourceView,
+            taskDestinationNamespaceId,
+            blankToNull(taskDestinationViewId),
+            taskDestinationViewDisplayName);
+      }
       return ReconcileViewTask.of(
-          sourceNamespace, sourceView, taskDestinationNamespace, taskDestinationViewDisplayName);
+          sourceNamespace,
+          sourceView,
+          taskDestinationNamespaceId,
+          taskDestinationViewId,
+          taskDestinationViewDisplayName);
     }
 
     ReconcileExecutionPolicy executionPolicy() {

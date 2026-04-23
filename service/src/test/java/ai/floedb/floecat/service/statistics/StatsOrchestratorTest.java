@@ -335,8 +335,6 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationTableColumns())
-        .containsExactlyInAnyOrder("c7", "#9");
   }
 
   @Test
@@ -376,13 +374,15 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationNamespacePaths()).containsExactly(List.of("db"));
-    assertThat(scopeCaptor.getValue().destinationTableDisplayName()).isEqualTo("events");
-    assertThat(scopeCaptor.getValue().destinationTableColumns())
-        .containsExactlyInAnyOrder("c7", "#9");
-    assertThat(scopeCaptor.getValue().destinationSnapshotIds()).containsExactly(42L);
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
-        .containsExactly(StatsTargetScopeCodec.encode(request.target()));
+    assertThat(scopeCaptor.getValue().destinationNamespaceIds()).isEmpty();
+    assertThat(scopeCaptor.getValue().destinationTableId()).isEqualTo(request.tableId().getId());
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
+        .containsExactly(
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                request.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(request.target()),
+                List.of("#9", "c7")));
   }
 
   @Test
@@ -456,8 +456,13 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
-        .containsExactly(StatsTargetScopeCodec.encode(rowCountRequest.target()));
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
+        .containsExactly(
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                rowCountRequest.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(rowCountRequest.target()),
+                List.of()));
   }
 
   @Test
@@ -535,8 +540,13 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
-        .containsExactly(StatsTargetScopeCodec.encode(supportedRequest.target()));
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
+        .containsExactly(
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                supportedRequest.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(supportedRequest.target()),
+                List.of()));
   }
 
   @Test
@@ -974,9 +984,13 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationSnapshotIds()).containsExactly(42L);
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
-        .containsExactly(StatsTargetScopeCodec.encode(columnReq.target()));
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
+        .containsExactly(
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                columnReq.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(columnReq.target()),
+                List.of()));
     verify(registry, Mockito.times(1)).captureBatch(any());
   }
 
@@ -1071,9 +1085,13 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationSnapshotIds()).containsExactly(42L);
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
-        .containsExactly(StatsTargetScopeCodec.encode(uncapturableReq.target()));
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
+        .containsExactly(
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                uncapturableReq.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(uncapturableReq.target()),
+                List.of()));
     verify(registry, Mockito.times(1)).captureBatch(any());
   }
 
@@ -1114,11 +1132,18 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationSnapshotIds()).containsExactly(42L, 43L);
-    assertThat(scopeCaptor.getValue().destinationStatsTargets())
+    assertThat(scopeCaptor.getValue().destinationStatsRequests())
         .containsExactly(
-            StatsTargetScopeCodec.encode(req1.target()),
-            StatsTargetScopeCodec.encode(req2.target()));
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                req1.tableId().getId(),
+                42L,
+                StatsTargetScopeCodec.encode(req1.target()),
+                List.of()),
+            new ai.floedb.floecat.reconciler.jobs.ReconcileScope.ScopedStatsRequest(
+                req2.tableId().getId(),
+                43L,
+                StatsTargetScopeCodec.encode(req2.target()),
+                List.of()));
   }
 
   @Test
@@ -1205,6 +1230,7 @@ class StatsOrchestratorTest {
   private static Table tableWithUpstream(ResourceId tableId, TableFormat format) {
     return Table.newBuilder()
         .setResourceId(tableId)
+        .setCatalogId(ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build())
         .setDisplayName("events")
         .setUpstream(
             ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()

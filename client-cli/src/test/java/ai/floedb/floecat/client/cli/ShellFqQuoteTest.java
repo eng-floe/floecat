@@ -391,7 +391,8 @@ class ShellFqQuoteTest {
       System.setOut(original);
     }
     String help = baos.toString();
-    assertTrue(help.contains("analyze <tableFQ> [--columns c1,c2,...]"));
+    assertTrue(
+        help.contains("analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current]"));
     assertTrue(help.contains("[--wait-seconds <n>]"));
   }
 
@@ -400,7 +401,10 @@ class ShellFqQuoteTest {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     StatsCliSupport.handle(
         "analyze", List.of(), new PrintStream(baos), null, null, null, null, null);
-    assertTrue(baos.toString().contains("usage: analyze <tableFQ> [--columns c1,c2,...]"));
+    assertTrue(
+        baos.toString()
+            .contains(
+                "usage: analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current]"));
     assertTrue(baos.toString().contains("[--wait-seconds <n>]"));
   }
 }

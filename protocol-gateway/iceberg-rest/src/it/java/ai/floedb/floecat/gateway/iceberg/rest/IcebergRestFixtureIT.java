@@ -34,6 +34,7 @@ import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -99,7 +100,6 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -1783,6 +1783,7 @@ class IcebergRestFixtureIT {
         .body("metadata.'format-version'", equalTo(2));
 
     if (connectorIntegrationEnabled) {
+      ResourceId namespaceId = resolveNamespaceId("iceberg");
       ResourceId tableId = resolveTableId("iceberg", "trino_test");
       Table tableRecord =
           withTableClient(
@@ -1812,9 +1813,7 @@ class IcebergRestFixtureIT {
                     .setScope(
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
-                            .addDestinationNamespacePaths(
-                                NamespacePath.newBuilder().addSegments("iceberg").build())
-                            .setDestinationTableDisplayName("trino_test")
+                            .setDestinationTableId(tableId.getId())
                             .build())
                     .setMode(CaptureMode.CM_STATS_ONLY)
                     .setFullRescan(true)
@@ -2622,6 +2621,14 @@ class IcebergRestFixtureIT {
         withDirectoryClient(
             stub -> stub.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()));
     return response.getResourceId();
+  }
+
+  private ResourceId resolveNamespaceId(String namespace) {
+    NameRef ref =
+        NameRef.newBuilder().setCatalog(CATALOG).addAllPath(namespaceSegments(namespace)).build();
+    return withDirectoryClient(
+            stub -> stub.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build()))
+        .getResourceId();
   }
 
   private static List<String> namespaceSegments(String namespace) {

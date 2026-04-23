@@ -217,9 +217,10 @@ class DirectReconcilerBackendTest {
             .putProperties("comment", "after")
             .build();
 
-    ResourceId changed = backend.ensureView(ctx, spec, "ns.orders_view");
+    var changed = backend.ensureView(ctx, spec, "ns.orders_view");
 
-    assertThat(changed).isEqualTo(viewId);
+    assertThat(changed.viewId()).isEqualTo(viewId);
+    assertThat(changed.changed()).isTrue();
     View updated = viewRepo.getById(viewId).orElseThrow();
     assertThat(updated.getSqlDefinitions(0).getSql()).isEqualTo("SELECT order_id FROM orders");
     assertThat(updated.getSqlDefinitions(0).getDialect()).isEqualTo("spark");

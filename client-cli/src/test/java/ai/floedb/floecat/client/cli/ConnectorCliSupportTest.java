@@ -20,12 +20,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
@@ -33,10 +39,12 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -48,6 +56,8 @@ import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.rpc.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.rpc.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -202,7 +212,13 @@ class ConnectorCliSupportTest {
   void connectorDeleteCallsServiceAndPrintsOk() throws Exception {
     try (Harness h = new Harness()) {
       h.connectorsService.connectorToReturn =
-          Connector.newBuilder().setResourceId(connectorId()).build();
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
+                      .build())
+              .build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ConnectorCliSupport.handle(
@@ -293,6 +309,137 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(1, h.reconcileControlService.startCaptureCalls.get());
+    }
+  }
+
+  @Test
+  void connectorTriggerColumnsCreatesScopedStatsRequest() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+      h.snapshotService.currentSnapshotId = 42L;
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("trigger", CONNECTOR_UUID, "--mode", "stats-only", "--columns", "c1,#7"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      ScopedStatsRequest statsRequest = request.getScope().getDestinationStatsRequests(0);
+      assertEquals("table-1", statsRequest.getTableId());
+      assertEquals(42L, statsRequest.getSnapshotId());
+      assertEquals(List.of("c1", "#7"), statsRequest.getColumnSelectorsList());
+    }
+  }
+
+  @Test
+  void connectorTriggerExplicitSnapshotCreatesScopedStatsRequest() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+      h.snapshotService.currentSnapshotId = 42L;
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "stats-only",
+              "--snapshot",
+              "99",
+              "--columns",
+              "c1,#7"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+    }
+  }
+
+  @Test
+  void connectorTriggerExplicitSnapshotWithoutColumnsStillScopesCapture() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("trigger", CONNECTOR_UUID, "--mode", "stats-only", "--snapshot", "99"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals(1, request.getScope().getDestinationStatsRequestsCount());
+      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(
+          List.of(), request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+    }
+  }
+
+  @Test
+  void connectorTriggerDestViewCreatesViewScopedCapture() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
+                      .build())
+              .build();
+      h.directoryService.resolvedViewId = "view-1";
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("trigger", CONNECTOR_UUID, "--dest-ns", "ns", "--dest-view", "orders_v"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals("view-1", request.getScope().getDestinationViewId());
+      assertEquals("", request.getScope().getDestinationTableId());
     }
   }
 
@@ -414,6 +561,45 @@ class ConnectorCliSupportTest {
     }
   }
 
+  @Test
+  void connectorJobPrintsDiscoveryViewDestinationDisplayName() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.getJobResponse =
+          ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+              .setJobId("job-view-1")
+              .setConnectorId(CONNECTOR_UUID)
+              .setKind(ReconcileJobKind.RJK_EXEC_VIEW)
+              .setParentJobId("job-plan-1")
+              .setExecutorId("remote-executor-a")
+              .setViewsScanned(1)
+              .setViewsChanged(1)
+              .setViewTask(
+                  ReconcileViewTask.newBuilder()
+                      .setSourceNamespace("sales")
+                      .setSourceView("orders_view")
+                      .setDestinationNamespaceId("ns-123")
+                      .setDestinationViewDisplayName("orders_curated_view")
+                      .setMode("DISCOVERY")
+                      .build())
+              .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("job", "job-view-1"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(
+          buf.toString().contains("view=sales.orders_view->ns-123.orders_curated_view"),
+          "expected discovery view routing to use destination display name");
+    }
+  }
+
   // --- connector cancel ---
 
   @Test
@@ -512,27 +698,32 @@ class ConnectorCliSupportTest {
     final CapturingConnectorsService connectorsService;
     final CapturingReconcileControlService reconcileControlService;
     final CapturingDirectoryService directoryService;
+    final CapturingSnapshotService snapshotService;
     final ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
     final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlStub;
     final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
+    final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
 
     Harness() throws Exception {
       String serverName = InProcessServerBuilder.generateName();
       this.connectorsService = new CapturingConnectorsService();
       this.reconcileControlService = new CapturingReconcileControlService();
       this.directoryService = new CapturingDirectoryService();
+      this.snapshotService = new CapturingSnapshotService();
       this.server =
           InProcessServerBuilder.forName(serverName)
               .directExecutor()
               .addService(connectorsService)
               .addService(reconcileControlService)
               .addService(directoryService)
+              .addService(snapshotService)
               .build()
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
       this.connectorsStub = ConnectorsGrpc.newBlockingStub(channel);
       this.reconcileControlStub = ReconcileControlGrpc.newBlockingStub(channel);
       this.directoryStub = DirectoryServiceGrpc.newBlockingStub(channel);
+      this.snapshotStub = SnapshotServiceGrpc.newBlockingStub(channel);
     }
 
     @Override
@@ -608,6 +799,7 @@ class ConnectorCliSupportTest {
     final AtomicInteger cancelReconcileJobCalls = new AtomicInteger();
     final AtomicInteger getReconcilerSettingsCalls = new AtomicInteger();
     final AtomicInteger updateReconcilerSettingsCalls = new AtomicInteger();
+    StartCaptureRequest lastStartCaptureRequest;
     CancelReconcileJobRequest lastCancelRequest;
     ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse getJobResponse =
         ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.getDefaultInstance();
@@ -617,6 +809,7 @@ class ConnectorCliSupportTest {
     public void startCapture(
         StartCaptureRequest request, StreamObserver<StartCaptureResponse> responseObserver) {
       startCaptureCalls.incrementAndGet();
+      lastStartCaptureRequest = request;
       responseObserver.onNext(StartCaptureResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
@@ -670,6 +863,8 @@ class ConnectorCliSupportTest {
 
   private static final class CapturingDirectoryService
       extends DirectoryServiceGrpc.DirectoryServiceImplBase {
+    String tableDisplayName = "";
+    String resolvedViewId = "view-default";
 
     @Override
     public void lookupCatalog(
@@ -688,7 +883,35 @@ class ConnectorCliSupportTest {
     @Override
     public void lookupTable(
         LookupTableRequest request, StreamObserver<LookupTableResponse> responseObserver) {
-      responseObserver.onNext(LookupTableResponse.getDefaultInstance());
+      responseObserver.onNext(
+          LookupTableResponse.newBuilder()
+              .setName(ai.floedb.floecat.common.rpc.NameRef.newBuilder().setName(tableDisplayName))
+              .build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void resolveView(
+        ResolveViewRequest request, StreamObserver<ResolveViewResponse> responseObserver) {
+      responseObserver.onNext(
+          ResolveViewResponse.newBuilder()
+              .setResourceId(ResourceId.newBuilder().setId(resolvedViewId).build())
+              .build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingSnapshotService
+      extends SnapshotServiceGrpc.SnapshotServiceImplBase {
+    long currentSnapshotId = 1L;
+
+    @Override
+    public void getSnapshot(
+        GetSnapshotRequest request, StreamObserver<GetSnapshotResponse> responseObserver) {
+      responseObserver.onNext(
+          GetSnapshotResponse.newBuilder()
+              .setSnapshot(Snapshot.newBuilder().setSnapshotId(currentSnapshotId).build())
+              .build());
       responseObserver.onCompleted();
     }
   }

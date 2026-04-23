@@ -797,7 +797,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void splitScopedReconcileMissReturnsExplicitFailure() throws Exception {
+  void splitScopedReconcileMissingDestinationTableIdReturnsExplicitFailure() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-scope-miss", "");
 
     var conn =
@@ -818,13 +818,14 @@ public class ConnectorIT {
             true,
             CaptureScope.newBuilder()
                 .setConnectorId(conn.getResourceId())
-                .setDestinationTableDisplayName("missing_table")
+                .setDestinationTableId("missing_table")
                 .build(),
             false);
 
     assertNotNull(job);
     assertEquals("JS_FAILED", job.state);
-    assertTrue(job.message.contains("No tables matched scope: missing_table"), job.message);
+    assertTrue(
+        job.message.contains("Destination table id does not exist: missing_table"), job.message);
   }
 
   @Test

@@ -442,7 +442,7 @@ public class SeedRunner {
     for (FixtureConfig fixture : fixtures) {
       ResourceId connectorId =
           seedIcebergConnector(accountId, catalogId, fixture, fixtureRoot, now);
-      syncConnector(connectorId, fixture);
+      syncConnector(accountId, catalogId, connectorId, fixture);
     }
   }
 
@@ -582,7 +582,8 @@ public class SeedRunner {
 
     for (DeltaFixtureConfig fixture : fixtures) {
       ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
-      syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+      syncConnector(
+          accountId, catalogId, connectorId, fixture.tableName(), fixture.destinationNamespace());
     }
   }
 
@@ -649,13 +650,26 @@ public class SeedRunner {
     return props;
   }
 
-  private void syncConnector(ResourceId connectorId, FixtureConfig fixture) {
-    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+  private void syncConnector(
+      ResourceId accountId, ResourceId catalogId, ResourceId connectorId, FixtureConfig fixture) {
+    syncConnector(
+        accountId, catalogId, connectorId, fixture.tableName(), fixture.destinationNamespace());
   }
 
   private void syncConnector(
-      ResourceId connectorId, String tableName, List<String> destinationNamespace) {
-    var scope = ReconcileScope.of(List.of(destinationNamespace), tableName, List.of());
+      ResourceId accountId,
+      ResourceId catalogId,
+      ResourceId connectorId,
+      String tableName,
+      List<String> destinationNamespace) {
+    var namespace =
+        namespaces
+            .getByPath(accountId.getId(), catalogId.getId(), destinationNamespace)
+            .orElse(null);
+    var scope =
+        namespace == null
+            ? ReconcileScope.empty()
+            : ReconcileScope.of(List.of(namespace.getResourceId().getId()), null);
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {

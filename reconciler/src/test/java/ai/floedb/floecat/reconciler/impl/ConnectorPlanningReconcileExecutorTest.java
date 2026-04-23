@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -67,11 +68,11 @@ class ConnectorPlanningReconcileExecutorTest {
     when(reconcilerService.planTableTasks(any(), any(), any(), any()))
         .thenReturn(
             List.of(
-                ReconcileTableTask.of("sales", "orders", "orders"),
-                ReconcileTableTask.of("sales", "customers", "customers")));
+                ReconcileTableTask.discovery("sales", "orders", "ns-1", "orders"),
+                ReconcileTableTask.discovery("sales", "customers", "ns-1", "customers")));
     when(reconcilerService.planViewTasks(any(), any(), any(), any()))
         .thenReturn(
-            List.of(ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view")));
+            List.of(ReconcileViewTask.discovery("sales", "orders_view", "ns-1", "orders_view")));
     var result =
         executor.execute(
             new ReconcileExecutor.ExecutionContext(
@@ -94,8 +95,9 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("connector-1"),
             anyBoolean(),
             eq(CaptureMode.METADATA_AND_STATS),
-            eq(ReconcileScope.empty()),
-            eq(ReconcileTableTask.of("sales", "orders", "orders")),
+            argThat(
+                scope -> scope != null && !scope.hasTableFilter() && !scope.hasNamespaceFilter()),
+            eq(ReconcileTableTask.discovery("sales", "orders", "ns-1", "orders")),
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             anyString());
@@ -105,8 +107,9 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("connector-1"),
             anyBoolean(),
             eq(CaptureMode.METADATA_AND_STATS),
-            eq(ReconcileScope.empty()),
-            eq(ReconcileTableTask.of("sales", "customers", "customers")),
+            argThat(
+                scope -> scope != null && !scope.hasTableFilter() && !scope.hasNamespaceFilter()),
+            eq(ReconcileTableTask.discovery("sales", "customers", "ns-1", "customers")),
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             anyString());
@@ -117,7 +120,7 @@ class ConnectorPlanningReconcileExecutorTest {
             anyBoolean(),
             eq(CaptureMode.METADATA_AND_STATS),
             eq(ReconcileScope.empty()),
-            eq(ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view")),
+            eq(ReconcileViewTask.discovery("sales", "orders_view", "ns-1", "orders_view")),
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             anyString());
@@ -128,9 +131,11 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
-    var scope = ReconcileScope.of(java.util.List.of(), "missing_table", java.util.List.of());
+    var scope = ReconcileScope.of(java.util.List.of(), "missing-table-id");
     var lease =
         new ReconcileJobStore.LeasedJob(
             "job-1",
@@ -166,7 +171,7 @@ class ConnectorPlanningReconcileExecutorTest {
 
     assertThat(result.ok()).isFalse();
     assertThat(result.errors).isEqualTo(1);
-    assertThat(result.message).contains("No tables matched scope: missing_table");
+    assertThat(result.message).contains("No tables matched scope: missing-table-id");
   }
 
   @Test
@@ -174,9 +179,10 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
-    var scope = ReconcileScope.of(List.of(List.of("dest", "requested_ns")), "", List.of());
+    var scope = ReconcileScope.of(List.of("requested-ns-id"), null);
     var lease =
         new ReconcileJobStore.LeasedJob(
             "job-1",
@@ -249,8 +255,7 @@ class ConnectorPlanningReconcileExecutorTest {
     when(reconcilerService.planTableTasks(any(), any(), any(), any())).thenReturn(List.of());
     when(reconcilerService.planViewTasks(any(), any(), any(), any()))
         .thenReturn(
-            List.of(ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view")));
-
+            List.of(ReconcileViewTask.discovery("sales", "orders_view", "ns-1", "orders_view")));
     var result =
         executor.execute(
             new ReconcileExecutor.ExecutionContext(
@@ -288,7 +293,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "connector-1",
             false,
             CaptureMode.STATS_ONLY,
-            ReconcileScope.of(java.util.List.of(), "trino_test", java.util.List.of()),
+            ReconcileScope.of(java.util.List.of(), "trino_test"),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
             "",
@@ -298,7 +303,8 @@ class ConnectorPlanningReconcileExecutorTest {
             "");
 
     when(reconcilerService.planTableTasks(any(), any(), any(), any()))
-        .thenReturn(List.of(ReconcileTableTask.of("iceberg", "trino_test", "trino_test")));
+        .thenReturn(
+            List.of(ReconcileTableTask.of("iceberg", "trino_test", "trino-test-id", "trino_test")));
 
     var result =
         executor.execute(

@@ -17,148 +17,185 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import java.util.List;
+import java.util.Objects;
 
 /** Scope constraints for a reconcile job (namespaces, tables, and optional stats-target hints). */
 public final class ReconcileScope {
-  private static final ReconcileScope EMPTY =
-      new ReconcileScope(List.of(), null, List.of(), List.of(), List.of());
+  private static final ReconcileScope EMPTY = new ReconcileScope(List.of(), null, null, List.of());
 
-  private final List<List<String>> destinationNamespacePaths;
-  private final String destinationTableDisplayName;
-  private final List<String> destinationTableColumns;
-  private final List<Long> destinationSnapshotIds;
-  private final List<String> destinationStatsTargets;
+  private final List<String> destinationNamespaceIds;
+  private final String destinationTableId;
+  private final String destinationViewId;
+  private final List<ScopedStatsRequest> destinationStatsRequests;
+
+  public record ScopedStatsRequest(
+      String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
+    public ScopedStatsRequest {
+      tableId = tableId == null ? "" : tableId.trim();
+      targetSpec = targetSpec == null ? "" : targetSpec.trim();
+      columnSelectors =
+          columnSelectors == null
+              ? List.of()
+              : columnSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .sorted()
+                  .toList();
+    }
+  }
 
   private ReconcileScope(
-      List<List<String>> destinationNamespacePaths,
-      String destinationTableDisplayName,
-      List<String> destinationTableColumns,
-      List<Long> destinationSnapshotIds,
-      List<String> destinationStatsTargets) {
-    if (destinationNamespacePaths == null || destinationNamespacePaths.isEmpty()) {
-      this.destinationNamespacePaths = List.of();
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      String destinationViewId,
+      List<ScopedStatsRequest> destinationStatsRequests) {
+    if (destinationNamespaceIds == null || destinationNamespaceIds.isEmpty()) {
+      this.destinationNamespaceIds = List.of();
     } else {
-      this.destinationNamespacePaths =
-          destinationNamespacePaths.stream()
-              .filter(path -> path != null && !path.isEmpty())
-              .map(List::copyOf)
+      this.destinationNamespaceIds =
+          destinationNamespaceIds.stream()
+              .filter(namespaceId -> namespaceId != null && !namespaceId.isBlank())
+              .map(String::trim)
+              .distinct()
               .toList();
     }
 
-    this.destinationTableDisplayName =
-        (destinationTableDisplayName == null || destinationTableDisplayName.isBlank())
+    this.destinationTableId =
+        (destinationTableId == null || destinationTableId.isBlank())
             ? null
-            : destinationTableDisplayName;
+            : destinationTableId.trim();
+    this.destinationViewId =
+        (destinationViewId == null || destinationViewId.isBlank())
+            ? null
+            : destinationViewId.trim();
 
-    this.destinationTableColumns =
-        destinationTableColumns == null ? List.of() : List.copyOf(destinationTableColumns);
-    this.destinationSnapshotIds =
-        destinationSnapshotIds == null
+    this.destinationStatsRequests =
+        destinationStatsRequests == null
             ? List.of()
-            : destinationSnapshotIds.stream().filter(id -> id != null && id >= 0L).toList();
-    this.destinationStatsTargets =
-        destinationStatsTargets == null ? List.of() : List.copyOf(destinationStatsTargets);
+            : destinationStatsRequests.stream()
+                .filter(Objects::nonNull)
+                .map(
+                    request ->
+                        new ScopedStatsRequest(
+                            request.tableId(),
+                            request.snapshotId(),
+                            request.targetSpec(),
+                            request.columnSelectors()))
+                .distinct()
+                .toList();
+
+    if (this.destinationTableId != null && !this.destinationNamespaceIds.isEmpty()) {
+      throw new IllegalArgumentException(
+          "destinationTableId cannot be combined with destinationNamespaceIds");
+    }
+    if (this.destinationViewId != null && !this.destinationNamespaceIds.isEmpty()) {
+      throw new IllegalArgumentException(
+          "destinationViewId cannot be combined with destinationNamespaceIds");
+    }
+    if (this.destinationTableId != null && this.destinationViewId != null) {
+      throw new IllegalArgumentException(
+          "destinationTableId cannot be combined with destinationViewId");
+    }
+    if (this.destinationViewId != null && !this.destinationStatsRequests.isEmpty()) {
+      throw new IllegalArgumentException(
+          "destinationViewId cannot be combined with destinationStatsRequests");
+    }
   }
 
   public static ReconcileScope empty() {
     return EMPTY;
   }
 
-  public static ReconcileScope of(
-      List<List<String>> destinationNamespacePaths,
-      String destinationTableDisplayName,
-      List<String> destinationTableColumns) {
-    return of(
-        destinationNamespacePaths,
-        destinationTableDisplayName,
-        destinationTableColumns,
-        List.of(),
-        List.of());
+  public static ReconcileScope of(List<String> destinationNamespaceIds, String destinationTableId) {
+    return of(destinationNamespaceIds, destinationTableId, null, List.of());
+  }
+
+  public static ReconcileScope ofView(
+      List<String> destinationNamespaceIds, String destinationViewId) {
+    return of(destinationNamespaceIds, null, destinationViewId, List.of());
   }
 
   public static ReconcileScope of(
-      List<List<String>> destinationNamespacePaths,
-      String destinationTableDisplayName,
-      List<String> destinationTableColumns,
-      List<Long> destinationSnapshotIds,
-      List<String> destinationStatsTargets) {
-    if ((destinationNamespacePaths == null || destinationNamespacePaths.isEmpty())
-        && (destinationTableDisplayName == null || destinationTableDisplayName.isBlank())
-        && (destinationTableColumns == null || destinationTableColumns.isEmpty())
-        && (destinationSnapshotIds == null || destinationSnapshotIds.isEmpty())
-        && (destinationStatsTargets == null || destinationStatsTargets.isEmpty())) {
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      List<ScopedStatsRequest> destinationStatsRequests) {
+    return of(destinationNamespaceIds, destinationTableId, null, destinationStatsRequests);
+  }
+
+  public static ReconcileScope of(
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      String destinationViewId,
+      List<ScopedStatsRequest> destinationStatsRequests) {
+    if ((destinationNamespaceIds == null || destinationNamespaceIds.isEmpty())
+        && (destinationTableId == null || destinationTableId.isBlank())
+        && (destinationViewId == null || destinationViewId.isBlank())
+        && (destinationStatsRequests == null || destinationStatsRequests.isEmpty())) {
       return EMPTY;
     }
     return new ReconcileScope(
-        destinationNamespacePaths,
-        destinationTableDisplayName,
-        destinationTableColumns,
-        destinationSnapshotIds,
-        destinationStatsTargets);
+        destinationNamespaceIds, destinationTableId, destinationViewId, destinationStatsRequests);
   }
 
-  public List<List<String>> destinationNamespacePaths() {
-    return destinationNamespacePaths;
+  public List<String> destinationNamespaceIds() {
+    return destinationNamespaceIds;
   }
 
-  public String destinationTableDisplayName() {
-    return destinationTableDisplayName;
+  public String destinationTableId() {
+    return destinationTableId;
   }
 
-  public List<String> destinationTableColumns() {
-    return destinationTableColumns;
+  public String destinationViewId() {
+    return destinationViewId;
   }
 
-  public List<Long> destinationSnapshotIds() {
-    return destinationSnapshotIds;
-  }
-
-  public List<String> destinationStatsTargets() {
-    return destinationStatsTargets;
+  public List<ScopedStatsRequest> destinationStatsRequests() {
+    return destinationStatsRequests;
   }
 
   public boolean hasNamespaceFilter() {
-    return !destinationNamespacePaths.isEmpty();
+    return !destinationNamespaceIds.isEmpty();
   }
 
   public boolean hasTableFilter() {
-    return destinationTableDisplayName != null;
+    return destinationTableId != null;
   }
 
-  public boolean matchesNamespace(String namespaceFq) {
+  public boolean hasViewFilter() {
+    return destinationViewId != null;
+  }
+
+  public boolean matchesNamespaceId(String namespaceId) {
     if (!hasNamespaceFilter()) {
       return true;
     }
-    if (namespaceFq == null || namespaceFq.isBlank()) {
+    if (namespaceId == null || namespaceId.isBlank()) {
       return false;
     }
-    for (List<String> path : destinationNamespacePaths) {
-      if (String.join(".", path).equals(namespaceFq)) {
-        return true;
-      }
-    }
-    return false;
+    return destinationNamespaceIds.contains(namespaceId);
   }
 
-  public boolean acceptsTable(String namespaceFq, String tableDisplayName) {
-    if (!matchesNamespace(namespaceFq)) {
+  public boolean acceptsTable(String namespaceId, String tableId) {
+    if (!matchesNamespaceId(namespaceId)) {
       return false;
     }
     if (!hasTableFilter()) {
       return true;
     }
-    return destinationTableDisplayName.equals(tableDisplayName);
+    return destinationTableId.equals(tableId);
   }
 
-  public boolean hasColumnFilter() {
-    return !destinationTableColumns.isEmpty();
+  public boolean acceptsView(String namespaceId, String viewId) {
+    if (!matchesNamespaceId(namespaceId)) {
+      return false;
+    }
+    if (!hasViewFilter()) {
+      return true;
+    }
+    return destinationViewId.equals(viewId);
   }
 
-  public boolean hasSnapshotFilter() {
-    return !destinationSnapshotIds.isEmpty();
-  }
-
-  public boolean hasStatsTargetFilter() {
-    return !destinationStatsTargets.isEmpty();
+  public boolean hasStatsRequestFilter() {
+    return !destinationStatsRequests.isEmpty();
   }
 }

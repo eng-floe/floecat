@@ -21,6 +21,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -119,47 +121,41 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
     long statsProcessed = 0L;
 
     try {
-      List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks =
-          reconcilerService.planTableTasks(principal, connectorId, lease.scope, null);
-      List<ReconcileViewTask> viewTasks =
-          lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
-              ? List.of()
-              : reconcilerService.planViewTasks(principal, connectorId, lease.scope, null);
-      ensureExecutionExecutorAvailable(tableTasks, viewTasks);
-      if (tableTasks.isEmpty()
-          && viewTasks.isEmpty()
-          && lease.scope != null
-          && lease.scope.hasTableFilter()) {
-        return ExecutionResult.failure(
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            "No tables matched scope: " + lease.scope.destinationTableDisplayName(),
-            new IllegalArgumentException(
-                "No tables matched scope: " + lease.scope.destinationTableDisplayName()));
-      }
-      for (var task : tableTasks) {
+      ReconcileScope scope = lease.scope == null ? ReconcileScope.empty() : lease.scope;
+      if (scope.hasTableFilter()) {
+        var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
+        ensureTableExecutorAvailable();
+        if (tableTasks.isEmpty()) {
+          return ExecutionResult.failure(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              "No tables matched scope: " + scope.destinationTableId(),
+              new IllegalArgumentException(
+                  "No tables matched scope: " + scope.destinationTableId()));
+        }
+        var task = tableTasks.getFirst();
         if (context.shouldStop().getAsBoolean()) {
-          return ExecutionResult.cancelled(
+          return cancelled(
               tablesPlanned,
               changed,
               viewsPlanned,
               viewsChanged,
               errors,
               snapshotsProcessed,
-              statsProcessed,
-              "Cancelled");
+              statsProcessed);
         }
         jobs.enqueueTableExecution(
             lease.accountId,
             lease.connectorId,
             lease.fullRescan,
             lease.captureMode,
-            lease.scope,
+            ReconcileScope.of(
+                List.of(), scope.destinationTableId(), scope.destinationStatsRequests()),
             task,
             lease.executionPolicy,
             lease.jobId,
@@ -177,25 +173,41 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 0,
                 0,
                 "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
-      }
-      for (var task : viewTasks) {
+      } else if (scope.hasViewFilter()) {
+        List<ReconcileViewTask> viewTasks =
+            lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
+                ? List.of()
+                : reconcilerService.planViewTasks(principal, connectorId, scope, null);
+        ensureViewExecutorAvailable();
+        if (viewTasks.isEmpty()) {
+          return ExecutionResult.failure(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              "No views matched scope: " + scope.destinationViewId(),
+              new IllegalArgumentException("No views matched scope: " + scope.destinationViewId()));
+        }
+        var task = viewTasks.getFirst();
         if (context.shouldStop().getAsBoolean()) {
-          return ExecutionResult.cancelled(
+          return cancelled(
               tablesPlanned,
               changed,
               viewsPlanned,
               viewsChanged,
               errors,
               snapshotsProcessed,
-              statsProcessed,
-              "Cancelled");
+              statsProcessed);
         }
         jobs.enqueueViewExecution(
             lease.accountId,
             lease.connectorId,
             lease.fullRescan,
             lease.captureMode,
-            lease.scope,
+            ReconcileScope.ofView(List.of(), scope.destinationViewId()),
             task,
             lease.executionPolicy,
             lease.jobId,
@@ -213,17 +225,95 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 0,
                 0,
                 "Planned view " + task.sourceNamespace() + "." + task.sourceView());
+      } else {
+        var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
+        List<ReconcileViewTask> viewTasks =
+            lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
+                ? List.of()
+                : reconcilerService.planViewTasks(principal, connectorId, scope, null);
+        ensureExecutionExecutorAvailable(tableTasks, viewTasks, false);
+        if (lease.captureMode != ReconcilerService.CaptureMode.STATS_ONLY) {
+          for (ReconcileViewTask task : viewTasks) {
+            if (context.shouldStop().getAsBoolean()) {
+              return cancelled(
+                  tablesPlanned,
+                  changed,
+                  viewsPlanned,
+                  viewsChanged,
+                  errors,
+                  snapshotsProcessed,
+                  statsProcessed);
+            }
+            jobs.enqueueViewExecution(
+                lease.accountId,
+                lease.connectorId,
+                lease.fullRescan,
+                lease.captureMode,
+                scope,
+                task,
+                lease.executionPolicy,
+                lease.jobId,
+                executionPinnedExecutorId);
+            planned++;
+            viewsPlanned++;
+            context
+                .progressListener()
+                .onProgress(
+                    tablesPlanned,
+                    0,
+                    viewsPlanned,
+                    0,
+                    0,
+                    0,
+                    0,
+                    "Planned view " + task.sourceNamespace() + "." + task.sourceView());
+          }
+        }
+        for (ReconcileTableTask task : tableTasks) {
+          if (context.shouldStop().getAsBoolean()) {
+            return cancelled(
+                tablesPlanned,
+                changed,
+                viewsPlanned,
+                viewsChanged,
+                errors,
+                snapshotsProcessed,
+                statsProcessed);
+          }
+          jobs.enqueueTableExecution(
+              lease.accountId,
+              lease.connectorId,
+              lease.fullRescan,
+              lease.captureMode,
+              scope,
+              task,
+              lease.executionPolicy,
+              lease.jobId,
+              executionPinnedExecutorId);
+          planned++;
+          tablesPlanned++;
+          context
+              .progressListener()
+              .onProgress(
+                  tablesPlanned,
+                  0,
+                  viewsPlanned,
+                  0,
+                  0,
+                  0,
+                  0,
+                  "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
+        }
       }
       if (context.shouldStop().getAsBoolean()) {
-        return ExecutionResult.cancelled(
+        return cancelled(
             tablesPlanned,
             changed,
             viewsPlanned,
             viewsChanged,
             errors,
             snapshotsProcessed,
-            statsProcessed,
-            "Cancelled");
+            statsProcessed);
       }
       return ExecutionResult.success(
           tablesPlanned,
@@ -256,18 +346,54 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
 
   private void ensureExecutionExecutorAvailable(
       List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks,
-      List<ReconcileViewTask> viewTasks) {
+      List<ReconcileViewTask> viewTasks,
+      boolean namespaceViewExecution) {
     if (!tableTasks.isEmpty()
         && (executorRegistry == null
             || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))) {
       throw new IllegalStateException(
           "No enabled reconcile executor is available for EXEC_TABLE jobs");
     }
-    if (!viewTasks.isEmpty()
+    if ((!viewTasks.isEmpty() || namespaceViewExecution)
         && (executorRegistry == null
             || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))) {
       throw new IllegalStateException(
           "No enabled reconcile executor is available for EXEC_VIEW jobs");
     }
+  }
+
+  private void ensureTableExecutorAvailable() {
+    if (executorRegistry == null
+        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)) {
+      throw new IllegalStateException(
+          "No enabled reconcile executor is available for EXEC_TABLE jobs");
+    }
+  }
+
+  private void ensureViewExecutorAvailable() {
+    if (executorRegistry == null
+        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)) {
+      throw new IllegalStateException(
+          "No enabled reconcile executor is available for EXEC_VIEW jobs");
+    }
+  }
+
+  private static ExecutionResult cancelled(
+      long tablesPlanned,
+      long changed,
+      long viewsPlanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    return ExecutionResult.cancelled(
+        tablesPlanned,
+        changed,
+        viewsPlanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed,
+        "Cancelled");
   }
 }

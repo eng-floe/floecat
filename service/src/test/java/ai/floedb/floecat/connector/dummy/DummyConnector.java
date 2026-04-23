@@ -28,6 +28,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -283,24 +284,38 @@ public final class DummyConnector implements FloecatConnector {
 
   @Override
   public List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    return configuredView(namespaceFq, options.getOrDefault("dummy.view.name", "dummy_view"))
+        .stream()
+        .toList();
+  }
+
+  @Override
+  public Optional<ViewDescriptor> describeView(String namespaceFq, String name) {
+    return configuredView(namespaceFq, name);
+  }
+
+  private Optional<ViewDescriptor> configuredView(String namespaceFq, String name) {
     if (!Boolean.parseBoolean(options.getOrDefault("dummy.view.enabled", "false"))) {
-      return List.of();
+      return Optional.empty();
     }
     String configuredNamespace = options.getOrDefault("dummy.view.namespace", namespaceFq);
     if (!configuredNamespace.equals(namespaceFq)) {
-      return List.of();
+      return Optional.empty();
     }
-    String viewName = options.getOrDefault("dummy.view.name", "dummy_view");
+    String configuredViewName = options.getOrDefault("dummy.view.name", "dummy_view");
+    if (!configuredViewName.equals(name)) {
+      return Optional.empty();
+    }
     String sql =
         options.getOrDefault("dummy.view.sql", "SELECT id FROM " + namespaceFq + ".events");
     String schemaJson =
         options.getOrDefault(
             "dummy.view.schema_json",
             "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"long\",\"required\":false}]}");
-    return List.of(
+    return Optional.of(
         new ViewDescriptor(
             namespaceFq,
-            viewName,
+            configuredViewName,
             sql,
             options.getOrDefault("dummy.view.dialect", "spark"),
             List.of(namespaceFq),
