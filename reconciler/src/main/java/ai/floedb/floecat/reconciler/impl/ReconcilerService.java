@@ -326,7 +326,7 @@ public class ReconcilerService {
       String sourceNsFq = fq(source.getNamespace().getSegmentsList());
       String destNsFq;
       String tableDisplayHint;
-      ResourceId destNamespaceId;
+      Optional<ResourceId> destNamespaceId;
       destNsFq =
           dest.hasNamespaceId()
               ? resolveNamespaceFq(ctx, dest.getNamespaceId())
@@ -337,9 +337,7 @@ public class ReconcilerService {
           dest.getTableDisplayName() == null || dest.getTableDisplayName().isBlank()
               ? null
               : dest.getTableDisplayName();
-      destNamespaceId =
-          lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq)
-              .orElseGet(() -> ensureNamespace(ctx, destCatalogId, destNsFq));
+      destNamespaceId = lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
 
       if (dest.hasTableId() && (source.getTable() == null || source.getTable().isBlank())) {
         throw new IllegalArgumentException(
@@ -358,7 +356,7 @@ public class ReconcilerService {
                       destinationNamespacePlanningPaths(destNsFq),
                       null))
               .stream()
-              .filter(task -> matchesPlannedNamespaceScope(destNamespaceId, scope))
+              .filter(task -> matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope))
               .toList();
       if (dest.hasTableId()) {
         return List.of(pinnedDestinationTableTask(dest.getTableId(), planned));
@@ -369,11 +367,11 @@ public class ReconcilerService {
                   ReconcileTableTask.discovery(
                       task.sourceNamespaceFq(),
                       task.sourceTable(),
-                      destNamespaceId.getId(),
+                      destNamespaceId.map(ResourceId::getId).orElse(""),
                       lookupDestinationTableIdByName(
                               ctx,
                               destCatalogId,
-                              destNamespaceId,
+                              destNamespaceId.orElse(null),
                               destNsFq,
                               task.destinationTableDisplayName())
                           .map(ResourceId::getId)
@@ -430,10 +428,9 @@ public class ReconcilerService {
               : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
                   ? fq(dest.getNamespace().getSegmentsList())
                   : sourceNsFq;
-      ResourceId destNamespaceId =
-          lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq)
-              .orElseGet(() -> ensureNamespace(ctx, destCatalogId, destNsFq));
-      if (!matchesPlannedNamespaceScope(destNamespaceId, scope)) {
+      Optional<ResourceId> destNamespaceId =
+          lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
+      if (!matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope)) {
         return List.of();
       }
       return connector
@@ -446,11 +443,11 @@ public class ReconcilerService {
                   ReconcileViewTask.discovery(
                       task.sourceNamespaceFq(),
                       task.sourceView(),
-                      destNamespaceId.getId(),
+                      destNamespaceId.map(ResourceId::getId).orElse(""),
                       lookupDestinationViewIdByName(
                               ctx,
                               destCatalogId,
-                              destNamespaceId,
+                              destNamespaceId.orElse(null),
                               destNsFq,
                               task.destinationViewDisplayName())
                           .map(ResourceId::getId)
@@ -673,18 +670,6 @@ public class ReconcilerService {
           new IllegalArgumentException(
               "sourceNamespace and sourceView are required for discovery view reconcile"));
     }
-    if (viewTask.destinationNamespaceId().isBlank()) {
-      return new Result(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          new IllegalArgumentException(
-              "destinationNamespaceId is required for discovery view reconcile"));
-    }
     if (scope.hasTableFilter() || scope.hasViewFilter()) {
       return new Result(
           0,
@@ -710,11 +695,12 @@ public class ReconcilerService {
     }
 
     ResourceId destNamespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(connectorId.getAccountId())
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(viewTask.destinationNamespaceId())
-            .build();
+        resolveDiscoveryNamespaceId(
+            ctx,
+            connectorId,
+            active.source(),
+            active.destination(),
+            viewTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
       return new Result(
           0,
@@ -1261,11 +1247,12 @@ public class ReconcilerService {
     }
 
     ResourceId destNamespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(connectorId.getAccountId())
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(tableTask.destinationNamespaceId())
-            .build();
+        resolveDiscoveryNamespaceId(
+            ctx,
+            connectorId,
+            active.source(),
+            active.destination(),
+            tableTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
       return new Result(
           0,
@@ -2518,6 +2505,27 @@ public class ReconcilerService {
     return backend.resolveNamespaceFq(ctx, namespaceId);
   }
 
+  private ResourceId resolveDiscoveryNamespaceId(
+      ReconcileContext ctx,
+      ResourceId connectorId,
+      SourceSelector source,
+      DestinationTarget destination,
+      String destinationNamespaceId) {
+    if (!blank(destinationNamespaceId)) {
+      return destinationResourceId(connectorId, ResourceKind.RK_NAMESPACE, destinationNamespaceId);
+    }
+    ResourceId destCatalogId = destination.getCatalogId();
+    String destNamespaceFq =
+        destination.hasNamespaceId()
+            ? resolveNamespaceFq(ctx, destination.getNamespaceId())
+            : (destination.hasNamespace()
+                    && !destination.getNamespace().getSegmentsList().isEmpty())
+                ? fq(destination.getNamespace().getSegmentsList())
+                : fq(source.getNamespace().getSegmentsList());
+    return lookupDestinationNamespaceId(ctx, destCatalogId, destination, destNamespaceFq)
+        .orElseGet(() -> ensureNamespace(ctx, destCatalogId, destNamespaceFq));
+  }
+
   private ReconcileTableTask planStrictTableTask(
       ReconcileContext ctx,
       ResourceId connectorId,
@@ -2532,7 +2540,22 @@ public class ReconcilerService {
           "Destination table id " + destinationTableId + " is missing persisted source identity");
     }
     validateSourceConnector(metadata.sourceConnectorId(), connectorId, "destination table id");
-    connector.describe(sourceBinding.namespace(), sourceBinding.name());
+    try {
+      FloecatConnector.TableDescriptor ignored =
+          connector.describe(sourceBinding.namespace(), sourceBinding.name());
+      if (ignored == null) {
+        throw new IllegalArgumentException(
+            "Table not found: " + sourceBinding.namespace() + "." + sourceBinding.name());
+      }
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      if (isMissingTableFailure(e)) {
+        throw new IllegalArgumentException(
+            "Table not found: " + sourceBinding.namespace() + "." + sourceBinding.name(), e);
+      }
+      throw e;
+    }
     return ReconcileTableTask.of(
         sourceBinding.namespace(),
         sourceBinding.name(),
@@ -2741,7 +2764,13 @@ public class ReconcilerService {
     if (scope == null || !scope.hasNamespaceFilter()) {
       return true;
     }
-    return destNamespaceId != null && scope.matchesNamespaceId(destNamespaceId.getId());
+    // Planning is read-only and may run before discovery execution creates the destination
+    // namespace. When the configured namespace cannot be resolved yet, allow planning to proceed
+    // and let execution enforce the concrete namespace id after resolution.
+    if (destNamespaceId == null) {
+      return true;
+    }
+    return scope.matchesNamespaceId(destNamespaceId.getId());
   }
 
   private ReconcileTableTask pinnedDestinationTableTask(
@@ -2781,6 +2810,27 @@ public class ReconcilerService {
       return cls;
     }
     return cls + ": " + m;
+  }
+
+  private static boolean isMissingTableFailure(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    String className = t.getClass().getName();
+    if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchObjectException")
+        || className.endsWith("NotFoundException")) {
+      return true;
+    }
+    String message = t.getMessage();
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    String normalized = message.toLowerCase();
+    return normalized.contains("http 404")
+        || normalized.contains("status 404")
+        || normalized.contains("not found")
+        || normalized.contains("does not exist");
   }
 
   private static String fq(List<String> segments) {
@@ -3038,9 +3088,6 @@ public class ReconcilerService {
     if (task.sourceNamespace().isBlank() || task.sourceTable().isBlank()) {
       return Optional.of(
           "sourceNamespace and sourceTable are required for discovery table reconcile");
-    }
-    if (task.destinationNamespaceId().isBlank()) {
-      return Optional.of("destinationNamespaceId is required for discovery table reconcile");
     }
     if (scope != null && (scope.hasTableFilter() || scope.hasViewFilter())) {
       return Optional.of(
