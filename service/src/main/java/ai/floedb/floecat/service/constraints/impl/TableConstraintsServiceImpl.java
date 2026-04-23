@@ -185,13 +185,15 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
                   if (idempotencyKey == null) {
-                    constraints.putSnapshotConstraints(
-                        request.getTableId(), request.getSnapshotId(), normalized);
+                    boolean changed =
+                        constraints.putSnapshotConstraints(
+                            request.getTableId(), request.getSnapshotId(), normalized);
                     var meta =
                         constraints.metaFor(request.getTableId(), request.getSnapshotId(), tsNow);
                     return PutTableConstraintsResponse.newBuilder()
                         .setConstraints(normalized)
                         .setMeta(meta)
+                        .setChanged(changed)
                         .build();
                   }
 
@@ -204,24 +206,28 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    constraints.putSnapshotConstraints(
-                                        request.getTableId(), request.getSnapshotId(), normalized);
+                                    boolean changed =
+                                        constraints.putSnapshotConstraints(
+                                            request.getTableId(),
+                                            request.getSnapshotId(),
+                                            normalized);
                                     return new IdempotencyGuard.CreateResult<>(
-                                        normalized, request.getTableId());
+                                        PutTableConstraintsResponse.newBuilder()
+                                            .setConstraints(normalized)
+                                            .setChanged(changed)
+                                            .build(),
+                                        request.getTableId());
                                   },
-                                  ignored ->
+                                  response ->
                                       constraints.metaFor(
                                           request.getTableId(), request.getSnapshotId(), tsNow),
                                   idempotencyStore,
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  SnapshotConstraints::parseFrom));
+                                  PutTableConstraintsResponse::parseFrom));
 
-                  return PutTableConstraintsResponse.newBuilder()
-                      .setConstraints(normalized)
-                      .setMeta(result.meta)
-                      .build();
+                  return result.body.toBuilder().setMeta(result.meta).build();
                 }),
             correlationId())
         .onFailure()

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,21 +24,45 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReconcileScopeTest {
+  private static final String NAMESPACE_ID = "ns-1";
+  private static final String TABLE_ID = "tbl-1";
 
   @Test
-  void namespaceMatchingAcceptsSegmentedAndFqSingleSegmentPaths() {
-    ReconcileScope segmented = ReconcileScope.of(List.of(List.of("dest", "ns")), null, List.of());
-    ReconcileScope fqSingle = ReconcileScope.of(List.of(List.of("dest.ns")), null, List.of());
+  void namespaceMatchingUsesNamespaceIds() {
+    ReconcileScope scope = ReconcileScope.of(List.of(NAMESPACE_ID), null);
 
-    assertTrue(segmented.matchesNamespace("dest.ns"));
-    assertTrue(fqSingle.matchesNamespace("dest.ns"));
+    assertTrue(scope.matchesNamespaceId(NAMESPACE_ID));
+    assertFalse(scope.matchesNamespaceId("ns-2"));
   }
 
   @Test
   void tableAcceptanceRequiresMatchingTableWhenTableFilterPresent() {
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest", "ns")), "tbl", List.of());
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID);
 
-    assertTrue(scope.acceptsTable("dest.ns", "tbl"));
-    assertFalse(scope.acceptsTable("dest.ns", "other"));
+    assertTrue(scope.acceptsTable("ignored", TABLE_ID));
+    assertFalse(scope.acceptsTable("ignored", "other"));
+  }
+
+  @Test
+  void storesExplicitStatsRequests() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(
+                scopedStatsRequest(TABLE_ID, 10L, "table", List.of()),
+                scopedStatsRequest(TABLE_ID, 11L, "column:7", List.of())));
+
+    assertTrue(scope.hasStatsRequestFilter());
+    assertEquals(
+        List.of(
+            scopedStatsRequest(TABLE_ID, 10L, "table", List.of()),
+            scopedStatsRequest(TABLE_ID, 11L, "column:7", List.of())),
+        scope.destinationStatsRequests());
+  }
+
+  private static ReconcileScope.ScopedStatsRequest scopedStatsRequest(
+      String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
+    return new ReconcileScope.ScopedStatsRequest(tableId, snapshotId, targetSpec, columnSelectors);
   }
 }

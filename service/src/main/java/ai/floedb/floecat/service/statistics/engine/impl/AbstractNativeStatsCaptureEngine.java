@@ -35,9 +35,13 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
@@ -48,6 +52,7 @@ import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -64,7 +69,10 @@ import org.jboss.logging.Logger;
 /**
  * Shared connector-backed capture flow for native statistics engines.
  *
- * <p>PR6 scope: resolves TABLE, COLUMN, and FILE targets.
+ * <p>Resolves TABLE, COLUMN, and FILE targets.
+ *
+ * <p>When a batch includes a TABLE request, native capture may persist additional COLUMN/FILE
+ * records returned by the connector as an opportunistic single-pass optimization.
  */
 abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
   private static final int STATS_PERSIST_QUEUE_CAPACITY = 2_048;
@@ -102,93 +110,130 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
 
   @Override
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    // Delta tables can legitimately use snapshot id 0.
-    if (request.snapshotId() < 0L) {
-      return Optional.empty();
+    StatsCaptureBatchItemResult item =
+        captureBatch(StatsCaptureBatchRequest.of(request)).results().getFirst();
+    return item.captureResult();
+  }
+
+  @Override
+  public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+    List<StatsCaptureRequest> requests = batchRequest.requests();
+    List<StatsCaptureBatchItemResult> results = new ArrayList<>(requests.size());
+    for (int i = 0; i < requests.size(); i++) {
+      results.add(null);
     }
-    try {
-      Optional<Table> table = tableRepository.getById(request.tableId());
-      if (table.isEmpty() || !table.get().hasUpstream()) {
-        return Optional.empty();
+
+    Map<CaptureGroupKey, List<Integer>> grouped = new LinkedHashMap<>();
+    for (int i = 0; i < requests.size(); i++) {
+      StatsCaptureRequest request = requests.get(i);
+      if (request.snapshotId() < 0L) {
+        results.set(i, StatsCaptureBatchItemResult.uncapturable(request, "invalid snapshot id"));
+        continue;
       }
-      UpstreamRef upstream = table.get().getUpstream();
-      if (!upstream.hasConnectorId()
-          || upstream.getNamespacePathCount() == 0
-          || upstream.getTableDisplayName().isBlank()) {
-        return Optional.empty();
+      grouped
+          .computeIfAbsent(
+              new CaptureGroupKey(request.tableId(), request.snapshotId(), request.executionMode()),
+              ignored -> new ArrayList<>())
+          .add(i);
+    }
+
+    for (Map.Entry<CaptureGroupKey, List<Integer>> entry : grouped.entrySet()) {
+      List<Integer> indexes = entry.getValue();
+      StatsCaptureRequest representative = requests.get(indexes.getFirst());
+      Optional<CaptureContext> captureContext = resolveContext(representative);
+      if (captureContext.isEmpty()) {
+        for (int idx : indexes) {
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.uncapturable(requests.get(idx), "no capture context"));
+        }
+        continue;
       }
 
-      Optional<Connector> connector = connectorRepository.getById(upstream.getConnectorId());
-      if (connector.isEmpty()) {
-        return Optional.empty();
-      }
-
-      ConnectorConfig baseConfig = ConnectorConfigMapper.fromProto(connector.get());
-      if (!supportsKind(baseConfig.kind())) {
-        return Optional.empty();
-      }
-      ConnectorConfig resolved =
-          resolveCredentials(
-              decorateConnectorConfig(baseConfig),
-              connector.get().hasAuth()
-                  ? connector.get().getAuth()
-                  : AuthConfig.getDefaultInstance(),
-              upstream.getConnectorId());
-
-      try (FloecatConnector floecatConnector = connectorOpener.open(resolved)) {
-        String namespaceFq = String.join(".", upstream.getNamespacePathList());
+      try (FloecatConnector floecatConnector =
+          connectorOpener.open(captureContext.get().resolvedConfig())) {
+        Set<String> selectors = unionSelectors(requests, indexes);
+        Set<StatsTargetKind> requestedTargetKinds = requestedTargetKinds(requests, indexes);
         List<TargetStatsRecord> capturedRecords =
             floecatConnector.captureSnapshotTargetStats(
-                namespaceFq,
-                upstream.getTableDisplayName(),
-                request.tableId(),
-                request.snapshotId(),
-                request.columnSelectors());
+                captureContext.get().namespaceFq(),
+                captureContext.get().tableDisplayName(),
+                representative.tableId(),
+                representative.snapshotId(),
+                selectors,
+                requestedTargetKinds);
         if (capturedRecords == null || capturedRecords.isEmpty()) {
-          return Optional.empty();
-        }
-        Optional<TargetStatsRecord> record = findMatchingRecord(capturedRecords, request);
-        if (record.isEmpty()) {
-          return Optional.empty();
-        }
-        TargetStatsRecord canonicalRecord = withCanonicalMetadata(record.get(), request);
-        if (request.target().hasTable()) {
-          // Table-target capture persists the full snapshot capture so later column/file lookups
-          // hit store without additional capture. Replace the table entry with the matched
-          // canonical record.
-          Set<String> seenTargets = new LinkedHashSet<>();
-          List<TargetStatsRecord> persistCandidates = new ArrayList<>();
-          for (TargetStatsRecord bundleRecord : capturedRecords) {
-            TargetStatsRecord toPersist =
-                bundleRecord.hasTable()
-                    ? canonicalRecord
-                    : withCanonicalMetadata(bundleRecord, request);
-            String persistKey = persistInFlightKey(toPersist);
-            if (seenTargets.add(persistKey)) {
-              persistCandidates.add(toPersist);
-            }
+          for (int idx : indexes) {
+            results.set(
+                idx,
+                StatsCaptureBatchItemResult.uncapturable(requests.get(idx), "no capture result"));
           }
-          PersistSchedule schedule = enqueueStatsPersistence(persistCandidates);
-          publishStatsPersistTelemetry(
-              request, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
-        } else {
-          PersistSchedule schedule = enqueueStatsPersistence(List.of(canonicalRecord));
-          publishStatsPersistTelemetry(
-              request, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
+          continue;
         }
-        return Optional.of(
-            StatsCaptureResult.forRecord(
-                id(), canonicalRecord, Map.of("source", "native_connector")));
+
+        Optional<Integer> tableRequestIndex =
+            indexes.stream()
+                .filter(idx -> requests.get(idx).target().hasTable())
+                .filter(idx -> findMatchingRecord(capturedRecords, requests.get(idx)).isPresent())
+                .findFirst();
+
+        Set<String> persisted = new HashSet<>();
+        // If TABLE target is in this group and was returned by the connector, persist the full
+        // bundle atomically. Otherwise, fall through to per-target persistence below.
+        if (tableRequestIndex.isPresent()) {
+          StatsCaptureRequest tableRequest = requests.get(tableRequestIndex.get());
+          Optional<TargetStatsRecord> matchedTable =
+              findMatchingRecord(capturedRecords, tableRequest);
+          if (matchedTable.isPresent()) {
+            TargetStatsRecord canonicalTable =
+                withCanonicalMetadata(matchedTable.get(), tableRequest);
+            int extraRecords = Math.max(capturedRecords.size() - 1, 0);
+            if (extraRecords > 0 && log.isDebugEnabled()) {
+              log.debugf(
+                  "Native bundle persistence engine=%s table=%s snapshot=%d opportunistic_records=%d",
+                  id(), tableRequest.tableId(), tableRequest.snapshotId(), extraRecords);
+            }
+            persistBundleOnce(capturedRecords, tableRequest, canonicalTable, persisted);
+          }
+        }
+
+        for (int idx : indexes) {
+          StatsCaptureRequest request = requests.get(idx);
+          Optional<TargetStatsRecord> matched = findMatchingRecord(capturedRecords, request);
+          if (matched.isEmpty()) {
+            results.set(
+                idx, StatsCaptureBatchItemResult.uncapturable(request, "no capture result"));
+            continue;
+          }
+          TargetStatsRecord canonical = withCanonicalMetadata(matched.get(), request);
+          if (!request.target().hasTable()) {
+            persistOnce(canonical, request, persisted);
+          }
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.captured(
+                  request,
+                  StatsCaptureResult.forRecord(
+                      id(), canonical, Map.of("source", "native_connector"))));
+        }
+      } catch (RuntimeException e) {
+        log.warnf(
+            e,
+            "Native stats batch capture failed engine=%s table=%s snapshot=%s batch_size=%d",
+            id(),
+            representative.tableId(),
+            representative.snapshotId(),
+            indexes.size());
+        for (int idx : indexes) {
+          results.set(
+              idx,
+              StatsCaptureBatchItemResult.degraded(
+                  requests.get(idx), "capture failed: " + e.getClass().getSimpleName()));
+        }
       }
-    } catch (RuntimeException e) {
-      log.warnf(
-          e,
-          "Native stats capture failed engine=%s table=%s snapshot=%s",
-          id(),
-          request.tableId(),
-          request.snapshotId());
-      return Optional.empty();
     }
+
+    return StatsCaptureBatchResult.of(results);
   }
 
   protected ConnectorConfig decorateConnectorConfig(ConnectorConfig baseConfig) {
@@ -241,6 +286,116 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
       case TARGET_NOT_SET, EXPRESSION -> Optional.empty();
     };
   }
+
+  private void persistBundleOnce(
+      List<TargetStatsRecord> records,
+      StatsCaptureRequest tableRequest,
+      TargetStatsRecord canonicalTable,
+      Set<String> persisted) {
+    List<TargetStatsRecord> persistCandidates = new ArrayList<>();
+    for (TargetStatsRecord record : records) {
+      TargetStatsRecord toPersist =
+          record.hasTable() ? canonicalTable : withCanonicalMetadata(record, tableRequest);
+      String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
+      if (persisted.add(storageId)) {
+        persistCandidates.add(toPersist);
+      }
+    }
+    if (persistCandidates.isEmpty()) {
+      return;
+    }
+    PersistSchedule schedule = enqueueStatsPersistence(persistCandidates);
+    publishStatsPersistTelemetry(
+        tableRequest, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
+  }
+
+  private void persistOnce(
+      TargetStatsRecord record, StatsCaptureRequest request, Set<String> persisted) {
+    String storageId = StatsTargetIdentity.storageId(record.getTarget());
+    if (!persisted.add(storageId)) {
+      return;
+    }
+    PersistSchedule schedule = enqueueStatsPersistence(List.of(record));
+    publishStatsPersistTelemetry(
+        request, schedule.enqueueNanos(), schedule.enqueuedCount(), schedule.dedupedCount());
+  }
+
+  private Set<String> unionSelectors(List<StatsCaptureRequest> requests, List<Integer> indexes) {
+    Set<String> selectors = new LinkedHashSet<>();
+    for (int idx : indexes) {
+      StatsCaptureRequest request = requests.get(idx);
+      selectors.addAll(request.columnSelectors());
+      if (request.target().hasColumn()) {
+        selectors.add("#" + request.target().getColumn().getColumnId());
+      }
+    }
+    return selectors;
+  }
+
+  private Set<StatsTargetKind> requestedTargetKinds(
+      List<StatsCaptureRequest> requests, List<Integer> indexes) {
+    Set<StatsTargetKind> kinds = new LinkedHashSet<>();
+    for (int idx : indexes) {
+      StatsTarget target = requests.get(idx).target();
+      if (target.hasTable()) {
+        // Table requests can persist the full native bundle in one pass.
+        kinds.add(StatsTargetKind.TABLE);
+        kinds.add(StatsTargetKind.COLUMN);
+        kinds.add(StatsTargetKind.FILE);
+        continue;
+      }
+      if (target.hasColumn()) {
+        kinds.add(StatsTargetKind.COLUMN);
+      } else if (target.hasFile()) {
+        kinds.add(StatsTargetKind.FILE);
+      } else if (target.hasExpression()) {
+        kinds.add(StatsTargetKind.EXPRESSION);
+      }
+    }
+    return kinds.isEmpty()
+        ? Set.of(StatsTargetKind.TABLE, StatsTargetKind.COLUMN, StatsTargetKind.FILE)
+        : Set.copyOf(kinds);
+  }
+
+  private Optional<CaptureContext> resolveContext(StatsCaptureRequest request) {
+    Optional<Table> table = tableRepository.getById(request.tableId());
+    if (table.isEmpty() || !table.get().hasUpstream()) {
+      return Optional.empty();
+    }
+    UpstreamRef upstream = table.get().getUpstream();
+    if (!upstream.hasConnectorId()
+        || upstream.getNamespacePathCount() == 0
+        || upstream.getTableDisplayName().isBlank()) {
+      return Optional.empty();
+    }
+
+    Optional<Connector> connector = connectorRepository.getById(upstream.getConnectorId());
+    if (connector.isEmpty()) {
+      return Optional.empty();
+    }
+    ConnectorConfig baseConfig = ConnectorConfigMapper.fromProto(connector.get());
+    if (!supportsKind(baseConfig.kind())) {
+      return Optional.empty();
+    }
+    ConnectorConfig resolved =
+        resolveCredentials(
+            decorateConnectorConfig(baseConfig),
+            connector.get().hasAuth() ? connector.get().getAuth() : AuthConfig.getDefaultInstance(),
+            upstream.getConnectorId());
+    return Optional.of(
+        new CaptureContext(
+            String.join(".", upstream.getNamespacePathList()),
+            upstream.getTableDisplayName(),
+            resolved));
+  }
+
+  private record CaptureContext(
+      String namespaceFq, String tableDisplayName, ConnectorConfig resolvedConfig) {}
+
+  private record CaptureGroupKey(
+      ai.floedb.floecat.common.rpc.ResourceId tableId,
+      long snapshotId,
+      StatsExecutionMode executionMode) {}
 
   /**
    * Schedules persistence for captured records with best-effort in-flight dedupe.
@@ -422,8 +577,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
       metadata.setProducer(StatsProducer.SPROD_SOURCE_NATIVE);
     }
     if (metadata.getCompleteness() == StatsCompleteness.SC_UNSPECIFIED) {
-      // PR6 baseline policy: native connector captures are treated as complete unless stated
-      // otherwise by upstream metadata.
+      // Native connector captures are treated as complete unless upstream metadata states
+      // otherwise.
       metadata.setCompleteness(StatsCompleteness.SC_COMPLETE);
     }
     metadata.setCaptureMode(
@@ -432,7 +587,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
             : StatsCaptureMode.SCM_ASYNC);
 
     if (!metadata.hasConfidenceLevel()) {
-      // PR6 baseline policy for callers that do not emit confidence.
+      // Callers that do not emit confidence default by completeness.
       double defaultConfidence =
           metadata.getCompleteness() == StatsCompleteness.SC_COMPLETE ? 1.0d : 0.5d;
       metadata.setConfidenceLevel(defaultConfidence);

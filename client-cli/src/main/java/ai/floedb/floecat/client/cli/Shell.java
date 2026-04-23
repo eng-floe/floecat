@@ -514,7 +514,7 @@ public class Shell implements Runnable {
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
+         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-stats|stats-only]
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -532,19 +532,19 @@ public class Shell implements Runnable {
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
              [--mode metadata-only|metadata-and-stats|stats-only]
-             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--snapshot <id>|--current] [--columns c1,#id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
          connector cancel <jobId> [--reason <text>]

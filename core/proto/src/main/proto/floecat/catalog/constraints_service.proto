@@ -37,6 +37,7 @@ message PutTableConstraintsRequest {
 message PutTableConstraintsResponse {
   SnapshotConstraints constraints = 1;
   ai.floedb.floecat.common.MutationMeta meta = 2;
+  bool changed = 3;
 }
 
 message MergeTableConstraintsRequest {

@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +59,8 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(spec.getOutputColumns(0).getName()).isEqualTo("amount");
     assertThat(spec.getOutputColumns(0).getLogicalType()).isEqualTo("DOUBLE");
     assertThat(spec.getCreationSearchPathList()).containsExactly("src_ns");
-    assertThat(capturingBackend.capturedIdempotencyKeys).containsExactly("dest_ns.revenue_view");
+    assertThat(capturingBackend.capturedIdempotencyKeys)
+        .containsExactly("namespace-id:ns-1|view-name:revenue_view");
   }
 
   @Test
@@ -80,7 +82,7 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.errors).isGreaterThanOrEqualTo(1);
     assertThat(capturingBackend.capturedViews).isEmpty();
     assertThat(result.error).isNotNull();
-    assertThat(result.error.getMessage()).contains("listViewDescriptors");
+    assertThat(result.error.getMessage()).contains("UC unavailable");
   }
 
   @Test
@@ -146,8 +148,9 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     var capturingBackend =
         new ViewCapturingBackend(activeConnector()) {
           @Override
-          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
-            if ("dest_ns.bad_view".equals(idempotencyKey)) {
+          public ReconcilerBackend.ViewMutationResult ensureView(
+              ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+            if ("namespace-id:ns-1|view-name:bad_view".equals(idempotencyKey)) {
               throw new RuntimeException("backend error for " + spec.getDisplayName());
             }
             return super.ensureView(ctx, spec, idempotencyKey);
@@ -180,10 +183,12 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     var capturingBackend =
         new ViewCapturingBackend(activeConnector()) {
           @Override
-          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+          public ReconcilerBackend.ViewMutationResult ensureView(
+              ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
             capturedViews.add(spec);
             capturedIdempotencyKeys.add(idempotencyKey);
-            return ResourceId.getDefaultInstance();
+            return new ReconcilerBackend.ViewMutationResult(
+                ResourceId.newBuilder().setId("existing-view-id").build(), false);
           }
         };
     service.backend = capturingBackend;
@@ -211,10 +216,12 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     var capturingBackend =
         new ViewCapturingBackend(activeConnector()) {
           @Override
-          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+          public ReconcilerBackend.ViewMutationResult ensureView(
+              ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
             capturedViews.add(spec);
             capturedIdempotencyKeys.add(idempotencyKey);
-            return ResourceId.newBuilder().setId("updated-view").build();
+            return new ReconcilerBackend.ViewMutationResult(
+                ResourceId.newBuilder().setId("updated-view").build(), true);
           }
         };
     service.backend = capturingBackend;
@@ -229,7 +236,7 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void viewsOnlyNamespaceWithTableFilterSyncsViews() {
+  void tableScopedReconcileDoesNotSyncViews() {
     var viewDesc =
         new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
             "src_cat.src_ns",
@@ -243,14 +250,14 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     service.backend = capturingBackend;
     service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
 
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "some_table", List.of());
+    ReconcileScope scope = ReconcileScope.of(List.of(), "missing-table-id");
+
     var result = service.reconcile(principal, connectorId, true, scope);
 
-    assertThat(result.errors).isEqualTo(1);
-    assertThat(result.error).isNotNull();
-    assertThat(result.error.getMessage()).contains("No tables matched scope");
-    assertThat(capturingBackend.capturedViews).hasSize(1);
-    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+    assertThat(result.ok()).isFalse();
+    assertThat(result.error).isInstanceOf(IllegalArgumentException.class);
+    assertThat(result.error.getMessage()).contains("missing persisted source identity");
+    assertThat(capturingBackend.capturedViews).isEmpty();
   }
 
   @Test
@@ -280,12 +287,11 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
               }
             };
 
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "some_table", List.of());
     var result =
         service.reconcileViewsOnly(
             principal,
             connectorId,
-            scope,
+            ReconcileScope.empty(),
             null,
             () -> false,
             (ts, tc, vs, vc, e, sp, stp, m) -> {});
@@ -296,6 +302,28 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.changed).isEqualTo(1);
     assertThat(capturingBackend.capturedViews).hasSize(1);
     assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  @Test
+  void reconcileViewsOnlyRejectsTableIdScope() {
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of());
+
+    var result =
+        service.reconcileViewsOnly(
+            principal,
+            connectorId,
+            ReconcileScope.of(List.of(), "missing-table-id"),
+            null,
+            () -> false,
+            (ts, tc, vs, vc, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.error).isInstanceOf(IllegalArgumentException.class);
+    assertThat(result.error.getMessage())
+        .contains("views-only reconcile cannot be combined with destination table id scope");
+    assertThat(capturingBackend.capturedViews).isEmpty();
   }
 
   @Test
@@ -318,7 +346,8 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
             principal,
             connectorId,
             ReconcileScope.empty(),
-            ReconcileViewTask.of("src_cat.src_ns", "revenue_view", "dest_ns", "revenue_view"),
+            ReconcileViewTask.of(
+                "src_cat.src_ns", "revenue_view", "dest-namespace-id", "dest-view-id"),
             null,
             () -> false,
             (ts, tc, vs, vc, e, sp, stp, m) -> {});
@@ -328,6 +357,83 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.changed).isEqualTo(1);
     assertThat(capturingBackend.capturedViews).hasSize(1);
     assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  @Test
+  void reconcileViewExecutesDiscoveryViewTaskWithExistingIdViaUpdateById() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result =
+        service.reconcileView(
+            principal,
+            connectorId,
+            ReconcileScope.empty(),
+            ReconcileViewTask.discovery(
+                "src_cat.src_ns", "revenue_view", "ns-1", "view-existing", "revenue_curated"),
+            null,
+            () -> false,
+            (ts, tc, vs, vc, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_curated");
+    assertThat(capturingBackend.capturedIdempotencyKeys).containsExactly("view-existing");
+  }
+
+  @Test
+  void reconcileViewExecutesDiscoveryViewTaskByNameViaUpdateById() {
+    var viewDesc =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+    ResourceId existingViewId = ResourceId.newBuilder().setId("view-by-name").build();
+
+    var capturingBackend =
+        new ViewCapturingBackend(activeConnector()) {
+          @Override
+          public java.util.Optional<ResourceId> lookupView(
+              ReconcileContext ctx, ai.floedb.floecat.common.rpc.NameRef view) {
+            assertThat(view.getName()).isEqualTo("revenue_curated");
+            return java.util.Optional.of(existingViewId);
+          }
+        };
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result =
+        service.reconcileView(
+            principal,
+            connectorId,
+            ReconcileScope.empty(),
+            ReconcileViewTask.discovery(
+                "src_cat.src_ns", "revenue_view", "ns-1", "revenue_curated"),
+            null,
+            () -> false,
+            (ts, tc, vs, vc, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_curated");
+    assertThat(capturingBackend.capturedIdempotencyKeys).containsExactly("view-by-name");
   }
 
   @Test

@@ -31,8 +31,11 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
@@ -73,10 +76,7 @@ class ReconcileExecutorControlImplTest {
                     "connector-1",
                     false,
                     CaptureMode.METADATA_AND_STATS,
-                    ReconcileScope.of(
-                        java.util.List.of(java.util.List.of("db")),
-                        "orders",
-                        java.util.List.of("id")),
+                    ReconcileScope.of(java.util.List.of(), "orders"),
                     ReconcileExecutionPolicy.of(
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
                     "lease-1",
@@ -97,7 +97,7 @@ class ReconcileExecutorControlImplTest {
     assertTrue(response.getFound());
     assertEquals("job-1", response.getJob().getJobId());
     assertEquals("connector-1", response.getJob().getConnectorId().getId());
-    assertEquals("orders", response.getJob().getScope().getDestinationTableDisplayName());
+    assertEquals("orders", response.getJob().getScope().getDestinationTableId());
     assertEquals("remote-executor", response.getJob().getPinnedExecutorId());
     verify(service.jobs)
         .leaseNext(
@@ -107,6 +107,42 @@ class ReconcileExecutorControlImplTest {
                         && request.executionClasses.contains(ReconcileExecutionClass.HEAVY)
                         && request.lanes.contains("remote")
                         && request.executorIds.contains("remote-executor")));
+  }
+
+  @Test
+  void leaseReconcileJobMapsIdBasedTableAndViewTasks() {
+    when(service.jobs.leaseNext(any()))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-2",
+                    "acct",
+                    "connector-2",
+                    false,
+                    CaptureMode.METADATA_AND_STATS,
+                    ReconcileScope.of(java.util.List.of("analytics-namespace-id"), null),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-2",
+                    "",
+                    "",
+                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileTableTask.of("sales", "orders", "orders-table-id", "orders_curated"),
+                    ReconcileViewTask.of(
+                        "sales", "orders_view", "analytics-namespace-id", "orders-view-id"),
+                    "")));
+
+    var response =
+        service
+            .leaseReconcileJob(
+                LeaseReconcileJobRequest.newBuilder().setExecutorId("executor-1").build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getFound());
+    assertEquals("orders-table-id", response.getJob().getTableTask().getDestinationTableId());
+    assertEquals(
+        "analytics-namespace-id", response.getJob().getViewTask().getDestinationNamespaceId());
+    assertEquals("orders-view-id", response.getJob().getViewTask().getDestinationViewId());
   }
 
   @Test

@@ -876,9 +876,8 @@ class TransactionCommitServiceTest {
     StartCaptureRequest request = requestCaptor.getValue();
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
     assertEquals("conn-1", request.getScope().getConnectorId().getId());
-    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
-    assertEquals(
-        List.of("db"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
+    assertEquals("tbl-id", request.getScope().getDestinationTableId());
+    assertEquals(0, request.getScope().getDestinationNamespaceIdsCount());
   }
 
   @Test

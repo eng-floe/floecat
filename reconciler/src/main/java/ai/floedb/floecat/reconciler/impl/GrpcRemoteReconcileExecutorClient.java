@@ -17,7 +17,6 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -223,12 +222,18 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
       return ReconcileScope.empty();
     }
     return ReconcileScope.of(
-        scope.getDestinationNamespacePathsList().stream()
-            .map(NamespacePath::getSegmentsList)
-            .map(java.util.List::copyOf)
-            .toList(),
-        scope.getDestinationTableDisplayName(),
-        scope.getDestinationTableColumnsList());
+        scope.getDestinationNamespaceIdsList(),
+        scope.getDestinationTableId(),
+        scope.getDestinationViewId(),
+        scope.getDestinationStatsRequestsList().stream()
+            .map(
+                request ->
+                    new ReconcileScope.ScopedStatsRequest(
+                        request.getTableId(),
+                        request.getSnapshotId(),
+                        request.getTargetSpec(),
+                        request.getColumnSelectorsList()))
+            .toList());
   }
 
   private static ReconcileExecutionPolicy fromProtoExecutionPolicy(
@@ -280,10 +285,22 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
     if (tableTask == null) {
       return ReconcileTableTask.empty();
     }
-    return ReconcileTableTask.of(
-        tableTask.getSourceNamespace(),
-        tableTask.getSourceTable(),
-        tableTask.getDestinationTableDisplayName());
+    ReconcileTableTask task =
+        ReconcileTableTask.of(
+            tableTask.getSourceNamespace(),
+            tableTask.getSourceTable(),
+            tableTask.getDestinationNamespaceId(),
+            tableTask.getDestinationTableId(),
+            tableTask.getDestinationTableDisplayName());
+    if (ReconcileTableTask.Mode.DISCOVERY.name().equals(tableTask.getMode())) {
+      return ReconcileTableTask.discovery(
+          tableTask.getSourceNamespace(),
+          tableTask.getSourceTable(),
+          tableTask.getDestinationNamespaceId(),
+          blankToNull(tableTask.getDestinationTableId()),
+          tableTask.getDestinationTableDisplayName());
+    }
+    return task;
   }
 
   private static ReconcileViewTask fromProtoViewTask(
@@ -291,11 +308,24 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
     if (viewTask == null) {
       return ReconcileViewTask.empty();
     }
+    if (ReconcileViewTask.Mode.DISCOVERY.name().equals(viewTask.getMode())) {
+      return ReconcileViewTask.discovery(
+          viewTask.getSourceNamespace(),
+          viewTask.getSourceView(),
+          viewTask.getDestinationNamespaceId(),
+          blankToNull(viewTask.getDestinationViewId()),
+          viewTask.getDestinationViewDisplayName());
+    }
     return ReconcileViewTask.of(
         viewTask.getSourceNamespace(),
         viewTask.getSourceView(),
-        viewTask.getDestinationNamespace(),
+        viewTask.getDestinationNamespaceId(),
+        viewTask.getDestinationViewId(),
         viewTask.getDestinationViewDisplayName());
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
   }
 
   private <T extends AbstractStub<T>> T withHeaders(T stub, String correlationId) {

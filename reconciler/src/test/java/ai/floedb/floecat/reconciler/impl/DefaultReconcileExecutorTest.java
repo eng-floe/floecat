@@ -52,7 +52,7 @@ class DefaultReconcileExecutorTest {
             "",
             "",
             ReconcileJobKind.EXEC_TABLE,
-            ReconcileTableTask.of("sales", "orders", "orders"),
+            ReconcileTableTask.of("sales", "orders", "orders-id", "orders"),
             "");
     var failure =
         new ReconcileFailureException(
@@ -101,7 +101,7 @@ class DefaultReconcileExecutorTest {
             "",
             ReconcileJobKind.EXEC_VIEW,
             ReconcileTableTask.empty(),
-            ReconcileViewTask.of("sales", "orders_view", "dest.analytics", "orders_view"),
+            ReconcileViewTask.of("sales", "orders_view", "dest-analytics-id", "orders-view-id"),
             "");
 
     when(reconcilerService.reconcileView(

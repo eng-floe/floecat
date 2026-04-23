@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -158,7 +159,15 @@ public class PlannerStatsBundleService {
         () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
-        statsStore::getTargetStats,
+        (tableId, snapshotId, targets) -> {
+          Map<String, Optional<TargetStatsRecord>> byTarget = new LinkedHashMap<>();
+          for (StatsTarget target : targets) {
+            byTarget.put(
+                StatsTargetIdentity.storageId(target),
+                statsStore.getTargetStats(tableId, snapshotId, target));
+          }
+          return Map.copyOf(byTarget);
+        },
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -195,21 +204,40 @@ public class PlannerStatsBundleService {
 
   @FunctionalInterface
   private interface TargetStatsLookup {
-    Optional<TargetStatsRecord> get(ResourceId tableId, long snapshotId, StatsTarget target);
+    Map<String, Optional<TargetStatsRecord>> get(
+        ResourceId tableId, long snapshotId, List<StatsTarget> targets);
   }
 
   private static TargetStatsLookup providerLookup(
       StatsOrchestrator statsOrchestrator, TableRepository tableRepository) {
     Objects.requireNonNull(statsOrchestrator, "statsOrchestrator");
     Objects.requireNonNull(tableRepository, "tableRepository");
-    return (tableId, snapshotId, target) ->
-        statsOrchestrator.resolve(
-            StatsCaptureRequest.builder(tableId, snapshotId, target)
-                .columnSelectors(Set.of())
-                .requestedKinds(Set.of())
-                .executionMode(StatsExecutionMode.SYNC)
-                .connectorType(ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId))
-                .build());
+    return (tableId, snapshotId, targets) -> {
+      if (targets == null || targets.isEmpty()) {
+        return Map.of();
+      }
+      String connectorType = ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId);
+      List<StatsCaptureRequest> requests =
+          targets.stream()
+              .map(
+                  target ->
+                      StatsCaptureRequest.builder(tableId, snapshotId, target)
+                          .columnSelectors(Set.of())
+                          .requestedKinds(Set.of())
+                          .executionMode(StatsExecutionMode.SYNC)
+                          .connectorType(connectorType)
+                          .build())
+              .toList();
+      List<Optional<TargetStatsRecord>> resolved =
+          statsOrchestrator.resolveBatch(StatsCaptureBatchRequest.of(requests));
+      Map<String, Optional<TargetStatsRecord>> byTarget = new LinkedHashMap<>();
+      for (int i = 0; i < requests.size(); i++) {
+        byTarget.put(
+            StatsTargetIdentity.storageId(requests.get(i).target()),
+            i < resolved.size() ? resolved.get(i) : Optional.empty());
+      }
+      return Map.copyOf(byTarget);
+    };
   }
 
   public Multi<TableConstraintsBundleChunk> streamConstraints(
@@ -518,8 +546,8 @@ public class PlannerStatsBundleService {
         result = pinMissingResult(tableId, target);
       } else {
         try {
-          Optional<TargetStatsRecord> recordOpt =
-              targetStatsLookup.get(tableId, snapshot.getAsLong(), target);
+          work.ensureTargetBatchLoaded(targetStatsLookup, snapshot.getAsLong());
+          Optional<TargetStatsRecord> recordOpt = work.lookupTarget(target);
           if (recordOpt.isPresent()) {
             returnedTargets++;
             result = buildFoundResult(recordOpt.get());
@@ -862,6 +890,8 @@ public class PlannerStatsBundleService {
     private boolean pinResolved = false;
     private int targetIndex = 0;
     private boolean constraintsEmitted = false;
+    private OptionalLong loadedSnapshot = OptionalLong.empty();
+    private Map<String, Optional<TargetStatsRecord>> loadedTargetsById = Map.of();
 
     private TableWork(ResourceId tableId, List<StatsTarget> targets) {
       this.tableId = tableId;
@@ -890,6 +920,22 @@ public class PlannerStatsBundleService {
 
     private void markConstraintsEmitted() {
       this.constraintsEmitted = true;
+    }
+
+    private void ensureTargetBatchLoaded(TargetStatsLookup lookup, long snapshotId) {
+      if (loadedSnapshot.isPresent() && loadedSnapshot.getAsLong() == snapshotId) {
+        return;
+      }
+      loadedTargetsById = lookup.get(tableId, snapshotId, targets);
+      loadedSnapshot = OptionalLong.of(snapshotId);
+    }
+
+    private Optional<TargetStatsRecord> lookupTarget(StatsTarget target) {
+      if (loadedTargetsById == null || loadedTargetsById.isEmpty()) {
+        return Optional.empty();
+      }
+      return loadedTargetsById.getOrDefault(
+          StatsTargetIdentity.storageId(target), Optional.empty());
     }
   }
 

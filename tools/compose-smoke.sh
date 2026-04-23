@@ -52,7 +52,8 @@ COMPOSE_SMOKE_STATS_SLEEP_SECONDS=${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}
 
 is_truthy() {
   local raw="${1:-}"
-  local normalized="${raw,,}"
+  local normalized
+  normalized=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
   case "${normalized}" in
     1|true|yes|on)
       return 0
@@ -229,7 +230,7 @@ assert_table_stats_available() {
   echo "==> [SMOKE] waiting for stats for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
   for attempt in $(seq 1 "$retries"); do
     out=$(run_cli_script "$compose_cmd" "account t-0001
-stats files $table_fqn --current --limit 5
+stats files $table_fqn --snapshot current --limit 5
 quit")
     last_out="$out"
     if echo "$out" | grep -q "PATH" && ! echo "$out" | grep -q "No file stats found."; then
@@ -406,7 +407,6 @@ run_mode() {
   fi
 
   local compose_cmd="$mode_env $DOCKER_COMPOSE_MAIN"
-
   on_mode_error() {
     echo "==> [SMOKE][FAIL] mode=$label"
     eval "$compose_cmd ps" || true
@@ -840,7 +840,12 @@ quit")
       return 1
     fi
     local duckdb_snapshot_ids
-    mapfile -t duckdb_snapshot_ids < <(printf '%s\n' "$duckdb_snapshots_out" | tr -d '\r' | awk '/^[0-9]+$/ {print $1}')
+    duckdb_snapshot_ids=()
+    while IFS= read -r snapshot_id; do
+      duckdb_snapshot_ids+=("$snapshot_id")
+    done <<EOF
+$(printf '%s\n' "$duckdb_snapshots_out" | tr -d '\r' | awk '/^[0-9]+$/ {print $1}')
+EOF
     if [ "${#duckdb_snapshot_ids[@]}" -lt 3 ]; then
       echo "$duckdb_snapshots_out"
       echo "[FAIL] $label duckdb time travel requires at least 3 snapshots, found ${#duckdb_snapshot_ids[@]}"

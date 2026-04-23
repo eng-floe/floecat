@@ -142,6 +142,12 @@ using `METADATA_AND_STATS`.
 
 This ingests metadata/snapshots first and enqueues scoped `STATS_ONLY` follow-up capture for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
+Follow-up payloads now use reconcile scoped stats requests
+(`table_id`, `snapshot_id`, `target_spec`, `column_selectors`) so background capture stays targeted
+without depending on separate unresolved snapshot-id and target lists.
+When a `STATS_ONLY` follow-up batch captures only a subset of requested items, the reconcile result
+is degraded; when none of the requested items are captured, the reconcile result fails instead of
+silently reporting zero processed stats.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to

@@ -18,7 +18,7 @@ package ai.floedb.floecat.client.cli;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
-import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
@@ -37,14 +38,14 @@ import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import com.google.protobuf.Duration;
 import java.io.PrintStream;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 
@@ -52,6 +53,7 @@ import java.util.function.Function;
 final class StatsCliSupport {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final String TABLE_TARGET_SPEC = "table";
 
   private StatsCliSupport() {}
 
@@ -63,10 +65,28 @@ final class StatsCliSupport {
    * @param out output stream
    * @param statistics gRPC statistics service stub
    * @param tables gRPC table service stub (used by analyze)
-   * @param namespaces gRPC namespace service stub (used by analyze)
+   * @param namespaces gRPC namespace service stub
    * @param reconcileControl gRPC reconcile control stub (used by analyze)
    * @param resolveTableId resolves a table FQ name or UUID to a {@link ResourceId}
    */
+  static void handle(
+      String command,
+      List<String> args,
+      PrintStream out,
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
+      TableServiceGrpc.TableServiceBlockingStub tables,
+      NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      Function<String, ResourceId> resolveTableId) {
+    switch (command) {
+      case "stats" -> stats(args, out, statistics, resolveTableId);
+      case "analyze" ->
+          analyze(args, out, snapshots, tables, namespaces, reconcileControl, resolveTableId);
+      default -> out.println("Unknown stats command: " + command);
+    }
+  }
+
   static void handle(
       String command,
       List<String> args,
@@ -76,11 +96,8 @@ final class StatsCliSupport {
       NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       Function<String, ResourceId> resolveTableId) {
-    switch (command) {
-      case "stats" -> stats(args, out, statistics, resolveTableId);
-      case "analyze" -> analyze(args, out, tables, namespaces, reconcileControl, resolveTableId);
-      default -> out.println("Unknown stats command: " + command);
-    }
+    handle(
+        command, args, out, statistics, null, tables, namespaces, reconcileControl, resolveTableId);
   }
 
   private static void stats(
@@ -233,6 +250,7 @@ final class StatsCliSupport {
   private static void analyze(
       List<String> args,
       PrintStream out,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       TableServiceGrpc.TableServiceBlockingStub tables,
       NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
@@ -240,14 +258,16 @@ final class StatsCliSupport {
     if (args.isEmpty()) {
       out.println(
           "usage: analyze <tableFQ> [--columns c1,c2,...]"
+              + " [--snapshot <id>|--current]"
               + " [--mode metadata-only|metadata-and-stats|stats-only]"
               + " [--full] [--wait-seconds <n>]");
       return;
     }
 
     String fq = args.get(0);
-    String columnsArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", ""));
-    List<String> columns = CliUtils.csvList(columnsArg);
+    List<String> columns =
+        CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+    String snapshotToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot", ""));
     CaptureMode mode =
         CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
     boolean full = CliArgs.hasFlag(args, "--full");
@@ -262,27 +282,35 @@ final class StatsCliSupport {
     if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
       throw new IllegalArgumentException("table has no upstream connector");
     }
-    var namespace =
-        namespaces
-            .getNamespace(
-                GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
-            .getNamespace();
-    var scopePath = new ArrayList<>(namespace.getParentsList());
-    if (!namespace.getDisplayName().isBlank()) {
-      scopePath.add(namespace.getDisplayName());
+    CaptureScope.Builder scope =
+        CaptureScope.newBuilder()
+            .setConnectorId(table.getUpstream().getConnectorId())
+            .setDestinationTableId(tableId.getId());
+    Long snapshotId =
+        snapshotToken.isBlank()
+            ? null
+            : resolveSnapshotId(snapshotToken, tableId, snapshotsService);
+    if (!columns.isEmpty()) {
+      if (mode == CaptureMode.CM_METADATA_ONLY) {
+        throw new IllegalArgumentException("--columns requires a stats mode");
+      }
+    }
+    if (snapshotId != null || !columns.isEmpty()) {
+      long effectiveSnapshotId =
+          snapshotId != null ? snapshotId : resolveSnapshotId("current", tableId, snapshotsService);
+      scope.addDestinationStatsRequests(
+          ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+              .setTableId(tableId.getId())
+              .setSnapshotId(effectiveSnapshotId)
+              .setTargetSpec(TABLE_TARGET_SPEC)
+              .addAllColumnSelectors(columns)
+              .build());
     }
 
     var response =
         reconcileControl.captureNow(
             CaptureNowRequest.newBuilder()
-                .setScope(
-                    CaptureScope.newBuilder()
-                        .setConnectorId(table.getUpstream().getConnectorId())
-                        .addDestinationNamespacePaths(
-                            NamespacePath.newBuilder().addAllSegments(scopePath).build())
-                        .setDestinationTableDisplayName(table.getDisplayName())
-                        .addAllDestinationTableColumns(columns)
-                        .build())
+                .setScope(scope.build())
                 .setMode(mode)
                 .setFullRescan(full)
                 .setMaxWait(Duration.newBuilder().setSeconds(waitSeconds).build())
@@ -290,6 +318,37 @@ final class StatsCliSupport {
     out.printf(
         "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
         fq, response.getTablesScanned(), response.getTablesChanged(), response.getErrors());
+  }
+
+  private static long resolveSnapshotId(
+      String snapshotToken,
+      ResourceId tableId,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService) {
+    if (snapshotToken == null
+        || snapshotToken.isBlank()
+        || "current".equalsIgnoreCase(snapshotToken)) {
+      return resolveCurrentSnapshotId(tableId, snapshotsService);
+    }
+    try {
+      return Long.parseLong(snapshotToken);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("--snapshot must be a numeric id or 'current'", e);
+    }
+  }
+
+  private static long resolveCurrentSnapshotId(
+      ResourceId tableId, SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService) {
+    if (snapshotsService == null) {
+      throw new IllegalStateException("snapshot service unavailable");
+    }
+    return snapshotsService
+        .getSnapshot(
+            GetSnapshotRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                .build())
+        .getSnapshot()
+        .getSnapshotId();
   }
 
   // --- print helpers ---

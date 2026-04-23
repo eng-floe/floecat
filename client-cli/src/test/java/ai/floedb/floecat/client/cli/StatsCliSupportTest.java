@@ -19,19 +19,32 @@ package ai.floedb.floecat.client.cli;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -257,13 +270,124 @@ class StatsCliSupportTest {
     }
   }
 
+  @Test
+  void analyzeColumnsCreatesScopedStatsRequest() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+      h.namespaceService.namespaceToReturn =
+          Namespace.newBuilder().addParents("db").setDisplayName("analytics").build();
+      h.snapshotService.currentSnapshotId = 42L;
+
+      StatsCliSupport.handle(
+          "analyze",
+          List.of("catalog.ns.tbl", "--mode", "stats-only", "--columns", "c1,#7"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.statisticsStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
+      assertEquals(
+          tableId().getId(), request.getScope().getDestinationStatsRequests(0).getTableId());
+      assertEquals(
+          List.of("c1", "#7"),
+          request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+    }
+  }
+
+  @Test
+  void analyzeExplicitSnapshotScopesRequestWithoutLookup() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+      h.namespaceService.namespaceToReturn =
+          Namespace.newBuilder().addParents("db").setDisplayName("analytics").build();
+      h.snapshotService.currentSnapshotId = 42L;
+
+      StatsCliSupport.handle(
+          "analyze",
+          List.of(
+              "catalog.ns.tbl", "--mode", "stats-only", "--snapshot", "99", "--columns", "c1,#7"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.statisticsStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
+      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+    }
+  }
+
+  @Test
+  void analyzeExplicitSnapshotWithoutColumnsStillScopesCapture() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+      h.namespaceService.namespaceToReturn =
+          Namespace.newBuilder().addParents("db").setDisplayName("analytics").build();
+
+      StatsCliSupport.handle(
+          "analyze",
+          List.of("catalog.ns.tbl", "--mode", "stats-only", "--snapshot", "99"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.statisticsStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
+      assertEquals(1, request.getScope().getDestinationStatsRequestsCount());
+      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(
+          List.of(), request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+    }
+  }
+
   // --- test infrastructure ---
 
   private static final class Harness implements AutoCloseable {
     final Server server;
     final ManagedChannel channel;
     final CapturingStatisticsService statisticsService;
+    final CapturingTableService tableService;
+    final CapturingNamespaceService namespaceService;
+    final CapturingSnapshotService snapshotService;
+    final CapturingReconcileControlService reconcileControlService;
     final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statisticsStub;
+    final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
     final TableServiceGrpc.TableServiceBlockingStub tablesStub;
     final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespacesStub;
     final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlStub;
@@ -271,16 +395,23 @@ class StatsCliSupportTest {
     Harness() throws Exception {
       String serverName = InProcessServerBuilder.generateName();
       this.statisticsService = new CapturingStatisticsService();
+      this.tableService = new CapturingTableService();
+      this.namespaceService = new CapturingNamespaceService();
+      this.snapshotService = new CapturingSnapshotService();
+      this.reconcileControlService = new CapturingReconcileControlService();
       this.server =
           InProcessServerBuilder.forName(serverName)
               .directExecutor()
               .addService(statisticsService)
+              .addService(tableService)
+              .addService(namespaceService)
+              .addService(snapshotService)
+              .addService(reconcileControlService)
               .build()
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
       this.statisticsStub = TableStatisticsServiceGrpc.newBlockingStub(channel);
-      // tables, namespaces, reconcileControl not exercised in stats tests — stubs point at the
-      // same in-process server; RPC calls in analyze tests would need additional services added.
+      this.snapshotStub = SnapshotServiceGrpc.newBlockingStub(channel);
       this.tablesStub = TableServiceGrpc.newBlockingStub(channel);
       this.namespacesStub = NamespaceServiceGrpc.newBlockingStub(channel);
       this.reconcileControlStub = ReconcileControlGrpc.newBlockingStub(channel);
@@ -318,6 +449,58 @@ class StatsCliSupportTest {
       listTargetStatsCalls.incrementAndGet();
       lastListTargetStatsRequest = request;
       responseObserver.onNext(ListTargetStatsResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingTableService extends TableServiceGrpc.TableServiceImplBase {
+    Table tableToReturn = Table.getDefaultInstance();
+
+    @Override
+    public void getTable(
+        GetTableRequest request, StreamObserver<GetTableResponse> responseObserver) {
+      responseObserver.onNext(GetTableResponse.newBuilder().setTable(tableToReturn).build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingNamespaceService
+      extends NamespaceServiceGrpc.NamespaceServiceImplBase {
+    Namespace namespaceToReturn = Namespace.getDefaultInstance();
+
+    @Override
+    public void getNamespace(
+        GetNamespaceRequest request, StreamObserver<GetNamespaceResponse> responseObserver) {
+      responseObserver.onNext(
+          GetNamespaceResponse.newBuilder().setNamespace(namespaceToReturn).build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingSnapshotService
+      extends SnapshotServiceGrpc.SnapshotServiceImplBase {
+    long currentSnapshotId = 1L;
+
+    @Override
+    public void getSnapshot(
+        GetSnapshotRequest request, StreamObserver<GetSnapshotResponse> responseObserver) {
+      responseObserver.onNext(
+          GetSnapshotResponse.newBuilder()
+              .setSnapshot(Snapshot.newBuilder().setSnapshotId(currentSnapshotId).build())
+              .build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingReconcileControlService
+      extends ReconcileControlGrpc.ReconcileControlImplBase {
+    CaptureNowRequest lastCaptureNowRequest;
+
+    @Override
+    public void captureNow(
+        CaptureNowRequest request, StreamObserver<CaptureNowResponse> responseObserver) {
+      lastCaptureNowRequest = request;
+      responseObserver.onNext(CaptureNowResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }

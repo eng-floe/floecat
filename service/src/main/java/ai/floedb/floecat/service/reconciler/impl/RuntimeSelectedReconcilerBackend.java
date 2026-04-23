@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -59,14 +60,56 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespace) {
+    return delegate.lookupNamespace(ctx, namespace);
+  }
+
+  @Override
   public ResourceId ensureTable(
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor) {
     return delegate.ensureTable(ctx, namespaceId, table, descriptor);
   }
 
   @Override
+  public boolean updateTableById(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      ResourceId namespaceId,
+      NameRef table,
+      TableSpecDescriptor descriptor) {
+    return delegate.updateTableById(ctx, tableId, namespaceId, table, descriptor);
+  }
+
+  @Override
   public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
     return delegate.lookupTable(ctx, table);
+  }
+
+  @Override
+  public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+    return delegate.lookupTableDisplayName(ctx, tableId);
+  }
+
+  @Override
+  public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+      ReconcileContext ctx, ResourceId tableId) {
+    return delegate.lookupDestinationTableMetadata(ctx, tableId);
+  }
+
+  @Override
+  public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view) {
+    return delegate.lookupView(ctx, view);
+  }
+
+  @Override
+  public Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+    return delegate.lookupViewDisplayName(ctx, viewId);
+  }
+
+  @Override
+  public Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+      ReconcileContext ctx, ResourceId viewId) {
+    return delegate.lookupDestinationViewMetadata(ctx, viewId);
   }
 
   @Override
@@ -104,14 +147,20 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
+    return delegate.statsCapturedForTargets(ctx, tableId, snapshotId, targets);
+  }
+
+  @Override
   public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     delegate.putTargetStats(ctx, stats);
   }
 
   @Override
-  public void putSnapshotConstraints(
+  public boolean putSnapshotConstraints(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {
-    delegate.putSnapshotConstraints(ctx, tableId, snapshotId, constraints);
+    return delegate.putSnapshotConstraints(ctx, tableId, snapshotId, constraints);
   }
 
   @Override
@@ -136,7 +185,12 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+  public ViewMutationResult ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
     return delegate.ensureView(ctx, spec, idempotencyKey);
+  }
+
+  @Override
+  public boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec) {
+    return delegate.updateViewById(ctx, viewId, spec);
   }
 }

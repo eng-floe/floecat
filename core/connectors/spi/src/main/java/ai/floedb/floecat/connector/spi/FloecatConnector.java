@@ -107,6 +107,10 @@ public interface FloecatConnector extends Closeable {
    *
    * <p>Default behavior derives tasks from {@link #listViewDescriptors(String)} after applying the
    * destination namespace scope. Views are intentionally not filtered by destination table scope.
+   *
+   * <p>Connectors that surface a view through this planning path must also support {@link
+   * #describeView(String, String)} for the same source identity unless the view has been removed
+   * concurrently.
    */
   default List<PlannedViewTask> planViewTasks(ViewPlanningRequest request) {
     if (request == null
@@ -154,6 +158,36 @@ public interface FloecatConnector extends Closeable {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns);
+
+  /**
+   * Captures target stats for one snapshot and optional selector scope with explicit target-kind
+   * hints.
+   *
+   * <p>Default behavior delegates to {@link #captureSnapshotTargetStats(String, String, ResourceId,
+   * long, Set)} and ignores {@code includeTargetKinds}. Connectors may override this to skip
+   * unnecessary work (for example file-level planning when only column targets are requested).
+   *
+   * <p>When {@link StatsTargetKind#TABLE} is included, callers may also include {@link
+   * StatsTargetKind#COLUMN} and {@link StatsTargetKind#FILE} so full-bundle capture and persistence
+   * can happen in one pass. Connectors may return any subset of the requested kinds.
+   */
+  default List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStats(
+        namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
+  }
+
+  enum StatsTargetKind {
+    TABLE,
+    COLUMN,
+    FILE,
+    EXPRESSION
+  }
 
   /**
    * Returns per-snapshot constraints for a table snapshot, if available.
@@ -424,6 +458,11 @@ public interface FloecatConnector extends Closeable {
    * Describes a view by name. Returns {@link Optional#empty()} if the view does not exist or cannot
    * be described. Default: empty.
    *
+   * <p>Connector implementations that expose views through {@link
+   * #planViewTasks(ViewPlanningRequest)} or {@link #listViewDescriptors(String)} must return a
+   * matching descriptor here for the same source identity unless the view has been removed
+   * concurrently.
+   *
    * @implSpec Prefer overriding {@link #listViewDescriptors} directly when the underlying catalog
    *     can return all view definitions in a single request, to avoid an additional round-trip per
    *     view.
@@ -436,6 +475,9 @@ public interface FloecatConnector extends Closeable {
    * Returns full descriptors for all views in the given namespace in a single operation. Connectors
    * that can batch this more efficiently than one {@link #describeView} call per name should
    * override this method.
+   *
+   * <p>Each returned descriptor must be resolvable through {@link #describeView(String, String)}
+   * using the descriptor namespace and name unless the view has been removed concurrently.
    *
    * <p><b>Default implementation:</b> chains {@link #listViews} and {@link #describeView} per name.
    * This default is <em>fail-fast</em>: if any {@code describeView} call throws, the exception

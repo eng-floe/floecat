@@ -17,14 +17,22 @@
 package ai.floedb.floecat.client.cli;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.client.cli.util.CliUtils;
+import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
 import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -72,6 +80,7 @@ import java.util.stream.Collectors;
 final class ConnectorCliSupport {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final String TABLE_TARGET_SPEC = "table";
 
   private ConnectorCliSupport() {}
 
@@ -92,14 +101,27 @@ final class ConnectorCliSupport {
       PrintStream out,
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     if ("connectors".equals(command)) {
       var all = listAllConnectors(null, DEFAULT_PAGE_SIZE, connectors);
       printConnectors(all, out, directory);
     } else {
-      connectorCrud(args, out, connectors, reconcileControl, directory, getCurrentAccountId);
+      connectorCrud(
+          args, out, connectors, reconcileControl, snapshots, directory, getCurrentAccountId);
     }
+  }
+
+  static void handle(
+      String command,
+      List<String> args,
+      PrintStream out,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      Supplier<String> getCurrentAccountId) {
+    handle(command, args, out, connectors, reconcileControl, null, directory, getCurrentAccountId);
   }
 
   // --- connector CRUD ---
@@ -109,6 +131,7 @@ final class ConnectorCliSupport {
       PrintStream out,
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     if (args.isEmpty()) {
@@ -468,7 +491,8 @@ final class ConnectorCliSupport {
           out.println(
               "usage: connector trigger <display_name|id> [--full]"
                   + " [--mode metadata-only|metadata-and-stats|stats-only]"
-                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]");
+                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]"
+                  + " [--snapshot <id>|--current] [--columns c1,#id2,...]");
           return;
         }
         boolean full = args.contains("--full");
@@ -476,19 +500,54 @@ final class ConnectorCliSupport {
             CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
         String destNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
-        List<String> destColumns =
-            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-cols", "")));
+        String destView = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-view", ""));
+        String snapshotToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot", ""));
+        List<String> columns =
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+        if (!destTable.isBlank() && !destView.isBlank()) {
+          throw new IllegalArgumentException("--dest-table cannot be combined with --dest-view");
+        }
+        if (!destView.isBlank() && (!columns.isEmpty() || !snapshotToken.isBlank())) {
+          throw new IllegalArgumentException(
+              "--dest-view cannot be combined with --snapshot or --columns");
+        }
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
-        if (!destNs.isBlank()) {
-          scope.addDestinationNamespacePaths(toNsPath(destNs));
+        Connector connector = null;
+        if (!destNs.isBlank()
+            || !destTable.isBlank()
+            || !destView.isBlank()
+            || !columns.isEmpty()
+            || !snapshotToken.isBlank()) {
+          connector =
+              connectors
+                  .getConnector(
+                      GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                  .getConnector();
+          addResolvedDestinationScope(scope, connector, destNs, destTable, destView, directory);
         }
-        if (!destTable.isBlank()) {
-          scope.setDestinationTableDisplayName(destTable);
-        }
-        if (!destColumns.isEmpty()) {
-          scope.addAllDestinationTableColumns(destColumns);
+        if (!columns.isEmpty() || !snapshotToken.isBlank()) {
+          if (mode == CaptureMode.CM_METADATA_ONLY) {
+            throw new IllegalArgumentException(
+                !columns.isEmpty()
+                    ? "--columns requires a stats mode"
+                    : "--snapshot requires a stats mode");
+          }
+          addAdHocStatsScope(
+              scope,
+              connector == null
+                  ? connectors
+                      .getConnector(
+                          GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                      .getConnector()
+                  : connector,
+              destNs,
+              destTable,
+              snapshotToken,
+              columns,
+              snapshots,
+              directory);
         }
         var resp =
             reconcileControl.startCapture(
@@ -1007,10 +1066,16 @@ final class ConnectorCliSupport {
         viewTask.getSourceNamespace().isBlank()
             ? viewTask.getSourceView()
             : viewTask.getSourceNamespace() + "." + viewTask.getSourceView();
-    String destination =
-        viewTask.getDestinationNamespace().isBlank()
+    String destinationName =
+        !viewTask.getDestinationViewDisplayName().isBlank()
             ? viewTask.getDestinationViewDisplayName()
-            : viewTask.getDestinationNamespace() + "." + viewTask.getDestinationViewDisplayName();
+            : viewTask.getDestinationViewId();
+    String destination =
+        viewTask.getDestinationNamespaceId().isBlank()
+            ? destinationName
+            : destinationName.isBlank()
+                ? viewTask.getDestinationNamespaceId()
+                : viewTask.getDestinationNamespaceId() + "." + destinationName;
     if (source.isBlank()) {
       return destination;
     }
@@ -1038,6 +1103,236 @@ final class ConnectorCliSupport {
         durationSeconds(settings.getDefaultInterval()),
         settings.getDefaultMode().name(),
         durationSeconds(settings.getFinishedJobRetention()));
+  }
+
+  private static void addAdHocStatsScope(
+      CaptureScope.Builder scope,
+      Connector connector,
+      String destNs,
+      String destTable,
+      String snapshotToken,
+      List<String> columns,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (snapshots == null) {
+      throw new IllegalStateException("snapshot service unavailable");
+    }
+    ResourceId tableId =
+        resolveScopedDestinationTableId(connector, destNs, destTable, columns, directory);
+
+    long snapshotId = resolveSnapshotId(snapshotToken, tableId, snapshots);
+    scope.addDestinationStatsRequests(
+        ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+            .setTableId(tableId.getId())
+            .setSnapshotId(snapshotId)
+            .setTargetSpec(TABLE_TARGET_SPEC)
+            .addAllColumnSelectors(columns)
+            .build());
+  }
+
+  private static void addResolvedDestinationScope(
+      CaptureScope.Builder scope,
+      Connector connector,
+      String destNs,
+      String destTable,
+      String destView,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (!destTable.isBlank()) {
+      ResourceId tableId =
+          resolveScopedDestinationTableId(connector, destNs, destTable, List.of(), directory);
+      scope.setDestinationTableId(tableId.getId());
+      return;
+    }
+    if (!destView.isBlank()) {
+      ResourceId viewId = resolveScopedDestinationViewId(connector, destNs, destView, directory);
+      scope.setDestinationViewId(viewId.getId());
+      return;
+    }
+    if (!destNs.isBlank()) {
+      ResourceId namespaceId = resolveScopedDestinationNamespaceId(connector, destNs, directory);
+      scope.addDestinationNamespaceIds(namespaceId.getId());
+    }
+  }
+
+  private static ResourceId resolveScopedDestinationTableId(
+      Connector connector,
+      String destNs,
+      String destTable,
+      List<String> columns,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    DestinationTarget destination = connector.getDestination();
+    String effectiveTable =
+        !destTable.isBlank() ? destTable : resolveDestinationTableDisplayName(connector, directory);
+    if (effectiveTable == null || effectiveTable.isBlank()) {
+      throw new IllegalArgumentException(
+          (!columns.isEmpty() ? "--columns" : "--snapshot")
+              + " requires a resolvable destination table; pass --dest-table if needed");
+    }
+
+    List<String> namespacePath =
+        !destNs.isBlank()
+            ? FQNameParserUtil.segments(destNs).stream().map(Quotes::unquote).toList()
+            : resolveDestinationNamespacePath(connector, directory);
+    if (destination.hasTableId() && destNs.isBlank() && destTable.isBlank()) {
+      return destination.getTableId();
+    }
+    String catalog = resolveDestinationCatalogDisplayName(connector, directory);
+    if (catalog == null || catalog.isBlank() || namespacePath.isEmpty()) {
+      throw new IllegalArgumentException(
+          (!columns.isEmpty() ? "--columns" : "--snapshot")
+              + " requires a resolvable destination table; pass --dest-ns and --dest-table if needed");
+    }
+    String fq = NameRefUtil.joinFqQuoted(catalog, namespacePath, effectiveTable);
+    return directory
+        .resolveTable(
+            ResolveTableRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build())
+        .getResourceId();
+  }
+
+  private static ResourceId resolveScopedDestinationNamespaceId(
+      Connector connector,
+      String destNs,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (connector == null || !connector.hasDestination()) {
+      throw new IllegalArgumentException("--dest-ns requires a connector destination");
+    }
+    DestinationTarget destination = connector.getDestination();
+    if (destination.hasNamespaceId() && destNs.isBlank()) {
+      return destination.getNamespaceId();
+    }
+    String catalog = resolveDestinationCatalogDisplayName(connector, directory);
+    if (catalog == null || catalog.isBlank()) {
+      throw new IllegalArgumentException("--dest-ns requires a resolvable destination catalog");
+    }
+    String fqNamespace = NameRefUtil.joinFqQuoted(catalog, FQNameParserUtil.segments(destNs), null);
+    return directory
+        .resolveNamespace(
+            ResolveNamespaceRequest.newBuilder()
+                .setRef(NamespaceCliSupport.nameRefForNamespace(fqNamespace, false))
+                .build())
+        .getResourceId();
+  }
+
+  private static ResourceId resolveScopedDestinationViewId(
+      Connector connector,
+      String destNs,
+      String destView,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (destView.isBlank()) {
+      throw new IllegalArgumentException("--dest-view requires a view name");
+    }
+    String catalog = resolveDestinationCatalogDisplayName(connector, directory);
+    List<String> namespacePath =
+        !destNs.isBlank()
+            ? FQNameParserUtil.segments(destNs).stream().map(Quotes::unquote).toList()
+            : resolveDestinationNamespacePath(connector, directory);
+    if (catalog == null || catalog.isBlank() || namespacePath.isEmpty()) {
+      throw new IllegalArgumentException(
+          "--dest-view requires a resolvable destination namespace; pass --dest-ns if needed");
+    }
+    String fq = NameRefUtil.joinFqQuoted(catalog, namespacePath, destView);
+    return directory
+        .resolveView(
+            ResolveViewRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build())
+        .getResourceId();
+  }
+
+  private static String resolveDestinationCatalogDisplayName(
+      Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (connector == null || !connector.hasDestination()) {
+      return "";
+    }
+    DestinationTarget destination = connector.getDestination();
+    if (!destination.hasCatalogId()) {
+      return "";
+    }
+    String display =
+        directory
+            .lookupCatalog(
+                LookupCatalogRequest.newBuilder().setResourceId(destination.getCatalogId()).build())
+            .getDisplayName();
+    return display == null || display.isBlank() ? destination.getCatalogId().getId() : display;
+  }
+
+  private static List<String> resolveDestinationNamespacePath(
+      Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (connector == null || !connector.hasDestination()) {
+      return List.of();
+    }
+    DestinationTarget destination = connector.getDestination();
+    if (destination.hasNamespaceId()) {
+      var ref =
+          directory
+              .lookupNamespace(
+                  LookupNamespaceRequest.newBuilder()
+                      .setResourceId(destination.getNamespaceId())
+                      .build())
+              .getRef();
+      ArrayList<String> path = new ArrayList<>(ref.getPathList());
+      if (!ref.getName().isBlank()) {
+        path.add(ref.getName());
+      }
+      return path;
+    }
+    if (destination.hasNamespace() && destination.getNamespace().getSegmentsCount() > 0) {
+      return List.copyOf(destination.getNamespace().getSegmentsList());
+    }
+    if (connector.hasSource() && connector.getSource().hasNamespace()) {
+      return List.copyOf(connector.getSource().getNamespace().getSegmentsList());
+    }
+    return List.of();
+  }
+
+  private static String resolveDestinationTableDisplayName(
+      Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (connector == null || !connector.hasDestination()) {
+      return "";
+    }
+    DestinationTarget destination = connector.getDestination();
+    if (destination.hasTableDisplayName() && !destination.getTableDisplayName().isBlank()) {
+      return destination.getTableDisplayName();
+    }
+    if (destination.hasTableId()) {
+      return directory
+          .lookupTable(
+              LookupTableRequest.newBuilder().setResourceId(destination.getTableId()).build())
+          .getName()
+          .getName();
+    }
+    if (connector.hasSource()
+        && connector.getSource().hasTable()
+        && !connector.getSource().getTable().isBlank()) {
+      return connector.getSource().getTable();
+    }
+    return "";
+  }
+
+  private static long resolveSnapshotId(
+      String snapshotToken,
+      ResourceId tableId,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots) {
+    if (snapshotToken == null
+        || snapshotToken.isBlank()
+        || "current".equalsIgnoreCase(snapshotToken)) {
+      return resolveCurrentSnapshotId(tableId, snapshots);
+    }
+    try {
+      return Long.parseLong(snapshotToken);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("--snapshot must be a numeric id or 'current'", e);
+    }
+  }
+
+  private static long resolveCurrentSnapshotId(
+      ResourceId tableId, SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots) {
+    return snapshots
+        .getSnapshot(
+            GetSnapshotRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                .build())
+        .getSnapshot()
+        .getSnapshotId();
   }
 
   // --- parse helpers ---

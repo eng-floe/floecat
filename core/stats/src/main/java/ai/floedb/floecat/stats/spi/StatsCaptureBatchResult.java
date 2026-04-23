@@ -16,14 +16,17 @@
 
 package ai.floedb.floecat.stats.spi;
 
-/**
- * Control-plane entrypoint for explicit stats capture requests.
- *
- * <p>Implementations centralize capture policy and engine routing so callers such as reconciler do
- * not duplicate selection logic.
- */
-public interface StatsCaptureControlPlane {
+import java.util.List;
+import java.util.Objects;
 
-  /** Executes multiple explicit trigger attempts in order. */
-  StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest);
+/** Container for per-item outcomes returned from batch capture/trigger operations. */
+public record StatsCaptureBatchResult(List<StatsCaptureBatchItemResult> results) {
+
+  public StatsCaptureBatchResult {
+    results = List.copyOf(Objects.requireNonNull(results, "results"));
+  }
+
+  public static StatsCaptureBatchResult of(List<StatsCaptureBatchItemResult> results) {
+    return new StatsCaptureBatchResult(results);
+  }
 }

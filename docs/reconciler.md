@@ -35,9 +35,13 @@ The current job model is split:
   6. Handles incremental vs full-rescan logic.
   7. Supports explicit capture modes:
      - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
-     - `STATS_ONLY`: writes stats only.
+     - `STATS_ONLY`: routes batched snapshot-target capture through the stats control-plane.
+       Fully non-captured batches (`UNCAPTURABLE` / `DEGRADED` only) fail the table job; mixed
+       captured + non-captured batches complete as degraded.
      - `METADATA_AND_STATS`: ingests metadata/snapshots/constraints, then enqueues scoped
-       `STATS_ONLY` follow-up jobs for discovered snapshots.
+       `STATS_ONLY` follow-up jobs for discovered snapshots using table-scoped
+       `ScopedStatsRequest` entries (`table_id`, `snapshot_id`, `target_spec`,
+       `column_selectors`).
 - **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors).
 - **`NameParts`** – Utility for parsing namespace/table names.
@@ -61,6 +65,12 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Statistics ingestion** – Stats persistence is centralized behind the stats control-plane
   (`StatsCaptureControlPlane` / orchestrator). `STATS_ONLY` runs route capture through registry
   engines; `METADATA_AND_STATS` schedules those captures asynchronously via follow-up jobs.
+  Follow-up scope now carries table-scoped `ScopedStatsRequest` entries rather than separate
+  snapshot-id and target lists.
+  - When every capture request in a `STATS_ONLY` batch is non-captured, reconcile now fails the
+    table job instead of reporting a silent success with `statsProcessed=0`.
+  - When a batch is mixed, reconcile reports degraded success and preserves the non-captured
+    outcome summary in the result.
 - **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
   `PutTableConstraints` after snapshot/stats handling.
   - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
@@ -71,7 +81,8 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   - Idempotency keys are derived from `SnapshotConstraints.toByteArray()` (byte-level,
     order-sensitive payload hashing), not semantic normalization.
 - **Mode-aware behavior** – In `STATS_ONLY`, destination-table misses are treated as skip/no-op
-  rather than job-fatal errors.
+  rather than job-fatal errors, but capture-path failures are not: a table job fails if none of the
+  requested batch items are captured and degrades if only a subset succeeds.
 - **Plan failure behavior** – If a `PLAN_CONNECTOR` job fails or is cancelled after it already
   enqueued some `EXEC_TABLE` / `EXEC_VIEW` children, the scheduler cancels those children.
   User-facing plan job reads surface the parent failure/cancel state immediately rather than waiting
@@ -127,7 +138,7 @@ Connector StartCapture / CaptureNow → ReconcileJobStore.enqueuePlan
               → ConnectorFactory.create + try-with-resources
                   → describe / enumerateSnapshots
                   → ingest metadata/snapshots/constraints
-                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
+                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by scoped stats requests
                   → (for STATS_ONLY) capture via stats control-plane/engine registry
               → Update connector destination IDs if missing
       → if EXEC_VIEW:

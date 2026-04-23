@@ -17,14 +17,26 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 public record ReconcileViewTask(
+    Mode mode,
     String sourceNamespace,
     String sourceView,
-    String destinationNamespace,
+    String destinationNamespaceId,
+    String destinationViewId,
     String destinationViewDisplayName) {
+  public enum Mode {
+    STRICT,
+    DISCOVERY
+  }
+
   public ReconcileViewTask {
+    mode = mode == null ? Mode.STRICT : mode;
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceView = sourceView == null ? "" : sourceView.trim();
-    destinationNamespace = destinationNamespace == null ? "" : destinationNamespace.trim();
+    destinationNamespaceId = destinationNamespaceId == null ? "" : destinationNamespaceId.trim();
+    destinationViewId =
+        mode == Mode.DISCOVERY && destinationViewId == null
+            ? null
+            : blankToEmpty(destinationViewId);
     destinationViewDisplayName =
         destinationViewDisplayName == null ? "" : destinationViewDisplayName.trim();
   }
@@ -32,26 +44,82 @@ public record ReconcileViewTask(
   public static ReconcileViewTask of(
       String sourceNamespace,
       String sourceView,
-      String destinationNamespace,
+      String destinationNamespaceId,
+      String destinationViewId) {
+    return of(sourceNamespace, sourceView, destinationNamespaceId, destinationViewId, "");
+  }
+
+  public static ReconcileViewTask of(
+      String sourceNamespace,
+      String sourceView,
+      String destinationNamespaceId,
+      String destinationViewId,
       String destinationViewDisplayName) {
     if ((sourceNamespace == null || sourceNamespace.isBlank())
         && (sourceView == null || sourceView.isBlank())
-        && (destinationNamespace == null || destinationNamespace.isBlank())
+        && (destinationNamespaceId == null || destinationNamespaceId.isBlank())
+        && (destinationViewId == null || destinationViewId.isBlank())
         && (destinationViewDisplayName == null || destinationViewDisplayName.isBlank())) {
       return empty();
     }
     return new ReconcileViewTask(
-        sourceNamespace, sourceView, destinationNamespace, destinationViewDisplayName);
+        Mode.STRICT,
+        sourceNamespace,
+        sourceView,
+        destinationNamespaceId,
+        destinationViewId,
+        destinationViewDisplayName);
+  }
+
+  public static ReconcileViewTask discovery(
+      String sourceNamespace,
+      String sourceView,
+      String destinationNamespaceId,
+      String destinationViewDisplayName) {
+    return discovery(
+        sourceNamespace, sourceView, destinationNamespaceId, null, destinationViewDisplayName);
+  }
+
+  public static ReconcileViewTask discovery(
+      String sourceNamespace,
+      String sourceView,
+      String destinationNamespaceId,
+      String destinationViewId,
+      String destinationViewDisplayName) {
+    return new ReconcileViewTask(
+        Mode.DISCOVERY,
+        sourceNamespace,
+        sourceView,
+        destinationNamespaceId,
+        destinationViewId,
+        destinationViewDisplayName);
   }
 
   public static ReconcileViewTask empty() {
-    return new ReconcileViewTask("", "", "", "");
+    return new ReconcileViewTask(Mode.STRICT, "", "", "", "", "");
   }
 
   public boolean isEmpty() {
     return sourceNamespace.isBlank()
         && sourceView.isBlank()
-        && destinationNamespace.isBlank()
+        && destinationNamespaceId.isBlank()
+        && blank(destinationViewId)
         && destinationViewDisplayName.isBlank();
+  }
+
+  public boolean strict() {
+    return !isEmpty() && mode == Mode.STRICT;
+  }
+
+  public boolean discoveryMode() {
+    return !isEmpty() && mode == Mode.DISCOVERY;
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value.trim();
+  }
+
+  private static boolean blank(String value) {
+    return value == null || value.isBlank();
   }
 }

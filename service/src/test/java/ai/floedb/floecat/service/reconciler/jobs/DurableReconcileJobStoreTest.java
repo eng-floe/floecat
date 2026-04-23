@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
@@ -49,6 +50,8 @@ import org.junit.jupiter.api.Test;
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
+  private static final String CATALOG = "cat-1";
+  private static final List<String> NAMESPACE_PATH = List.of("ns");
 
   private DurableReconcileJobStore store;
 
@@ -73,7 +76,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void enqueueDedupesWhileJobIsActive() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1"));
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String first =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
@@ -86,7 +89,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void enqueueDoesNotDedupeAcrossDifferentExecutionPolicies() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1"));
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String first =
         store.enqueue(
@@ -130,7 +133,7 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty(),
             ReconcileJobKind.EXEC_TABLE,
-            ReconcileTableTask.of("src.ns", "orders", "orders"),
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders"),
             ReconcileExecutionPolicy.defaults(),
             planJobId,
             "");
@@ -141,7 +144,7 @@ class DurableReconcileJobStoreTest {
         CaptureMode.METADATA_AND_STATS,
         ReconcileScope.empty(),
         ReconcileJobKind.EXEC_TABLE,
-        ReconcileTableTask.of("src.ns", "customers", "customers"),
+        ReconcileTableTask.of("src.ns", "customers", "customers-table-id", "customers"),
         ReconcileExecutionPolicy.defaults(),
         "other-plan",
         "");
@@ -163,10 +166,11 @@ class DurableReconcileJobStoreTest {
             CONNECTOR_ID,
             false,
             CaptureMode.METADATA_AND_STATS,
-            ReconcileScope.of(List.of(List.of("analytics")), "", List.of()),
+            ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.EXEC_VIEW,
             ReconcileTableTask.empty(),
-            ReconcileViewTask.of("db", "events_summary", "analytics", "events_summary"),
+            ReconcileViewTask.of(
+                "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
             ReconcileExecutionPolicy.defaults(),
             "",
             "");
@@ -176,7 +180,137 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, lease.jobId);
     assertEquals("db", lease.viewTask.sourceNamespace());
     assertEquals("events_summary", lease.viewTask.sourceView());
-    assertEquals("analytics", lease.viewTask.destinationNamespace());
+    assertEquals("analytics-namespace-id", lease.viewTask.destinationNamespaceId());
+    assertEquals("events-summary-id", lease.viewTask.destinationViewId());
+  }
+
+  @Test
+  void enqueueExecViewRejectsMismatchedDestinationNamespaceIds() {
+    store.init();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.enqueue(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_STATS,
+                    ReconcileScope.of(List.of("analytics-namespace-id"), null),
+                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.of(
+                        "db", "events_summary", "other-namespace-id", "events-summary-id"),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    ""));
+
+    assertEquals(
+        "view task destinationNamespaceId does not match scope destinationNamespaceIds",
+        error.getMessage());
+  }
+
+  @Test
+  void enqueueExecTableDedupesOnDestinationTableIdNotDisplayName() {
+    store.init();
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueExecViewDedupesOnDestinationIdsNotDisplayName() {
+    store.init();
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of("analytics-namespace-id"), null),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of(
+                "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of("analytics-namespace-id"), null),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.of(
+                "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueNamespaceScopedExecViewDedupesOnDestinationNamespaceIds() {
+    store.init();
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of("analytics-namespace-id"), null),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of("analytics-namespace-id"), null),
+            ReconcileJobKind.EXEC_VIEW,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(first, second);
   }
 
   @Test
@@ -253,7 +387,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void leaseNextAllowsOnlyOneRunningJobPerLane() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String metadataJob =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
@@ -273,7 +407,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String firstJob =
         store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
@@ -294,10 +428,8 @@ class DurableReconcileJobStoreTest {
   @Test
   void leaseNextTreatsEquivalentMultiNamespaceScopesAsSameTableLane() {
     store.init();
-    ReconcileScope firstScope =
-        ReconcileScope.of(List.of(List.of("b"), List.of("a")), "tbl", List.of());
-    ReconcileScope secondScope =
-        ReconcileScope.of(List.of(List.of("a"), List.of("b")), "tbl", List.of());
+    ReconcileScope firstScope = ReconcileScope.of(List.of("b", "a"), null);
+    ReconcileScope secondScope = ReconcileScope.of(List.of("a", "b"), null);
 
     String firstJob =
         store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
@@ -318,7 +450,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void successfulJobClearsDedupeAndAllowsFreshEnqueue() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
     String first =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
 
@@ -331,15 +463,21 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueuePreservesColumnScope() {
+  void enqueuePreservesScopedStatsRequests() {
     store.init();
-    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1", "#3"));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(scopedStatsRequest("tbl", 42L, "table", List.of("c1", "#3"))));
 
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
 
     ReconcileJob job = store.get(jobId).orElseThrow();
-    assertEquals(List.of("c1", "#3"), job.scope.destinationTableColumns());
+    assertEquals(
+        List.of(scopedStatsRequest("tbl", 42L, "table", List.of("#3", "c1"))),
+        job.scope.destinationStatsRequests());
   }
 
   @Test
@@ -415,7 +553,7 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.empty(),
             ReconcileJobKind.EXEC_VIEW,
             ReconcileTableTask.empty(),
-            ReconcileViewTask.of("src_ns", "src_view", "dst_ns", "dst_view"),
+            ReconcileViewTask.of("src_ns", "src_view", "dst-ns-id", "dst-view-id"),
             ReconcileExecutionPolicy.defaults(),
             "",
             "");
@@ -427,8 +565,8 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_FAILED", failed.state);
     assertEquals("src_ns", failed.viewTask.sourceNamespace());
     assertEquals("src_view", failed.viewTask.sourceView());
-    assertEquals("dst_ns", failed.viewTask.destinationNamespace());
-    assertEquals("dst_view", failed.viewTask.destinationViewDisplayName());
+    assertEquals("dst-ns-id", failed.viewTask.destinationNamespaceId());
+    assertEquals("dst-view-id", failed.viewTask.destinationViewId());
   }
 
   @Test
@@ -457,14 +595,14 @@ class DurableReconcileJobStoreTest {
             CONNECTOR_ID,
             false,
             CaptureMode.METADATA_AND_STATS,
-            ReconcileScope.of(List.of(List.of("ns1")), "t1", List.of()));
+            ReconcileScope.of(List.of(), "t1"));
     String second =
         store.enqueue(
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
             CaptureMode.METADATA_AND_STATS,
-            ReconcileScope.of(List.of(List.of("ns2")), "t2", List.of()));
+            ReconcileScope.of(List.of(), "t2"));
 
     var firstPage = store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of());
     assertEquals(1, firstPage.jobs.size());
@@ -668,9 +806,9 @@ class DurableReconcileJobStoreTest {
   @Test
   void queueStatsReflectQueuedRunningAndCancellingJobs() {
     store.init();
-    ReconcileScope queuedScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-q", List.of());
-    ReconcileScope runningScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-r", List.of());
-    ReconcileScope cancellingScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-c", List.of());
+    ReconcileScope queuedScope = ReconcileScope.of(List.of(), "tbl-q");
+    ReconcileScope runningScope = ReconcileScope.of(List.of(), "tbl-r");
+    ReconcileScope cancellingScope = ReconcileScope.of(List.of(), "tbl-c");
 
     store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, queuedScope);
     store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, runningScope);
@@ -768,5 +906,10 @@ class DurableReconcileJobStoreTest {
         }
       };
     }
+  }
+
+  private static ReconcileScope.ScopedStatsRequest scopedStatsRequest(
+      String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
+    return new ReconcileScope.ScopedStatsRequest(tableId, snapshotId, targetSpec, columnSelectors);
   }
 }

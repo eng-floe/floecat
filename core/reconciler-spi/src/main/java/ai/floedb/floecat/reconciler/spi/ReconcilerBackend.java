@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.spi;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -36,13 +37,45 @@ import java.util.Set;
 
 /** Front door used by the reconciler regardless of deployment mode. */
 public interface ReconcilerBackend {
+  String SOURCE_NAMESPACE_PROPERTY = "floecat.reconciler.source_namespace";
+  String SOURCE_NAME_PROPERTY = "floecat.reconciler.source_name";
+  String SOURCE_CONNECTOR_ID_PROPERTY = "floecat.reconciler.source_connector_id";
 
   ResourceId ensureNamespace(ReconcileContext ctx, ResourceId catalogId, NameRef namespace);
+
+  Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespace);
 
   ResourceId ensureTable(
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor);
 
+  /**
+   * Updates an existing destination table by stable resource ID.
+   *
+   * <p>This method must not create a table when {@code tableId} is missing and must not resolve the
+   * target by display name. Implementations should refresh reconciler-owned metadata, including the
+   * persisted source identity carried in {@code descriptor}.
+   *
+   * @return whether the persisted table changed
+   */
+  default boolean updateTableById(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      ResourceId namespaceId,
+      NameRef table,
+      TableSpecDescriptor descriptor) {
+    throw new UnsupportedOperationException("updateTableById is not supported");
+  }
+
   Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table);
+
+  default Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+    return Optional.empty();
+  }
+
+  default Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+      ReconcileContext ctx, ResourceId tableId) {
+    return Optional.empty();
+  }
 
   SnapshotPin snapshotPinFor(
       ReconcileContext ctx, ResourceId tableId, SnapshotRef ref, Optional<Timestamp> asOf);
@@ -68,11 +101,26 @@ public interface ReconcilerBackend {
   boolean statsCapturedForColumnSelectors(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors);
 
+  /**
+   * Returns whether all requested explicit stats targets are present for the snapshot.
+   *
+   * <p>Each target is checked by exact identity ({@code table_id, snapshot_id, target}).
+   * Implementations should return {@code false} when any target is missing.
+   */
+  boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets);
+
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 
-  /** No-op default; connectors that predate constraints support may omit this. */
-  default void putSnapshotConstraints(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {}
+  /**
+   * Persists snapshot-scoped constraints and returns whether storage changed.
+   *
+   * <p>No-op default for backends that predate constraints support.
+   */
+  default boolean putSnapshotConstraints(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {
+    return false;
+  }
 
   String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId);
 
@@ -83,15 +131,65 @@ public interface ReconcilerBackend {
   void updateConnectorDestination(
       ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination);
 
+  Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view);
+
+  default Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+    return Optional.empty();
+  }
+
+  default Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+      ReconcileContext ctx, ResourceId viewId) {
+    return Optional.empty();
+  }
+
   /**
    * Ensures a view with the given spec exists at the destination.
    *
    * <p>The idempotency key is used for deduplication across reconciler runs. Implementations should
    * create the view when missing and update the existing view when the persisted definition has
-   * drifted from {@code spec}. Returns the resource ID of the created or updated view, or {@link
-   * ResourceId#getDefaultInstance()} when the existing view already matches the requested spec.
+   * drifted from {@code spec}.
    */
-  ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey);
+  ViewMutationResult ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey);
+
+  /**
+   * Updates an existing destination view by stable resource ID.
+   *
+   * <p>This method must not create a view when {@code viewId} is missing and must not resolve the
+   * target by display name. Implementations should reject catalog, namespace, or display-name
+   * mismatches because those fields identify the existing destination resource in single-view
+   * reconcile.
+   *
+   * @return whether the persisted view changed
+   */
+  boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec);
+
+  record ViewMutationResult(ResourceId viewId, boolean changed) {}
+
+  record DestinationTableMetadata(
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String displayName,
+      String sourceNamespace,
+      String sourceName,
+      ResourceId sourceConnectorId) {
+    public DestinationTableMetadata(
+        ResourceId catalogId, ResourceId namespaceId, String displayName) {
+      this(catalogId, namespaceId, displayName, "", "", null);
+    }
+  }
+
+  record DestinationViewMetadata(
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String displayName,
+      String sourceNamespace,
+      String sourceName,
+      ResourceId sourceConnectorId) {
+    public DestinationViewMetadata(
+        ResourceId catalogId, ResourceId namespaceId, String displayName) {
+      this(catalogId, namespaceId, displayName, "", "", null);
+    }
+  }
 
   record TableSpecDescriptor(
       String namespaceFq,

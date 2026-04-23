@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CONNECTOR;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.NAMESPACE;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -97,6 +99,31 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     String leaf = namespaceRef.getName();
     leaf = mustNonEmpty(normalizeName(leaf), "namespace.name", corrId);
     return ensureNamespaceEntry(ctx, catalog, accountId, parents, leaf);
+  }
+
+  @Override
+  public Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespaceRef) {
+    if (namespaceRef == null) {
+      return Optional.empty();
+    }
+    String accountId = ctx.principal().getAccountId();
+    String catalogName = namespaceRef.getCatalog();
+    if (catalogName == null || catalogName.isBlank()) {
+      return Optional.empty();
+    }
+    var catalogOpt = catalogRepo.getByName(accountId, normalizeName(catalogName));
+    if (catalogOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    List<String> path = new ArrayList<>(normalizedSegments(namespaceRef.getPathList()));
+    String leaf = namespaceRef.getName();
+    if (leaf == null || leaf.isBlank()) {
+      return Optional.empty();
+    }
+    path.add(normalizeName(leaf));
+    return namespaceRepo
+        .getByPath(accountId, catalogOpt.get().getResourceId().getId(), path)
+        .map(Namespace::getResourceId);
   }
 
   private void ensureParentNamespaces(ReconcileContext ctx, Catalog catalog, List<String> parents) {
@@ -199,7 +226,52 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+  public boolean updateTableById(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      ResourceId namespaceId,
+      NameRef tableRef,
+      TableSpecDescriptor descriptor) {
+    String corrId = ctx.correlationId();
+    String displayName = mustNonEmpty(descriptor.displayName(), "table.display_name", corrId);
+    String normalized = normalizeName(displayName);
+    Map<String, String> properties =
+        descriptor.properties() != null ? descriptor.properties() : Map.of();
+    List<String> partitionKeys =
+        descriptor.partitionKeys() != null ? descriptor.partitionKeys() : List.of();
+
+    Table current =
+        tableRepo
+            .getById(tableId)
+            .orElseThrow(() -> GrpcErrors.notFound(corrId, TABLE, Map.of("id", tableId.getId())));
+    if (!current.getNamespaceId().equals(namespaceId)) {
+      throw new IllegalArgumentException(
+          "Destination table namespace mismatch for id: " + tableId.getId());
+    }
+    if (!current.getDisplayName().equals(normalized)) {
+      throw new IllegalArgumentException(
+          "Destination table display name mismatch for id: " + tableId.getId());
+    }
+
+    Table desired =
+        current.toBuilder()
+            .setSchemaJson(mustNonEmpty(descriptor.schemaJson(), "schema_json", corrId))
+            .setUpstream(buildUpstream(descriptor, partitionKeys))
+            .clearProperties()
+            .putAllProperties(properties)
+            .build();
+    if (desired.equals(current)) {
+      return false;
+    }
+    long expectedPointerVersion = tableRepo.metaForSafe(tableId).getPointerVersion();
+    if (!tableRepo.update(desired, expectedPointerVersion)) {
+      throw new IllegalStateException("Failed to update reconciled table " + tableId.getId());
+    }
+    return true;
+  }
+
+  @Override
+  public ViewMutationResult ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
     String corrId = ctx.correlationId();
     String accountId = ctx.principal().getAccountId();
     var namespace =
@@ -233,14 +305,14 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
               .putAllProperties(spec.getPropertiesMap())
               .build();
       if (desired.equals(current)) {
-        return ResourceId.getDefaultInstance();
+        return new ViewMutationResult(current.getResourceId(), false);
       }
       long expectedPointerVersion =
           viewRepo.metaForSafe(current.getResourceId()).getPointerVersion();
       if (!viewRepo.update(desired, expectedPointerVersion)) {
         throw new IllegalStateException("Failed to update reconciled view " + normalized);
       }
-      return current.getResourceId();
+      return new ViewMutationResult(current.getResourceId(), true);
     }
 
     var view =
@@ -256,7 +328,53 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
             .putAllProperties(spec.getPropertiesMap())
             .build();
     viewRepo.create(view);
-    return view.getResourceId();
+    return new ViewMutationResult(view.getResourceId(), true);
+  }
+
+  @Override
+  public boolean updateViewById(ReconcileContext ctx, ResourceId viewId, ViewSpec spec) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      throw new IllegalArgumentException("viewId is required");
+    }
+    View current =
+        viewRepo
+            .getById(viewId)
+            .orElseThrow(
+                () ->
+                    new IllegalArgumentException(
+                        "Destination view id does not exist: " + viewId.getId()));
+    if (!current.getCatalogId().equals(spec.getCatalogId())) {
+      throw new IllegalArgumentException("Destination view catalog does not match requested spec");
+    }
+    if (!current.getNamespaceId().equals(spec.getNamespaceId())) {
+      throw new IllegalArgumentException(
+          "Destination view namespace does not match requested spec");
+    }
+    if (!current.getDisplayName().equals(spec.getDisplayName())) {
+      throw new IllegalArgumentException(
+          "Destination view display name does not match requested spec");
+    }
+    View desired =
+        current.toBuilder()
+            .clearSqlDefinitions()
+            .addAllSqlDefinitions(spec.getSqlDefinitionsList())
+            .clearCreationSearchPath()
+            .addAllCreationSearchPath(spec.getCreationSearchPathList())
+            .clearOutputColumns()
+            .addAllOutputColumns(spec.getOutputColumnsList())
+            .clearBaseRelations()
+            .addAllBaseRelations(spec.getBaseRelationsList())
+            .clearProperties()
+            .putAllProperties(spec.getPropertiesMap())
+            .build();
+    if (desired.equals(current)) {
+      return false;
+    }
+    long expectedPointerVersion = viewRepo.metaForSafe(current.getResourceId()).getPointerVersion();
+    if (!viewRepo.update(desired, expectedPointerVersion)) {
+      throw new IllegalStateException("Failed to update reconciled view " + viewId.getId());
+    }
+    return true;
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor, List<String> partitionKeys) {
@@ -277,6 +395,28 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     }
     builder.addAllPartitionKeys(partitionKeys);
     return builder.build();
+  }
+
+  private static String sourceNamespace(Table table) {
+    return table != null && table.hasUpstream()
+        ? String.join(".", table.getUpstream().getNamespacePathList())
+        : "";
+  }
+
+  private static String sourceName(Table table) {
+    return table != null && table.hasUpstream() ? table.getUpstream().getTableDisplayName() : "";
+  }
+
+  private static ResourceId sourceConnectorId(Table table) {
+    return table != null && table.hasUpstream() && table.getUpstream().hasConnectorId()
+        ? table.getUpstream().getConnectorId()
+        : null;
+  }
+
+  private static ResourceId sourceConnectorId(String connectorId) {
+    return connectorId == null || connectorId.isBlank()
+        ? null
+        : ResourceId.newBuilder().setKind(ResourceKind.RK_CONNECTOR).setId(connectorId).build();
   }
 
   @Override
@@ -317,6 +457,101 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
     var table = tableRepo.getByName(accountId, catalogId, namespaceId.getId(), normalized);
     return table.map(Table::getResourceId);
+  }
+
+  @Override
+  public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    return tableRepo.getById(tableId).map(Table::getDisplayName);
+  }
+
+  @Override
+  public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+      ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    return tableRepo
+        .getById(tableId)
+        .map(
+            table ->
+                new DestinationTableMetadata(
+                    table.getCatalogId(),
+                    table.getNamespaceId(),
+                    table.getDisplayName(),
+                    sourceNamespace(table),
+                    sourceName(table),
+                    sourceConnectorId(table)));
+  }
+
+  @Override
+  public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef viewRef) {
+    if (viewRef == null) {
+      return Optional.empty();
+    }
+    String accountId = ctx.principal().getAccountId();
+    String catalogName = viewRef.getCatalog();
+    if (catalogName == null || catalogName.isBlank()) {
+      return Optional.empty();
+    }
+
+    catalogName = normalizeName(catalogName);
+
+    var catalogOpt = catalogRepo.getByName(accountId, catalogName);
+    if (catalogOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    String catalogId = catalogOpt.get().getResourceId().getId();
+
+    List<String> path = new ArrayList<>(normalizedSegments(viewRef.getPathList()));
+    if (path.isEmpty()) {
+      return Optional.empty();
+    }
+
+    var namespaceOpt = namespaceRepo.getByPath(accountId, catalogId, path);
+    if (namespaceOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    ResourceId namespaceId = namespaceOpt.get().getResourceId();
+
+    String viewName = viewRef.getName();
+    if (viewName == null || viewName.isBlank()) {
+      return Optional.empty();
+    }
+    String normalized = normalizeName(viewName);
+
+    var view = viewRepo.getByName(accountId, catalogId, namespaceId.getId(), normalized);
+    return view.map(View::getResourceId);
+  }
+
+  @Override
+  public Optional<String> lookupViewDisplayName(ReconcileContext ctx, ResourceId viewId) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    return viewRepo.getById(viewId).map(View::getDisplayName);
+  }
+
+  @Override
+  public Optional<DestinationViewMetadata> lookupDestinationViewMetadata(
+      ReconcileContext ctx, ResourceId viewId) {
+    if (viewId == null || viewId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    return viewRepo
+        .getById(viewId)
+        .map(
+            view ->
+                new DestinationViewMetadata(
+                    view.getCatalogId(),
+                    view.getNamespaceId(),
+                    view.getDisplayName(),
+                    view.getPropertiesOrDefault(SOURCE_NAMESPACE_PROPERTY, ""),
+                    view.getPropertiesOrDefault(SOURCE_NAME_PROPERTY, ""),
+                    sourceConnectorId(
+                        view.getPropertiesOrDefault(SOURCE_CONNECTOR_ID_PROPERTY, ""))));
   }
 
   @Override
@@ -433,6 +668,23 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     } while (pageToken != null && !pageToken.isBlank());
 
     return required.isSatisfiedBy(presentIds, presentNames);
+  }
+
+  @Override
+  public boolean statsCapturedForTargets(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return true;
+    }
+    for (StatsTarget target : targets) {
+      if (target == null || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
+        return false;
+      }
+      if (statsStore.getTargetStats(tableId, snapshotId, target).isEmpty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override

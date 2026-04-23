@@ -17,44 +17,231 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class InMemoryReconcileJobStoreTest {
 
   @Test
-  void markFailedPreservesViewTaskContext() {
+  void enqueueDedupesWhileJobIsActive() {
     var store = new InMemoryReconcileJobStore();
-    String jobId =
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_STATS, scope);
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_STATS, scope);
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeAcrossDifferentExecutionPolicies() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of()),
+            "");
+    String second =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+            "");
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueExecViewRejectsMismatchedDestinationNamespaceIds() {
+    var store = new InMemoryReconcileJobStore();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.enqueue(
+                    "acct",
+                    "conn",
+                    false,
+                    CaptureMode.METADATA_AND_STATS,
+                    ReconcileScope.of(List.of("analytics-namespace-id"), null),
+                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.of(
+                        "db", "events_summary", "other-namespace-id", "events-summary-id"),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    ""));
+
+    assertEquals(
+        "view task destinationNamespaceId does not match scope destinationNamespaceIds",
+        error.getMessage());
+  }
+
+  @Test
+  void enqueueExecTableDedupesOnDestinationTableIdNotDisplayName() {
+    var store = new InMemoryReconcileJobStore();
+
+    String first =
         store.enqueue(
             "acct",
             "conn",
             false,
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_VIEW,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.of("src_ns", "src_view", "dst_ns", "dst_view"),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
             ReconcileExecutionPolicy.defaults(),
             "",
             "");
-    var lease = store.leaseNext().orElseThrow();
+    String second =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
 
-    store.markFailed(jobId, lease.leaseEpoch, System.currentTimeMillis(), "boom", 0, 0, 1, 0, 1);
+    assertEquals(first, second);
+  }
 
-    var failed = store.get("acct", jobId).orElseThrow();
-    assertEquals("JS_FAILED", failed.state);
-    assertEquals("src_ns", failed.viewTask.sourceNamespace());
-    assertEquals("src_view", failed.viewTask.sourceView());
-    assertEquals("dst_ns", failed.viewTask.destinationNamespace());
-    assertEquals("dst_view", failed.viewTask.destinationViewDisplayName());
+  @Test
+  void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String firstJob = store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+    String secondJob =
+        store.enqueue("acct", "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextTreatsEquivalentMultiNamespaceScopesAsSameTableLane() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope firstScope = ReconcileScope.of(List.of("b", "a"), null);
+    ReconcileScope secondScope = ReconcileScope.of(List.of("a", "b"), null);
+
+    String firstJob =
+        store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
+    String secondJob = store.enqueue("acct", "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void markFailedRequeuesAndEventuallyTransitionsToFailed() throws Exception {
+    String maxAttemptsKey = "floecat.reconciler.job-store.max-attempts";
+    String baseBackoffKey = "floecat.reconciler.job-store.base-backoff-ms";
+    String maxBackoffKey = "floecat.reconciler.job-store.max-backoff-ms";
+    String previousMaxAttempts = System.getProperty(maxAttemptsKey);
+    String previousBaseBackoff = System.getProperty(baseBackoffKey);
+    String previousMaxBackoff = System.getProperty(maxBackoffKey);
+    try {
+      System.setProperty(maxAttemptsKey, "2");
+      System.setProperty(baseBackoffKey, "100");
+      System.setProperty(maxBackoffKey, "100");
+
+      var store = new InMemoryReconcileJobStore();
+      String jobId =
+          store.enqueue(
+              "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+      var firstLease = store.leaseNext().orElseThrow();
+
+      store.markFailed(
+          jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "transient", 1, 0, 1, 2, 3);
+      var retried = store.get("acct", jobId).orElseThrow();
+      assertEquals("JS_QUEUED", retried.state);
+
+      Thread.sleep(120L);
+      var secondLease = store.leaseNext().orElseThrow();
+      store.markFailed(
+          jobId, secondLease.leaseEpoch, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
+      var failed = store.get("acct", jobId).orElseThrow();
+      assertEquals("JS_FAILED", failed.state);
+    } finally {
+      restoreProperty(maxAttemptsKey, previousMaxAttempts);
+      restoreProperty(baseBackoffKey, previousBaseBackoff);
+      restoreProperty(maxBackoffKey, previousMaxBackoff);
+    }
+  }
+
+  @Test
+  void markFailedPreservesViewTaskContext() {
+    String maxAttemptsKey = "floecat.reconciler.job-store.max-attempts";
+    String previousMaxAttempts = System.getProperty(maxAttemptsKey);
+    try {
+      System.setProperty(maxAttemptsKey, "1");
+      var store = new InMemoryReconcileJobStore();
+      String jobId =
+          store.enqueue(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_STATS,
+              ReconcileScope.empty(),
+              ReconcileJobKind.EXEC_VIEW,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.of("src_ns", "src_view", "dst-ns-id", "dst-view-id"),
+              ReconcileExecutionPolicy.defaults(),
+              "",
+              "");
+      var lease = store.leaseNext().orElseThrow();
+
+      store.markFailed(jobId, lease.leaseEpoch, System.currentTimeMillis(), "boom", 0, 0, 1, 0, 1);
+
+      var failed = store.get("acct", jobId).orElseThrow();
+      assertEquals("JS_FAILED", failed.state);
+      assertEquals("src_ns", failed.viewTask.sourceNamespace());
+      assertEquals("src_view", failed.viewTask.sourceView());
+      assertEquals("dst-ns-id", failed.viewTask.destinationNamespaceId());
+      assertEquals("dst-view-id", failed.viewTask.destinationViewId());
+    } finally {
+      restoreProperty(maxAttemptsKey, previousMaxAttempts);
+    }
   }
 
   @Test
@@ -100,8 +287,7 @@ class InMemoryReconcileJobStoreTest {
       var reclaimed = store.leaseNext().orElseThrow();
       assertEquals(jobId, reclaimed.jobId);
       var job = store.get("acct", jobId).orElseThrow();
-      assertEquals("JS_QUEUED", job.state);
-      assertEquals("Lease expired; requeued", job.message);
+      assertEquals("JS_RUNNING", job.state);
     } finally {
       restoreProperty(leaseMsKey, previousLeaseMs);
       restoreProperty(reclaimMsKey, previousReclaimMs);
