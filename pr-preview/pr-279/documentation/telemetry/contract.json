@@ -1,0 +1,762 @@
+[
+  {
+    "name": "floecat.core.cache.accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of accounts with an active cache entry, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that the cache is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Approximate number of entries in the cache, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache operation failures (load errors), tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.hits",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache lookup hits, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Cache latency distribution for operations.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.max.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured max entries for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.max.weight.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured maximum weight (bytes) for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.misses",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache lookup misses, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.weighted.size.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total weight (bytes) of cache entries, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.exec.active",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of threads actively executing tasks per pool.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.queue.depth",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of work items waiting in the executor queue per pool.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.rejected",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of task submissions rejected by the executor.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.task.run",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Duration spent running the task on a worker thread.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool", "result"]
+  },
+  {
+    "name": "floecat.core.exec.task.wait",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Duration spent waiting in the queue before execution starts.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool", "result"]
+  },
+  {
+    "name": "floecat.core.gc.collections",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of GC collections per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC failures per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.pause",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC pause time per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.observability.dropped.metric.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of metric emissions rejected because validation failed.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
+    "name": "floecat.core.observability.dropped.tags.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of tags dropped because they violated telemetry contracts.",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.core.observability.duplicate.gauge.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of duplicate gauge registration attempts.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
+    "name": "floecat.core.observability.invalid.metric.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of metrics rejected because they were not registered.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
+    "name": "floecat.core.observability.registry.size",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Current size of the telemetry registry.",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.core.rpc.active",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of in-flight RPCs per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.rpc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of RPC failures per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Latency distribution for RPC operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total RPC requests processed, tagged by account and status.",
+    "requiredTags": ["account", "component", "operation", "status"],
+    "allowedTags": ["account", "component", "operation", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of RPC retries invoked.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.store.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of bytes processed by store operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store failure count per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store operation latency distribution.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of store requests emitted per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.task.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that a scheduled task is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last finished a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last started a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.running",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of active ticks for the scheduled task (usually 0 or 1).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.jvm.gc.live.data.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "Extra JVM",
+    "description": "Estimated live data (bytes) held by each garbage collector.",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "gc", "operation"]
+  },
+  {
+    "name": "floecat.jvm.gc.live.data.growth.rate",
+    "type": "GAUGE",
+    "unit": "bytes_per_second",
+    "since": "v1",
+    "origin": "Extra JVM",
+    "description": "Live data growth rate (bytes/second) for GC-managed pools.",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "gc", "operation"]
+  },
+  {
+    "name": "floecat.profiling.captures.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "profiling",
+    "description": "Profiling capture lifecycle counts (started/completed/failed/dropped).",
+    "requiredTags": ["component", "mode", "operation", "result", "scope", "trigger"],
+    "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.flight.cancelled.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request cancellations by operation, table, and reason.",
+    "requiredTags": ["component", "operation", "reason"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.errors.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request failures by operation, table, and reason.",
+    "requiredTags": ["component", "operation", "reason"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.inflight",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of in-flight Flight streams.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation", "resource"]
+  },
+  {
+    "name": "floecat.service.flight.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request latency by operation, table, and terminal status.",
+    "requiredTags": ["component", "operation", "status"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.requests.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total Flight requests by operation, table, and terminal status.",
+    "requiredTags": ["component", "operation", "status"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.reconcile.cancel_job.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "CancelReconcileJob request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.capture_now.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "CaptureNow request outcomes by trigger type.",
+    "requiredTags": ["component", "operation", "result", "trigger"],
+    "allowedTags": ["component", "operation", "reason", "result", "trigger"]
+  },
+  {
+    "name": "floecat.service.reconcile.errors.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Errors recorded by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.get_job.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "GetReconcileJob request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.get_settings.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "GetReconcilerSettings request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.job.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job terminal latency by execution mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.cancelling",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of reconcile jobs waiting for cancellation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.queued",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of queued reconcile jobs.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.running",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of running reconcile jobs.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job terminal outcomes by execution mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.list_jobs.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "ListReconcileJobs request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.enqueue.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner enqueue decisions by mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.tick.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner tick latency.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.ticks.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner tick outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.queue.oldest_age",
+    "type": "GAUGE",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Age in milliseconds of the oldest queued reconcile job.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.snapshots_processed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Snapshots processed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.start_capture.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "StartCapture request outcomes by trigger type.",
+    "requiredTags": ["component", "operation", "result", "trigger"],
+    "allowedTags": ["component", "operation", "reason", "result", "trigger"]
+  },
+  {
+    "name": "floecat.service.reconcile.stats_processed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Statistics payloads processed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.tables_changed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Tables changed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.tables_scanned.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Tables scanned by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.update_settings.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "UpdateReconcilerSettings request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.views_changed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Views changed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.views_scanned.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Views scanned by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.stats.batch_groups.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats batch request groups processed.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.batch_items.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats batch item counters (untagged series tracks submitted items; tagged series with result=* tracks per-outcome items; query with result tag filters to avoid double-counting).",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.engine_batch_calls.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats engine batch capture calls.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.store_hits.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats store hit count for batch resolution.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.store_misses.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Stats store miss count for batch resolution.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.storage.account.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "service",
+    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
+    "name": "floecat.service.storage.account.pointers",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Per-account pointer count stored in the service.",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  }
+]

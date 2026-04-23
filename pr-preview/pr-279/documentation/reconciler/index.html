@@ -1,0 +1,1993 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/reconciler/">
+      
+      
+        <link rel="prev" href="../system-scans-grpc/">
+      
+      
+        <link rel="next" href="../transactions/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Reconciler - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#reconciler" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Reconciler
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture &amp; Responsibilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-api-surface-area" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API / Surface Area
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#important-internal-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Internal Details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Important Internal Details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backend-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Backend selection
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow &amp; Lifecycle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-extensibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration &amp; Extensibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      Examples &amp; Scenarios
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture &amp; Responsibilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-api-surface-area" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API / Surface Area
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#important-internal-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Internal Details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Important Internal Details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backend-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Backend selection
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow &amp; Lifecycle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-extensibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration &amp; Extensibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      Examples &amp; Scenarios
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mc-blog-tracking/docs/reconciler.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="reconciler">Reconciler<a class="headerlink" href="#reconciler" title="Permanent link">&para;</a></h1>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>The <code>reconciler/</code> module automates ingestion from upstream connectors. It manages a queue of
+reconciliation jobs, leases work to workers, instantiates connectors via the SPI, and calls the
+service’s gRPC APIs to create tables, snapshots, statistics, and scan bundles.</p>
+<p>This component decouples connector execution from the main service so that long-running scans do not
+block gRPC threads. The service submits capture jobs via <code>ReconcileControl.StartCapture</code>, which
+creates jobs in the reconciler’s store.</p>
+<p>The current job model is split:</p>
+<ul>
+<li><strong><code>PLAN_CONNECTOR</code></strong> – top-level connector job. Planning resolves the connector, enumerates the
+  table- and view-scoped work, and enqueues child jobs.</li>
+<li><strong><code>EXEC_TABLE</code></strong> – child table job. Execution performs metadata and/or stats work for exactly one
+  planned table task.</li>
+<li><strong><code>EXEC_VIEW</code></strong> – child view job. Execution materializes or updates exactly one planned view task.</li>
+</ul>
+<h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>ReconcileJobStore</code></strong> – Interface abstracting job persistence and leasing. In service runtime,
+  the default is the durable implementation (<code>DurableReconcileJobStore</code>) selected by
+  <code>floecat.reconciler.job-store=durable</code>; in-memory (<code>InMemoryReconcileJobStore</code>) remains available
+  for lightweight/local usage when <code>floecat.reconciler.job-store=memory</code>.</li>
+<li><strong><code>ReconcilerScheduler</code></strong> – Quarkus scheduled bean that polls the job store, leases a job,
+  transitions it to running, invokes <code>ReconcilerService</code> or the planner executor, records
+  success/failure stats, and cancels child table/view jobs when a parent plan job terminates
+  unsuccessfully after partial enqueue.</li>
+<li><strong><code>ReconcilerService</code></strong> – Core orchestration:</li>
+<li>Resolves connector metadata via the service’s <code>Connectors</code> RPC.</li>
+<li>Plans table-scoped work for connector jobs, preserving destination namespace/table overrides.</li>
+<li>Ensures destination catalogs/namespaces/tables exist (creating them if needed).</li>
+<li>Instantiates the connector via <code>ConnectorFactory</code>.</li>
+<li>Executes table-scoped metadata/stats work and updates connectors with resolved destination IDs.</li>
+<li>Handles incremental vs full-rescan logic.</li>
+<li>Supports explicit capture modes:<ul>
+<li><code>METADATA_ONLY</code>: advances/creates table + snapshot state without writing stats.</li>
+<li><code>STATS_ONLY</code>: routes batched snapshot-target capture through the stats control-plane.
+   Fully non-captured batches (<code>UNCAPTURABLE</code> / <code>DEGRADED</code> only) fail the table job; mixed
+   captured + non-captured batches complete as degraded.</li>
+<li><code>METADATA_AND_STATS</code>: ingests metadata/snapshots/constraints, then enqueues scoped
+   <code>STATS_ONLY</code> follow-up jobs for discovered snapshots using table-scoped
+   <code>ScopedStatsRequest</code> entries (<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>,
+   <code>column_selectors</code>).</li>
+</ul>
+</li>
+<li><strong><code>GrpcClients</code></strong> – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
+  Snapshot, Statistics, Directory, Connectors).</li>
+<li><strong><code>NameParts</code></strong> – Utility for parsing namespace/table names.</li>
+</ul>
+<h2 id="public-api-surface-area">Public API / Surface Area<a class="headerlink" href="#public-api-surface-area" title="Permanent link">&para;</a></h2>
+<p>While the reconciler itself runs as an internal Quarkus app, it exposes behaviour through the
+reconcile control RPCs:
+- <code>ReconcileControl.StartCapture(connector_id, full_rescan)</code> – Enqueues a top-level
+  <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>.
+- <code>ReconcileControl.CaptureNow(...)</code> – Uses the same split path, but waits for the aggregated
+  outcome of the top-level plan job plus any child <code>EXEC_TABLE</code> / <code>EXEC_VIEW</code> jobs.
+- <code>ReconcileControl.GetReconcileJob(job_id)</code> / <code>ListReconcileJobs(...)</code> – Expose both top-level and
+  child jobs. Plan jobs aggregate child counters for user-facing status reads.</p>
+<p>Internally, the scheduler exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
+<h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Destination binding</strong> – When reconciling, the service ensures the connector’s declared
+  destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
+  <code>ConnectorState</code> update or raises conflicts.</li>
+<li><strong>Statistics ingestion</strong> – Stats persistence is centralized behind the stats control-plane
+  (<code>StatsCaptureControlPlane</code> / orchestrator). <code>STATS_ONLY</code> runs route capture through registry
+  engines; <code>METADATA_AND_STATS</code> schedules those captures asynchronously via follow-up jobs.
+  Follow-up scope now carries table-scoped <code>ScopedStatsRequest</code> entries rather than separate
+  snapshot-id and target lists.</li>
+<li>When every capture request in a <code>STATS_ONLY</code> batch is non-captured, reconcile now fails the
+    table job instead of reporting a silent success with <code>statsProcessed=0</code>.</li>
+<li>When a batch is mixed, reconcile reports degraded success and preserves the non-captured
+    outcome summary in the result.</li>
+<li><strong>Snapshot constraints ingestion</strong> – Reconciler ingests snapshot constraints through
+  <code>PutTableConstraints</code> after snapshot/stats handling.</li>
+<li>Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
+    the current table reconcile, including when table stats were already captured.</li>
+<li>Constraints writes are repeatable/upsert-like: reconciler may rewrite the same
+    table+snapshot constraints on repeated runs (no separate "constraints already captured"
+    tracking is introduced here).</li>
+<li>Idempotency keys are derived from <code>SnapshotConstraints.toByteArray()</code> (byte-level,
+    order-sensitive payload hashing), not semantic normalization.</li>
+<li><strong>Mode-aware behavior</strong> – In <code>STATS_ONLY</code>, destination-table misses are treated as skip/no-op
+  rather than job-fatal errors, but capture-path failures are not: a table job fails if none of the
+  requested batch items are captured and degrades if only a subset succeeds.</li>
+<li><strong>Plan failure behavior</strong> – If a <code>PLAN_CONNECTOR</code> job fails or is cancelled after it already
+  enqueued some <code>EXEC_TABLE</code> / <code>EXEC_VIEW</code> children, the scheduler cancels those children.
+  User-facing plan job reads surface the parent failure/cancel state immediately rather than waiting
+  for queued/running children to drain.</li>
+<li><strong>Scoped plan misses</strong> – A destination namespace scope miss is treated as “no matching table
+  tasks” rather than a planner crash. If a scoped destination table filter matches nothing, the
+  planner still returns an explicit <code>No tables matched scope</code> failure so operators get a clear
+  diagnostic instead of a silent success.</li>
+<li><strong>Split-phase view behavior</strong> – In split mode, view tasks are planned once per top-level
+  <code>PLAN_CONNECTOR</code> job and executed as dedicated <code>EXEC_VIEW</code> children, not as part of child
+  <code>EXEC_TABLE</code> jobs. This avoids duplicate or skipped view updates while preserving per-view retry
+  and cancellation semantics.</li>
+<li><strong>View reconciliation semantics</strong> – Reconcile is current-state, not history-preserving. When an
+  upstream view already exists in Floecat, reconcile updates the stored canonical definition in
+  place rather than appending a first-class backend version history.</li>
+<li><strong>Error handling</strong> – Exceptions inside the per-table loop are caught, logged, and recorded in the
+  job summary (<code>errors++</code>). The job proceeds to the next table, incrementing <code>scanned</code> regardless of
+  success.</li>
+<li><strong>Job leasing</strong> – <code>DurableReconcileJobStore</code> leases from persisted ready pointers, marks jobs
+  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort interval.
+  Failed jobs are retried with backoff up to configured attempt limits before terminal failure.</li>
+<li><strong>Durable pointer model</strong> – Durable reconcile queue pointers (<code>/reconcile/jobs/by-id</code>,
+  <code>/accounts/by-id/reconcile/jobs/by-id</code>, <code>/accounts/by-id/reconcile/jobs/ready</code>, and
+  <code>/reconcile/dedupe</code>) are blob-backed and store the current reconcile job JSON blob URI. When a
+  job state transition writes a new canonical blob version, the store CAS-updates lookup/ready/dedupe
+  pointers to the same blob URI.</li>
+<li><strong>GC ownership</strong> – <code>ReconcileJobGc</code> remains responsible for reconcile lifecycle cleanup (terminal-state
+  queue/dedupe cleanup and retention-based deletion of old durable job records). <code>PointerGc</code> handles
+  structural orphan cleanup, but it does not enforce reconcile retention/state policy.
+  Terminal jobs are removed from active scheduling immediately, but their canonical records remain
+  queryable until reconcile-job retention expires and GC reaps them.</li>
+</ul>
+<h3 id="backend-selection">Backend selection<a class="headerlink" href="#backend-selection" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>floecat.reconciler.backend</code> (default <code>local</code>) selects which backend implementation <code>ReconcilerService</code>
+  uses. Set it to <code>remote</code> when the reconciler runs as a separate process and must talk to the service
+  over gRPC. In remote mode the reconciler uses <code>floecat.reconciler.authorization.header</code>/<code>token</code> to send
+  an authorization header on every call. Per-request tokens supplied via <code>ReconcileContext</code> override the
+  static token, so the precedence is: request-scoped token → configured token → no header.</li>
+</ul>
+<h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
+<p><div class="highlight"><pre><span></span><code>Connector StartCapture / CaptureNow → ReconcileJobStore.enqueuePlan
+  → ReconcilerScheduler.pollOnce
+      → jobs.leaseNext (returns account + connector IDs)
+      → markRunning
+      → if PLAN_CONNECTOR:
+          → ReconcilerService.planTableTasks / planViewTasks
+          → enqueue child EXEC_TABLE / EXEC_VIEW jobs
+      → if EXEC_TABLE:
+          → ReconcilerService.reconcile (capture mode on leased job)
+              → Connectors.GetConnector → ConnectorConfig
+              → Ensure destination catalog/namespace/table
+              → ConnectorFactory.create + try-with-resources
+                  → describe / enumerateSnapshots
+                  → ingest metadata/snapshots/constraints
+                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by scoped stats requests
+                  → (for STATS_ONLY) capture via stats control-plane/engine registry
+              → Update connector destination IDs if missing
+      → if EXEC_VIEW:
+          → ReconcilerService.reconcileView
+              → ConnectorFactory.create + try-with-resources
+                  → describeView (or listViewDescriptors fallback)
+                  → ensure destination namespace exists
+                  → create or update the destination view
+      → markSucceeded or markFailed
+</code></pre></div>
+Jobs include <code>fullRescan</code>, <code>executionPolicy</code>, <code>jobKind</code>, optional <code>tableTask</code>, and track
+<code>tablesScanned</code>, <code>tablesChanged</code>, <code>viewsScanned</code>, <code>viewsChanged</code>, and <code>errors</code>.
+<code>ReconcilerScheduler</code> uses an <code>AtomicBoolean</code> guard to prevent concurrent runs within the same
+instance.</p>
+<h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Scheduling cadence via <code>reconciler.pollEvery</code> (defaults to <code>1s</code>).</li>
+<li>Job store selection:</li>
+<li><code>floecat.reconciler.job-store=durable</code> (service default) uses persisted queue records plus
+    retry/lease tuning via:
+    <code>floecat.reconciler.job-store.max-attempts</code>, <code>base-backoff-ms</code>, <code>max-backoff-ms</code>, <code>lease-ms</code>,
+    <code>reclaim-interval-ms</code>, and <code>ready-scan-limit</code>.</li>
+<li><code>floecat.reconciler.job-store=memory</code> uses the in-memory queue implementation.</li>
+<li>Swap out <code>ReconcileJobStore</code> for additional backends by providing a CDI alternative (job ID
+  references must remain stable for <code>GetReconcileJob</code>).</li>
+<li>Extend <code>ReconcilerService</code> to support partial selection (for example column filters) by inspecting
+  <code>SourceSelector.columns</code>.</li>
+<li>Add health checks/metrics by tapping into <code>ReconcileJobStore</code> stats or <code>MeterRegistry</code> in the
+  scheduler.</li>
+</ul>
+<h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Full rescan</strong> – Operator triggers <code>connector trigger demo-glue --full</code>. The job store enqueues a
+  full scan, scheduler leases it, and runs the requested capture mode across the full upstream
+  history. The job transitions to <code>JS_SUCCEEDED</code> once the pass completes.</li>
+<li><strong>Incremental run</strong> – Without <code>--full</code>, <code>ReconcilerService</code> restricts its work to the connector’s
+  configured <code>source.table</code> (if set) and only ingests new snapshots (parents already known via
+  <code>SnapshotRepository</code>).</li>
+</ul>
+<h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Connector SPI details: <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
+<li>Service connector RPCs: <a href="../service/"><code>docs/service.md</code></a></li>
+<li>Concrete connectors: <a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a>,
+  <a href="../connectors-delta/"><code>docs/connectors-delta.md</code></a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
