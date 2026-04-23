@@ -2362,6 +2362,51 @@
 <td>component, mode, operation, reason, result</td>
 </tr>
 <tr>
+<td>floecat.service.stats.batch_groups.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Stats batch request groups processed.</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.batch_items.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Stats batch item counters (untagged series tracks submitted items; tagged series with result=* tracks per-outcome items; query with result tag filters to avoid double-counting).</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.engine_batch_calls.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Stats engine batch capture calls.</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.store_hits.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Stats store hit count for batch resolution.</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.store_misses.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Stats store miss count for batch resolution.</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
 <td>floecat.service.storage.account.bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>

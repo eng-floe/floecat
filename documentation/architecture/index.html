@@ -1739,8 +1739,10 @@ serving execution-ready scan bundles.</p>
    repository APIs, and records incremental NDV, histograms, and scan manifests. Reconcile execution
    is mode-split:</li>
 <li><code>METADATA_ONLY</code> for table/snapshot state</li>
-<li><code>STATS_ONLY</code> for stats enrichment only (via stats control-plane / engine registry)</li>
-<li><code>METADATA_AND_STATS</code> for metadata ingest plus queued <code>STATS_ONLY</code> follow-up capture</li>
+<li><code>STATS_ONLY</code> for stats enrichment only (via stats control-plane / engine registry), with
+     failure on fully non-captured batches and degraded success on partial capture</li>
+<li><code>METADATA_AND_STATS</code> for metadata ingest plus queued <code>STATS_ONLY</code> follow-up capture using
+     table-scoped stats requests</li>
 <li>The <strong>Service</strong> exposes CRUD RPCs for catalogs/namespaces/tables/views, plus query-lifecycle and
    statistics APIs. Requests traverse interceptors that inject <code>PrincipalContext</code>, correlation IDs,
    and optional query leases before hitting service implementations.</li>

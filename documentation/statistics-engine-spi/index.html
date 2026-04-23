@@ -1190,6 +1190,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#batch-contract-for-engine-implementors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Batch contract for engine implementors
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-to-add-a-new-engine" class="md-nav__link">
     <span class="md-ellipsis">
       How to add a new engine
@@ -1670,6 +1679,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#batch-contract-for-engine-implementors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Batch contract for engine implementors
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-to-add-a-new-engine" class="md-nav__link">
     <span class="md-ellipsis">
       How to add a new engine
@@ -1772,9 +1790,9 @@ layer for:</p>
 <p><code>EXPRESSION</code> capture engines are future work.</p>
 <p><code>StatsCaptureRequest.columnSelectors</code>:</p>
 <ul>
-<li>optional connector-native selector hints for scoped table/column/file capture</li>
-<li>used to preserve selector-scoped reconcile behavior while routing through orchestrator/control
-  plane</li>
+<li>optional connector-native selector hints</li>
+<li>explicit target selection uses batch requests (<code>StatsCaptureBatchRequest</code>) and per-item
+  <code>StatsTarget</code> payloads</li>
 </ul>
 <p>Default store:</p>
 <ul>
@@ -1786,7 +1804,7 @@ layer for:</p>
 <li><code>StatsEngineRegistry</code> handles capability/priority engine selection for compute capture.</li>
 <li><code>StatsCaptureControlPlane</code> is the explicit capture entrypoint for control-plane callers
   (for example reconciler <code>STATS_ONLY</code> routing); current service implementation delegates to
-  <code>StatsOrchestrator.trigger(request)</code>.</li>
+  <code>StatsOrchestrator.triggerBatch(batchRequest)</code>.</li>
 <li>Public read/list RPCs remain <code>StatsStore</code> authoritative reads.</li>
 </ul>
 <p>Authoritative model:</p>
@@ -1824,46 +1842,42 @@ layer for:</p>
 <p><code>StatsEngineRegistry</code> uses these capabilities plus <code>priority()</code> to select candidate engines in
 order.</p>
 <h2 id="routing-behavior">Routing behavior<a class="headerlink" href="#routing-behavior" title="Permanent link">&para;</a></h2>
-<p><code>StatsOrchestrator.resolve(request)</code>:</p>
+<p><code>StatsOrchestrator.resolve(request)</code> / <code>resolveBatch(batchRequest)</code>:</p>
 <ol>
 <li>checks <code>StatsStore</code> for an existing record</li>
-<li>for <code>SYNC</code>, runs capture through a singleflight key (<code>table_id + snapshot_id + target +
-   connector_type</code>) so concurrent identical misses share one capture attempt</li>
-<li><code>SYNC</code> callers that did not start capture wait briefly for the in-flight result (bounded by
-   request latency budget, clamped to a small max); timeout/failure returns miss without immediate
-   recapture</li>
-<li>if still missing, enqueues table-scoped <code>STATS_ONLY</code> capture for the requested snapshot and
-   returns empty</li>
+<li>for <code>SYNC</code>, calls <code>StatsEngineRegistry.captureBatch()</code> on miss (single-item requests are
+   wrapped via <code>StatsCaptureBatchRequest.of(request)</code>)</li>
+<li>if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped <code>STATS_ONLY</code> follow-up carrying the
+   unresolved table-scoped stats requests and returns empty for unresolved items</li>
 </ol>
 <p>Current enqueue policy:</p>
 <ul>
 <li>enqueue fallback is currently miss-based</li>
 <li>enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
   candidate for the requested target</li>
-<li>async enqueue scope is currently table+snapshot (not target-granular follow-up yet)</li>
-<li>target-level async follow-up reasons/scopes are planned in later PRs</li>
+<li>async enqueue scope is table-scoped and uses reconcile <code>ScopedStatsRequest</code> payloads:
+  <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code></li>
 </ul>
-<p>Execution mode behavior summary:</p>
-<ul>
-<li><code>SYNC</code>: attempts to return captured stats in-band; if async persistence queueing fails inside an
-  engine, persistence falls back to caller thread to preserve read-after-write behavior.</li>
-<li><code>ASYNC</code>: does not block for capture completion in <code>resolve</code>; it only schedules follow-up work and
-  returns empty on miss.</li>
-</ul>
-<p><code>StatsEngineRegistry.capture(request)</code>:</p>
+<p><code>StatsEngineRegistry.captureBatch(batchRequest)</code>:</p>
 <ol>
-<li>filters engines by <code>supports(request)</code> / capabilities</li>
-<li>sorts by <code>priority()</code> then <code>id()</code></li>
-<li>calls each engine until one returns a non-empty result</li>
-<li>throws <code>StatsUnsupportedTargetException</code> when no engine supports the request</li>
+<li>filters candidates per request by <code>supports(request)</code> / capabilities</li>
+<li>applies deterministic priority ordering (<code>priority()</code> then <code>id()</code>)</li>
+<li>routes batched stage groups per engine and preserves request order in results</li>
+<li>returns per-item outcomes (<code>CAPTURED</code>, <code>UNCAPTURABLE</code>, <code>DEGRADED</code>, <code>QUEUED</code>)</li>
 </ol>
 <p>The registry is selection-only and does not merge multi-engine outputs.</p>
-<p><code>StatsCaptureControlPlane.trigger(request)</code>:</p>
+<p><code>StatsCaptureControlPlane.triggerBatch(batchRequest)</code>:</p>
 <ol>
 <li>serves as the explicit capture control-plane entrypoint (non-query callers)</li>
-<li>in service runtime, delegates to <code>StatsOrchestrator.trigger(request)</code></li>
-<li>executes one registry-routed capture attempt (no store-read short-circuit, no enqueue fallback)</li>
+<li>in service runtime, delegates to <code>StatsOrchestrator.triggerBatch(...)</code></li>
+<li>executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)</li>
 </ol>
+<p>Reconciler policy on top of control-plane results:</p>
+<ul>
+<li>all items non-captured (<code>UNCAPTURABLE</code> / <code>DEGRADED</code>) =&gt; reconcile table execution fails</li>
+<li>mixed captured + non-captured =&gt; reconcile table execution succeeds in degraded state</li>
+<li><code>statsProcessed</code> counts captured snapshots, not attempted requests</li>
+</ul>
 <p>Result model:</p>
 <ul>
 <li><code>StatsCaptureResult</code> returns one canonical <code>TargetStatsRecord</code> plus engine attributes.</li>
@@ -1875,12 +1889,21 @@ order.</p>
 <li><code>COLUMN</code> and <code>EXPRESSION</code> targets must carry <code>scalar</code> payload</li>
 <li><code>FILE</code> target must carry <code>file</code> payload with matching canonical file path</li>
 <li>Table targets use <code>TableValueStats</code> (value only) with metadata at record level.</li>
-<li><code>StatsCaptureRequest</code> is intentionally target-native: one request resolves one concrete target.
-  The request also carries <code>columnSelectors</code> so one reconcile/capture request can scope work to
-  multiple relevant columns in that target context.
-  Scope-level orchestration may issue multiple requests for a table/snapshot, and engines may still
-  persist additional related records from a single source read when available.</li>
+<li>Single request API is target-native (<code>StatsCaptureRequest</code>).</li>
+<li>Batch API is first-class (<code>StatsCaptureBatchRequest</code>) and is the primary path for reconciler/query
+  orchestration so engines can process multiple targets in one pass.</li>
 </ul>
+<h2 id="batch-contract-for-engine-implementors">Batch contract for engine implementors<a class="headerlink" href="#batch-contract-for-engine-implementors" title="Permanent link">&para;</a></h2>
+<p>Implementations of <code>StatsCaptureEngine.captureBatch()</code> must:</p>
+<ol>
+<li><strong>Size invariant</strong>: <code>results().size() == batchRequest.requests().size()</code> in all cases.</li>
+<li><strong>Order invariant</strong>: <code>result[i]</code> must correspond to <code>requests.get(i)</code>.</li>
+<li><strong>No throws</strong>: represent failures as per-item outcomes (typically <code>DEGRADED</code>) instead of
+   throwing exceptions.</li>
+<li><strong>Item independence</strong>: failure for one item must not prevent attempts for remaining items.</li>
+<li><strong>UNCAPTURABLE semantics</strong>: use <code>UNCAPTURABLE</code> only for capability mismatches. Registry routing
+   retries <code>UNCAPTURABLE</code> items with the next candidate engine; <code>DEGRADED</code> is final.</li>
+</ol>
 <h2 id="how-to-add-a-new-engine">How to add a new engine<a class="headerlink" href="#how-to-add-a-new-engine" title="Permanent link">&para;</a></h2>
 <ol>
 <li>Implement <code>StatsCaptureEngine</code>.</li>
@@ -1898,10 +1921,17 @@ order.</p>
 </ul>
 <h2 id="existing-baseline-behavior">Existing baseline behavior<a class="headerlink" href="#existing-baseline-behavior" title="Permanent link">&para;</a></h2>
 <p><code>StatsRepository</code> is the default OSS authoritative <code>StatsStore</code> implementation.
-Native engines persist captured records into <code>StatsStore</code> through an async persistence path with
-in-flight dedupe by target identity. For <code>SYNC</code> capture calls, if async queue submission is
-rejected, engines persist on caller thread as a safety fallback. This keeps reads/writes aligned
-to one authoritative store contract while reducing hot-path write blocking in the common case.</p>
+Both native engines persist captured records back into <code>StatsStore</code> before returning.
+This keeps reads and writes aligned to one authoritative store contract.</p>
+<p>When a TABLE request is included in a native engine batch, the engine may opportunistically persist
+additional COLUMN/FILE records returned in the same connector capture bundle. This is intentional
+to avoid extra source scans for follow-up target requests.</p>
+<p>Native connector target-kind expansion:</p>
+<ul>
+<li>when <code>StatsTargetKind.TABLE</code> is requested, native engines may also request <code>COLUMN</code> and <code>FILE</code>
+  from <code>captureSnapshotTargetStats(...)</code> so full-bundle persistence can happen in one connector
+  pass</li>
+</ul>
 <h2 id="plugging-your-own-statsstore">Plugging your own StatsStore<a class="headerlink" href="#plugging-your-own-statsstore" title="Permanent link">&para;</a></h2>
 <p>You can replace the default store with your own CDI bean implementing
 <code>ai.floedb.floecat.stats.spi.StatsStore</code>.</p>

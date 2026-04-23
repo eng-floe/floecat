@@ -1776,9 +1776,13 @@ creates jobs in the reconciler’s store.</p>
 <li>Handles incremental vs full-rescan logic.</li>
 <li>Supports explicit capture modes:<ul>
 <li><code>METADATA_ONLY</code>: advances/creates table + snapshot state without writing stats.</li>
-<li><code>STATS_ONLY</code>: writes stats only.</li>
+<li><code>STATS_ONLY</code>: routes batched snapshot-target capture through the stats control-plane.
+   Fully non-captured batches (<code>UNCAPTURABLE</code> / <code>DEGRADED</code> only) fail the table job; mixed
+   captured + non-captured batches complete as degraded.</li>
 <li><code>METADATA_AND_STATS</code>: ingests metadata/snapshots/constraints, then enqueues scoped
-   <code>STATS_ONLY</code> follow-up jobs for discovered snapshots.</li>
+   <code>STATS_ONLY</code> follow-up jobs for discovered snapshots using table-scoped
+   <code>ScopedStatsRequest</code> entries (<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>,
+   <code>column_selectors</code>).</li>
 </ul>
 </li>
 <li><strong><code>GrpcClients</code></strong> – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
@@ -1802,7 +1806,13 @@ reconcile control RPCs:
   <code>ConnectorState</code> update or raises conflicts.</li>
 <li><strong>Statistics ingestion</strong> – Stats persistence is centralized behind the stats control-plane
   (<code>StatsCaptureControlPlane</code> / orchestrator). <code>STATS_ONLY</code> runs route capture through registry
-  engines; <code>METADATA_AND_STATS</code> schedules those captures asynchronously via follow-up jobs.</li>
+  engines; <code>METADATA_AND_STATS</code> schedules those captures asynchronously via follow-up jobs.
+  Follow-up scope now carries table-scoped <code>ScopedStatsRequest</code> entries rather than separate
+  snapshot-id and target lists.</li>
+<li>When every capture request in a <code>STATS_ONLY</code> batch is non-captured, reconcile now fails the
+    table job instead of reporting a silent success with <code>statsProcessed=0</code>.</li>
+<li>When a batch is mixed, reconcile reports degraded success and preserves the non-captured
+    outcome summary in the result.</li>
 <li><strong>Snapshot constraints ingestion</strong> – Reconciler ingests snapshot constraints through
   <code>PutTableConstraints</code> after snapshot/stats handling.</li>
 <li>Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
@@ -1813,7 +1823,8 @@ reconcile control RPCs:
 <li>Idempotency keys are derived from <code>SnapshotConstraints.toByteArray()</code> (byte-level,
     order-sensitive payload hashing), not semantic normalization.</li>
 <li><strong>Mode-aware behavior</strong> – In <code>STATS_ONLY</code>, destination-table misses are treated as skip/no-op
-  rather than job-fatal errors.</li>
+  rather than job-fatal errors, but capture-path failures are not: a table job fails if none of the
+  requested batch items are captured and degrades if only a subset succeeds.</li>
 <li><strong>Plan failure behavior</strong> – If a <code>PLAN_CONNECTOR</code> job fails or is cancelled after it already
   enqueued some <code>EXEC_TABLE</code> / <code>EXEC_VIEW</code> children, the scheduler cancels those children.
   User-facing plan job reads surface the parent failure/cancel state immediately rather than waiting
@@ -1869,7 +1880,7 @@ reconcile control RPCs:
               → ConnectorFactory.create + try-with-resources
                   → describe / enumerateSnapshots
                   → ingest metadata/snapshots/constraints
-                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
+                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by scoped stats requests
                   → (for STATS_ONLY) capture via stats control-plane/engine registry
               → Update connector destination IDs if missing
       → if EXEC_VIEW:
