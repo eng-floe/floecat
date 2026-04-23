@@ -4329,14 +4329,15 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             ReconcileScope.of(List.of(), tableId.getId()),
             ReconcilerService.CaptureMode.STATS_ONLY);
 
-    assertThat(result.ok()).isTrue();
+    assertThat(result.ok()).isFalse();
     assertThat(result.snapshotsProcessed).isEqualTo(2L);
     assertThat(result.statsProcessed).isZero();
-    assertThat(result.errors).isZero();
+    assertThat(result.errors).isEqualTo(1L);
+    assertThat(result.message()).contains("UNCAPTURABLE").contains("control plane unavailable");
   }
 
   @Test
-  void statsOnlyConnectorAssistedPathRemainsSuccessfulWhenBatchIsDegraded() {
+  void statsOnlyConnectorAssistedPathFailsWhenBatchIsFullyDegraded() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -4469,10 +4470,305 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             ReconcileScope.of(List.of(), tableId.getId()),
             ReconcilerService.CaptureMode.STATS_ONLY);
 
-    assertThat(result.ok()).isTrue();
+    assertThat(result.ok()).isFalse();
     assertThat(result.snapshotsProcessed).isEqualTo(2L);
     assertThat(result.statsProcessed).isZero();
-    assertThat(result.errors).isZero();
+    assertThat(result.errors).isEqualTo(1L);
+    assertThat(result.message()).contains("DEGRADED").contains("runtime");
+  }
+
+  @Test
+  void statsOnlyConnectorAssistedPathIsDegradedWhenBatchIsPartiallyCaptured() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-stats-only-partial")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        ResourceId destCatalogId =
+            ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+        ResourceId destNamespaceId =
+            ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+        return Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(
+                        NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns"))
+                    .setTable("tbl"))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId)
+                    .setTableId(tableId))
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class SnapshotOnlyConnector extends FakeConnector {
+      SnapshotOnlyConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("tbl");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            namespaceFq,
+            tableName,
+            "s3://bucket/path",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(
+                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()),
+            new SnapshotBundle(
+                202L,
+                201L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                Map.of()));
+      }
+    }
+
+    StatsCaptureControlPlane controlPlane = Mockito.mock(StatsCaptureControlPlane.class);
+    Mockito.when(controlPlane.triggerBatch(Mockito.any()))
+        .thenAnswer(
+            invocation -> {
+              StatsCaptureBatchRequest batchRequest = invocation.getArgument(0);
+              List<StatsCaptureRequest> requests = batchRequest.requests();
+              return StatsCaptureBatchResult.of(
+                  List.of(
+                      capturedItem(requests.get(0)),
+                      StatsCaptureBatchItemResult.degraded(requests.get(1), "runtime")));
+            });
+
+    @SuppressWarnings("unchecked")
+    Instance<StatsCaptureControlPlane> instance = Mockito.mock(Instance.class);
+    Mockito.when(instance.isUnsatisfied()).thenReturn(false);
+    Mockito.when(instance.get()).thenReturn(controlPlane);
+
+    service.backend = new Backend();
+    service.statsCaptureControlPlane = instance;
+    service.connectorOpener = cfg -> new SnapshotOnlyConnector();
+
+    var result =
+        reconcileTableTask(
+            tableId,
+            false,
+            ReconcileScope.of(List.of(), tableId.getId()),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.degraded()).isTrue();
+    assertThat(result.snapshotsProcessed).isEqualTo(2L);
+    assertThat(result.statsProcessed).isEqualTo(1L);
+    assertThat(result.degradedReasons).anyMatch(reason -> reason.contains("DEGRADED"));
+  }
+
+  @Test
+  void statsOnlyKnownSnapshotWithDefaultScopedTableTargetUsesTableCompletenessCheck() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-stats-only-default-table-target")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        ResourceId destCatalogId =
+            ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+        ResourceId destNamespaceId =
+            ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+        return Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(
+                        NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns"))
+                    .setTable("tbl"))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId)
+                    .setTableId(tableId))
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(201L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return true;
+      }
+
+      @Override
+      public boolean statsCapturedForColumnSelectors(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        return true;
+      }
+
+      @Override
+      public boolean statsCapturedForTargets(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          Set<StatsTarget> targets) {
+        return false;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class SnapshotOnlyConnector extends FakeConnector {
+      SnapshotOnlyConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("tbl");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            namespaceFq,
+            tableName,
+            "s3://bucket/path",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(
+                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+      }
+    }
+
+    StatsCaptureControlPlane controlPlane = Mockito.mock(StatsCaptureControlPlane.class);
+    ArgumentCaptor<StatsCaptureBatchRequest> batchCaptor =
+        ArgumentCaptor.forClass(StatsCaptureBatchRequest.class);
+    Mockito.when(controlPlane.triggerBatch(batchCaptor.capture()))
+        .thenAnswer(
+            invocation -> {
+              StatsCaptureBatchRequest batchRequest = invocation.getArgument(0);
+              return StatsCaptureBatchResult.of(
+                  batchRequest.requests().stream()
+                      .map(ReconcilerServiceTest::capturedItem)
+                      .toList());
+            });
+
+    @SuppressWarnings("unchecked")
+    Instance<StatsCaptureControlPlane> instance = Mockito.mock(Instance.class);
+    Mockito.when(instance.isUnsatisfied()).thenReturn(false);
+    Mockito.when(instance.get()).thenReturn(controlPlane);
+
+    service.backend = new Backend();
+    service.statsCaptureControlPlane = instance;
+    service.connectorOpener = cfg -> new SnapshotOnlyConnector();
+
+    var result =
+        reconcileTableTask(
+            tableId,
+            false,
+            ReconcileScope.of(
+                List.of(),
+                tableId.getId(),
+                List.of(
+                    scopedStatsRequest(
+                        tableId.getId(),
+                        201L,
+                        StatsTargetScopeCodec.encode(StatsTargetIdentity.tableTarget()),
+                        List.of()))),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    Mockito.verifyNoInteractions(controlPlane);
   }
 
   @Test

@@ -934,6 +934,24 @@ public class ReconcilerService {
         matchedTableIds);
   }
 
+  private static Result tableFailureResult(TableExecutionOutcome outcome) {
+    List<String> matchedTableIds =
+        outcome.destinationTableId() == null || outcome.destinationTableId().getId().isBlank()
+            ? List.of()
+            : List.of(outcome.destinationTableId().getId());
+    return new Result(
+        outcome.tablesScanned(),
+        outcome.tablesChanged(),
+        0,
+        0,
+        1,
+        outcome.snapshotsProcessed(),
+        outcome.statsProcessed(),
+        new RuntimeException(outcome.errorReason().orElse("unknown error")),
+        outcome.degradedReason().map(List::of).orElseGet(List::of),
+        matchedTableIds);
+  }
+
   private Result executePlannedTableTasks(
       PrincipalContext principal,
       ResourceId connectorId,
@@ -1190,6 +1208,9 @@ public class ReconcilerService {
                         .sorted()
                         .collect(Collectors.joining(", "))));
       }
+      if (outcome.errorReason().isPresent()) {
+        return tableFailureResult(outcome);
+      }
       return tableSuccessResult(outcome);
     } catch (Exception e) {
       if (e instanceof ReconcileCancelledException) {
@@ -1366,6 +1387,9 @@ public class ReconcilerService {
               0,
               0,
               0);
+      if (outcome.errorReason().isPresent()) {
+        return tableFailureResult(outcome);
+      }
       return tableSuccessResult(outcome);
     } catch (Exception e) {
       if (e instanceof ReconcileCancelledException) {
@@ -1502,6 +1526,7 @@ public class ReconcilerService {
     long snapshotsProcessed;
     long statsProcessed;
     Optional<String> degradedReason = Optional.empty();
+    Optional<String> errorReason = Optional.empty();
     if (captureMode == CaptureMode.STATS_ONLY) {
       IngestCounts ingestCounts =
           captureStatsOnlyViaControlPlane(
@@ -1526,12 +1551,15 @@ public class ReconcilerService {
               connectorKind);
       snapshotsProcessed = ingestCounts.snapshotsProcessed;
       statsProcessed = ingestCounts.statsProcessed;
+      degradedReason = ingestCounts.degradedReason;
+      errorReason = ingestCounts.errorReason;
       if (progressState != null) {
         progressState.observe(
             tablesScannedBase + tablesScanned,
             tablesChangedBase,
             snapshotsProcessedBase + snapshotsProcessed,
             statsProcessedBase + statsProcessed);
+        progressState.degradedReason = degradedReason;
       }
     } else {
       MetadataPassOutcome outcome =
@@ -1591,7 +1619,8 @@ public class ReconcilerService {
         tablesChanged,
         snapshotsProcessed,
         statsProcessed,
-        degradedReason);
+        degradedReason,
+        errorReason);
   }
 
   private static List<ViewSqlDefinition> toCatalogSqlDefinitions(
@@ -2080,9 +2109,20 @@ public class ReconcilerService {
               .filter(item -> item.outcome() == StatsTriggerOutcome.CAPTURED)
               .map(item -> item.request().snapshotId())
               .collect(Collectors.toCollection(LinkedHashSet::new));
+      List<StatsCaptureBatchItemResult> nonCapturedResults =
+          batchResult.results().stream()
+              .filter(item -> item.outcome() != StatsTriggerOutcome.CAPTURED)
+              .toList();
       // statsProcessed counts successful capture attempts per snapshot, not number of persisted
       // target records.
       statsProcessed += capturedSnapshots.size();
+      if (!nonCapturedResults.isEmpty()) {
+        String summary = summarizeStatsCaptureOutcomes(nonCapturedResults);
+        if (capturedSnapshots.isEmpty()) {
+          return IngestCounts.error(snapshotsProcessed, statsProcessed, false, summary);
+        }
+        return IngestCounts.degraded(snapshotsProcessed, statsProcessed, false, summary);
+      }
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed, false);
   }
@@ -2413,12 +2453,20 @@ public class ReconcilerService {
       List<ReconcileScope.ScopedStatsRequest> scopedStatsRequests,
       Set<String> defaultColumnSelectors) {
     if (scopedStatsRequests != null && !scopedStatsRequests.isEmpty()) {
+      Set<String> scopedSelectors = selectorsForScopedTableRequests(scopedStatsRequests);
+      if (matchesDefaultTableWideScopedCapture(scopedStatsRequests, defaultColumnSelectors)) {
+        if (!backend.statsAlreadyCapturedForTargetKind(
+            ctx, tableId, snapshotId, StatsTargetKind.STK_TABLE)) {
+          return false;
+        }
+        return scopedSelectors.isEmpty()
+            || backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, scopedSelectors);
+      }
       Set<StatsTarget> scopedTargets = decodeTargetSpecsFromRequests(scopedStatsRequests);
       if (!scopedTargets.isEmpty()
           && !backend.statsCapturedForTargets(ctx, tableId, snapshotId, scopedTargets)) {
         return false;
       }
-      Set<String> scopedSelectors = selectorsForScopedTableRequests(scopedStatsRequests);
       return scopedSelectors.isEmpty()
           || backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, scopedSelectors);
     }
@@ -2452,6 +2500,49 @@ public class ReconcilerService {
                               + request.targetSpec())));
     }
     return decodedTargets;
+  }
+
+  private boolean matchesDefaultTableWideScopedCapture(
+      List<ReconcileScope.ScopedStatsRequest> scopedStatsRequests,
+      Set<String> defaultColumnSelectors) {
+    if (scopedStatsRequests == null || scopedStatsRequests.isEmpty()) {
+      return false;
+    }
+    for (ReconcileScope.ScopedStatsRequest request : scopedStatsRequests) {
+      Optional<StatsTarget> decodedTarget =
+          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec());
+      if (decodedTarget.isEmpty()
+          || decodedTarget.get().getTargetCase() != StatsTarget.TargetCase.TABLE) {
+        return false;
+      }
+    }
+    return selectorsForScopedTableRequests(scopedStatsRequests)
+        .equals(defaultColumnSelectors == null ? Set.of() : defaultColumnSelectors);
+  }
+
+  private static String summarizeStatsCaptureOutcomes(
+      List<StatsCaptureBatchItemResult> nonCapturedResults) {
+    Map<StatsTriggerOutcome, Long> counts =
+        nonCapturedResults.stream()
+            .collect(
+                Collectors.groupingBy(
+                    StatsCaptureBatchItemResult::outcome,
+                    LinkedHashMap::new,
+                    Collectors.counting()));
+    String outcomes =
+        counts.entrySet().stream()
+            .map(entry -> entry.getValue() + " " + entry.getKey().name())
+            .collect(Collectors.joining(", "));
+    String details =
+        nonCapturedResults.stream()
+            .map(StatsCaptureBatchItemResult::detail)
+            .filter(detail -> detail != null && !detail.isBlank())
+            .distinct()
+            .limit(3)
+            .collect(Collectors.joining("; "));
+    return details.isBlank()
+        ? "Stats capture batch had non-captured outcomes: " + outcomes
+        : "Stats capture batch had non-captured outcomes: " + outcomes + " (" + details + ")";
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
@@ -3312,11 +3403,44 @@ public class ReconcilerService {
     final long snapshotsProcessed;
     final long statsProcessed;
     final boolean tableChanged;
+    final Optional<String> degradedReason;
+    final Optional<String> errorReason;
 
     private IngestCounts(long snapshotsProcessed, long statsProcessed, boolean tableChanged) {
+      this(snapshotsProcessed, statsProcessed, tableChanged, Optional.empty(), Optional.empty());
+    }
+
+    private IngestCounts(
+        long snapshotsProcessed,
+        long statsProcessed,
+        boolean tableChanged,
+        Optional<String> degradedReason,
+        Optional<String> errorReason) {
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.tableChanged = tableChanged;
+      this.degradedReason = degradedReason == null ? Optional.empty() : degradedReason;
+      this.errorReason = errorReason == null ? Optional.empty() : errorReason;
+    }
+
+    private static IngestCounts degraded(
+        long snapshotsProcessed, long statsProcessed, boolean tableChanged, String degradedReason) {
+      return new IngestCounts(
+          snapshotsProcessed,
+          statsProcessed,
+          tableChanged,
+          Optional.ofNullable(degradedReason).filter(reason -> !reason.isBlank()),
+          Optional.empty());
+    }
+
+    private static IngestCounts error(
+        long snapshotsProcessed, long statsProcessed, boolean tableChanged, String errorReason) {
+      return new IngestCounts(
+          snapshotsProcessed,
+          statsProcessed,
+          tableChanged,
+          Optional.empty(),
+          Optional.ofNullable(errorReason).filter(reason -> !reason.isBlank()));
     }
   }
 
@@ -3461,9 +3585,11 @@ public class ReconcilerService {
       long tablesChanged,
       long snapshotsProcessed,
       long statsProcessed,
-      Optional<String> degradedReason) {
+      Optional<String> degradedReason,
+      Optional<String> errorReason) {
     private static TableExecutionOutcome skipped(boolean matchedScope) {
-      return new TableExecutionOutcome(matchedScope, null, 0L, 0L, 0L, 0L, Optional.empty());
+      return new TableExecutionOutcome(
+          matchedScope, null, 0L, 0L, 0L, 0L, Optional.empty(), Optional.empty());
     }
   }
 

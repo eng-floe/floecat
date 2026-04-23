@@ -110,15 +110,15 @@ order.
 2. for `SYNC`, calls `StatsEngineRegistry.captureBatch()` on miss (single-item requests are
    wrapped via `StatsCaptureBatchRequest.of(request)`)
 3. if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped `STATS_ONLY` follow-up carrying the
-   unresolved snapshot + target set and returns empty for unresolved items
+   unresolved table-scoped stats requests and returns empty for unresolved items
 
 Current enqueue policy:
 
 - enqueue fallback is currently miss-based
 - enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
   candidate for the requested target
-- async enqueue scope is table-scoped with explicit unresolved target payload:
-  `destination_snapshot_ids` + `destination_stats_targets`
+- async enqueue scope is table-scoped and uses reconcile `ScopedStatsRequest` payloads:
+  `table_id` + `snapshot_id` + encoded `target_spec` + `column_selectors`
 
 `StatsEngineRegistry.captureBatch(batchRequest)`:
 
@@ -134,6 +134,12 @@ The registry is selection-only and does not merge multi-engine outputs.
 1. serves as the explicit capture control-plane entrypoint (non-query callers)
 2. in service runtime, delegates to `StatsOrchestrator.triggerBatch(...)`
 3. executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)
+
+Reconciler policy on top of control-plane results:
+
+- all items non-captured (`UNCAPTURABLE` / `DEGRADED`) => reconcile table execution fails
+- mixed captured + non-captured => reconcile table execution succeeds in degraded state
+- `statsProcessed` counts captured snapshots, not attempted requests
 
 Result model:
 
