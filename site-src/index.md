@@ -9,7 +9,7 @@ classes: wide
 <section class="home-hero">
   <div class="home-hero__content">
     <p class="home-kicker">Metadata Control Plane</p>
-    <h1>One planner-ready metadata plane for Iceberg and Delta catalogs.</h1>
+    <h1>A planner-ready metadata layer for Iceberg and Delta</h1>
     <p class="home-subtitle">
       Built for data platform engineers and query engine teams that need consistent
       metadata semantics across catalogs, clouds, and engines.
@@ -27,16 +27,12 @@ classes: wide
   </div>
 </section>
 
-<section class="trust-strip">
-  <span>Iceberg REST compatible</span>
-  <span>Tested with DuckDB + Trino</span>
-  <span>Apache 2.0 open source</span>
-</section>
-
 {% assign latest = site.posts | first %}
+
 {% if latest %}
+
 <section id="latest-post" class="home-latest-post">
-  <p class="home-latest-post__label">Latest Post</p>
+  <p class="home-latest-post__label">Latest from Floecat</p>
   <h2>{{ latest.title }}</h2>
   <p class="home-latest-post__meta">
     {{ latest.date | date: "%Y-%m-%d" }}
@@ -44,10 +40,17 @@ classes: wide
     {% assign latest_read = latest_words | divided_by: 180 | plus: 1 %}
     · {{ latest_read }} min read
   </p>
-  <p>{{ latest.excerpt | strip_html | truncate: 220 }}</p>
-  <a class="btn btn--primary" href="{{ latest.url | relative_url }}">Read Latest Post</a>
+  {% assign latest_summary = latest.summary | default: latest.description | default: latest.excerpt %}
+  <p>{{ latest_summary | strip_html | normalize_whitespace | truncate: 220 }}</p>
+  <a class="btn btn--primary" href="{{ latest.url | relative_url }}">Read the post</a>
 </section>
 {% endif %}
+
+<section class="trust-strip">
+  <span>Iceberg REST compatible</span>
+  <span>Tested with DuckDB + Trino</span>
+  <span>Apache 2.0 open source</span>
+</section>
 
 <h2 id="why-floecat">Why teams use Floecat</h2>
 

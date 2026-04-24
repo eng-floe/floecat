@@ -1,6 +1,7 @@
 ---
 layout: single
 title: "Sampling-Based NDV Estimation in Iceberg Tables"
+summary: How do you estimate NDV in under one second without owning the write path?
 date: 2026-04-20
 comments: true
 author: mark_cusack
