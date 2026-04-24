@@ -26,9 +26,13 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -244,7 +248,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB, "get_reconcile_job", "success", null);
-                    return toResponse(job);
+                    return toResponse(principalContext.getAccountId(), job);
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB,
@@ -294,7 +298,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var builder = ListReconcileJobsResponse.newBuilder();
                     for (var job : page.jobs) {
                       builder.addJobs(
-                          toResponse(aggregateIfPlanJob(principalContext.getAccountId(), job)));
+                          toResponse(
+                              principalContext.getAccountId(),
+                              aggregateIfPlanJob(principalContext.getAccountId(), job)));
                     }
                     builder.setPage(
                         PageResponse.newBuilder()
@@ -383,7 +389,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         .setCancelled(
                             "JS_CANCELLED".equals(cancelled.get().state)
                                 || "JS_CANCELLING".equals(cancelled.get().state))
-                        .setJob(toResponse(cancelled.get()))
+                        .setJob(toResponse(principalContext.getAccountId(), cancelled.get()))
                         .build();
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
@@ -642,11 +648,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
           .asRuntimeException();
     }
     if (executorRegistry != null
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)) {
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
       throw Status.FAILED_PRECONDITION
           .withDescription(
-              "No enabled reconcile executor is available for EXEC_TABLE or EXEC_VIEW jobs")
+              "No enabled reconcile executor is available for PLAN_TABLE or PLAN_VIEW jobs")
           .asRuntimeException();
     }
   }
@@ -833,7 +839,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
   private ReconcileJobStore.ReconcileJob aggregateIfPlanJob(
       String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+    if (job == null || !supportsChildAggregation(job.jobKind)) {
       return job;
     }
     List<ReconcileJobStore.ReconcileJob> children = childJobsFor(accountId, job);
@@ -904,12 +910,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         job.jobKind,
         job.tableTask,
         job.viewTask,
+        job.snapshotTask,
+        job.fileGroupTask,
         job.parentJobId);
   }
 
   private List<ReconcileJobStore.ReconcileJob> childJobsFor(
       String accountId, ReconcileJobStore.ReconcileJob planJob) {
-    if (planJob == null || planJob.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+    if (planJob == null || !supportsChildAggregation(planJob.jobKind)) {
       return List.of();
     }
     return jobs.childJobs(accountId, planJob.jobId);
@@ -917,7 +925,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
   private void cancelChildJobs(
       String accountId, ReconcileJobStore.ReconcileJob job, String reason) {
-    if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+    if (job == null || !supportsChildAggregation(job.jobKind)) {
       return;
     }
     for (var child : childJobsFor(accountId, job)) {
@@ -931,9 +939,13 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   private static boolean canCancelViaActiveChildren(
       ReconcileJobStore.ReconcileJob storedJob, ReconcileJobStore.ReconcileJob effectiveJob) {
     return storedJob != null
-        && storedJob.jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        && supportsChildAggregation(storedJob.jobKind)
         && effectiveJob != null
         && !isTerminalState(effectiveJob.state);
+  }
+
+  private static boolean supportsChildAggregation(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
   private static String aggregateState(
@@ -974,7 +986,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         || "JS_CANCELLED".equals(state);
   }
 
-  private static GetReconcileJobResponse toResponse(ReconcileJobStore.ReconcileJob job) {
+  private GetReconcileJobResponse toResponse(String accountId, ReconcileJobStore.ReconcileJob job) {
+    FileGroupCounts fileGroupCounts = fileGroupCounts(accountId, job);
     return GetReconcileJobResponse.newBuilder()
         .setJobId(job.jobId)
         .setConnectorId(job.connectorId)
@@ -1000,15 +1013,148 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setParentJobId(job.parentJobId == null ? "" : job.parentJobId)
         .setTableTask(toProtoTableTask(job.tableTask))
         .setViewTask(toProtoViewTask(job.viewTask))
+        .setSnapshotTask(toProtoSnapshotTask(job.snapshotTask))
+        .setFileGroupTask(toProtoFileGroupTask(job.fileGroupTask))
+        .setFileGroupsTotal(fileGroupCounts.totalGroups)
+        .setFileGroupsCompleted(fileGroupCounts.completedGroups)
+        .setFileGroupsFailed(fileGroupCounts.failedGroups)
+        .setFilesTotal(fileGroupCounts.totalFiles)
+        .setFilesCompleted(fileGroupCounts.completedFiles)
+        .setFilesFailed(fileGroupCounts.failedFiles)
         .build();
   }
+
+  private FileGroupCounts fileGroupCounts(String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null) {
+      return FileGroupCounts.empty();
+    }
+    if (job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
+      return snapshotFileGroupCounts(accountId, job);
+    }
+    if (job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP) {
+      return fileGroupExecutionCounts(accountId, job);
+    }
+    return FileGroupCounts.empty();
+  }
+
+  private FileGroupCounts snapshotFileGroupCounts(
+      String accountId, ReconcileJobStore.ReconcileJob job) {
+    var snapshotTask = job.snapshotTask == null ? ReconcileSnapshotTask.empty() : job.snapshotTask;
+    long totalGroups = snapshotTask.fileGroups().size();
+    long totalFiles =
+        snapshotTask.fileGroups().stream().mapToLong(group -> group.filePaths().size()).sum();
+    if (totalGroups == 0L) {
+      return FileGroupCounts.empty();
+    }
+    List<ReconcileJobStore.ReconcileJob> children = jobs.childJobs(accountId, job.jobId);
+    long completedGroups = 0L;
+    long failedGroups = 0L;
+    long completedFiles = 0L;
+    long failedFiles = 0L;
+    for (var child : children) {
+      if (child == null || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
+        continue;
+      }
+      FileResultCounts fileCounts = fileResultCounts(accountId, child);
+      if ("JS_SUCCEEDED".equals(child.state)) {
+        completedGroups++;
+      } else if ("JS_FAILED".equals(child.state) || "JS_CANCELLED".equals(child.state)) {
+        failedGroups++;
+      }
+      completedFiles += fileCounts.completed;
+      failedFiles += fileCounts.failed;
+    }
+    return new FileGroupCounts(
+        totalGroups, completedGroups, failedGroups, totalFiles, completedFiles, failedFiles);
+  }
+
+  private FileGroupCounts fileGroupExecutionCounts(
+      String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (job.fileGroupTask == null || job.fileGroupTask.isEmpty()) {
+      return FileGroupCounts.empty();
+    }
+    FileResultCounts fileCounts = fileResultCounts(accountId, job);
+    long fileCount = fileCounts.total;
+    long completedGroups = "JS_SUCCEEDED".equals(job.state) ? 1L : 0L;
+    long failedGroups = "JS_FAILED".equals(job.state) || "JS_CANCELLED".equals(job.state) ? 1L : 0L;
+    return new FileGroupCounts(
+        1L, completedGroups, failedGroups, fileCount, fileCounts.completed, fileCounts.failed);
+  }
+
+  private long plannedFileCount(String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null || job.fileGroupTask == null || job.fileGroupTask.isEmpty()) {
+      return 0L;
+    }
+    if (!job.fileGroupTask.filePaths().isEmpty()) {
+      return job.fileGroupTask.filePaths().size();
+    }
+    if (job.parentJobId == null || job.parentJobId.isBlank()) {
+      return 0L;
+    }
+    return jobs.get(accountId, job.parentJobId)
+        .map(parent -> parent.snapshotTask)
+        .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
+        .flatMap(
+            snapshotTask ->
+                snapshotTask.fileGroups().stream()
+                    .filter(group -> group != null && !group.isEmpty())
+                    .filter(group -> group.groupId().equals(job.fileGroupTask.groupId()))
+                    .filter(group -> group.planId().equals(job.fileGroupTask.planId()))
+                    .findFirst())
+        .map(group -> (long) group.filePaths().size())
+        .orElse(0L);
+  }
+
+  private FileResultCounts fileResultCounts(String accountId, ReconcileJobStore.ReconcileJob job) {
+    long total = plannedFileCount(accountId, job);
+    if (job == null || job.fileGroupTask == null || job.fileGroupTask.fileResults().isEmpty()) {
+      if ("JS_SUCCEEDED".equals(job == null ? "" : job.state)) {
+        return new FileResultCounts(total, total, 0L);
+      }
+      if ("JS_FAILED".equals(job == null ? "" : job.state)
+          || "JS_CANCELLED".equals(job == null ? "" : job.state)) {
+        return new FileResultCounts(total, 0L, total);
+      }
+      return new FileResultCounts(total, 0L, 0L);
+    }
+    long completed = 0L;
+    long failed = 0L;
+    for (var result : job.fileGroupTask.fileResults()) {
+      if (result == null || result.isEmpty()) {
+        continue;
+      }
+      if (result.state() == ReconcileFileResult.State.SUCCEEDED
+          || result.state() == ReconcileFileResult.State.SKIPPED) {
+        completed++;
+      } else if (result.state() == ReconcileFileResult.State.FAILED) {
+        failed++;
+      }
+    }
+    return new FileResultCounts(total, completed, failed);
+  }
+
+  private record FileGroupCounts(
+      long totalGroups,
+      long completedGroups,
+      long failedGroups,
+      long totalFiles,
+      long completedFiles,
+      long failedFiles) {
+    private static FileGroupCounts empty() {
+      return new FileGroupCounts(0L, 0L, 0L, 0L, 0L, 0L);
+    }
+  }
+
+  private record FileResultCounts(long total, long completed, long failed) {}
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
       ReconcileJobKind jobKind) {
     return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
       case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
-      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
-      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
+      case PLAN_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_TABLE;
+      case PLAN_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_VIEW;
+      case PLAN_SNAPSHOT -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_SNAPSHOT;
+      case EXEC_FILE_GROUP -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP;
     };
   }
 
@@ -1035,6 +1181,70 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setDestinationViewId(blankToEmpty(effective.destinationViewId()))
         .setDestinationViewDisplayName(effective.destinationViewDisplayName())
         .setMode(effective.mode().name())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask toProtoSnapshotTask(
+      ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
+        .setTableId(effective.tableId())
+        .setSnapshotId(effective.snapshotId())
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceTable(effective.sourceTable())
+        .addAllFileGroups(
+            effective.fileGroups().stream()
+                .map(ReconcileControlImpl::toProtoFileGroupTask)
+                .toList())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask toProtoFileGroupTask(
+      ReconcileFileGroupTask fileGroupTask) {
+    ReconcileFileGroupTask effective =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask.newBuilder()
+        .setPlanId(effective.planId())
+        .setGroupId(effective.groupId())
+        .setTableId(effective.tableId())
+        .setSnapshotId(effective.snapshotId())
+        .addAllFilePaths(effective.filePaths())
+        .addAllFileResults(
+            effective.fileResults().stream().map(ReconcileControlImpl::toProtoFileResult).toList())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(
+      ReconcileFileResult fileResult) {
+    ReconcileFileResult effective = fileResult == null ? ReconcileFileResult.empty() : fileResult;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
+        .setFilePath(effective.filePath())
+        .setState(
+            switch (effective.state()) {
+              case SUCCEEDED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED;
+              case FAILED -> ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_FAILED;
+              case SKIPPED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SKIPPED;
+              case UNSPECIFIED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_UNSPECIFIED;
+            })
+        .setStatsProcessed(effective.statsProcessed())
+        .setMessage(effective.message())
+        .setIndexArtifact(toProtoIndexArtifact(effective.indexArtifact()))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+      toProtoIndexArtifact(ReconcileIndexArtifactResult indexArtifact) {
+    ReconcileIndexArtifactResult effective =
+        indexArtifact == null ? ReconcileIndexArtifactResult.empty() : indexArtifact;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+        .newBuilder()
+        .setArtifactUri(effective.artifactUri())
+        .setArtifactFormat(effective.artifactFormat())
+        .setArtifactFormatVersion(effective.artifactFormatVersion())
         .build();
   }
 

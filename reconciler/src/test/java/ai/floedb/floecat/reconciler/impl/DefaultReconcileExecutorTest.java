@@ -21,6 +21,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -28,9 +30,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class DefaultReconcileExecutorTest {
@@ -38,7 +42,9 @@ class DefaultReconcileExecutorTest {
   @Test
   void executePreservesConnectorMissingFailureKind() {
     var reconcilerService = mock(ReconcilerService.class);
-    var executor = new DefaultReconcileExecutor(reconcilerService, true);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor = new DefaultReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
         new ReconcileJobStore.LeasedJob(
             "job-1",
@@ -51,7 +57,7 @@ class DefaultReconcileExecutorTest {
             "lease-1",
             "",
             "",
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("sales", "orders", "orders-id", "orders"),
             "");
     var failure =
@@ -86,7 +92,9 @@ class DefaultReconcileExecutorTest {
   @Test
   void executeViewJobUsesReconcileViewPath() {
     var reconcilerService = mock(ReconcilerService.class);
-    var executor = new DefaultReconcileExecutor(reconcilerService, true);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor = new DefaultReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
         new ReconcileJobStore.LeasedJob(
             "job-1",
@@ -99,7 +107,7 @@ class DefaultReconcileExecutorTest {
             "lease-1",
             "",
             "",
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.of("sales", "orders_view", "dest-analytics-id", "orders-view-id"),
             "");
@@ -125,5 +133,70 @@ class DefaultReconcileExecutorTest {
     assertThat(result.ok()).isTrue();
     assertThat(result.scanned).isEqualTo(1);
     assertThat(result.changed).isEqualTo(1);
+    verify(jobs, never())
+        .enqueueSnapshotPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeTablePlanEnqueuesSnapshotPlansAndSuppressesParentSnapshotCounts() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT)).thenReturn(true);
+    var executor = new DefaultReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.discovery("sales", "orders", "dest-ns", "", "orders"),
+            "");
+
+    when(reconcilerService.reconcile(
+            any(), any(), anyBoolean(), any(), any(), any(), nullable(String.class), any(), any()))
+        .thenReturn(
+            new ReconcilerService.Result(
+                1, 1, 0, 0, 0, 0, 0, null, List.of(), List.of("orders-id")));
+    when(reconcilerService.planSnapshotTasks(
+            any(), any(), anyBoolean(), any(), any(), nullable(String.class)))
+        .thenReturn(List.of(ReconcileSnapshotTask.of("orders-id", 42L, "sales", "orders")));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.tablesScanned).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    verify(jobs)
+        .enqueueSnapshotPlan(
+            org.mockito.ArgumentMatchers.eq("acct"),
+            org.mockito.ArgumentMatchers.eq("connector-1"),
+            anyBoolean(),
+            org.mockito.ArgumentMatchers.eq(CaptureMode.METADATA_AND_STATS),
+            org.mockito.ArgumentMatchers.eq(ReconcileScope.empty()),
+            org.mockito.ArgumentMatchers.eq(
+                ReconcileSnapshotTask.of("orders-id", 42L, "sales", "orders")),
+            org.mockito.ArgumentMatchers.eq(ReconcileExecutionPolicy.defaults()),
+            org.mockito.ArgumentMatchers.eq("job-1"),
+            org.mockito.ArgumentMatchers.eq(""));
   }
 }

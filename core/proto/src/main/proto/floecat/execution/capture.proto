@@ -1,0 +1,109 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ai.floedb.floecat.execution;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.execution.rpc";
+option java_outer_classname = "ExecutionCaptureProto";
+
+import "floecat/catalog/index.proto";
+import "floecat/catalog/stats.proto";
+import "floecat/common/common.proto";
+import "floecat/reconciler/reconciler.proto";
+
+message CaptureColumn {
+  int64 field_id = 1;
+  string name = 2;
+  bool capture_stats = 3;
+  bool capture_index = 4;
+}
+
+message CapturePolicy {
+  repeated CaptureColumn columns = 1;
+  bool capture_table_stats = 2;
+  bool capture_file_stats = 3;
+  bool capture_indexes = 4;
+  map<string, string> properties = 99;
+}
+
+message FileGroupMember {
+  string file_path = 1;
+  int64 declared_size_bytes = 2;
+  int64 declared_row_count = 3;
+  map<string, string> properties = 99;
+}
+
+message ExecuteFileGroupRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  ai.floedb.floecat.common.ResourceId connector_id = 3;
+  ai.floedb.floecat.common.ResourceId table_id = 4;
+  int64 snapshot_id = 5;
+
+  string plan_id = 6;
+  string group_id = 7;
+  string correlation_id = 8;
+
+  repeated FileGroupMember files = 9;
+  CapturePolicy capture_policy = 10;
+
+  bool capture_stats = 11;
+  bool capture_indexes = 12;
+
+  ai.floedb.floecat.reconciler.ExecutionPolicy execution_policy = 13;
+}
+
+enum FileCaptureState {
+  FCS_UNSPECIFIED = 0;
+  FCS_CAPTURED = 1;
+  FCS_SKIPPED_ALREADY_COMPLETE = 2;
+  FCS_DEGRADED = 3;
+  FCS_FAILED = 4;
+}
+
+message FileCaptureResult {
+  string file_path = 1;
+  FileCaptureState state = 2;
+  string message = 3;
+
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 10;
+  ai.floedb.floecat.catalog.IndexArtifactRecord index_artifact = 11;
+
+  optional int64 rows_indexed = 20;
+  optional int64 pages_indexed = 21;
+}
+
+message ExecuteFileGroupResponse {
+  string job_id = 1;
+  string plan_id = 2;
+  string group_id = 3;
+
+  repeated FileCaptureResult files = 10;
+
+  uint64 files_total = 20;
+  uint64 files_completed = 21;
+  uint64 files_skipped = 22;
+  uint64 files_failed = 23;
+
+  bool degraded = 30;
+  string message = 31;
+}
+
+service CaptureExecutionService {
+  rpc ExecuteFileGroup(ExecuteFileGroupRequest) returns (ExecuteFileGroupResponse);
+}

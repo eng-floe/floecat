@@ -47,6 +47,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -459,6 +460,74 @@ public class ReconcilerService {
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to plan reconcile view tasks for connector " + connectorId.getId(), e);
+    }
+  }
+
+  public List<ReconcileSnapshotTask> planSnapshotTasks(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      ReconcileTableTask tableTask,
+      String bearerToken) {
+    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
+    ReconcileTableTask effectiveTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+    if (effectiveTask.isEmpty()
+        || effectiveTask.sourceNamespace().isBlank()
+        || effectiveTask.sourceTable().isBlank()
+        || effectiveTask.destinationTableId() == null
+        || effectiveTask.destinationTableId().isBlank()) {
+      return List.of();
+    }
+
+    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+    ActiveConnector active = activeConnectorForResult(ctx, connectorId);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(effectiveTask.destinationTableId())
+            .build();
+    Set<Long> targetSnapshotIds =
+        scope.destinationStatsRequests().stream()
+            .filter(request -> request != null)
+            .filter(request -> tableId.getId().equals(request.tableId()))
+            .map(ReconcileScope.ScopedStatsRequest::snapshotId)
+            .filter(snapshotId -> snapshotId >= 0)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+    Set<Long> knownSnapshotIds = fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, tableId);
+    Set<Long> enumerationKnownSnapshotIds =
+        knownSnapshotIdsForEnumeration(fullRescan, false, knownSnapshotIds, null);
+
+    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+      List<FloecatConnector.SnapshotBundle> bundles =
+          connector.enumerateSnapshots(
+              effectiveTask.sourceNamespace(),
+              effectiveTask.sourceTable(),
+              tableId,
+              fullRescan
+                  ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
+                  : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                      enumerationKnownSnapshotIds, targetSnapshotIds));
+      if (bundles == null || bundles.isEmpty()) {
+        return List.of();
+      }
+      return bundles.stream()
+          .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
+          .map(
+              bundle ->
+                  ReconcileSnapshotTask.of(
+                      effectiveTask.destinationTableId(),
+                      bundle.snapshotId(),
+                      effectiveTask.sourceNamespace(),
+                      effectiveTask.sourceTable()))
+          .distinct()
+          .toList();
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Failed to plan snapshot tasks for connector " + connectorId.getId(), e);
     }
   }
 
@@ -2396,23 +2465,19 @@ public class ReconcilerService {
             snapshotsProcessedBase,
             statsProcessedBase);
     Optional<String> degradedReason = Optional.empty();
-    if (captureMode == CaptureMode.METADATA_AND_STATS) {
-      List<ReconcileScope.ScopedStatsRequest> effectiveScopedStatsRequests =
-          scopedStatsRequestsForSnapshots(
-              snapshotIdsFromBundles(bundles), scopedStatsRequestsBySnapshot);
-      boolean shouldEnqueueStatsFollowUp =
-          !hasScopedStatsRequestFilter || !effectiveScopedStatsRequests.isEmpty();
+    boolean shouldEnqueueStatsFollowUp =
+        captureMode == CaptureMode.METADATA_AND_STATS
+            && (!hasScopedStatsRequestFilter || !scopedStatsRequestsBySnapshot.isEmpty());
+    if (shouldEnqueueStatsFollowUp) {
       degradedReason =
-          shouldEnqueueStatsFollowUp
-              ? enqueueStatsOnlyCapture(
-                  connectorId,
-                  scopeNamespaceFq,
-                  destTableDisplay,
-                  tableId,
-                  snapshotIdsFromBundles(bundles),
-                  effectiveScopedStatsRequests,
-                  defaultColumnSelectors)
-              : Optional.empty();
+          enqueueStatsOnlyCapture(
+              connectorId,
+              scopeNamespaceFq,
+              destTableDisplay,
+              tableId,
+              snapshotIdsFromBundles(bundles),
+              scopedStatsRequestsBySnapshot.values().stream().flatMap(List::stream).toList(),
+              defaultColumnSelectors);
     }
     return new MetadataPassOutcome(ingestCounts, ingestCounts.tableChanged, degradedReason);
   }
@@ -3347,7 +3412,7 @@ public class ReconcilerService {
           List.of());
     }
 
-    private Result(
+    Result(
         long tablesScanned,
         long tablesChanged,
         long viewsScanned,
@@ -3388,6 +3453,10 @@ public class ReconcilerService {
 
     public boolean degraded() {
       return !degradedReasons.isEmpty();
+    }
+
+    public List<String> matchedTableIds() {
+      return matchedTableIds;
     }
 
     public String message() {

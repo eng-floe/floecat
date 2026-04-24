@@ -24,8 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
@@ -86,7 +89,7 @@ class InMemoryReconcileJobStoreTest {
                     false,
                     CaptureMode.METADATA_AND_STATS,
                     ReconcileScope.of(List.of("analytics-namespace-id"), null),
-                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileJobKind.PLAN_VIEW,
                     ReconcileTableTask.empty(),
                     ReconcileViewTask.of(
                         "db", "events_summary", "other-namespace-id", "events-summary-id"),
@@ -110,7 +113,7 @@ class InMemoryReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
             ReconcileExecutionPolicy.defaults(),
             "",
@@ -122,13 +125,93 @@ class InMemoryReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
             ReconcileExecutionPolicy.defaults(),
             "",
             "");
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void persistSnapshotPlanUpdatesStoredJobPayload() {
+    var store = new InMemoryReconcileJobStore();
+    String jobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(
+                ReconcileFileGroupTask.of(
+                    jobId,
+                    "snapshot-55-group-0",
+                    "table-1",
+                    55L,
+                    List.of("s3://bucket/data/file-1.parquet")))));
+
+    var job = store.get("acct", jobId).orElseThrow();
+    assertEquals(1, job.snapshotTask.fileGroups().size());
+    assertEquals(
+        "s3://bucket/data/file-1.parquet",
+        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+  }
+
+  @Test
+  void persistFileGroupResultUpdatesStoredJobPayload() {
+    var store = new InMemoryReconcileJobStore();
+    String jobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.EXEC_FILE_GROUP,
+            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    store.persistFileGroupResult(
+        jobId,
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(
+                ai.floedb.floecat.reconciler.jobs.ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    2L,
+                    ReconcileIndexArtifactResult.of(
+                        "s3://bucket/index/file-1.parquet.index", "parquet", 1)))));
+
+    var job = store.get("acct", jobId).orElseThrow();
+    assertEquals(1, job.fileGroupTask.fileResults().size());
+    assertEquals(2L, job.fileGroupTask.fileResults().getFirst().statsProcessed());
+    assertEquals(
+        "s3://bucket/index/file-1.parquet.index",
+        job.fileGroupTask.fileResults().getFirst().indexArtifact().artifactUri());
   }
 
   @Test
@@ -223,7 +306,7 @@ class InMemoryReconcileJobStoreTest {
               false,
               CaptureMode.METADATA_AND_STATS,
               ReconcileScope.empty(),
-              ReconcileJobKind.EXEC_VIEW,
+              ReconcileJobKind.PLAN_VIEW,
               ReconcileTableTask.empty(),
               ReconcileViewTask.of("src_ns", "src_view", "dst-ns-id", "dst-view-id"),
               ReconcileExecutionPolicy.defaults(),

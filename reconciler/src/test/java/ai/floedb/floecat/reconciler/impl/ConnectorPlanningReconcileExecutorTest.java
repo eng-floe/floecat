@@ -45,8 +45,8 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
@@ -90,7 +90,7 @@ class ConnectorPlanningReconcileExecutorTest {
     assertThat(result.ok()).isTrue();
     assertThat(result.scanned).isEqualTo(3);
     verify(jobs)
-        .enqueueTableExecution(
+        .enqueueTablePlan(
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
@@ -102,7 +102,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("job-1"),
             anyString());
     verify(jobs)
-        .enqueueTableExecution(
+        .enqueueTablePlan(
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
@@ -114,7 +114,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("job-1"),
             anyString());
     verify(jobs)
-        .enqueueViewExecution(
+        .enqueueViewPlan(
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
@@ -127,12 +127,128 @@ class ConnectorPlanningReconcileExecutorTest {
   }
 
   @Test
+  void executePlansSnapshotJobsForExistingDestinationTables() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+    var task = ReconcileTableTask.discovery("sales", "orders", "ns-1", "orders-id", "orders");
+
+    when(reconcilerService.planTableTasks(any(), any(), any(), any())).thenReturn(List.of(task));
+    when(reconcilerService.planViewTasks(any(), any(), any(), any())).thenReturn(List.of());
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.tablesScanned).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    verify(jobs)
+        .enqueueTablePlan(
+            eq("acct"),
+            eq("connector-1"),
+            anyBoolean(),
+            eq(CaptureMode.METADATA_AND_STATS),
+            eq(ReconcileScope.empty()),
+            eq(task),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            anyString());
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueSnapshotPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeDoesNotRequireSnapshotPlanningExecutor() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+    var task = ReconcileTableTask.discovery("sales", "orders", "ns-1", "orders-id", "orders");
+
+    when(reconcilerService.planTableTasks(any(), any(), any(), any())).thenReturn(List.of(task));
+    when(reconcilerService.planViewTasks(any(), any(), any(), any())).thenReturn(List.of());
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    verify(jobs)
+        .enqueueTablePlan(
+            eq("acct"),
+            eq("connector-1"),
+            anyBoolean(),
+            eq(CaptureMode.METADATA_AND_STATS),
+            eq(ReconcileScope.empty()),
+            eq(task),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            anyString());
+  }
+
+  @Test
   void executeFailsWhenScopedPlanMatchesNoTables() {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var scope = ReconcileScope.of(java.util.List.of(), "missing-table-id");
@@ -179,7 +295,7 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var scope = ReconcileScope.of(List.of("requested-ns-id"), null);
@@ -221,10 +337,9 @@ class ConnectorPlanningReconcileExecutorTest {
     assertThat(result.scanned).isEqualTo(0);
     assertThat(result.changed).isEqualTo(0);
     verify(jobs, org.mockito.Mockito.never())
-        .enqueueTableExecution(
-            any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+        .enqueueTablePlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
     verify(jobs, org.mockito.Mockito.never())
-        .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+        .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
     assertThat(progressCalled.get()).isFalse();
   }
 
@@ -233,7 +348,7 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)).thenReturn(false);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)).thenReturn(false);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
@@ -273,9 +388,9 @@ class ConnectorPlanningReconcileExecutorTest {
     assertThat(result.ok()).isFalse();
     assertThat(result.errors).isEqualTo(1);
     assertThat(result.message)
-        .contains("No enabled reconcile executor is available for EXEC_VIEW jobs");
+        .contains("No enabled reconcile executor is available for PLAN_VIEW jobs");
     verify(jobs, org.mockito.Mockito.never())
-        .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+        .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -283,7 +398,7 @@ class ConnectorPlanningReconcileExecutorTest {
     var reconcilerService = mock(ReconcilerService.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)).thenReturn(true);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
     var executor =
         new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
     var lease =
@@ -326,6 +441,6 @@ class ConnectorPlanningReconcileExecutorTest {
     verify(reconcilerService, org.mockito.Mockito.never())
         .planViewTasks(any(), any(), any(), any());
     verify(jobs, org.mockito.Mockito.never())
-        .enqueueViewExecution(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+        .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
   }
 }

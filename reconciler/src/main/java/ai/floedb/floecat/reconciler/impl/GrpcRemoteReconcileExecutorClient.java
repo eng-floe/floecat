@@ -20,9 +20,13 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
@@ -204,6 +208,8 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
         fromProtoJobKind(job.getKind()),
         fromProtoTableTask(job.getTableTask()),
         fromProtoViewTask(job.getViewTask()),
+        fromProtoSnapshotTask(job.getSnapshotTask()),
+        fromProtoFileGroupTask(job.getFileGroupTask()),
         job.getParentJobId());
   }
 
@@ -265,8 +271,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
       ReconcileJobKind jobKind) {
     return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
       case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
-      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
-      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
+      case PLAN_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_TABLE;
+      case PLAN_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_VIEW;
+      case PLAN_SNAPSHOT -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_SNAPSHOT;
+      case EXEC_FILE_GROUP -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP;
     };
   }
 
@@ -274,8 +282,10 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
       ai.floedb.floecat.reconciler.rpc.ReconcileJobKind jobKind) {
     return switch (jobKind) {
       case RJK_PLAN_CONNECTOR -> ReconcileJobKind.PLAN_CONNECTOR;
-      case RJK_EXEC_TABLE -> ReconcileJobKind.EXEC_TABLE;
-      case RJK_EXEC_VIEW -> ReconcileJobKind.EXEC_VIEW;
+      case RJK_PLAN_TABLE -> ReconcileJobKind.PLAN_TABLE;
+      case RJK_PLAN_VIEW -> ReconcileJobKind.PLAN_VIEW;
+      case RJK_PLAN_SNAPSHOT -> ReconcileJobKind.PLAN_SNAPSHOT;
+      case RJK_EXEC_FILE_GROUP -> ReconcileJobKind.EXEC_FILE_GROUP;
       case RJK_UNSPECIFIED, UNRECOGNIZED -> ReconcileJobKind.PLAN_CONNECTOR;
     };
   }
@@ -322,6 +332,67 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
         viewTask.getDestinationNamespaceId(),
         viewTask.getDestinationViewId(),
         viewTask.getDestinationViewDisplayName());
+  }
+
+  private static ReconcileSnapshotTask fromProtoSnapshotTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask == null) {
+      return ReconcileSnapshotTask.empty();
+    }
+    return ReconcileSnapshotTask.of(
+        snapshotTask.getTableId(),
+        snapshotTask.getSnapshotId(),
+        snapshotTask.getSourceNamespace(),
+        snapshotTask.getSourceTable(),
+        snapshotTask.getFileGroupsList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupTask)
+            .toList());
+  }
+
+  private static ReconcileFileGroupTask fromProtoFileGroupTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    return ReconcileFileGroupTask.of(
+        fileGroupTask.getPlanId(),
+        fileGroupTask.getGroupId(),
+        fileGroupTask.getTableId(),
+        fileGroupTask.getSnapshotId(),
+        fileGroupTask.getFilePathsList(),
+        fileGroupTask.getFileResultsList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileResult)
+            .toList());
+  }
+
+  private static ReconcileFileResult fromProtoFileResult(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult fileResult) {
+    if (fileResult == null) {
+      return ReconcileFileResult.empty();
+    }
+    return ReconcileFileResult.of(
+        fileResult.getFilePath(),
+        switch (fileResult.getState()) {
+          case RFRS_SUCCEEDED -> ReconcileFileResult.State.SUCCEEDED;
+          case RFRS_FAILED -> ReconcileFileResult.State.FAILED;
+          case RFRS_SKIPPED -> ReconcileFileResult.State.SKIPPED;
+          case RFRS_UNSPECIFIED, UNRECOGNIZED -> ReconcileFileResult.State.UNSPECIFIED;
+        },
+        fileResult.getStatsProcessed(),
+        fileResult.getMessage(),
+        fromProtoIndexArtifact(fileResult.getIndexArtifact()));
+  }
+
+  private static ReconcileIndexArtifactResult fromProtoIndexArtifact(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+          indexArtifact) {
+    if (indexArtifact == null) {
+      return ReconcileIndexArtifactResult.empty();
+    }
+    return ReconcileIndexArtifactResult.of(
+        indexArtifact.getArtifactUri(),
+        indexArtifact.getArtifactFormat(),
+        indexArtifact.getArtifactFormatVersion());
   }
 
   private static String blankToNull(String value) {

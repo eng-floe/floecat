@@ -7,16 +7,18 @@ helper schemas. Every other module depends on these contracts for serialization,
 compatibility.
 
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
-`connector/`, `account/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.floecat.*.rpc`
-packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.
+`connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
+under the `ai.floedb.floecat.*.rpc` packages and are consumed by the Quarkus service, connectors,
+CLI, and reconciler.
 
 ## Architecture & Responsibilities
 - **`common/common.proto`** – Defines `QueryInput`, `ResourceId`, `NameRef`, `SnapshotRef`, pagination, rich error
   payloads, `PrincipalContext`, and idempotency/optimistic-concurrency helpers. Every other schema
   imports this file.
 - **`catalog/*.proto`** – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
-  lookups, and table statistics. Each service exposes the same Create/List/Get/Update/Delete (CLGUD)
-  lifecycle with `PageRequest`/`PageResponse` support; stats schemas also cover per-file statistics.
+  lookups, table statistics, and index artifacts. Each service exposes the same
+  Create/List/Get/Update/Delete (CLGUD) lifecycle with `PageRequest`/`PageResponse` support; stats
+  schemas also cover per-file statistics and index artifact metadata.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
@@ -26,6 +28,10 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 - **`query/user_objects_bundle.proto`** – `GetUserObjects` streams resolved relation metadata for planner binding, including per-column `ColumnResult` outcomes (`READY` with `ColumnInfo` or `FAILED` with `ColumnFailure`).
 - **`execution/scan.proto`** – Scan metadata (data/delete files + per-file stats) produced by
   connectors and consumed at execution time.
+- **`execution/capture.proto`** – File-group execution RPCs used by the combined stats/index
+  capture worker path.
+- **`reconciler/reconciler.proto`** – Reconcile queue/job tracking contracts, including split
+  planning/execution job kinds and per-file execution results.
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.
 - **`account/account.proto`** – Account CRUD service for multi-tenancy.
@@ -40,11 +46,13 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
+| `TableIndexService` | `GetIndexArtifact`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata keyed by table, snapshot, and target file. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
+| `CaptureExecutionService` | `ExecuteFileGroup` | Combined worker-facing file-group execution contract for planned stats and index capture. |
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
@@ -81,6 +89,9 @@ engine release.
 - **File-level stats** – `FileTargetStats` anchors counts and sketches to
   a file path. File stats are written as `TargetStatsRecord` values with `target.file` identity via
   `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream.
+- **Index artifact streams** – `PutIndexArtifacts` requires each client stream to target exactly one
+  `table_id` and one `snapshot_id`. Multiple snapshots must be written through separate client
+  streams.
 - **Stats vs constraints snapshot policy** – `PutTargetStats` currently accepts unknown snapshots
   (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
@@ -115,8 +126,9 @@ engine release.
    [`docs/service.md`](service.md#security-and-context)) and call gRPC endpoints.
 2. Mutations include `IdempotencyKey` for once-and-only-once semantics; the service persists a hash
   of the request along with the resultant `MutationMeta` so replays yield the previous payload.
-3. Connectors written against the SPI return `ScanFile` and stats payloads that exactly match the
-  protos defined here; the reconciler pipes them back via the catalog/statistics services.
+3. Connectors written against the SPI return `ScanFile`, stats, and file-group capture metadata
+  that exactly match the protos defined here; the reconciler pipes them back via the
+  catalog/statistics/index services.
 4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
    `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
    `EndQuery` once execution is complete.

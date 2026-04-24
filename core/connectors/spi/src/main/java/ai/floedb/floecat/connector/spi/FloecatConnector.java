@@ -182,6 +182,59 @@ public interface FloecatConnector extends Closeable {
         namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
   }
 
+  /**
+   * Captures stats for one planned file-group within a snapshot.
+   *
+   * <p>The default implementation falls back to snapshot-scoped capture and filters file-target
+   * records to the requested file paths. This preserves correctness for file-target stats, but
+   * connectors should override it to avoid rescanning the full snapshot when they can execute the
+   * file group directly.
+   */
+  default List<TargetStatsRecord> capturePlannedFileGroupStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    Set<String> effectivePaths =
+        plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
+    if (effectivePaths.isEmpty()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> captured =
+        captureSnapshotTargetStats(
+            namespaceFq,
+            tableName,
+            destinationTableId,
+            snapshotId,
+            includeColumns == null ? Set.of() : includeColumns,
+            includeTargetKinds == null || includeTargetKinds.isEmpty()
+                ? Set.of(StatsTargetKind.FILE)
+                : includeTargetKinds);
+    return captured.stream()
+        .filter(TargetStatsRecord::hasFile)
+        .filter(record -> effectivePaths.contains(record.getFile().getFilePath()))
+        .toList();
+  }
+
+  /**
+   * Captures page-index rows for one planned file group within a snapshot.
+   *
+   * <p>This is reconcile/execution-only metadata and intentionally separate from query scan
+   * planning. Connectors should return one entry per indexed page and may return an empty result
+   * when page indexes are unavailable for the planned files.
+   */
+  default List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths) {
+    return List.of();
+  }
+
   enum StatsTargetKind {
     TABLE,
     COLUMN,
@@ -214,6 +267,17 @@ public interface FloecatConnector extends Closeable {
     }
     return snapshotConstraints(
         namespaceFq, tableName, destinationTableId, snapshotBundle.snapshotId());
+  }
+
+  /**
+   * Plans snapshot file membership for reconcile/execution planning.
+   *
+   * <p>This is intentionally separate from query scan bundles. Connectors may return {@link
+   * Optional#empty()} when they cannot expose snapshot file membership directly.
+   */
+  default Optional<SnapshotFilePlan> planSnapshotFiles(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    return Optional.empty();
   }
 
   record SnapshotEnumerationOptions(
@@ -363,6 +427,160 @@ public interface FloecatConnector extends Closeable {
       Map<String, String> summary,
       int schemaId,
       Map<String, ByteString> metadata) {}
+
+  record SnapshotFileEntry(
+      String filePath,
+      String fileFormat,
+      long fileSizeInBytes,
+      long recordCount,
+      FileContent fileContent,
+      String partitionDataJson,
+      int partitionSpecId,
+      List<Integer> equalityFieldIds,
+      Long sequenceNumber) {
+    public SnapshotFileEntry {
+      filePath = filePath == null ? "" : filePath;
+      fileFormat = fileFormat == null ? "" : fileFormat;
+      fileSizeInBytes = Math.max(0L, fileSizeInBytes);
+      recordCount = Math.max(0L, recordCount);
+      fileContent = fileContent == null ? FileContent.FC_DATA : fileContent;
+      partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
+      equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+    }
+  }
+
+  record SnapshotFilePlan(List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+    public SnapshotFilePlan {
+      dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
+      deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
+    }
+  }
+
+  record ParquetPageIndexEntry(
+      String filePath,
+      String columnName,
+      int rowGroup,
+      int pageOrdinal,
+      long firstRowIndex,
+      int rowCount,
+      int liveRowCount,
+      Long pageHeaderOffset,
+      int pageTotalCompressedSize,
+      Long dictionaryPageHeaderOffset,
+      Integer dictionaryPageTotalCompressedSize,
+      boolean requiresDictionaryPage,
+      String parquetPhysicalType,
+      String parquetCompression,
+      short parquetMaxDefLevel,
+      short parquetMaxRepLevel,
+      Integer decimalPrecision,
+      Integer decimalScale,
+      Integer decimalBits,
+      Integer minI32,
+      Integer maxI32,
+      Long minI64,
+      Long maxI64,
+      Float minF32,
+      Float maxF32,
+      Double minF64,
+      Double maxF64,
+      Boolean minBool,
+      Boolean maxBool,
+      String minUtf8,
+      String maxUtf8,
+      byte[] minDecimal128Unscaled,
+      byte[] maxDecimal128Unscaled,
+      byte[] minDecimal256Unscaled,
+      byte[] maxDecimal256Unscaled) {
+    public ParquetPageIndexEntry {
+      filePath = filePath == null ? "" : filePath;
+      columnName = columnName == null ? "" : columnName;
+      rowGroup = Math.max(0, rowGroup);
+      pageOrdinal = Math.max(0, pageOrdinal);
+      firstRowIndex = Math.max(0L, firstRowIndex);
+      rowCount = Math.max(0, rowCount);
+      liveRowCount = Math.max(0, liveRowCount);
+      pageTotalCompressedSize = Math.max(0, pageTotalCompressedSize);
+      parquetPhysicalType = parquetPhysicalType == null ? "" : parquetPhysicalType;
+      parquetCompression = parquetCompression == null ? "" : parquetCompression;
+      minUtf8 = minUtf8 == null ? null : minUtf8;
+      maxUtf8 = maxUtf8 == null ? null : maxUtf8;
+      minDecimal128Unscaled =
+          minDecimal128Unscaled == null
+              ? null
+              : java.util.Arrays.copyOf(minDecimal128Unscaled, minDecimal128Unscaled.length);
+      maxDecimal128Unscaled =
+          maxDecimal128Unscaled == null
+              ? null
+              : java.util.Arrays.copyOf(maxDecimal128Unscaled, maxDecimal128Unscaled.length);
+      minDecimal256Unscaled =
+          minDecimal256Unscaled == null
+              ? null
+              : java.util.Arrays.copyOf(minDecimal256Unscaled, minDecimal256Unscaled.length);
+      maxDecimal256Unscaled =
+          maxDecimal256Unscaled == null
+              ? null
+              : java.util.Arrays.copyOf(maxDecimal256Unscaled, maxDecimal256Unscaled.length);
+    }
+
+    public ParquetPageIndexEntry(
+        String filePath,
+        String columnName,
+        int rowGroup,
+        int pageOrdinal,
+        long firstRowIndex,
+        int rowCount,
+        int liveRowCount,
+        Long pageHeaderOffset,
+        int pageTotalCompressedSize,
+        Long dictionaryPageHeaderOffset,
+        Integer dictionaryPageTotalCompressedSize,
+        boolean requiresDictionaryPage,
+        String parquetPhysicalType,
+        String parquetCompression,
+        short parquetMaxDefLevel,
+        short parquetMaxRepLevel,
+        Integer decimalPrecision,
+        Integer decimalScale,
+        Integer decimalBits) {
+      this(
+          filePath,
+          columnName,
+          rowGroup,
+          pageOrdinal,
+          firstRowIndex,
+          rowCount,
+          liveRowCount,
+          pageHeaderOffset,
+          pageTotalCompressedSize,
+          dictionaryPageHeaderOffset,
+          dictionaryPageTotalCompressedSize,
+          requiresDictionaryPage,
+          parquetPhysicalType,
+          parquetCompression,
+          parquetMaxDefLevel,
+          parquetMaxRepLevel,
+          decimalPrecision,
+          decimalScale,
+          decimalBits,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null);
+    }
+  }
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 

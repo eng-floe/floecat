@@ -30,6 +30,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ConnectorPlanningSupport;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
+import ai.floedb.floecat.connector.common.ParquetPageIndexReader;
+import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.FilteringNdvProvider;
@@ -337,7 +339,77 @@ public abstract class IcebergConnector implements FloecatConnector {
       return List.of();
     }
     return buildTargetStats(
-        table, destinationTableId, snapshot, includeColumns, includeTargetKinds);
+        table, destinationTableId, snapshot, includeColumns, includeTargetKinds, Set.of());
+  }
+
+  @Override
+  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
+      return List.of();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return List.of();
+    }
+    return buildTargetStats(
+        table,
+        destinationTableId,
+        snapshot,
+        includeColumns,
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? Set.of(StatsTargetKind.FILE)
+            : includeTargetKinds,
+        plannedFilePaths);
+  }
+
+  @Override
+  public List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths) {
+    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
+      return List.of();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return List.of();
+    }
+    var reader = ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path));
+    return reader.readEntries(plannedFilePaths);
+  }
+
+  @Override
+  public Optional<SnapshotFilePlan> planSnapshotFiles(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+
+    try (var planner = new IcebergPlanner(table, snapshotId, Set.of(), Set.of(), null, true)) {
+      List<SnapshotFileEntry> dataFiles = new ArrayList<>();
+      for (PlannedFile<Integer> planned : planner) {
+        dataFiles.add(toDataScanFile(planned));
+      }
+      List<SnapshotFileEntry> deleteFiles =
+          planner.deleteFiles().stream().map(IcebergConnector::toDeleteScanFile).toList();
+      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), deleteFiles));
+    }
   }
 
   private List<TargetStatsRecord> buildTargetStats(
@@ -345,7 +417,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Snapshot snapshot,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -372,7 +445,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
     }
 
-    EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
+    EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
     var columnNames = engineOutput.columnNames();
     var logicalTypes = engineOutput.logicalTypes();
     var tStats =
@@ -995,8 +1068,63 @@ public abstract class IcebergConnector implements FloecatConnector {
       Map<Integer, LogicalType> logicalTypes,
       List<IcebergPlanner.DeleteFileStat> deleteFiles) {}
 
-  private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
-    try (var planner = new IcebergPlanner(table, snapshotId, colIds, null)) {
+  private static SnapshotFileEntry toDataScanFile(PlannedFile<Integer> planned) {
+    return new SnapshotFileEntry(
+        planned.path(),
+        planned.format(),
+        planned.sizeBytes(),
+        planned.rowCount(),
+        FileContent.FC_DATA,
+        planned.partitionDataJson(),
+        planned.partitionSpecId(),
+        List.of(),
+        planned.sequenceNumber());
+  }
+
+  private static SnapshotFileEntry toDeleteScanFile(IcebergPlanner.DeleteFileStat deleteFile) {
+    return new SnapshotFileEntry(
+        deleteFile.location(),
+        inferDeleteFormat(deleteFile.location()),
+        deleteFile.fileSizeInBytes(),
+        deleteFile.recordCount(),
+        mapDeleteContent(deleteFile.content()),
+        "",
+        0,
+        deleteFile.equalityFieldIds(),
+        deleteFile.fileSequenceNumber());
+  }
+
+  private static String inferDeleteFormat(String location) {
+    if (location == null || location.isBlank()) {
+      return "";
+    }
+    String lower = location.toLowerCase(Locale.ROOT);
+    if (lower.endsWith(".parquet") || lower.endsWith(".parq")) {
+      return "PARQUET";
+    }
+    if (lower.endsWith(".avro")) {
+      return "AVRO";
+    }
+    if (lower.endsWith(".orc")) {
+      return "ORC";
+    }
+    return "";
+  }
+
+  private static FileContent mapDeleteContent(org.apache.iceberg.FileContent content) {
+    if (content == org.apache.iceberg.FileContent.EQUALITY_DELETES) {
+      return FileContent.FC_EQUALITY_DELETES;
+    }
+    if (content == org.apache.iceberg.FileContent.POSITION_DELETES) {
+      return FileContent.FC_POSITION_DELETES;
+    }
+    return FileContent.FC_DATA;
+  }
+
+  private EngineOut runEngine(
+      Table table, long snapshotId, Set<Integer> colIds, Set<String> plannedFilePaths) {
+    try (var planner =
+        new IcebergPlanner(table, snapshotId, colIds, plannedFilePaths, null, true)) {
 
       Map<Integer, String> colNames = planner.columnNamesByKey();
       Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();

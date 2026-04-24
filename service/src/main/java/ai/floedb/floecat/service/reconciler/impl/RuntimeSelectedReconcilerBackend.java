@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.impl.GrpcReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -135,6 +137,48 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Optional<FloecatConnector.SnapshotFilePlan> fetchSnapshotFilePlan(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    return delegate.fetchSnapshotFilePlan(ctx, tableId, snapshotId);
+  }
+
+  @Override
+  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    return delegate.capturePlannedFileGroupStats(ctx, tableId, snapshotId, plannedFilePaths);
+  }
+
+  @Override
+  public List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    return delegate.capturePlannedFileGroupPageIndexEntries(
+        ctx, tableId, snapshotId, plannedFilePaths);
+  }
+
+  @Override
+  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> plannedFilePaths,
+      List<TargetStatsRecord> stats) {
+    return delegate.materializePlannedFileGroupIndexArtifacts(
+        ctx, tableId, snapshotId, plannedFilePaths, stats);
+  }
+
+  @Override
+  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> plannedFilePaths,
+      List<TargetStatsRecord> stats,
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
+    return delegate.materializePlannedFileGroupIndexArtifacts(
+        ctx, tableId, snapshotId, plannedFilePaths, stats, pageIndexEntries);
+  }
+
+  @Override
   public boolean statsAlreadyCapturedForTargetKind(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
     return delegate.statsAlreadyCapturedForTargetKind(ctx, tableId, snapshotId, targetKind);
@@ -155,6 +199,11 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   @Override
   public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     delegate.putTargetStats(ctx, stats);
+  }
+
+  @Override
+  public void putIndexArtifacts(ReconcileContext ctx, List<IndexArtifactRecord> artifacts) {
+    delegate.putIndexArtifacts(ctx, artifacts);
   }
 
   @Override

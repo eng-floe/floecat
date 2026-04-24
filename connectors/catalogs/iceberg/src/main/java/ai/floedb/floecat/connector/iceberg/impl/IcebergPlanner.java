@@ -69,6 +69,7 @@ final class IcebergPlanner implements Planner<Integer> {
   private final Map<Integer, Type> idToIceType = new HashMap<>();
   private final NdvProvider ndvProvider;
   private final Set<Integer> columnSet;
+  private final Set<String> plannedFilePaths;
   private final Schema schema;
   private final Map<Integer, PartitionSpec> specsById;
   private final PartitionSpec defaultSpec;
@@ -77,9 +78,14 @@ final class IcebergPlanner implements Planner<Integer> {
       Table table,
       long snapshotId,
       Set<Integer> colIds,
+      Set<String> plannedFilePaths,
       NdvProvider ndvProvider,
       boolean planFiles) {
     this.ndvProvider = ndvProvider;
+    this.plannedFilePaths =
+        plannedFilePaths == null || plannedFilePaths.isEmpty()
+            ? Set.of()
+            : Collections.unmodifiableSet(new LinkedHashSet<>(plannedFilePaths));
 
     Snapshot snap = table.snapshot(snapshotId);
     Integer snapSchemaId = snap != null ? snap.schemaId() : null;
@@ -104,8 +110,15 @@ final class IcebergPlanner implements Planner<Integer> {
       TableScan scan = table.newScan().useSnapshot(snapshotId).includeColumnStats();
       try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
         for (FileScanTask task : tasks) {
-          files.add(toPlanned(task.file()));
+          String dataPath = task.file().location().toString();
+          if (this.plannedFilePaths.isEmpty() || this.plannedFilePaths.contains(dataPath)) {
+            files.add(toPlanned(task.file()));
+          }
           for (var deleteFile : task.deletes()) {
+            String deletePath = deleteFile.location().toString();
+            if (!this.plannedFilePaths.isEmpty() && !this.plannedFilePaths.contains(deletePath)) {
+              continue;
+            }
             List<Integer> equalityFieldIds =
                 deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                     ? List.copyOf(deleteFile.equalityFieldIds())
@@ -127,7 +140,7 @@ final class IcebergPlanner implements Planner<Integer> {
   }
 
   IcebergPlanner(Table table, long snapshotId, Set<Integer> colIds, NdvProvider ndvProvider) {
-    this(table, snapshotId, colIds, ndvProvider, true);
+    this(table, snapshotId, colIds, Set.of(), ndvProvider, true);
   }
 
   @Override

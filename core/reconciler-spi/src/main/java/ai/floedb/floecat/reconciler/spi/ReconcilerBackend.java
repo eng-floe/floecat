@@ -16,6 +16,7 @@
 package ai.floedb.floecat.reconciler.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import com.google.protobuf.Timestamp;
 import java.util.List;
@@ -86,6 +88,70 @@ public interface ReconcilerBackend {
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 
+  /**
+   * Returns a snapshot file plan for one persisted snapshot when available.
+   *
+   * <p>Backends that cannot yet materialize snapshot file membership should return {@link
+   * Optional#empty()}.
+   */
+  default Optional<FloecatConnector.SnapshotFilePlan> fetchSnapshotFilePlan(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    return Optional.empty();
+  }
+
+  /**
+   * Captures file-target stats for one planned file group.
+   *
+   * <p>Default behavior returns an empty result so older or remote backends can opt in
+   * incrementally.
+   */
+  default List<TargetStatsRecord> capturePlannedFileGroupStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    return List.of();
+  }
+
+  /**
+   * Captures page-index rows for one planned file group.
+   *
+   * <p>Default behavior returns an empty result so older or remote backends can opt in
+   * incrementally.
+   */
+  default List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    return List.of();
+  }
+
+  /**
+   * Materializes durable index artifacts for one planned file group and returns the stored artifact
+   * metadata.
+   *
+   * <p>Default behavior returns an empty result so older or remote backends can opt in
+   * incrementally.
+   */
+  default List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> plannedFilePaths,
+      List<TargetStatsRecord> stats) {
+    return List.of();
+  }
+
+  /**
+   * Materializes durable index artifacts for one planned file group using explicitly captured page
+   * index rows.
+   */
+  default List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> plannedFilePaths,
+      List<TargetStatsRecord> stats,
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
+    return materializePlannedFileGroupIndexArtifacts(
+        ctx, tableId, snapshotId, plannedFilePaths, stats);
+  }
+
   /** Returns whether the snapshot has persisted stats for a specific target kind. */
   boolean statsAlreadyCapturedForTargetKind(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind);
@@ -111,6 +177,8 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets);
 
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
+
+  default void putIndexArtifacts(ReconcileContext ctx, List<IndexArtifactRecord> artifacts) {}
 
   /**
    * Persists snapshot-scoped constraints and returns whether storage changed.

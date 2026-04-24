@@ -149,7 +149,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
               snapshotsProcessed,
               statsProcessed);
         }
-        jobs.enqueueTableExecution(
+        jobs.enqueueTablePlan(
             lease.accountId,
             lease.connectorId,
             lease.fullRescan,
@@ -170,7 +170,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 viewsPlanned,
                 0,
                 0,
-                0,
+                snapshotsProcessed,
                 0,
                 "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
       } else if (scope.hasViewFilter()) {
@@ -202,7 +202,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
               snapshotsProcessed,
               statsProcessed);
         }
-        jobs.enqueueViewExecution(
+        jobs.enqueueViewPlan(
             lease.accountId,
             lease.connectorId,
             lease.fullRescan,
@@ -244,7 +244,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                   snapshotsProcessed,
                   statsProcessed);
             }
-            jobs.enqueueViewExecution(
+            jobs.enqueueViewPlan(
                 lease.accountId,
                 lease.connectorId,
                 lease.fullRescan,
@@ -280,7 +280,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 snapshotsProcessed,
                 statsProcessed);
           }
-          jobs.enqueueTableExecution(
+          jobs.enqueueTablePlan(
               lease.accountId,
               lease.connectorId,
               lease.fullRescan,
@@ -300,7 +300,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                   viewsPlanned,
                   0,
                   0,
-                  0,
+                  snapshotsProcessed,
                   0,
                   "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
         }
@@ -350,31 +350,31 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
       boolean namespaceViewExecution) {
     if (!tableTasks.isEmpty()
         && (executorRegistry == null
-            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))) {
+            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))) {
       throw new IllegalStateException(
-          "No enabled reconcile executor is available for EXEC_TABLE jobs");
+          "No enabled reconcile executor is available for PLAN_TABLE jobs");
     }
     if ((!viewTasks.isEmpty() || namespaceViewExecution)
         && (executorRegistry == null
-            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))) {
+            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))) {
       throw new IllegalStateException(
-          "No enabled reconcile executor is available for EXEC_VIEW jobs");
+          "No enabled reconcile executor is available for PLAN_VIEW jobs");
     }
   }
 
   private void ensureTableExecutorAvailable() {
     if (executorRegistry == null
-        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE)) {
+        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)) {
       throw new IllegalStateException(
-          "No enabled reconcile executor is available for EXEC_TABLE jobs");
+          "No enabled reconcile executor is available for PLAN_TABLE jobs");
     }
   }
 
   private void ensureViewExecutorAvailable() {
     if (executorRegistry == null
-        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW)) {
+        || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
       throw new IllegalStateException(
-          "No enabled reconcile executor is available for EXEC_VIEW jobs");
+          "No enabled reconcile executor is available for PLAN_VIEW jobs");
     }
   }
 

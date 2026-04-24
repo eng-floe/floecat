@@ -53,4 +53,12 @@ class KeysTest {
         "/accounts/acct/transactions/tx/delete/%2Faccounts%2Fa%2Fb",
         Keys.transactionDeleteSentinelUri("acct", "tx", "/accounts/a/b"));
   }
+
+  @Test
+  void snapshotIndexSidecarBlobUriUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/index-sidecars/0000000000000000007/file%3As3%3A%2F%2Fb%2Fp%2Fa%20rquet/deadbeef.parquet",
+        Keys.snapshotIndexSidecarBlobUri(
+            "acct id", "table id", 7L, "file:s3://b/p/a rquet", "deadbeef"));
+  }
 }

@@ -21,9 +21,13 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
@@ -276,8 +280,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     for (var jobKind : request.getJobKindsList()) {
       switch (jobKind) {
         case RJK_PLAN_CONNECTOR -> jobKinds.add(ReconcileJobKind.PLAN_CONNECTOR);
-        case RJK_EXEC_TABLE -> jobKinds.add(ReconcileJobKind.EXEC_TABLE);
-        case RJK_EXEC_VIEW -> jobKinds.add(ReconcileJobKind.EXEC_VIEW);
+        case RJK_PLAN_TABLE -> jobKinds.add(ReconcileJobKind.PLAN_TABLE);
+        case RJK_PLAN_VIEW -> jobKinds.add(ReconcileJobKind.PLAN_VIEW);
+        case RJK_PLAN_SNAPSHOT -> jobKinds.add(ReconcileJobKind.PLAN_SNAPSHOT);
+        case RJK_EXEC_FILE_GROUP -> jobKinds.add(ReconcileJobKind.EXEC_FILE_GROUP);
         case RJK_UNSPECIFIED, UNRECOGNIZED -> {}
       }
     }
@@ -304,6 +310,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setParentJobId(lease.parentJobId)
         .setTableTask(toProtoTableTask(lease.tableTask))
         .setViewTask(toProtoViewTask(lease.viewTask))
+        .setSnapshotTask(toProtoSnapshotTask(lease.snapshotTask))
+        .setFileGroupTask(toProtoFileGroupTask(lease.fileGroupTask))
         .build();
   }
 
@@ -311,8 +319,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       ReconcileJobKind jobKind) {
     return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
       case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
-      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
-      case EXEC_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_VIEW;
+      case PLAN_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_TABLE;
+      case PLAN_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_VIEW;
+      case PLAN_SNAPSHOT -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_SNAPSHOT;
+      case EXEC_FILE_GROUP -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP;
     };
   }
 
@@ -339,6 +349,72 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setDestinationViewId(blankToEmpty(effective.destinationViewId()))
         .setDestinationViewDisplayName(effective.destinationViewDisplayName())
         .setMode(effective.mode().name())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask toProtoSnapshotTask(
+      ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
+        .setTableId(effective.tableId())
+        .setSnapshotId(effective.snapshotId())
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceTable(effective.sourceTable())
+        .addAllFileGroups(
+            effective.fileGroups().stream()
+                .map(ReconcileExecutorControlImpl::toProtoFileGroupTask)
+                .toList())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask toProtoFileGroupTask(
+      ReconcileFileGroupTask fileGroupTask) {
+    ReconcileFileGroupTask effective =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask.newBuilder()
+        .setPlanId(effective.planId())
+        .setGroupId(effective.groupId())
+        .setTableId(effective.tableId())
+        .setSnapshotId(effective.snapshotId())
+        .addAllFilePaths(effective.filePaths())
+        .addAllFileResults(
+            effective.fileResults().stream()
+                .map(ReconcileExecutorControlImpl::toProtoFileResult)
+                .toList())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(
+      ReconcileFileResult fileResult) {
+    ReconcileFileResult effective = fileResult == null ? ReconcileFileResult.empty() : fileResult;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
+        .setFilePath(effective.filePath())
+        .setState(
+            switch (effective.state()) {
+              case SUCCEEDED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED;
+              case FAILED -> ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_FAILED;
+              case SKIPPED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SKIPPED;
+              case UNSPECIFIED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_UNSPECIFIED;
+            })
+        .setStatsProcessed(effective.statsProcessed())
+        .setMessage(effective.message())
+        .setIndexArtifact(toProtoIndexArtifact(effective.indexArtifact()))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+      toProtoIndexArtifact(ReconcileIndexArtifactResult indexArtifact) {
+    ReconcileIndexArtifactResult effective =
+        indexArtifact == null ? ReconcileIndexArtifactResult.empty() : indexArtifact;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+        .newBuilder()
+        .setArtifactUri(effective.artifactUri())
+        .setArtifactFormat(effective.artifactFormat())
+        .setArtifactFormatVersion(effective.artifactFormatVersion())
         .build();
   }
 

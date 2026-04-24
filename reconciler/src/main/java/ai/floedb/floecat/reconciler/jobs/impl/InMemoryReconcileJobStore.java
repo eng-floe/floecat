@@ -18,9 +18,11 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import io.quarkus.arc.Arc;
@@ -137,6 +139,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
@@ -144,6 +148,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     ReconcileTableTask effectiveTableTask =
         tableTask == null ? ReconcileTableTask.empty() : tableTask;
     ReconcileViewTask effectiveViewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    ReconcileSnapshotTask effectiveSnapshotTask =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    ReconcileFileGroupTask effectiveFileGroupTask =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
     ReconcileScope effectiveScope =
         normalizeScopeForJobKind(
             scope == null ? ReconcileScope.empty() : scope,
@@ -164,6 +172,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
+            effectiveSnapshotTask,
+            effectiveFileGroupTask,
             effectivePolicy,
             effectiveParentJobId,
             effectivePinnedExecutorId);
@@ -186,7 +196,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     laneKeysByJobId.put(
         id,
         laneKey(
-            connectorId, effectiveScope, effectiveJobKind, effectiveTableTask, effectiveViewTask));
+            connectorId,
+            effectiveScope,
+            effectiveJobKind,
+            effectiveTableTask,
+            effectiveViewTask,
+            effectiveSnapshotTask,
+            effectiveFileGroupTask));
     var job =
         new ReconcileJob(
             id,
@@ -211,6 +227,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
+            effectiveSnapshotTask,
+            effectiveFileGroupTask,
             effectiveParentJobId);
     jobs.put(id, job);
     pinnedExecutors.put(id, effectivePinnedExecutorId);
@@ -308,6 +326,76 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    jobs.computeIfPresent(
+        jobId,
+        (id, existing) ->
+            new ReconcileJob(
+                existing.jobId,
+                existing.accountId,
+                existing.connectorId,
+                existing.state,
+                existing.message,
+                existing.startedAtMs,
+                existing.finishedAtMs,
+                existing.tablesScanned,
+                existing.tablesChanged,
+                existing.viewsScanned,
+                existing.viewsChanged,
+                existing.errors,
+                existing.fullRescan,
+                existing.captureMode,
+                existing.snapshotsProcessed,
+                existing.statsProcessed,
+                existing.scope,
+                existing.executionPolicy,
+                existing.executorId,
+                existing.jobKind,
+                existing.tableTask,
+                existing.viewTask,
+                effective,
+                existing.fileGroupTask,
+                existing.parentJobId));
+  }
+
+  @Override
+  public void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask) {
+    ReconcileFileGroupTask effective =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+    jobs.computeIfPresent(
+        jobId,
+        (id, existing) ->
+            new ReconcileJob(
+                existing.jobId,
+                existing.accountId,
+                existing.connectorId,
+                existing.state,
+                existing.message,
+                existing.startedAtMs,
+                existing.finishedAtMs,
+                existing.tablesScanned,
+                existing.tablesChanged,
+                existing.viewsScanned,
+                existing.viewsChanged,
+                existing.errors,
+                existing.fullRescan,
+                existing.captureMode,
+                existing.snapshotsProcessed,
+                existing.statsProcessed,
+                existing.scope,
+                existing.executionPolicy,
+                existing.executorId,
+                existing.jobKind,
+                existing.tableTask,
+                existing.viewTask,
+                existing.snapshotTask,
+                effective,
+                existing.parentJobId));
+  }
+
+  @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     long now = System.currentTimeMillis();
     reclaimExpiredLeasesIfDue(now);
@@ -382,6 +470,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                     current.jobKind,
                     current.tableTask,
                     current.viewTask,
+                    current.snapshotTask,
+                    current.fileGroupTask,
                     current.parentJobId));
         ReconcileJob leasedJob = jobs.get(jobId);
         return Optional.of(
@@ -399,6 +489,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 leasedJob.jobKind,
                 leasedJob.tableTask,
                 leasedJob.viewTask,
+                leasedJob.snapshotTask,
+                leasedJob.fileGroupTask,
                 leasedJob.parentJobId));
       }
     }
@@ -455,6 +547,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
   }
@@ -505,6 +599,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
   }
@@ -558,6 +654,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
   }
@@ -615,6 +713,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.jobKind,
                 job.tableTask,
                 job.viewTask,
+                job.snapshotTask,
+                job.fileGroupTask,
                 job.parentJobId);
           }
 
@@ -644,6 +744,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
   }
@@ -696,6 +798,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.jobKind,
                 job.tableTask,
                 job.viewTask,
+                job.snapshotTask,
+                job.fileGroupTask,
                 job.parentJobId);
           }
           releaseLane(id);
@@ -728,6 +832,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
     var current = jobs.get(jobId);
@@ -802,6 +908,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.jobKind,
               job.tableTask,
               job.viewTask,
+              job.snapshotTask,
+              job.fileGroupTask,
               job.parentJobId);
         });
   }
@@ -865,6 +973,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   job.jobKind,
                   job.tableTask,
                   job.viewTask,
+                  job.snapshotTask,
+                  job.fileGroupTask,
                   job.parentJobId);
             }
             if ("JS_CANCELLING".equals(job.state)) {
@@ -893,6 +1003,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   job.jobKind,
                   job.tableTask,
                   job.viewTask,
+                  job.snapshotTask,
+                  job.fileGroupTask,
                   job.parentJobId);
             }
             return job;
@@ -942,7 +1054,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask) {
     ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
-    if (jobKind == ReconcileJobKind.EXEC_TABLE
+    if (jobKind == ReconcileJobKind.PLAN_TABLE
         && tableTask != null
         && tableTask.strict()
         && !blank(tableTask.destinationTableId())) {
@@ -960,7 +1072,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           : ReconcileScope.of(
               List.of(), tableTask.destinationTableId(), effectiveScope.destinationStatsRequests());
     }
-    if (jobKind == ReconcileJobKind.EXEC_VIEW
+    if (jobKind == ReconcileJobKind.PLAN_VIEW
         && viewTask != null
         && viewTask.strict()
         && !blank(viewTask.destinationViewId())) {
@@ -992,18 +1104,30 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileScope scope,
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
-      ReconcileViewTask viewTask) {
+      ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask) {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
-    if (jobKind == ReconcileJobKind.EXEC_TABLE && tableTask != null) {
+    if (jobKind == ReconcileJobKind.PLAN_TABLE && tableTask != null) {
       return scope.destinationTableId() == null || scope.destinationTableId().isBlank()
           ? "tables|" + namespaces
           : "table|" + scope.destinationTableId();
     }
-    if (jobKind == ReconcileJobKind.EXEC_VIEW && viewTask != null) {
+    if (jobKind == ReconcileJobKind.PLAN_VIEW && viewTask != null) {
       return scope.destinationViewId() == null || scope.destinationViewId().isBlank()
           ? "views|" + namespaces
           : "view|" + scope.destinationViewId();
+    }
+    if (jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+        && snapshotTask != null
+        && !blank(snapshotTask.tableId())) {
+      return "snapshot-plan|" + snapshotTask.tableId();
+    }
+    if (jobKind == ReconcileJobKind.EXEC_FILE_GROUP
+        && fileGroupTask != null
+        && !blank(fileGroupTask.tableId())) {
+      return "file-group|" + fileGroupTask.tableId();
     }
     String resource =
         scope.destinationTableId() != null
@@ -1021,6 +1145,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
@@ -1075,6 +1201,23 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 + (viewTask == null ? "" : blankToEmpty(viewTask.destinationViewId())),
             "view_task.destination_view_display_name=" + canonicalViewDisplayName,
             "view_task.mode=" + (viewTask == null ? "" : viewTask.mode().name()),
+            "snapshot_task.table_id="
+                + (snapshotTask == null ? "" : blankToEmpty(snapshotTask.tableId())),
+            "snapshot_task.snapshot_id=" + (snapshotTask == null ? 0L : snapshotTask.snapshotId()),
+            "snapshot_task.source_namespace="
+                + (snapshotTask == null ? "" : blankToEmpty(snapshotTask.sourceNamespace())),
+            "snapshot_task.source_table="
+                + (snapshotTask == null ? "" : blankToEmpty(snapshotTask.sourceTable())),
+            "file_group_task.plan_id="
+                + (fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.planId())),
+            "file_group_task.group_id="
+                + (fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.groupId())),
+            "file_group_task.table_id="
+                + (fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.tableId())),
+            "file_group_task.snapshot_id="
+                + (fileGroupTask == null ? 0L : fileGroupTask.snapshotId()),
+            "file_group_task.file_paths="
+                + (fileGroupTask == null ? "" : String.join(",", fileGroupTask.filePaths())),
             "scope.namespaces=" + namespaces,
             "scope.table=" + table,
             "scope.view=" + blankToEmpty(scope.destinationViewId()),

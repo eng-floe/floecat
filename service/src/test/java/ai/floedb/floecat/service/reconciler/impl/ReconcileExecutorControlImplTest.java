@@ -125,7 +125,7 @@ class ReconcileExecutorControlImplTest {
                     "lease-2",
                     "",
                     "",
-                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileJobKind.PLAN_VIEW,
                     ReconcileTableTask.of("sales", "orders", "orders-table-id", "orders_curated"),
                     ReconcileViewTask.of(
                         "sales", "orders_view", "analytics-namespace-id", "orders-view-id"),
