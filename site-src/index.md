@@ -9,7 +9,7 @@ classes: wide
 <section class="home-hero">
   <div class="home-hero__content">
     <p class="home-kicker">Metadata Control Plane</p>
-    <h1>A planner-ready metadata layer for Iceberg and Delta</h1>
+    <h1>Planner-ready metadata for Iceberg and Delta</h1>
     <p class="home-subtitle">
       Built for data platform engineers and query engine teams that need consistent
       metadata semantics across catalogs, clouds, and engines.
