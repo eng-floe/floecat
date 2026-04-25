@@ -16,7 +16,7 @@
 }
 
 html {
-  font-size: 20px;
+  font-size: 18px;
   background: #f4f0f0;
 }
 
@@ -992,6 +992,14 @@ pre .clipboard-copy-button.copied::after {
   .layout--single .initial-content {
     padding-left: 0.75rem;
     padding-right: 0.75rem;
+  }
+
+  html {
+    font-size: 17px;
+  }
+
+  .github-stars-count {
+    display: none;
   }
 
   .visible-links {
