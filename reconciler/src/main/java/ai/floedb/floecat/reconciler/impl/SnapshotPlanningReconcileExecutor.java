@@ -38,9 +38,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
+  private static final Logger LOG = Logger.getLogger(SnapshotPlanningReconcileExecutor.class);
+
   private final ReconcilerBackend backend;
   private final ReconcileJobStore jobs;
   private final ReconcileExecutorRegistry executorRegistry;
@@ -111,11 +114,20 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
     }
     ReconcileSnapshotTask task =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    LOG.infof(
+        "execute PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+        lease.jobId,
+        lease.connectorId,
+        task.tableId(),
+        task.snapshotId(),
+        task.sourceNamespace(),
+        task.sourceTable(),
+        task.fileGroups().size());
     if (task.isEmpty()
         || task.tableId().isBlank()
         || task.sourceNamespace().isBlank()
         || task.sourceTable().isBlank()
-        || task.snapshotId() <= 0) {
+        || task.snapshotId() < 0) {
       return ExecutionResult.failure(
           0,
           0,
@@ -151,9 +163,10 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("snapshot not found"));
     }
     List<ReconcileFileGroupTask> fileGroupTasks =
-        !task.fileGroups().isEmpty()
-            ? task.fileGroups()
-            : buildFileGroupTasks(lease, task, snapshot);
+        !task.fileGroups().isEmpty() ? task.fileGroups() : buildFileGroupTasks(lease, task);
+    LOG.infof(
+        "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
+        lease.jobId, task.tableId(), task.snapshotId(), fileGroupTasks.size());
     if (task.fileGroups().isEmpty()) {
       jobs.persistSnapshotPlan(lease.jobId, plannedSnapshotTask(task, fileGroupTasks));
     }
@@ -223,7 +236,7 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   }
 
   private List<ReconcileFileGroupTask> buildFileGroupTasks(
-      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task, Snapshot snapshot) {
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
     Optional<FloecatConnector.SnapshotFilePlan> planned = fetchSnapshotFilePlan(lease, task);
     if (planned.isPresent()) {
       List<String> parquetFilePaths =
@@ -239,7 +252,7 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
       }
       return List.of();
     }
-    return List.of(buildFallbackFileGroupTask(lease, task, snapshot));
+    return List.of();
   }
 
   private static boolean isParquetFile(FloecatConnector.SnapshotFileEntry file) {
@@ -259,7 +272,17 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
             .setId(task.tableId())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    return backend.fetchSnapshotFilePlan(reconcileContext(lease), tableId, task.snapshotId());
+    Optional<FloecatConnector.SnapshotFilePlan> planned =
+        backend.fetchSnapshotFilePlan(reconcileContext(lease), tableId, task.snapshotId());
+    LOG.infof(
+        "fetchSnapshotFilePlan jobId=%s tableId=%s snapshotId=%d present=%s dataFiles=%d deleteFiles=%d",
+        lease.jobId,
+        task.tableId(),
+        task.snapshotId(),
+        planned.isPresent(),
+        planned.map(plan -> plan.dataFiles().size()).orElse(0),
+        planned.map(plan -> plan.deleteFiles().size()).orElse(0));
+    return planned;
   }
 
   private List<ReconcileFileGroupTask> partitionFilePaths(
@@ -286,18 +309,6 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
         task.sourceNamespace(),
         task.sourceTable(),
         fileGroupTasks);
-  }
-
-  private static ReconcileFileGroupTask buildFallbackFileGroupTask(
-      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task, Snapshot snapshot) {
-    String planId = lease.jobId;
-    String groupId = "snapshot-" + task.snapshotId() + "-group-0";
-    String planningHandle =
-        snapshot.getManifestList().isBlank()
-            ? "snapshot://" + task.tableId() + "/" + task.snapshotId()
-            : snapshot.getManifestList();
-    return ReconcileFileGroupTask.of(
-        planId, groupId, task.tableId(), task.snapshotId(), List.of(planningHandle));
   }
 
   private void ensureFileGroupExecutorAvailable(List<ReconcileFileGroupTask> fileGroupTasks) {

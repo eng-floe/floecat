@@ -49,6 +49,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -353,7 +354,9 @@ class DirectReconcilerBackendTest {
             .setState(IndexArtifactState.IAS_PENDING)
             .build();
 
-    backend.putIndexArtifacts(ctx, List.of(record));
+    backend.putIndexArtifacts(
+        ctx,
+        List.of(new ReconcilerBackend.StagedIndexArtifact(record, new byte[] {1}, "test/type")));
 
     assertThat(
             indexArtifactRepository.getIndexArtifact(
@@ -369,7 +372,7 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
-  void materializePlannedFileGroupIndexArtifactsWritesRealParquetBlob() throws Exception {
+  void materializePlannedFileGroupIndexArtifactsStagesRealParquetBlob() throws Exception {
     FileTargetStats fileStats =
         FileTargetStats.newBuilder()
             .setFilePath("/data/file.parquet")
@@ -417,7 +420,7 @@ class DirectReconcilerBackendTest {
             null,
             null);
 
-    List<IndexArtifactRecord> artifacts =
+    List<ReconcilerBackend.StagedIndexArtifact> artifacts =
         backend.materializePlannedFileGroupIndexArtifacts(
             ctx,
             tableId,
@@ -427,14 +430,24 @@ class DirectReconcilerBackendTest {
             List.of(pageEntry));
 
     assertThat(artifacts).hasSize(1);
-    IndexArtifactRecord artifact = artifacts.getFirst();
-    assertThat(artifact.getState()).isEqualTo(IndexArtifactState.IAS_READY);
-    assertThat(artifact.getArtifactFormat()).isEqualTo("parquet");
-    assertThat(artifact.getArtifactUri()).contains("/index-sidecars/");
-    assertThat(artifact.getContentEtag()).isNotBlank();
-    assertThat(artifact.getContentSha256B64()).isNotBlank();
-    assertThat(artifact.getCoverage().getRowsIndexed()).isEqualTo(33L);
-    byte[] stored = indexBlobStore.get(artifact.getArtifactUri());
+    ReconcilerBackend.StagedIndexArtifact artifact = artifacts.getFirst();
+    IndexArtifactRecord artifactRecord = artifact.record();
+    assertThat(artifactRecord.getState()).isEqualTo(IndexArtifactState.IAS_READY);
+    assertThat(artifactRecord.getArtifactFormat()).isEqualTo("parquet");
+    assertThat(artifactRecord.getArtifactUri()).contains("/index-sidecars/");
+    assertThat(artifactRecord.getContentEtag()).isNotBlank();
+    assertThat(artifactRecord.getContentSha256B64()).isNotBlank();
+    assertThat(artifactRecord.getCoverage().getRowsIndexed()).isEqualTo(33L);
+    assertThat(artifactRecord.getCoverage().getLiveRowsIndexed()).isEqualTo(33L);
+    assertThat(
+            indexArtifactRepository.getIndexArtifact(
+                tableId,
+                SNAPSHOT_ID,
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build()))
+        .isEmpty();
+    byte[] stored = artifact.content();
     assertThat(stored).isNotNull();
     assertThat(stored).isNotEmpty();
     assertThat(new String(stored, 0, 4, java.nio.charset.StandardCharsets.US_ASCII))
@@ -446,6 +459,8 @@ class DirectReconcilerBackendTest {
           .containsEntry("sidecar.data_file_path", "/data/file.parquet");
       assertThat(reader.getFooter().getBlocks().getFirst().getColumns()).hasSize(34);
     }
+    backend.putIndexArtifacts(ctx, artifacts);
+    assertThat(indexBlobStore.get(artifactRecord.getArtifactUri())).isEqualTo(stored);
     assertThat(
             indexArtifactRepository.getIndexArtifact(
                 tableId,
@@ -456,7 +471,7 @@ class DirectReconcilerBackendTest {
         .isPresent()
         .get()
         .extracting(IndexArtifactRecord::getArtifactUri)
-        .isEqualTo(artifact.getArtifactUri());
+        .isEqualTo(artifactRecord.getArtifactUri());
   }
 
   @Test

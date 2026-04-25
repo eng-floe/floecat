@@ -31,10 +31,13 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 /** Default executor that preserves the existing in-process ReconcilerService planning path. */
 @ApplicationScoped
 public class DefaultReconcileExecutor implements ReconcileExecutor {
+  private static final Logger LOG = Logger.getLogger(DefaultReconcileExecutor.class);
+
   private final ReconcilerService reconcilerService;
   private final ReconcileJobStore jobs;
   private final ReconcileExecutorRegistry executorRegistry;
@@ -226,6 +229,15 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
       if (context.shouldStop().getAsBoolean()) {
         break;
       }
+      LOG.infof(
+          "enqueue PLAN_SNAPSHOT parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+          lease.jobId,
+          lease.connectorId,
+          snapshotTask == null ? "" : snapshotTask.tableId(),
+          snapshotTask == null ? 0L : snapshotTask.snapshotId(),
+          snapshotTask == null ? "" : snapshotTask.sourceNamespace(),
+          snapshotTask == null ? "" : snapshotTask.sourceTable(),
+          snapshotTask == null ? 0 : snapshotTask.fileGroups().size());
       jobs.enqueueSnapshotPlan(
           lease.accountId,
           lease.connectorId,

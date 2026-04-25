@@ -45,9 +45,12 @@ import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient {
+  private static final Logger LOG = Logger.getLogger(GrpcRemoteReconcileExecutorClient.class);
+
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -194,23 +197,38 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
   private static ReconcileJobStore.LeasedJob fromProtoLease(
       ai.floedb.floecat.reconciler.rpc.LeasedReconcileJob job) {
     ResourceId connectorId = job.getConnectorId();
-    return new ReconcileJobStore.LeasedJob(
-        job.getJobId(),
-        connectorId.getAccountId(),
-        connectorId.getId(),
-        job.getFullRescan(),
-        fromProtoCaptureMode(job.getMode()),
-        fromProtoScope(job.getScope()),
-        fromProtoExecutionPolicy(job.getExecutionPolicy()),
-        job.getLeaseEpoch(),
-        job.getPinnedExecutorId(),
-        job.getExecutorId(),
-        fromProtoJobKind(job.getKind()),
-        fromProtoTableTask(job.getTableTask()),
-        fromProtoViewTask(job.getViewTask()),
-        fromProtoSnapshotTask(job.getSnapshotTask()),
-        fromProtoFileGroupTask(job.getFileGroupTask()),
-        job.getParentJobId());
+    ReconcileJobStore.LeasedJob lease =
+        new ReconcileJobStore.LeasedJob(
+            job.getJobId(),
+            connectorId.getAccountId(),
+            connectorId.getId(),
+            job.getFullRescan(),
+            fromProtoCaptureMode(job.getMode()),
+            fromProtoScope(job.getScope()),
+            fromProtoExecutionPolicy(job.getExecutionPolicy()),
+            job.getLeaseEpoch(),
+            job.getPinnedExecutorId(),
+            job.getExecutorId(),
+            fromProtoJobKind(job.getKind()),
+            fromProtoTableTask(job.getTableTask()),
+            fromProtoViewTask(job.getViewTask()),
+            fromProtoSnapshotTask(job.getSnapshotTask()),
+            fromProtoFileGroupTask(job.getFileGroupTask()),
+            job.getParentJobId());
+    if (lease.jobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
+      LOG.infof(
+          "fromProtoLease PLAN_SNAPSHOT jobId=%s connectorId=%s protoTableId=%s protoSnapshotId=%d mappedTableId=%s mappedSnapshotId=%d source=%s.%s fileGroups=%d",
+          lease.jobId,
+          lease.connectorId,
+          job.getSnapshotTask().getTableId(),
+          job.getSnapshotTask().getSnapshotId(),
+          lease.snapshotTask == null ? "" : lease.snapshotTask.tableId(),
+          lease.snapshotTask == null ? 0L : lease.snapshotTask.snapshotId(),
+          lease.snapshotTask == null ? "" : lease.snapshotTask.sourceNamespace(),
+          lease.snapshotTask == null ? "" : lease.snapshotTask.sourceTable(),
+          lease.snapshotTask == null ? 0 : lease.snapshotTask.fileGroups().size());
+    }
+    return lease;
   }
 
   private static CaptureMode fromProtoCaptureMode(

@@ -142,27 +142,30 @@ class FileGroupExecutionReconcileExecutorTest {
             org.mockito.ArgumentMatchers.anyList()))
         .thenReturn(
             List.of(
-                IndexArtifactRecord.newBuilder()
-                    .setTableId(
-                        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-                            .setAccountId("acct")
-                            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-                            .setId("table-1")
-                            .build())
-                    .setSnapshotId(55L)
-                    .setTarget(
-                        IndexTarget.newBuilder()
-                            .setFile(
-                                IndexFileTarget.newBuilder()
-                                    .setFilePath("s3://bucket/path/file-1.parquet")
-                                    .build())
-                            .build())
-                    .setArtifactUri(
-                        "/accounts/acct/tables/table-1/index-sidecars/0000000000000000055/file%3As3%3A%2F%2Fbucket%2Fpath%2Ffile-1.parquet/abc.parquet")
-                    .setArtifactFormat("parquet")
-                    .setArtifactFormatVersion(1)
-                    .setState(IndexArtifactState.IAS_READY)
-                    .build()));
+                new ReconcilerBackend.StagedIndexArtifact(
+                    IndexArtifactRecord.newBuilder()
+                        .setTableId(
+                            ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                                .setAccountId("acct")
+                                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+                                .setId("table-1")
+                                .build())
+                        .setSnapshotId(55L)
+                        .setTarget(
+                            IndexTarget.newBuilder()
+                                .setFile(
+                                    IndexFileTarget.newBuilder()
+                                        .setFilePath("s3://bucket/path/file-1.parquet")
+                                        .build())
+                                .build())
+                        .setArtifactUri(
+                            "/accounts/acct/tables/table-1/index-sidecars/0000000000000000055/file%3As3%3A%2F%2Fbucket%2Fpath%2Ffile-1.parquet/abc.parquet")
+                        .setArtifactFormat("parquet")
+                        .setArtifactFormatVersion(1)
+                        .setState(IndexArtifactState.IAS_READY)
+                        .build(),
+                    new byte[] {1, 2, 3},
+                    "application/x-parquet")));
     var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
     var lease =
         new ReconcileJobStore.LeasedJob(
@@ -216,6 +219,9 @@ class FileGroupExecutionReconcileExecutorTest {
                                 "/accounts/acct/tables/table-1/index-sidecars/0000000000000000055/file%3As3%3A%2F%2Fbucket%2Fpath%2Ffile-1.parquet/abc.parquet")));
     verify(backend)
         .putTargetStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+    verify(backend)
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
     verify(backend)
         .materializePlannedFileGroupIndexArtifacts(
             org.mockito.ArgumentMatchers.any(),

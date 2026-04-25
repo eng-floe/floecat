@@ -44,6 +44,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
@@ -68,7 +69,11 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -98,10 +103,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 @Typed(GrpcReconcilerBackend.class)
 public class GrpcReconcilerBackend implements ReconcilerBackend {
+  private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
+
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -111,6 +119,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private final Optional<String> headerName;
   private final Optional<String> staticToken;
   private final Duration statsTimeout;
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
 
   public GrpcReconcilerBackend(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
@@ -452,6 +461,73 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
     }
+  }
+
+  @Override
+  public Optional<FloecatConnector.SnapshotFilePlan> fetchSnapshotFilePlan(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        Optional.empty(),
+        (source, sourceCtx) -> {
+          Optional<FloecatConnector.SnapshotFilePlan> planned =
+              source.planSnapshotFiles(
+                  sourceCtx.sourceNamespace(), sourceCtx.sourceTable(), tableId, snapshotId);
+          LOG.infof(
+              "GrpcReconcilerBackend.fetchSnapshotFilePlan tableId=%s snapshotId=%d source=%s.%s present=%s dataFiles=%d deleteFiles=%d",
+              tableId.getId(),
+              snapshotId,
+              sourceCtx.sourceNamespace(),
+              sourceCtx.sourceTable(),
+              planned.isPresent(),
+              planned.map(plan -> plan.dataFiles().size()).orElse(0),
+              planned.map(plan -> plan.deleteFiles().size()).orElse(0));
+          return planned;
+        });
+  }
+
+  @Override
+  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    if (plannedFilePaths == null || plannedFilePaths.isEmpty() || snapshotId < 0) {
+      return List.of();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        List.of(),
+        (source, sourceCtx) ->
+            source.capturePlannedFileGroupStats(
+                sourceCtx.sourceNamespace(),
+                sourceCtx.sourceTable(),
+                tableId,
+                snapshotId,
+                Set.copyOf(plannedFilePaths),
+                Set.of(),
+                Set.of(FloecatConnector.StatsTargetKind.FILE)));
+  }
+
+  @Override
+  public List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
+    if (plannedFilePaths == null || plannedFilePaths.isEmpty() || snapshotId < 0) {
+      return List.of();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        List.of(),
+        (source, sourceCtx) ->
+            source.capturePlannedFileGroupPageIndexEntries(
+                sourceCtx.sourceNamespace(),
+                sourceCtx.sourceTable(),
+                tableId,
+                snapshotId,
+                Set.copyOf(plannedFilePaths)));
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -1076,6 +1152,70 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return connectorId == null || connectorId.isBlank()
         ? null
         : ResourceId.newBuilder().setKind(ResourceKind.RK_CONNECTOR).setId(connectorId).build();
+  }
+
+  private Optional<SourceConnectorContext> sourceConnectorContext(
+      ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    Table tableRecord;
+    try {
+      tableRecord =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+    if (!tableRecord.hasUpstream()) {
+      return Optional.empty();
+    }
+    ResourceId connectorId = sourceConnectorId(tableRecord.getUpstream());
+    String sourceNamespace = sourceNamespace(tableRecord.getUpstream());
+    String sourceTable = sourceName(tableRecord.getUpstream());
+    if (connectorId == null
+        || connectorId.getId().isBlank()
+        || sourceNamespace.isBlank()
+        || sourceTable.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.of(new SourceConnectorContext(connectorId, sourceNamespace, sourceTable));
+  }
+
+  private <T> T withSourceConnector(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      T emptyValue,
+      SourceConnectorOperation<T> operation) {
+    Optional<SourceConnectorContext> sourceContext = sourceConnectorContext(ctx, tableId);
+    if (sourceContext.isEmpty()) {
+      return emptyValue;
+    }
+    Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
+    ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    try (FloecatConnector source = connectorOpener.open(config)) {
+      return operation.apply(source, sourceContext.get());
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Failed to open source connector for table " + tableId.getId(), e);
+    }
+  }
+
+  @FunctionalInterface
+  interface ConnectorOpener {
+    FloecatConnector open(ConnectorConfig config) throws Exception;
+  }
+
+  private record SourceConnectorContext(
+      ResourceId connectorId, String sourceNamespace, String sourceTable) {}
+
+  @FunctionalInterface
+  private interface SourceConnectorOperation<T> {
+    T apply(FloecatConnector source, SourceConnectorContext sourceContext) throws Exception;
   }
 
   private TableFormat toTableFormat(ConnectorFormat format) {

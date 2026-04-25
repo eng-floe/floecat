@@ -1069,6 +1069,10 @@ public final class ParquetPageIndexReader {
   }
 
   private static byte[] signExtend(byte[] input, int targetLength) {
+    if (input.length > targetLength) {
+      throw new IllegalArgumentException(
+          "Value with " + input.length + " bytes does not fit in " + targetLength + " bytes");
+    }
     byte sign = input.length > 0 && (input[0] & 0x80) != 0 ? (byte) 0xFF : 0x00;
     byte[] out = new byte[targetLength];
     java.util.Arrays.fill(out, sign);
@@ -1082,7 +1086,17 @@ public final class ParquetPageIndexReader {
   }
 
   private static byte[] toFixedLenBytes(BigInteger value, int length) {
-    return signExtend(value.toByteArray(), length);
+    byte[] raw = value.toByteArray();
+    if (raw.length == length) {
+      return raw;
+    }
+    if (raw.length == length + 1) {
+      byte expectedSign = value.signum() < 0 ? (byte) 0xFF : (byte) 0x00;
+      if (raw[0] == expectedSign) {
+        return java.util.Arrays.copyOfRange(raw, 1, raw.length);
+      }
+    }
+    return signExtend(raw, length);
   }
 
   private record TypedStats(

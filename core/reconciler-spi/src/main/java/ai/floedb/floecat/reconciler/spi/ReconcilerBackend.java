@@ -122,13 +122,13 @@ public interface ReconcilerBackend {
   }
 
   /**
-   * Materializes durable index artifacts for one planned file group and returns the stored artifact
-   * metadata.
+   * Materializes staged index artifacts for one planned file group.
    *
-   * <p>Default behavior returns an empty result so older or remote backends can opt in
+   * <p>The returned artifacts must not be durably published until {@link #putIndexArtifacts} is
+   * invoked. Default behavior returns an empty result so older or remote backends can opt in
    * incrementally.
    */
-  default List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  default List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -137,11 +137,8 @@ public interface ReconcilerBackend {
     return List.of();
   }
 
-  /**
-   * Materializes durable index artifacts for one planned file group using explicitly captured page
-   * index rows.
-   */
-  default List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  /** Materializes staged index artifacts using explicitly captured page-index rows. */
+  default List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -178,7 +175,7 @@ public interface ReconcilerBackend {
 
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 
-  default void putIndexArtifacts(ReconcileContext ctx, List<IndexArtifactRecord> artifacts) {}
+  default void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {}
 
   /**
    * Persists snapshot-scoped constraints and returns whether storage changed.
@@ -256,6 +253,19 @@ public interface ReconcilerBackend {
     public DestinationViewMetadata(
         ResourceId catalogId, ResourceId namespaceId, String displayName) {
       this(catalogId, namespaceId, displayName, "", "", null);
+    }
+  }
+
+  record StagedIndexArtifact(IndexArtifactRecord record, byte[] content, String contentType) {
+    public StagedIndexArtifact {
+      record = record == null ? IndexArtifactRecord.getDefaultInstance() : record;
+      content = content == null ? null : java.util.Arrays.copyOf(content, content.length);
+      contentType = contentType == null ? "" : contentType;
+    }
+
+    @Override
+    public byte[] content() {
+      return content == null ? null : java.util.Arrays.copyOf(content, content.length);
     }
   }
 

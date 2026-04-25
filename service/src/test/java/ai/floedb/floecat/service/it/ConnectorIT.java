@@ -1396,11 +1396,12 @@ public class ConnectorIT {
           filePaths.stream().noneMatch(path -> path.startsWith("snapshot://")),
           "expected connector-native planning instead of synthetic snapshot handles");
       assertTrue(
-          filePaths.stream().allMatch(path -> path.endsWith(".parquet")),
-          "expected parquet file paths in file-group tasks");
-      assertTrue(
           filePaths.stream().allMatch(path -> path.startsWith("s3://floecat-delta/call_center/")),
           "expected delta fixture data files rooted at the seeded fixture table");
+      assertTrue(
+          filePaths.stream()
+              .allMatch(path -> !path.contains("/_delta_log/") && !path.endsWith(".json")),
+          "expected data-file paths in file-group tasks instead of delta-log entries");
     }
   }
 

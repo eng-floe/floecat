@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
@@ -156,7 +155,7 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -167,7 +166,7 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -202,7 +201,7 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public void putIndexArtifacts(ReconcileContext ctx, List<IndexArtifactRecord> artifacts) {
+  public void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {
     delegate.putIndexArtifacts(ctx, artifacts);
   }
 

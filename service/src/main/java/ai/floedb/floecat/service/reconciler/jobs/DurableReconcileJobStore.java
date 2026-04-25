@@ -229,6 +229,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               dedupeKey,
               now,
               readyKey);
+      if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
+        LOG.infof(
+            "enqueue persisted PLAN_SNAPSHOT jobId=%s parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+            jobId,
+            parentJobId,
+            connectorId,
+            effectiveSnapshotTask.tableId(),
+            effectiveSnapshotTask.snapshotId(),
+            effectiveSnapshotTask.sourceNamespace(),
+            effectiveSnapshotTask.sourceTable(),
+            effectiveSnapshotTask.fileGroups().size());
+      }
 
       try {
         blobStore.put(
@@ -452,6 +464,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    LOG.infof(
+        "persistSnapshotPlan jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
+        jobId, effective.tableId(), effective.snapshotId(), effective.fileGroups().size());
     mutateByJobId(
         jobId,
         existing -> {
@@ -1041,6 +1056,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         // latest canonical/secondary pointers before dereferencing blobs, so old blob URIs are
         // not stable externally-cacheable addresses once the pointer swap has committed.
         blobStore.delete(currentPointer.getBlobUri());
+        if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
+          ReconcileSnapshotTask snapshotTask = current.snapshotTask();
+          LOG.infof(
+              "leaseCanonical PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+              current.jobId,
+              current.connectorId,
+              snapshotTask.tableId(),
+              snapshotTask.snapshotId(),
+              snapshotTask.sourceNamespace(),
+              snapshotTask.sourceTable(),
+              snapshotTask.fileGroups().size());
+        }
         return Optional.of(
             new LeasedJob(
                 current.jobId,

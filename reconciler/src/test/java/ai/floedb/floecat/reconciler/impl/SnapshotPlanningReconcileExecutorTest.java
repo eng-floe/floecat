@@ -193,11 +193,10 @@ class SnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void executeFallsBackToSyntheticSnapshotHandleWhenManifestListMissing() {
+  void executeSkipsFileGroupExecutionWhenSnapshotFilePlanUnavailable() {
     var backend = mock(ReconcilerBackend.class);
     var jobs = mock(ReconcileJobStore.class);
     var executorRegistry = mock(ReconcileExecutorRegistry.class);
-    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP)).thenReturn(true);
     when(backend.fetchSnapshot(any(), any(), anyLong()))
         .thenReturn(
             Optional.of(
@@ -244,19 +243,100 @@ class SnapshotPlanningReconcileExecutorTest {
     assertThat(result.ok()).isTrue();
     verify(jobs)
         .persistSnapshotPlan(
+            "job-1", ReconcileSnapshotTask.of("table-1", 55L, "db", "events", java.util.List.of()));
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueFileGroupExecution(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            anyBoolean(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any());
+  }
+
+  @Test
+  void executeAcceptsZeroSnapshotIdForDelta() {
+    var backend = mock(ReconcilerBackend.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP)).thenReturn(true);
+    when(backend.fetchSnapshot(any(), any(), anyLong()))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(ResourceId.newBuilder().setAccountId("acct").setId("table-1"))
+                    .setSnapshotId(0L)
+                    .build()));
+    when(backend.fetchSnapshotFilePlan(any(), any(), anyLong()))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    java.util.List.of(
+                        new FloecatConnector.SnapshotFileEntry(
+                            "s3://bucket/data/file-0.parquet",
+                            "PARQUET",
+                            0L,
+                            0L,
+                            ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+                            "",
+                            0,
+                            java.util.List.of(),
+                            null)),
+                    java.util.List.of())));
+    var executor =
+        new SnapshotPlanningReconcileExecutor(backend, jobs, executorRegistry, 128, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.of("table-1", 0L, "db", "events"),
+            ReconcileFileGroupTask.empty(),
+            "parent-1");
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    verify(jobs)
+        .persistSnapshotPlan(
             "job-1",
             ReconcileSnapshotTask.of(
                 "table-1",
-                55L,
+                0L,
                 "db",
                 "events",
                 java.util.List.of(
                     ReconcileFileGroupTask.of(
                         "job-1",
-                        "snapshot-55-group-0",
+                        "snapshot-0-group-0",
                         "table-1",
-                        55L,
-                        java.util.List.of("snapshot://table-1/55")))));
+                        0L,
+                        java.util.List.of("s3://bucket/data/file-0.parquet")))));
     verify(jobs)
         .enqueueFileGroupExecution(
             org.mockito.ArgumentMatchers.eq("acct"),
@@ -266,7 +346,7 @@ class SnapshotPlanningReconcileExecutorTest {
             org.mockito.ArgumentMatchers.eq(ReconcileScope.empty()),
             org.mockito.ArgumentMatchers.eq(
                 ReconcileFileGroupTask.of(
-                    "job-1", "snapshot-55-group-0", "table-1", 55L, java.util.List.of())),
+                    "job-1", "snapshot-0-group-0", "table-1", 0L, java.util.List.of())),
             org.mockito.ArgumentMatchers.eq(ReconcileExecutionPolicy.defaults()),
             org.mockito.ArgumentMatchers.eq("job-1"),
             org.mockito.ArgumentMatchers.eq(""));

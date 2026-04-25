@@ -767,7 +767,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -778,7 +778,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public List<IndexArtifactRecord> materializePlannedFileGroupIndexArtifacts(
+  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -798,7 +798,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     Map<String, List<FloecatConnector.ParquetPageIndexEntry>> pageEntriesByFile =
         pageIndexEntriesByFile(pageIndexEntries);
     var now = nowTs();
-    List<IndexArtifactRecord> artifacts = new ArrayList<>();
+    List<StagedIndexArtifact> artifacts = new ArrayList<>();
     for (String filePath : plannedFilePaths) {
       FileTargetStats fileStats = byPath.get(filePath);
       if (fileStats == null) {
@@ -816,8 +816,6 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
               snapshotId,
               targetId,
               base64ToHex(contentSha256B64));
-      blobStore.put(artifactUri, sidecar, INDEX_CONTENT_TYPE);
-      String etag = blobStore.head(artifactUri).map(h -> h.getEtag()).orElse(contentSha256B64);
       IndexArtifactRecord record =
           IndexArtifactRecord.newBuilder()
               .setTableId(tableId)
@@ -829,7 +827,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
               .setArtifactUri(artifactUri)
               .setArtifactFormat("parquet")
               .setArtifactFormatVersion(1)
-              .setContentEtag(etag)
+              .setContentEtag(contentSha256B64)
               .setContentSha256B64(contentSha256B64)
               .setState(IndexArtifactState.IAS_READY)
               .setCoverage(indexCoverage(fileStats, filePageEntries))
@@ -848,9 +846,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
       if (fileStats.getFileContentValue() != 0) {
         withProps.putProperties("source_file_content", fileStats.getFileContent().name());
       }
-      record = withProps.build();
-      indexArtifactRepo.putIndexArtifact(record);
-      artifacts.add(record);
+      artifacts.add(new StagedIndexArtifact(withProps.build(), sidecar, INDEX_CONTENT_TYPE));
     }
     return List.copyOf(artifacts);
   }
@@ -948,18 +944,34 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public void putIndexArtifacts(ReconcileContext ctx, List<IndexArtifactRecord> artifacts) {
+  public void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {
     if (artifacts == null || artifacts.isEmpty()) {
       return;
     }
-    for (IndexArtifactRecord record : artifacts) {
+    for (StagedIndexArtifact artifact : artifacts) {
+      IndexArtifactRecord record =
+          artifact == null ? IndexArtifactRecord.getDefaultInstance() : artifact.record();
       if (!record.hasTableId() || record.getTableId().getId().isBlank()) {
         throw new IllegalArgumentException("record missing tableId");
       }
       if (!record.hasTarget()) {
         throw new IllegalArgumentException("record missing target");
       }
-      indexArtifactRepo.putIndexArtifact(record);
+      byte[] content = artifact == null ? null : artifact.content();
+      if (content == null || content.length == 0) {
+        throw new IllegalArgumentException("staged artifact missing content");
+      }
+      String contentType =
+          artifact.contentType() == null || artifact.contentType().isBlank()
+              ? INDEX_CONTENT_TYPE
+              : artifact.contentType();
+      blobStore.put(record.getArtifactUri(), content, contentType);
+      String etag =
+          blobStore
+              .head(record.getArtifactUri())
+              .map(h -> h.getEtag())
+              .orElse(record.getContentEtag());
+      indexArtifactRepo.putIndexArtifact(record.toBuilder().setContentEtag(etag).build());
     }
   }
 
@@ -1069,6 +1081,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     var coverage = IndexCoverage.newBuilder();
     if (fileStats.getRowCount() > 0L) {
       coverage.setRowsIndexed(fileStats.getRowCount());
+      coverage.setLiveRowsIndexed(fileStats.getRowCount());
     }
     if (fileStats.getSizeBytes() > 0L) {
       coverage.setBytesScanned(fileStats.getSizeBytes());
@@ -1080,14 +1093,6 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
               .map(FloecatConnector.ParquetPageIndexEntry::rowGroup)
               .distinct()
               .count());
-      long liveRowsIndexed =
-          pageIndexEntries.stream()
-              .mapToLong(FloecatConnector.ParquetPageIndexEntry::liveRowCount)
-              .max()
-              .orElse(0L);
-      if (liveRowsIndexed > 0L) {
-        coverage.setLiveRowsIndexed(liveRowsIndexed);
-      }
     }
     return coverage.build();
   }

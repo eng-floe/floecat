@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -167,12 +166,15 @@ public class FileGroupExecutionReconcileExecutor implements ReconcileExecutor {
               plannedTask.filePaths(),
               stats,
               pageIndexEntries);
-      jobs.persistFileGroupResult(
-          lease.jobId,
-          plannedTask.withFileResults(fileResultsForSuccess(plannedTask, stats, artifacts)));
       if (!stats.isEmpty()) {
         backend.putTargetStats(reconcileContext, stats);
       }
+      if (!artifacts.isEmpty()) {
+        backend.putIndexArtifacts(reconcileContext, artifacts);
+      }
+      jobs.persistFileGroupResult(
+          lease.jobId,
+          plannedTask.withFileResults(fileResultsForSuccess(plannedTask, stats, artifacts)));
       long statsProcessed = stats.size();
       context
           .progressListener()
@@ -203,26 +205,30 @@ public class FileGroupExecutionReconcileExecutor implements ReconcileExecutor {
   private static List<ReconcileFileResult> fileResultsForSuccess(
       ReconcileFileGroupTask plannedTask,
       List<TargetStatsRecord> stats,
-      List<IndexArtifactRecord> artifacts) {
+      List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
     LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
     HashMap<String, ReconcileIndexArtifactResult> artifactsByFile = new HashMap<>();
     for (String filePath : plannedTask.filePaths()) {
       statsByFile.put(filePath, 0L);
     }
-    for (IndexArtifactRecord artifact : artifacts) {
-      if (!artifact.hasTarget() || !artifact.getTarget().hasFile()) {
+    for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
+      if (artifact == null) {
         continue;
       }
-      String filePath = artifact.getTarget().getFile().getFilePath();
+      var record = artifact.record();
+      if (!record.hasTarget() || !record.getTarget().hasFile()) {
+        continue;
+      }
+      String filePath = record.getTarget().getFile().getFilePath();
       if (filePath == null || filePath.isBlank()) {
         continue;
       }
       artifactsByFile.put(
           filePath,
           ReconcileIndexArtifactResult.of(
-              artifact.getArtifactUri(),
-              artifact.getArtifactFormat(),
-              artifact.getArtifactFormatVersion()));
+              record.getArtifactUri(),
+              record.getArtifactFormat(),
+              record.getArtifactFormatVersion()));
     }
     for (TargetStatsRecord record : stats) {
       if (!record.hasFile()) {

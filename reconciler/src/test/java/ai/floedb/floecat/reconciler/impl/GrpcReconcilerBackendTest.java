@@ -17,6 +17,8 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -24,28 +26,39 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import io.grpc.Status;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -253,6 +266,135 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
+  void fetchSnapshotFilePlanUsesSourceConnectorFromUpstreamMetadata() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    backend.connector = mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+    when(backend.connector.withInterceptors(any())).thenReturn(backend.connector);
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setConnectorId(connectorId)
+                    .addNamespacePath("main")
+                    .addNamespacePath("sales")
+                    .setTableDisplayName("orders")
+                    .build())
+            .build();
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    Connector connector =
+        Connector.newBuilder().setResourceId(connectorId).setKind(ConnectorKind.CK_DELTA).build();
+    when(backend.connector.getConnector(any()))
+        .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
+
+    FloecatConnector source = mock(FloecatConnector.class);
+    FloecatConnector.SnapshotFilePlan plan =
+        new FloecatConnector.SnapshotFilePlan(
+            List.of(
+                new FloecatConnector.SnapshotFileEntry(
+                    "s3://bucket/path/file.parquet",
+                    "parquet",
+                    10L,
+                    0L,
+                    FileContent.FC_DATA,
+                    "",
+                    0,
+                    List.of(),
+                    null)),
+            List.of());
+    when(source.planSnapshotFiles(anyString(), anyString(), any(), anyLong()))
+        .thenReturn(Optional.of(plan));
+    backend.connectorOpener = cfg -> source;
+
+    ReconcileContext ctx = reconcileContext();
+
+    Optional<FloecatConnector.SnapshotFilePlan> result =
+        backend.fetchSnapshotFilePlan(ctx, tableId, 44L);
+
+    assertThat(result).contains(plan);
+    verify(source).planSnapshotFiles("main.sales", "orders", tableId, 44L);
+  }
+
+  @Test
+  void capturePlannedFileGroupStatsUsesSourceConnectorFromUpstreamMetadata() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    backend.connector = mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+    when(backend.connector.withInterceptors(any())).thenReturn(backend.connector);
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setConnectorId(connectorId)
+                    .addNamespacePath("main")
+                    .addNamespacePath("sales")
+                    .setTableDisplayName("orders")
+                    .build())
+            .build();
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    Connector connector =
+        Connector.newBuilder().setResourceId(connectorId).setKind(ConnectorKind.CK_DELTA).build();
+    when(backend.connector.getConnector(any()))
+        .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
+
+    FloecatConnector source = mock(FloecatConnector.class);
+    List<TargetStatsRecord> stats = List.of(TargetStatsRecord.getDefaultInstance());
+    when(source.capturePlannedFileGroupStats(
+            anyString(), anyString(), any(), anyLong(), any(), any(), any()))
+        .thenReturn(stats);
+    backend.connectorOpener = cfg -> source;
+
+    List<TargetStatsRecord> result =
+        backend.capturePlannedFileGroupStats(
+            reconcileContext(), tableId, 44L, List.of("s3://bucket/path/file.parquet"));
+
+    assertThat(result).isEqualTo(stats);
+    verify(source)
+        .capturePlannedFileGroupStats(
+            anyString(), anyString(), any(), anyLong(), any(), any(), any());
+  }
+
+  @Test
   void ensureViewUpdatesExistingViewAfterAlreadyExistsConflict() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
@@ -370,5 +512,14 @@ class GrpcReconcilerBackendTest {
             "base_relations",
             "creation_search_path",
             "output_columns");
+  }
+
+  private static ReconcileContext reconcileContext() {
+    return new ReconcileContext(
+        "corr",
+        PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
+        "svc",
+        Instant.now(),
+        Optional.empty());
   }
 }
