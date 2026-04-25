@@ -48,6 +48,8 @@ public interface ReconcileJobStore {
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId);
@@ -72,6 +74,36 @@ public interface ReconcileJobStore {
         jobKind,
         tableTask,
         ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        executionPolicy,
+        parentJobId,
+        pinnedExecutorId);
+  }
+
+  default String enqueue(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileJobKind jobKind,
+      ReconcileTableTask tableTask,
+      ReconcileViewTask viewTask,
+      ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
+      String pinnedExecutorId) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        jobKind,
+        tableTask,
+        viewTask,
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
         executionPolicy,
         parentJobId,
         pinnedExecutorId);
@@ -106,12 +138,14 @@ public interface ReconcileJobStore {
         ReconcileJobKind.PLAN_CONNECTOR,
         ReconcileTableTask.empty(),
         ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
         executionPolicy,
         "",
         pinnedExecutorId);
   }
 
-  default String enqueueTableExecution(
+  default String enqueueTablePlan(
       String accountId,
       String connectorId,
       boolean fullRescan,
@@ -127,15 +161,17 @@ public interface ReconcileJobStore {
         fullRescan,
         captureMode,
         scope,
-        ReconcileJobKind.EXEC_TABLE,
+        ReconcileJobKind.PLAN_TABLE,
         tableTask,
         ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
         executionPolicy,
         parentJobId,
         pinnedExecutorId);
   }
 
-  default String enqueueViewExecution(
+  default String enqueueViewPlan(
       String accountId,
       String connectorId,
       boolean fullRescan,
@@ -151,9 +187,63 @@ public interface ReconcileJobStore {
         fullRescan,
         captureMode,
         scope,
-        ReconcileJobKind.EXEC_VIEW,
+        ReconcileJobKind.PLAN_VIEW,
         ReconcileTableTask.empty(),
         viewTask,
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        executionPolicy,
+        parentJobId,
+        pinnedExecutorId);
+  }
+
+  default String enqueueSnapshotPlan(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
+      String pinnedExecutorId) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileJobKind.PLAN_SNAPSHOT,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        snapshotTask,
+        ReconcileFileGroupTask.empty(),
+        executionPolicy,
+        parentJobId,
+        pinnedExecutorId);
+  }
+
+  default String enqueueFileGroupExecution(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileFileGroupTask fileGroupTask,
+      ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
+      String pinnedExecutorId) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        fileGroupTask,
         executionPolicy,
         parentJobId,
         pinnedExecutorId);
@@ -307,6 +397,10 @@ public interface ReconcileJobStore {
 
   boolean isCancellationRequested(String jobId);
 
+  void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask);
+
+  void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask);
+
   void markCancelled(
       String jobId,
       String leaseEpoch,
@@ -367,6 +461,8 @@ public interface ReconcileJobStore {
     public final ReconcileJobKind jobKind;
     public final ReconcileTableTask tableTask;
     public final ReconcileViewTask viewTask;
+    public final ReconcileSnapshotTask snapshotTask;
+    public final ReconcileFileGroupTask fileGroupTask;
     public final String parentJobId;
 
     public ReconcileJob(
@@ -452,6 +548,8 @@ public interface ReconcileJobStore {
           ReconcileJobKind.PLAN_CONNECTOR,
           ReconcileTableTask.empty(),
           ReconcileViewTask.empty(),
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
           "");
     }
 
@@ -547,6 +645,8 @@ public interface ReconcileJobStore {
           jobKind,
           tableTask,
           ReconcileViewTask.empty(),
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
           parentJobId);
     }
 
@@ -574,6 +674,60 @@ public interface ReconcileJobStore {
         ReconcileTableTask tableTask,
         ReconcileViewTask viewTask,
         String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          scope,
+          executionPolicy,
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -597,6 +751,8 @@ public interface ReconcileJobStore {
       this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
       this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
       this.viewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+      this.snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+      this.fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
       this.parentJobId = parentJobId == null ? "" : parentJobId;
     }
   }
@@ -615,6 +771,8 @@ public interface ReconcileJobStore {
     public final ReconcileJobKind jobKind;
     public final ReconcileTableTask tableTask;
     public final ReconcileViewTask viewTask;
+    public final ReconcileSnapshotTask snapshotTask;
+    public final ReconcileFileGroupTask fileGroupTask;
     public final String parentJobId;
 
     public LeasedJob(
@@ -642,6 +800,8 @@ public interface ReconcileJobStore {
           ReconcileJobKind.PLAN_CONNECTOR,
           ReconcileTableTask.empty(),
           ReconcileViewTask.empty(),
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
           "");
     }
 
@@ -673,6 +833,8 @@ public interface ReconcileJobStore {
           jobKind,
           tableTask,
           ReconcileViewTask.empty(),
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
           parentJobId);
     }
 
@@ -691,6 +853,42 @@ public interface ReconcileJobStore {
         ReconcileTableTask tableTask,
         ReconcileViewTask viewTask,
         String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          fullRescan,
+          captureMode,
+          scope,
+          executionPolicy,
+          leaseEpoch,
+          pinnedExecutorId,
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
+          parentJobId);
+    }
+
+    public LeasedJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String leaseEpoch,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -705,6 +903,8 @@ public interface ReconcileJobStore {
       this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
       this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
       this.viewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+      this.snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+      this.fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
       this.parentJobId = parentJobId == null ? "" : parentJobId;
     }
   }

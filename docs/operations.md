@@ -84,14 +84,14 @@ Recommended split deployment:
 - Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
 
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
-APIs, while executor-plane nodes primarily run child `EXEC_TABLE` and `EXEC_VIEW` work.
-`CaptureNow` now follows the same plan-plus-child execution path rather than a legacy
-connector-wide execution mode.
+APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
+and `EXEC_FILE_GROUP` work. `CaptureNow` follows the same plan-plus-child execution path rather
+than a legacy connector-wide execution mode.
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
 Planner jobs also need to remain leaseable under the configured execution lane semantics: planner
-executors advertise wildcard lane support, while child `EXEC_TABLE` / `EXEC_VIEW` jobs carry the
-concrete lane policy that remote or local workers enforce later.
+executors advertise wildcard lane support, while child planning and file-group execution jobs carry
+the concrete lane policy that remote or local workers enforce later.
 
 To scale executors horizontally, add more executor-plane instances. They greedily lease eligible jobs from the shared durable queue, so no leader election is required at the executor layer.
 

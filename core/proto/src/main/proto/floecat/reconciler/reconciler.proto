@@ -75,14 +75,18 @@ enum ExecutionClass {
 // Logical reconcile job type.
 //
 // The current model is split:
-// - PLAN_CONNECTOR is the top-level connector job that enumerates child work.
-// - EXEC_TABLE is a child job that executes one planned table task.
-// - EXEC_VIEW is a child job that executes one planned view task.
+// - PLAN_CONNECTOR discovers connector-scoped work.
+// - PLAN_TABLE plans one table-scoped unit of work.
+// - PLAN_VIEW plans one view-scoped unit of work.
+// - PLAN_SNAPSHOT freezes one snapshot-scoped plan.
+// - EXEC_FILE_GROUP performs heavy file-group execution.
 enum ReconcileJobKind {
   RJK_UNSPECIFIED = 0;
   RJK_PLAN_CONNECTOR = 1;
-  RJK_EXEC_TABLE = 2;
-  RJK_EXEC_VIEW = 3;
+  RJK_PLAN_TABLE = 2;
+  RJK_PLAN_VIEW = 3;
+  RJK_PLAN_SNAPSHOT = 4;
+  RJK_EXEC_FILE_GROUP = 5;
 }
 
 // One table-scoped unit of reconcile work emitted by a planner job.
@@ -115,6 +119,57 @@ message ReconcileViewTask {
   string destination_view_display_name = 5;
   // Explicit execution mode: STRICT uses destination_view_id, DISCOVERY uses namespace + name.
   string mode = 6;
+}
+
+// One snapshot-scoped planning unit emitted after metadata detection.
+message ReconcileSnapshotTask {
+  // Stable destination table id for the snapshot being planned.
+  string table_id = 1;
+  // Snapshot to plan.
+  uint64 snapshot_id = 2;
+  // Fully qualified upstream source namespace.
+  string source_namespace = 3;
+  // Upstream source table name.
+  string source_table = 4;
+  // Immutable grouped file plan persisted on the PLAN_SNAPSHOT job after planning completes.
+  repeated ReconcileFileGroupTask file_groups = 5;
+}
+
+// One grouped file execution unit emitted by snapshot planning.
+message ReconcileFileResult {
+  enum State {
+    RFRS_UNSPECIFIED = 0;
+    RFRS_SUCCEEDED = 1;
+    RFRS_FAILED = 2;
+    RFRS_SKIPPED = 3;
+  }
+
+  message ReconcileIndexArtifactResult {
+    string artifact_uri = 1;
+    string artifact_format = 2;
+    uint32 artifact_format_version = 3;
+  }
+
+  string file_path = 1;
+  State state = 2;
+  uint64 stats_processed = 3;
+  string message = 4;
+  ReconcileIndexArtifactResult index_artifact = 5;
+}
+
+message ReconcileFileGroupTask {
+  // Immutable persisted snapshot plan identity.
+  string plan_id = 1;
+  // Immutable file-group identity within the snapshot plan.
+  string group_id = 2;
+  // Stable destination table id for this file group.
+  string table_id = 3;
+  // Snapshot to execute.
+  uint64 snapshot_id = 4;
+  // Files assigned to this execution group.
+  repeated string file_paths = 5;
+  // Per-file execution results persisted on the EXEC_FILE_GROUP job.
+  repeated ReconcileFileResult file_results = 6;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -176,12 +231,16 @@ message LeasedReconcileJob {
   // Executor currently holding the lease, if any.
   string executor_id = 9;
   ReconcileJobKind kind = 10;
-  // Present for EXEC_TABLE jobs; empty otherwise.
+  // Present for PLAN_TABLE jobs; empty otherwise.
   ReconcileTableTask table_task = 11;
-  // Parent job id for child execution jobs.
+  // Parent job id for child planning or execution jobs.
   string parent_job_id = 12;
-  // Present for EXEC_VIEW jobs; empty otherwise.
+  // Present for PLAN_VIEW jobs; empty otherwise.
   ReconcileViewTask view_task = 13;
+  // Present for PLAN_SNAPSHOT jobs; empty otherwise.
+  ReconcileSnapshotTask snapshot_task = 14;
+  // Present for EXEC_FILE_GROUP jobs; empty otherwise.
+  ReconcileFileGroupTask file_group_task = 15;
 }
 
 // Request from an executor asking the scheduler for work it is willing to run.
@@ -293,7 +352,7 @@ message GetReconcileJobRequest {
 // Durable job status returned to clients and operators.
 //
 // For PLAN_CONNECTOR jobs, the service may return an aggregated state/counter view derived from the
-// parent plan job plus its child EXEC_TABLE/EXEC_VIEW jobs.
+// parent plan job plus its child PLAN_TABLE/PLAN_VIEW jobs.
 message GetReconcileJobResponse {
   string job_id = 1;
   // Connector id as a plain string for lightweight display and filtering.
@@ -317,14 +376,30 @@ message GetReconcileJobResponse {
   // Executor that most recently ran or is currently running the job.
   string executor_id = 15;
   ReconcileJobKind kind = 16;
-  // Parent job id for child execution jobs; empty for top-level plan jobs.
+  // Parent job id for child planning or execution jobs; empty for top-level plan jobs.
   string parent_job_id = 17;
-  // Planned table task carried by an EXEC_TABLE job.
+  // Planned table task carried by a PLAN_TABLE job.
   ReconcileTableTask table_task = 18;
-  // Planned view task carried by an EXEC_VIEW job.
+  // Planned view task carried by a PLAN_VIEW job.
   ReconcileViewTask view_task = 19;
   uint64 views_scanned = 20;
   uint64 views_changed = 21;
+  // Planned snapshot task carried by a PLAN_SNAPSHOT job.
+  ReconcileSnapshotTask snapshot_task = 22;
+  // Planned file-group task carried by an EXEC_FILE_GROUP job.
+  ReconcileFileGroupTask file_group_task = 23;
+  // Planned file-group count for snapshot-scoped execution.
+  uint64 file_groups_total = 24;
+  // Successfully completed file-group count for snapshot-scoped execution.
+  uint64 file_groups_completed = 25;
+  // Failed or cancelled file-group count for snapshot-scoped execution.
+  uint64 file_groups_failed = 26;
+  // Planned file count for snapshot-scoped execution.
+  uint64 files_total = 27;
+  // Successfully completed file count for snapshot-scoped execution.
+  uint64 files_completed = 28;
+  // Failed or cancelled file count for snapshot-scoped execution.
+  uint64 files_failed = 29;
 }
 
 // Lists reconcile jobs visible to the caller.

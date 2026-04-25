@@ -20,9 +20,12 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -138,6 +141,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
@@ -145,6 +150,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     ReconcileTableTask effectiveTableTask =
         tableTask == null ? ReconcileTableTask.empty() : tableTask;
     ReconcileViewTask effectiveViewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    ReconcileSnapshotTask effectiveSnapshotTask =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    ReconcileFileGroupTask effectiveFileGroupTask =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
     ReconcileScope scope =
         normalizeScopeForJobKind(
             incomingScope == null ? ReconcileScope.empty() : incomingScope,
@@ -154,7 +163,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     String laneKey =
-        laneKey(connectorId, scope, effectiveJobKind, effectiveTableTask, effectiveViewTask);
+        laneKey(
+            connectorId,
+            scope,
+            effectiveJobKind,
+            effectiveTableTask,
+            effectiveViewTask,
+            effectiveSnapshotTask,
+            effectiveFileGroupTask);
     String dedupeKey =
         dedupeKey(
             accountId,
@@ -165,6 +181,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
+            effectiveSnapshotTask,
+            effectiveFileGroupTask,
             policy,
             parentJobId,
             pinnedExecutorId);
@@ -202,6 +220,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               effectiveJobKind,
               effectiveTableTask,
               effectiveViewTask,
+              effectiveSnapshotTask,
+              effectiveFileGroupTask,
               policy,
               parentJobId,
               pinnedExecutorId,
@@ -209,6 +229,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               dedupeKey,
               now,
               readyKey);
+      if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
+        LOG.infof(
+            "enqueue persisted PLAN_SNAPSHOT jobId=%s parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+            jobId,
+            parentJobId,
+            connectorId,
+            effectiveSnapshotTask.tableId(),
+            effectiveSnapshotTask.snapshotId(),
+            effectiveSnapshotTask.sourceNamespace(),
+            effectiveSnapshotTask.sourceTable(),
+            effectiveSnapshotTask.fileGroups().size());
+      }
 
       try {
         blobStore.put(
@@ -426,6 +458,42 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     return renewLeaseByCanonicalPointer(loaded.get().canonicalPointerKey, jobId, leaseEpoch);
+  }
+
+  @Override
+  public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    LOG.infof(
+        "persistSnapshotPlan jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
+        jobId, effective.tableId(), effective.snapshotId(), effective.fileGroups().size());
+    mutateByJobId(
+        jobId,
+        existing -> {
+          existing.snapshotTaskTableId = blankToEmpty(effective.tableId());
+          existing.snapshotTaskSnapshotId = effective.snapshotId();
+          existing.snapshotTaskSourceNamespace = effective.sourceNamespace();
+          existing.snapshotTaskSourceTable = effective.sourceTable();
+          existing.snapshotTaskFileGroups = effective.fileGroups();
+          return existing;
+        });
+  }
+
+  @Override
+  public void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask) {
+    ReconcileFileGroupTask effective =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+    mutateByJobId(
+        jobId,
+        existing -> {
+          existing.fileGroupPlanId = blankToEmpty(effective.planId());
+          existing.fileGroupGroupId = blankToEmpty(effective.groupId());
+          existing.fileGroupTableId = blankToEmpty(effective.tableId());
+          existing.fileGroupSnapshotId = effective.snapshotId();
+          existing.fileGroupPaths = effective.filePaths();
+          existing.fileGroupResults = effective.fileResults();
+          return existing;
+        });
   }
 
   @Override
@@ -988,6 +1056,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         // latest canonical/secondary pointers before dereferencing blobs, so old blob URIs are
         // not stable externally-cacheable addresses once the pointer swap has committed.
         blobStore.delete(currentPointer.getBlobUri());
+        if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
+          ReconcileSnapshotTask snapshotTask = current.snapshotTask();
+          LOG.infof(
+              "leaseCanonical PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+              current.jobId,
+              current.connectorId,
+              snapshotTask.tableId(),
+              snapshotTask.snapshotId(),
+              snapshotTask.sourceNamespace(),
+              snapshotTask.sourceTable(),
+              snapshotTask.fileGroups().size());
+        }
         return Optional.of(
             new LeasedJob(
                 current.jobId,
@@ -1003,6 +1083,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 current.jobKind(),
                 current.tableTask(),
                 current.viewTask(),
+                current.snapshotTask(),
+                current.fileGroupTask(),
                 current.parentJobId()));
       }
 
@@ -1314,6 +1396,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         stored.jobKind(),
         stored.tableTask(),
         stored.viewTask(),
+        stored.snapshotTask(),
+        stored.fileGroupTask(),
         stored.parentJobId());
   }
 
@@ -1589,7 +1673,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask) {
     ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
-    if (jobKind == ReconcileJobKind.EXEC_TABLE
+    if (jobKind == ReconcileJobKind.PLAN_TABLE
         && tableTask != null
         && tableTask.strict()
         && !blank(tableTask.destinationTableId())) {
@@ -1607,7 +1691,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           : ReconcileScope.of(
               List.of(), tableTask.destinationTableId(), effectiveScope.destinationStatsRequests());
     }
-    if (jobKind == ReconcileJobKind.EXEC_VIEW
+    if (jobKind == ReconcileJobKind.PLAN_VIEW
         && viewTask != null
         && viewTask.strict()
         && !blank(viewTask.destinationViewId())) {
@@ -1639,18 +1723,30 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileScope scope,
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
-      ReconcileViewTask viewTask) {
+      ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask) {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
-    if (jobKind == ReconcileJobKind.EXEC_TABLE && tableTask != null) {
+    if (jobKind == ReconcileJobKind.PLAN_TABLE && tableTask != null) {
       return scope.destinationTableId() == null || scope.destinationTableId().isBlank()
           ? "tables|" + namespaces
           : "table|" + scope.destinationTableId();
     }
-    if (jobKind == ReconcileJobKind.EXEC_VIEW && viewTask != null) {
+    if (jobKind == ReconcileJobKind.PLAN_VIEW && viewTask != null) {
       return scope.destinationViewId() == null || scope.destinationViewId().isBlank()
           ? "views|" + namespaces
           : "view|" + scope.destinationViewId();
+    }
+    if (jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+        && snapshotTask != null
+        && !blank(snapshotTask.tableId())) {
+      return "snapshot-plan|" + snapshotTask.tableId();
+    }
+    if (jobKind == ReconcileJobKind.EXEC_FILE_GROUP
+        && fileGroupTask != null
+        && !blank(fileGroupTask.tableId())) {
+      return "file-group|" + fileGroupTask.tableId();
     }
     String resource =
         scope.destinationTableId() != null
@@ -1668,6 +1764,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileJobKind jobKind,
       ReconcileTableTask tableTask,
       ReconcileViewTask viewTask,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
@@ -1720,6 +1818,33 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             viewTask == null ? "" : blankToEmpty(viewTask.destinationViewId()))
         .scalar("view_task.destination_view_display_name", canonicalViewDisplayName)
         .scalar("view_task.mode", viewTask == null ? "" : viewTask.mode().name())
+        .scalar(
+            "snapshot_task.table_id",
+            snapshotTask == null ? "" : blankToEmpty(snapshotTask.tableId()))
+        .scalar(
+            "snapshot_task.snapshot_id",
+            String.valueOf(snapshotTask == null ? 0L : snapshotTask.snapshotId()))
+        .scalar(
+            "snapshot_task.source_namespace",
+            snapshotTask == null ? "" : blankToEmpty(snapshotTask.sourceNamespace()))
+        .scalar(
+            "snapshot_task.source_table",
+            snapshotTask == null ? "" : blankToEmpty(snapshotTask.sourceTable()))
+        .scalar(
+            "file_group_task.plan_id",
+            fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.planId()))
+        .scalar(
+            "file_group_task.group_id",
+            fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.groupId()))
+        .scalar(
+            "file_group_task.table_id",
+            fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.tableId()))
+        .scalar(
+            "file_group_task.snapshot_id",
+            String.valueOf(fileGroupTask == null ? 0L : fileGroupTask.snapshotId()))
+        .list(
+            "file_group_task.file_paths",
+            fileGroupTask == null ? List.of() : fileGroupTask.filePaths())
         .scalar("scope.namespaces", namespaces)
         .scalar("scope.table", table)
         .scalar("scope.view", scope.destinationViewId() == null ? "" : scope.destinationViewId())
@@ -1861,6 +1986,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String sourceView;
     public String taskDestinationViewId;
     public String taskDestinationViewDisplayName;
+    public String snapshotTaskTableId;
+    public long snapshotTaskSnapshotId;
+    public String snapshotTaskSourceNamespace;
+    public String snapshotTaskSourceTable;
+    public List<ReconcileFileGroupTask> snapshotTaskFileGroups = List.of();
+    public String fileGroupPlanId;
+    public String fileGroupGroupId;
+    public String fileGroupTableId;
+    public long fileGroupSnapshotId;
+    public List<String> fileGroupPaths = List.of();
+    public List<ReconcileFileResult> fileGroupResults = List.of();
     public String destinationTableId;
     public String destinationViewId;
     public List<String> destinationNamespaceIds = List.of();
@@ -1903,6 +2039,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         ReconcileJobKind jobKind,
         ReconcileTableTask tableTask,
         ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
         ReconcileExecutionPolicy executionPolicy,
         String parentJobId,
         String pinnedExecutorId,
@@ -1927,17 +2065,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.executorId = "";
       ReconcileTableTask effectiveTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
       ReconcileViewTask effectiveViewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+      ReconcileSnapshotTask effectiveSnapshotTask =
+          snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+      ReconcileFileGroupTask effectiveFileGroupTask =
+          fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
       rec.sourceNamespace =
-          jobKind == ReconcileJobKind.EXEC_VIEW
+          jobKind == ReconcileJobKind.PLAN_VIEW
               ? effectiveViewTask.sourceNamespace()
               : effectiveTask.sourceNamespace();
       rec.sourceTable = effectiveTask.sourceTable();
       rec.taskMode =
-          jobKind == ReconcileJobKind.EXEC_VIEW
+          jobKind == ReconcileJobKind.PLAN_VIEW
               ? effectiveViewTask.mode().name()
               : effectiveTask.mode().name();
       rec.taskDestinationNamespaceId =
-          jobKind == ReconcileJobKind.EXEC_VIEW
+          jobKind == ReconcileJobKind.PLAN_VIEW
               ? effectiveViewTask.destinationNamespaceId()
               : effectiveTask.destinationNamespaceId();
       rec.taskDestinationTableId = blankToEmpty(effectiveTask.destinationTableId());
@@ -1945,6 +2087,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.sourceView = effectiveViewTask.sourceView();
       rec.taskDestinationViewId = blankToEmpty(effectiveViewTask.destinationViewId());
       rec.taskDestinationViewDisplayName = effectiveViewTask.destinationViewDisplayName();
+      rec.snapshotTaskTableId = blankToEmpty(effectiveSnapshotTask.tableId());
+      rec.snapshotTaskSnapshotId = effectiveSnapshotTask.snapshotId();
+      rec.snapshotTaskSourceNamespace = effectiveSnapshotTask.sourceNamespace();
+      rec.snapshotTaskSourceTable = effectiveSnapshotTask.sourceTable();
+      rec.snapshotTaskFileGroups = effectiveSnapshotTask.fileGroups();
+      rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
+      rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
+      rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());
+      rec.fileGroupSnapshotId = effectiveFileGroupTask.snapshotId();
+      rec.fileGroupPaths = effectiveFileGroupTask.filePaths();
+      rec.fileGroupResults = effectiveFileGroupTask.fileResults();
       rec.destinationNamespaceIds = scope.destinationNamespaceIds();
       rec.destinationTableId = scope.destinationTableId();
       rec.destinationViewId = scope.destinationViewId();
@@ -2013,6 +2166,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           taskDestinationNamespaceId,
           taskDestinationViewId,
           taskDestinationViewDisplayName);
+    }
+
+    ReconcileSnapshotTask snapshotTask() {
+      return ReconcileSnapshotTask.of(
+          snapshotTaskTableId,
+          snapshotTaskSnapshotId,
+          snapshotTaskSourceNamespace,
+          snapshotTaskSourceTable,
+          snapshotTaskFileGroups);
+    }
+
+    ReconcileFileGroupTask fileGroupTask() {
+      return ReconcileFileGroupTask.of(
+          fileGroupPlanId,
+          fileGroupGroupId,
+          fileGroupTableId,
+          fileGroupSnapshotId,
+          fileGroupPaths,
+          fileGroupResults);
     }
 
     ReconcileExecutionPolicy executionPolicy() {

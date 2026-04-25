@@ -34,8 +34,12 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
@@ -84,9 +88,9 @@ class ReconcileControlImplTest {
     when(service.jobs.childJobs(anyString(), anyString())).thenReturn(java.util.List.of());
     when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR))
         .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
         .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
         .thenReturn(true);
   }
 
@@ -220,9 +224,9 @@ class ReconcileControlImplTest {
 
   @Test
   void captureNowFailsFastWhenNoExecutionExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_TABLE))
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
         .thenReturn(false);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_VIEW))
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
         .thenReturn(false);
 
     StatusRuntimeException ex =
@@ -373,6 +377,217 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void getReconcileJobReportsSnapshotFileGroupCompletionCounts() {
+    var snapshotJob =
+        new ReconcileJobStore.ReconcileJob(
+            "snapshot-1",
+            "acct",
+            "connector-1",
+            "JS_SUCCEEDED",
+            "",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            false,
+            null,
+            0L,
+            0L,
+            null,
+            null,
+            "",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            null,
+            null,
+            ReconcileSnapshotTask.of(
+                "table-1",
+                100L,
+                "ns",
+                "tbl",
+                java.util.List.of(
+                    ReconcileFileGroupTask.of(
+                        "snapshot-1", "group-1", "table-1", 100L, java.util.List.of("a.parquet")),
+                    ReconcileFileGroupTask.of(
+                        "snapshot-1",
+                        "group-2",
+                        "table-1",
+                        100L,
+                        java.util.List.of("b.parquet", "c.parquet")))),
+            ReconcileFileGroupTask.empty(),
+            "plan-table-1");
+    when(service.jobs.get("acct", "snapshot-1")).thenReturn(Optional.of(snapshotJob));
+    when(service.jobs.childJobs("acct", "snapshot-1"))
+        .thenReturn(
+            java.util.List.of(
+                fileGroupChildJob("group-job-1", "JS_SUCCEEDED", "snapshot-1", "group-1"),
+                fileGroupChildJob("group-job-2", "JS_FAILED", "snapshot-1", "group-2")));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("snapshot-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_FAILED, response.getState());
+    assertEquals(2L, response.getFileGroupsTotal());
+    assertEquals(1L, response.getFileGroupsCompleted());
+    assertEquals(1L, response.getFileGroupsFailed());
+    assertEquals(3L, response.getFilesTotal());
+    assertEquals(1L, response.getFilesCompleted());
+    assertEquals(2L, response.getFilesFailed());
+  }
+
+  @Test
+  void getReconcileJobUsesPerFileResultsForPartialFailureCounts() {
+    var snapshotJob =
+        new ReconcileJobStore.ReconcileJob(
+            "snapshot-2",
+            "acct",
+            "connector-1",
+            "JS_FAILED",
+            "",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            false,
+            null,
+            0L,
+            0L,
+            null,
+            null,
+            "",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            null,
+            null,
+            ReconcileSnapshotTask.of(
+                "table-1",
+                100L,
+                "ns",
+                "tbl",
+                java.util.List.of(
+                    ReconcileFileGroupTask.of(
+                        "snapshot-2",
+                        "group-1",
+                        "table-1",
+                        100L,
+                        java.util.List.of("a.parquet", "b.parquet")))),
+            ReconcileFileGroupTask.empty(),
+            "plan-table-1");
+    when(service.jobs.get("acct", "snapshot-2")).thenReturn(Optional.of(snapshotJob));
+    when(service.jobs.childJobs("acct", "snapshot-2"))
+        .thenReturn(
+            java.util.List.of(
+                new ReconcileJobStore.ReconcileJob(
+                    "group-job-1",
+                    "acct",
+                    "connector-1",
+                    "JS_FAILED",
+                    "",
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    false,
+                    null,
+                    0L,
+                    0L,
+                    null,
+                    null,
+                    "executor-1",
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    null,
+                    null,
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.of(
+                        "snapshot-2",
+                        "group-1",
+                        "table-1",
+                        100L,
+                        java.util.List.of(),
+                        java.util.List.of(
+                            ReconcileFileResult.succeeded(
+                                "a.parquet",
+                                2L,
+                                ReconcileIndexArtifactResult.of(
+                                    "s3://bucket/index/a.parquet.index", "parquet", 1)),
+                            ReconcileFileResult.failed("b.parquet", "boom"))),
+                    "snapshot-2")));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("snapshot-2").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(2L, response.getFilesTotal());
+    assertEquals(1L, response.getFilesCompleted());
+    assertEquals(1L, response.getFilesFailed());
+  }
+
+  @Test
+  void getReconcileJobReturnsIndexArtifactOnExecFileGroupResult() {
+    var execJob =
+        new ReconcileJobStore.ReconcileJob(
+            "group-job-1",
+            "acct",
+            "connector-1",
+            "JS_SUCCEEDED",
+            "",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            false,
+            null,
+            0L,
+            0L,
+            null,
+            null,
+            "executor-1",
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            null,
+            null,
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "snapshot-2",
+                "group-1",
+                "table-1",
+                100L,
+                java.util.List.of(),
+                java.util.List.of(
+                    ReconcileFileResult.succeeded(
+                        "a.parquet",
+                        2L,
+                        ReconcileIndexArtifactResult.of(
+                            "s3://bucket/index/a.parquet.index", "parquet", 1)))),
+            "snapshot-2");
+    when(service.jobs.get("acct", "group-job-1")).thenReturn(Optional.of(execJob));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("group-job-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(
+        "s3://bucket/index/a.parquet.index",
+        response.getFileGroupTask().getFileResults(0).getIndexArtifact().getArtifactUri());
+  }
+
+  @Test
   void cancelReconcileJobCancelsActiveChildrenWhenPlanJobAlreadySucceeded() {
     var planJob = job("plan-1", "JS_SUCCEEDED", 0, 0, 0, "");
     var childOne = childJob("child-1", "JS_RUNNING", 0, 0, 0, "", "plan-1");
@@ -465,9 +680,39 @@ class ReconcileControlImplTest {
         null,
         null,
         "executor-1",
-        ReconcileJobKind.EXEC_TABLE,
+        ReconcileJobKind.PLAN_TABLE,
         null,
         null,
+        parentJobId);
+  }
+
+  private static ReconcileJobStore.ReconcileJob fileGroupChildJob(
+      String jobId, String state, String parentJobId, String groupId) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        state,
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        null,
+        0L,
+        0L,
+        null,
+        null,
+        "executor-1",
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        null,
+        null,
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.of("snapshot-1", groupId, "table-1", 100L, java.util.List.of()),
         parentJobId);
   }
 }

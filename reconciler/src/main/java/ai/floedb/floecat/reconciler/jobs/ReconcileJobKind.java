@@ -18,8 +18,10 @@ package ai.floedb.floecat.reconciler.jobs;
 
 public enum ReconcileJobKind {
   PLAN_CONNECTOR,
-  EXEC_TABLE,
-  EXEC_VIEW;
+  PLAN_TABLE,
+  PLAN_VIEW,
+  PLAN_SNAPSHOT,
+  EXEC_FILE_GROUP;
 
   public static ReconcileJobKind fromString(String value) {
     if (value == null || value.isBlank()) {

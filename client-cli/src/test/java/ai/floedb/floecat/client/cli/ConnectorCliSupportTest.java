@@ -481,7 +481,7 @@ class ConnectorCliSupportTest {
                   ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
                       .setJobId("job-table-1")
                       .setConnectorId(CONNECTOR_UUID)
-                      .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
+                      .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
                       .setParentJobId("job-plan-1")
                       .setExecutorId("remote-executor-a")
                       .setTablesScanned(1)
@@ -508,7 +508,7 @@ class ConnectorCliSupportTest {
 
       assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
       assertTrue(buf.toString().contains("kind=plan_connector"));
-      assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(buf.toString().contains("kind=plan_table"));
       assertTrue(
           buf.toString()
               .contains("tables_scanned=2 tables_changed=0 views_scanned=1 views_changed=0"));
@@ -527,7 +527,7 @@ class ConnectorCliSupportTest {
           ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
               .setJobId("job-table-1")
               .setConnectorId(CONNECTOR_UUID)
-              .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
+              .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
               .setParentJobId("job-plan-1")
               .setExecutorId("remote-executor-a")
               .setTablesScanned(4)
@@ -552,7 +552,7 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(1, h.reconcileControlService.getReconcileJobCalls.get());
-      assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(buf.toString().contains("kind=plan_table"));
       assertTrue(
           buf.toString()
               .contains("tables_scanned=4 tables_changed=1 views_scanned=0 views_changed=0"));
@@ -568,7 +568,7 @@ class ConnectorCliSupportTest {
           ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
               .setJobId("job-view-1")
               .setConnectorId(CONNECTOR_UUID)
-              .setKind(ReconcileJobKind.RJK_EXEC_VIEW)
+              .setKind(ReconcileJobKind.RJK_PLAN_VIEW)
               .setParentJobId("job-plan-1")
               .setExecutorId("remote-executor-a")
               .setViewsScanned(1)

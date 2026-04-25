@@ -321,7 +321,7 @@ class ReconcilerSchedulerTest {
     when(wrongKind.supportedExecutionClasses())
         .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
     when(wrongKind.supportedLanes()).thenReturn(Set.of(""));
-    when(wrongKind.supportedJobKinds()).thenReturn(EnumSet.of(ReconcileJobKind.EXEC_TABLE));
+    when(wrongKind.supportedJobKinds()).thenReturn(EnumSet.of(ReconcileJobKind.PLAN_TABLE));
     when(wrongKind.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(wrongKind.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(wrongKind.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
@@ -476,7 +476,7 @@ class ReconcilerSchedulerTest {
         null,
         null,
         "",
-        ReconcileJobKind.EXEC_TABLE,
+        ReconcileJobKind.PLAN_TABLE,
         null,
         parentJobId);
   }
@@ -501,7 +501,7 @@ class ReconcilerSchedulerTest {
         null,
         null,
         "",
-        ReconcileJobKind.EXEC_TABLE,
+        ReconcileJobKind.PLAN_TABLE,
         null,
         parentJobId);
   }

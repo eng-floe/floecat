@@ -26,6 +26,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -283,6 +284,81 @@ public final class DummyConnector implements FloecatConnector {
   }
 
   @Override
+  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    Set<String> effectivePaths =
+        plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
+    if (effectivePaths.isEmpty()) {
+      return List.of();
+    }
+    return captureSnapshotTargetStats(
+            namespaceFq, tableName, destinationTableId, snapshotId, includeColumns)
+        .stream()
+        .filter(TargetStatsRecord::hasFile)
+        .filter(record -> effectivePaths.contains(record.getFile().getFilePath()))
+        .toList();
+  }
+
+  @Override
+  public List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths) {
+    Set<String> effectivePaths =
+        plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
+    if (effectivePaths.isEmpty()) {
+      return List.of();
+    }
+    List<ParquetPageIndexEntry> entries = new ArrayList<>();
+    for (DummyFile file : snapshotFiles(namespaceFq, tableName, snapshotId)) {
+      if (!effectivePaths.contains(file.path())) {
+        continue;
+      }
+      entries.add(
+          new ParquetPageIndexEntry(
+              file.path(),
+              "id",
+              0,
+              0,
+              0L,
+              Math.toIntExact(file.rowCount()),
+              Math.toIntExact(file.rowCount()),
+              128L,
+              512,
+              null,
+              null,
+              false,
+              "INT64",
+              "ZSTD",
+              (short) 0,
+              (short) 0,
+              null,
+              null,
+              null));
+    }
+    return List.copyOf(entries);
+  }
+
+  @Override
+  public Optional<SnapshotFilePlan> planSnapshotFiles(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    return Optional.of(
+        new SnapshotFilePlan(
+            snapshotFiles(namespaceFq, tableName, snapshotId).stream()
+                .map(DummyFile::toSnapshotFile)
+                .toList(),
+            List.of()));
+  }
+
+  @Override
   public List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
     return configuredView(namespaceFq, options.getOrDefault("dummy.view.name", "dummy_view"))
         .stream()
@@ -320,6 +396,23 @@ public final class DummyConnector implements FloecatConnector {
             options.getOrDefault("dummy.view.dialect", "spark"),
             List.of(namespaceFq),
             schemaJson));
+  }
+
+  private static List<DummyFile> snapshotFiles(
+      String namespaceFq, String tableName, long snapshotId) {
+    String basePath =
+        "s3://dummy/" + namespaceFq.replace('.', '/') + "/" + tableName + "/snapshot-" + snapshotId;
+    return List.of(
+        new DummyFile(basePath + "/part-00000.parquet", 30L, 512L),
+        new DummyFile(basePath + "/part-00001.parquet", 30L, 512L),
+        new DummyFile(basePath + "/part-00002.parquet", 40L, 1024L));
+  }
+
+  private record DummyFile(String path, long rowCount, long sizeBytes) {
+    private SnapshotFileEntry toSnapshotFile() {
+      return new SnapshotFileEntry(
+          path, "PARQUET", sizeBytes, rowCount, FileContent.FC_DATA, "", 0, List.of(), null);
+    }
   }
 
   @Override

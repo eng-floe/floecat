@@ -1,0 +1,112 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ai.floedb.floecat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.catalog.rpc";
+
+import "floecat/common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+message IndexFileTarget {
+  string file_path = 1;
+}
+
+message IndexTarget {
+  oneof target {
+    IndexFileTarget file = 1;
+  }
+}
+
+enum IndexArtifactState {
+  IAS_UNSPECIFIED = 0;
+  IAS_PENDING = 1;
+  IAS_READY = 2;
+  IAS_FAILED = 3;
+  IAS_DELETED = 4;
+}
+
+message IndexCoverage {
+  optional int64 rows_indexed = 1;
+  optional int64 live_rows_indexed = 2;
+  optional int64 pages_indexed = 3;
+  optional int64 row_groups_indexed = 4;
+  optional int64 bytes_scanned = 5;
+  map<string, string> properties = 99;
+}
+
+message IndexArtifactRecord {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  IndexTarget target = 3;
+
+  string artifact_uri = 10;
+  string artifact_format = 11;
+  uint32 artifact_format_version = 12;
+  string content_etag = 13;
+  string content_sha256_b64 = 14;
+
+  IndexArtifactState state = 20;
+  google.protobuf.Timestamp created_at = 21;
+  google.protobuf.Timestamp refreshed_at = 22;
+
+  IndexCoverage coverage = 30;
+
+  optional string source_file_format = 40;
+  optional string source_schema_id = 41;
+
+  repeated int64 field_ids = 50;
+  map<string, string> properties = 99;
+}
+
+message PutIndexArtifactsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  repeated IndexArtifactRecord records = 3;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 4;
+}
+
+message PutIndexArtifactsResponse {
+  int32 upserted = 1;
+}
+
+message GetIndexArtifactRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
+  IndexTarget target = 3;
+}
+
+message GetIndexArtifactResponse {
+  IndexArtifactRecord record = 1;
+}
+
+message ListIndexArtifactsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
+  ai.floedb.floecat.common.PageRequest page = 3;
+}
+
+message ListIndexArtifactsResponse {
+  repeated IndexArtifactRecord records = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+service TableIndexService {
+  rpc GetIndexArtifact(GetIndexArtifactRequest) returns (GetIndexArtifactResponse);
+  rpc ListIndexArtifacts(ListIndexArtifactsRequest) returns (ListIndexArtifactsResponse);
+  rpc PutIndexArtifacts(stream PutIndexArtifactsRequest) returns (PutIndexArtifactsResponse);
+}

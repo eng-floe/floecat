@@ -22,12 +22,17 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
@@ -44,9 +49,11 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
@@ -59,11 +66,16 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.io.InputFile;
+import org.apache.parquet.io.SeekableInputStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -79,8 +91,10 @@ class DirectReconcilerBackendTest {
   private FakeViewRepository viewRepo;
   private SnapshotTestSupport.FakeSnapshotRepository snapshotRepo;
   private StatsRepository statsRepository;
+  private IndexArtifactRepository indexArtifactRepository;
   private SnapshotHelper snapshotHelper;
   private ConnectorRepository connectorRepo;
+  private InMemoryBlobStore indexBlobStore;
 
   private ReconcileContext ctx;
   private ResourceId catalogId;
@@ -96,6 +110,9 @@ class DirectReconcilerBackendTest {
     viewRepo = new FakeViewRepository();
     snapshotRepo = new SnapshotTestSupport.FakeSnapshotRepository();
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    indexBlobStore = new InMemoryBlobStore();
+    indexArtifactRepository =
+        new IndexArtifactRepository(new InMemoryPointerStore(), indexBlobStore);
     snapshotHelper = new SnapshotHelper(snapshotRepo);
     connectorRepo = new ConnectorRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
@@ -106,6 +123,8 @@ class DirectReconcilerBackendTest {
     backend.viewRepo = viewRepo;
     backend.snapshotRepo = snapshotRepo;
     backend.statsStore = statsRepository;
+    backend.indexArtifactRepo = indexArtifactRepository;
+    backend.blobStore = indexBlobStore;
     backend.snapshotHelper = snapshotHelper;
     backend.connectorRepo = connectorRepo;
 
@@ -320,6 +339,142 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
+  void indexArtifactsCanBeStoredAndReadBack() {
+    IndexArtifactRecord record =
+        IndexArtifactRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build())
+            .setArtifactUri("/data/file.parquet.floe-index.parquet")
+            .setArtifactFormat("parquet")
+            .setArtifactFormatVersion(1)
+            .setState(IndexArtifactState.IAS_PENDING)
+            .build();
+
+    backend.putIndexArtifacts(
+        ctx,
+        List.of(new ReconcilerBackend.StagedIndexArtifact(record, new byte[] {1}, "test/type")));
+
+    assertThat(
+            indexArtifactRepository.getIndexArtifact(
+                tableId,
+                SNAPSHOT_ID,
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build()))
+        .isPresent()
+        .get()
+        .extracting(IndexArtifactRecord::getArtifactUri)
+        .isEqualTo("/data/file.parquet.floe-index.parquet");
+  }
+
+  @Test
+  void materializePlannedFileGroupIndexArtifactsStagesRealParquetBlob() throws Exception {
+    FileTargetStats fileStats =
+        FileTargetStats.newBuilder()
+            .setFilePath("/data/file.parquet")
+            .setFileFormat("parquet")
+            .setRowCount(33L)
+            .setSizeBytes(2048L)
+            .setSequenceNumber(9L)
+            .build();
+    TargetStatsRecord record = TargetStatsRecords.fileRecord(tableId, SNAPSHOT_ID, fileStats);
+    var pageEntry =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry(
+            "/data/file.parquet",
+            "id",
+            0,
+            0,
+            0L,
+            33,
+            33,
+            256L,
+            512,
+            128L,
+            128,
+            true,
+            "INT64",
+            "UNCOMPRESSED",
+            (short) 1,
+            (short) 0,
+            null,
+            null,
+            null,
+            null,
+            null,
+            10L,
+            42L,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+
+    List<ReconcilerBackend.StagedIndexArtifact> artifacts =
+        backend.materializePlannedFileGroupIndexArtifacts(
+            ctx,
+            tableId,
+            SNAPSHOT_ID,
+            List.of("/data/file.parquet"),
+            List.of(record),
+            List.of(pageEntry));
+
+    assertThat(artifacts).hasSize(1);
+    ReconcilerBackend.StagedIndexArtifact artifact = artifacts.getFirst();
+    IndexArtifactRecord artifactRecord = artifact.record();
+    assertThat(artifactRecord.getState()).isEqualTo(IndexArtifactState.IAS_READY);
+    assertThat(artifactRecord.getArtifactFormat()).isEqualTo("parquet");
+    assertThat(artifactRecord.getArtifactUri()).contains("/index-sidecars/");
+    assertThat(artifactRecord.getContentEtag()).isNotBlank();
+    assertThat(artifactRecord.getContentSha256B64()).isNotBlank();
+    assertThat(artifactRecord.getCoverage().getRowsIndexed()).isEqualTo(33L);
+    assertThat(artifactRecord.getCoverage().getLiveRowsIndexed()).isEqualTo(33L);
+    assertThat(
+            indexArtifactRepository.getIndexArtifact(
+                tableId,
+                SNAPSHOT_ID,
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build()))
+        .isEmpty();
+    byte[] stored = artifact.content();
+    assertThat(stored).isNotNull();
+    assertThat(stored).isNotEmpty();
+    assertThat(new String(stored, 0, 4, java.nio.charset.StandardCharsets.US_ASCII))
+        .isEqualTo("PAR1");
+    try (ParquetFileReader reader = ParquetFileReader.open(new ByteArrayInputFile(stored))) {
+      assertThat(reader.getFooter().getBlocks()).hasSize(1);
+      assertThat(reader.getFooter().getBlocks().getFirst().getRowCount()).isEqualTo(1L);
+      assertThat(reader.getFooter().getFileMetaData().getKeyValueMetaData())
+          .containsEntry("sidecar.data_file_path", "/data/file.parquet");
+      assertThat(reader.getFooter().getBlocks().getFirst().getColumns()).hasSize(34);
+    }
+    backend.putIndexArtifacts(ctx, artifacts);
+    assertThat(indexBlobStore.get(artifactRecord.getArtifactUri())).isEqualTo(stored);
+    assertThat(
+            indexArtifactRepository.getIndexArtifact(
+                tableId,
+                SNAPSHOT_ID,
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build()))
+        .isPresent()
+        .get()
+        .extracting(IndexArtifactRecord::getArtifactUri)
+        .isEqualTo(artifactRecord.getArtifactUri());
+  }
+
+  @Test
   void statsCapturedForColumnSelectorsRequiresFullSelectorCoverage() {
     ScalarStats col1 = ScalarStats.newBuilder().setDisplayName("i").build();
     ScalarStats col2 = ScalarStats.newBuilder().setDisplayName("j").build();
@@ -480,5 +635,105 @@ class DirectReconcilerBackendTest {
         "uri",
         "source.ns",
         "source_table");
+  }
+
+  private static final class ByteArrayInputFile implements InputFile {
+    private final byte[] bytes;
+
+    private ByteArrayInputFile(byte[] bytes) {
+      this.bytes = bytes;
+    }
+
+    @Override
+    public long getLength() {
+      return bytes.length;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new ByteArraySeekableInputStream(bytes);
+    }
+  }
+
+  private static final class ByteArraySeekableInputStream extends SeekableInputStream {
+    private final byte[] bytes;
+    private int position = 0;
+
+    private ByteArraySeekableInputStream(byte[] bytes) {
+      this.bytes = bytes;
+    }
+
+    @Override
+    public long getPos() {
+      return position;
+    }
+
+    @Override
+    public void seek(long newPos) {
+      if (newPos < 0 || newPos > bytes.length) {
+        throw new IllegalArgumentException("invalid seek position: " + newPos);
+      }
+      position = (int) newPos;
+    }
+
+    @Override
+    public int read() {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      return bytes[position++] & 0xFF;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      int toRead = Math.min(len, bytes.length - position);
+      System.arraycopy(bytes, position, b, off, toRead);
+      position += toRead;
+      return toRead;
+    }
+
+    @Override
+    public int read(ByteBuffer dst) {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      int toRead = Math.min(dst.remaining(), bytes.length - position);
+      dst.put(bytes, position, toRead);
+      position += toRead;
+      return toRead;
+    }
+
+    @Override
+    public void readFully(byte[] bytes) throws IOException {
+      readFully(bytes, 0, bytes.length);
+    }
+
+    @Override
+    public void readFully(byte[] bytes, int start, int len) throws IOException {
+      int total = 0;
+      while (total < len) {
+        int n = read(bytes, start + total, len - total);
+        if (n < 0) {
+          throw new IOException("Unexpected EOF");
+        }
+        total += n;
+      }
+    }
+
+    @Override
+    public void readFully(ByteBuffer dst) throws IOException {
+      while (dst.hasRemaining()) {
+        int n = read(dst);
+        if (n < 0) {
+          throw new IOException("Unexpected EOF");
+        }
+      }
+    }
+
+    @Override
+    public void close() {}
   }
 }
