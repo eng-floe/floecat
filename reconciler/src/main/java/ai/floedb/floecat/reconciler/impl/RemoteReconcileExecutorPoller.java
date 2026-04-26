@@ -278,7 +278,7 @@ public class RemoteReconcileExecutorPoller {
             result.message);
         return;
       }
-      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
+      if (isObsoleteFailureKind(result.failureKind)) {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
@@ -329,9 +329,7 @@ public class RemoteReconcileExecutorPoller {
             cancellationRequested.get() ? progress.errors : Math.max(1L, progress.errors);
         completeIfPossible(
             remoteLease,
-            cancellationRequested.get()
-                    || failureKindOf(e)
-                        == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
+            cancellationRequested.get() || isObsoleteFailureKind(failureKindOf(e))
                 ? RemoteLeasedJob.CompletionState.CANCELLED
                 : RemoteLeasedJob.CompletionState.FAILED,
             progress.tablesScanned,
@@ -343,11 +341,17 @@ public class RemoteReconcileExecutorPoller {
             progress.statsProcessed,
             describeFailure(e));
       }
-      LOG.errorf(
-          e,
-          "Remote reconcile execution failed for job %s executor=%s",
-          lease.jobId,
-          executor.id());
+      if (isObsoleteFailureKind(failureKindOf(e))) {
+        LOG.infof(
+            "Remote reconcile job became obsolete for job %s executor=%s reason=%s",
+            lease.jobId, executor.id(), describeFailure(e));
+      } else {
+        LOG.errorf(
+            e,
+            "Remote reconcile execution failed for job %s executor=%s",
+            lease.jobId,
+            executor.id());
+      }
     } finally {
       Thread.interrupted();
     }
@@ -403,6 +407,12 @@ public class RemoteReconcileExecutorPoller {
       cur = cur.getCause();
     }
     return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static boolean isObsoleteFailureKind(
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind) {
+    return failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING;
   }
 
   private static final class ProgressSnapshot {

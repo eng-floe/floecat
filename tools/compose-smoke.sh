@@ -396,11 +396,14 @@ run_mode() {
   local pre_services="$4"
   local kc_host="${5:-}"
   local kc_port="${6:-}"
+  local compose_profiles_override="${7:-}"
+  local mode_env_extra="${8:-}"
+  local executor_scale="${9:-}"
 
   local compose_project="floecat-smoke-$label"
-  local compose_profiles="$profile"
+  local compose_profiles="${compose_profiles_override:-$profile}"
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
-    compose_profiles="${profile},polaris"
+    compose_profiles="${compose_profiles},polaris"
   fi
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     compose_profiles="${compose_profiles},unity"
@@ -415,6 +418,9 @@ run_mode() {
   fi
   if [ -n "$kc_port" ]; then
     mode_env="$mode_env KC_HOSTNAME_PORT=$kc_port"
+  fi
+  if [ -n "$mode_env_extra" ]; then
+    mode_env="$mode_env $mode_env_extra"
   fi
 
   local compose_cmd="$mode_env $DOCKER_COMPOSE_MAIN"
@@ -502,7 +508,12 @@ run_mode() {
     wait_for_url "http://localhost:${unity_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" 180 "Unity Catalog health"
   fi
 
-  if ! eval "$compose_cmd up -d"; then
+  local compose_up_cmd="$compose_cmd up -d"
+  if [ -n "$executor_scale" ]; then
+    compose_up_cmd="$compose_up_cmd --scale executor=$executor_scale"
+  fi
+
+  if ! eval "$compose_up_cmd"; then
     return 1
   fi
 
@@ -656,7 +667,7 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
     local rest_setup_out
     rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 catalog create $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --desc compose-smoke-upstream-iceberg
-connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --auth token=$polaris_token --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1 --props s3.access-key-id=test --props s3.secret-access-key=test
+connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --cred-type client --cred endpoint=http://polaris:8181/api/catalog/v1/oauth/tokens --cred client_id=root --cred client_secret=s3cr3t --cred scope=PRINCIPAL_ROLE:ALL --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1 --props s3.access-key-id=test --props s3.secret-access-key=test
 quit")
     echo "$rest_setup_out"
     assert_contains "$label upstream iceberg connector setup" "$rest_setup_out" "smoke-upstream-iceberg"
@@ -1320,6 +1331,18 @@ for raw_mode in "${mode_list[@]}"; do
       ;;
     localstack)
       run_mode ./env.localstack localstack localstack "localstack"
+      ;;
+    localstack-remote)
+      run_mode \
+        ./env.localstack \
+        localstack \
+        localstack-remote \
+        "localstack" \
+        "" \
+        "" \
+        "localstack,reconciler-executor" \
+        "QUARKUS_PROFILE_SERVICE=reconciler-control" \
+        "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
       ;;
     localstack-oidc)
       run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"

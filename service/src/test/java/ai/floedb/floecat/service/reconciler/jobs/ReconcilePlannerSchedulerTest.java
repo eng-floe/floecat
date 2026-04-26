@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -47,6 +48,21 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReconcilePlannerSchedulerTest {
+
+  private static void stubConnectorLookup(ConnectorRepository connectors, Connector... rows) {
+    for (Connector row : rows) {
+      when(connectors.getById(argThat(id -> sameResourceId(id, row.getResourceId()))))
+          .thenReturn(java.util.Optional.of(row));
+    }
+  }
+
+  private static boolean sameResourceId(ResourceId left, ResourceId right) {
+    return left != null
+        && right != null
+        && left.getAccountId().equals(right.getAccountId())
+        && left.getId().equals(right.getId())
+        && left.getKind() == right.getKind();
+  }
 
   @Test
   void runPlannerPassUsesOpaqueAccountTokensBetweenPages() {
@@ -96,6 +112,10 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of();
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-b", "conn-b1", "bravo-1"));
 
     scheduler.runPlannerPass(5L, 1, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -153,6 +173,10 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of();
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-a", "conn-a2", "alpha-2"));
 
     scheduler.runPlannerPass(100L, 10, 1, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -189,6 +213,7 @@ class ReconcilePlannerSchedulerTest {
               next.append(token == null ? "" : token);
               return List.of(connector("acct-a", "conn-a1", "alpha-1"));
             });
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
 
     scheduler.runPlannerPass(100L, 10, 1, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -226,6 +251,11 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of(connector("acct-b", "conn-b1", "bravo-1"));
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-a", "conn-a2", "alpha-2"),
+        connector("acct-b", "conn-b1", "bravo-1"));
 
     scheduler.runPlannerPass(5L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -258,6 +288,10 @@ class ReconcilePlannerSchedulerTest {
             List.of(
                 connector("acct-a", "conn-disabled", "alpha-1", false),
                 connector("acct-a", "conn-enabled", "alpha-2", true)));
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-disabled", "alpha-1", false),
+        connector("acct-a", "conn-enabled", "alpha-2", true));
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -282,6 +316,7 @@ class ReconcilePlannerSchedulerTest {
           .thenReturn(List.of(account("acct-a", "alpha")));
       when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
           .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+      stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
       when(scheduler.jobs.enqueuePlan(
               anyString(),
               anyString(),
@@ -315,6 +350,7 @@ class ReconcilePlannerSchedulerTest {
         .thenReturn(List.of(account("acct-a", "alpha")));
     when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
         .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
     when(scheduler.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenAnswer(
@@ -348,6 +384,7 @@ class ReconcilePlannerSchedulerTest {
         .thenReturn(List.of(account("acct-a", "alpha")));
     when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
         .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 

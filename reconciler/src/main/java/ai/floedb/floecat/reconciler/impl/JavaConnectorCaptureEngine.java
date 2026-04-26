@@ -16,14 +16,22 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngine;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.EnumSet;
 import java.util.Optional;
 
@@ -32,13 +40,13 @@ import java.util.Optional;
 public class JavaConnectorCaptureEngine implements CaptureEngine {
   @FunctionalInterface
   interface ConnectorOpener {
-    FloecatConnector open(ai.floedb.floecat.connector.rpc.Connector connector);
+    FloecatConnector open(ConnectorConfig connector);
   }
 
   final JavaConnectorFileGroupCaptureAdapter adapter = new JavaConnectorFileGroupCaptureAdapter();
+  @Inject CredentialResolver credentialResolver;
 
-  ConnectorOpener connectorOpener =
-      connector -> ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector));
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
 
   @Override
   public String id() {
@@ -70,8 +78,59 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     if (!supports(request)) {
       return Optional.empty();
     }
-    try (var source = connectorOpener.open(request.sourceConnector())) {
+    try (var source = connectorOpener.open(resolveCredentials(request.sourceConnector()))) {
       return Optional.of(adapter.capture(source, request));
+    } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw new ReconcileFailureException(
+            ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult.FailureKind
+                .TABLE_MISSING,
+            "source object missing",
+            e);
+      }
+      throw e;
     }
+  }
+
+  private ConnectorConfig resolveCredentials(Connector connector) {
+    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+    AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (connector == null
+        || !connector.hasResourceId()
+        || auth.getScheme().isBlank()
+        || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
+  }
+
+  private static boolean isMissingObjectFailure(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    String className = t.getClass().getName();
+    if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchViewException")
+        || className.endsWith("NoSuchObjectException")
+        || className.endsWith("NotFoundException")) {
+      return true;
+    }
+    String message = t.getMessage();
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    String normalized = message.toLowerCase();
+    return normalized.contains("http 404")
+        || normalized.contains("status 404")
+        || normalized.contains("not found")
+        || normalized.contains("does not exist");
   }
 }

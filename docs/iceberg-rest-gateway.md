@@ -224,8 +224,10 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
 - **Compose smoke:** `make compose-smoke` runs DuckDB table federation checks plus Trino table and
-  view lifecycle checks in LocalStack mode. The Trino block creates and replaces an Iceberg view
-  via SQL and verifies both definitions are queryable.
+  view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
+  `COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke`, which starts the service in
+  `reconciler-control` mode and enables the remote `executor` profile. The Trino block creates and
+  replaces an Iceberg view via SQL and verifies both definitions are queryable.
 
 ---
 

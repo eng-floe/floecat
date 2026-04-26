@@ -399,7 +399,7 @@ public class ReconcilerScheduler {
             null);
         return;
       }
-      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
+      if (isObsoleteFailureKind(result.failureKind)) {
         jobs.markCancelled(
             lease.jobId,
             lease.leaseEpoch,
@@ -424,7 +424,7 @@ public class ReconcilerScheduler {
             result.errors,
             totalSnapshots,
             totalStats,
-            "connector_missing",
+            obsoleteFailureReason(result.failureKind),
             result.message);
         return;
       }
@@ -541,7 +541,8 @@ public class ReconcilerScheduler {
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          if (failureKindOf(e) == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
+          var failureKind = failureKindOf(e);
+          if (isObsoleteFailureKind(failureKind)) {
             long errorCount = Math.max(1L, progress.errors);
             jobs.markCancelled(
                 lease.jobId,
@@ -567,7 +568,7 @@ public class ReconcilerScheduler {
                 errorCount,
                 progress.snapshotsProcessed,
                 progress.statsProcessed,
-                "connector_missing",
+                obsoleteFailureReason(failureKind),
                 msg);
           } else {
             long errorCount = Math.max(1L, progress.errors);
@@ -702,6 +703,21 @@ public class ReconcilerScheduler {
       cur = cur.getCause();
     }
     return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static boolean isObsoleteFailureKind(
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind) {
+    return failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING;
+  }
+
+  private static String obsoleteFailureReason(
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind) {
+    return switch (failureKind) {
+      case CONNECTOR_MISSING -> "connector_missing";
+      case TABLE_MISSING -> "table_missing";
+      default -> "stale_source";
+    };
   }
 
   private void emitOutcome(

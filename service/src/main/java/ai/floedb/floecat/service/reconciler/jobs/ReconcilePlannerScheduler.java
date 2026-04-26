@@ -244,6 +244,11 @@ public class ReconcilePlannerScheduler {
     }
 
     String key = connector.getResourceId().getAccountId() + ":" + connector.getResourceId().getId();
+    if (connectors.getById(connector.getResourceId()).isEmpty()) {
+      lastEnqueueMs.remove(key);
+      observePlannerEnqueue("skipped", mode, "stale_connector");
+      return;
+    }
     boolean fullRescan = effectiveMode == ReconcileMode.RM_FULL;
     long now = nowMs();
     long notBeforeMs = 0L;

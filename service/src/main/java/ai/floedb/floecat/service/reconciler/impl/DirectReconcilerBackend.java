@@ -41,16 +41,24 @@ import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.impl.FileGroupIndexArtifactStager;
+import ai.floedb.floecat.reconciler.impl.ReconcileFailureException;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
@@ -157,6 +165,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject CaptureEngineRegistry captureEngineRegistry;
+  @Inject CredentialResolver credentialResolver;
 
   @Override
   public ResourceId ensureNamespace(
@@ -711,8 +720,16 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     }
 
     Connector connector = lookupConnector(ctx, connectorId);
-    try (var source = ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector))) {
+    try (var source = ConnectorFactory.create(resolveCredentials(connector))) {
       return source.planSnapshotFiles(sourceNamespace, sourceTable, tableId, snapshotId);
+    } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING,
+            "source object missing: " + sourceNamespace + "." + sourceTable,
+            e);
+      }
+      throw e;
     }
   }
 
@@ -746,7 +763,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     CaptureEngineResult capture =
         captureEngineRegistry.capture(
             new CaptureEngineRequest(
-                connector,
+                connector.toBuilder().setAuth(resolvedAuth(connector)).build(),
                 sourceNamespace,
                 sourceTable,
                 request.tableId(),
@@ -800,6 +817,28 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
       builder.setSizeBytes(bytesScanned);
     }
     return builder.build();
+  }
+
+  private static boolean isMissingObjectFailure(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    String className = t.getClass().getName();
+    if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchViewException")
+        || className.endsWith("NoSuchObjectException")
+        || className.endsWith("NotFoundException")) {
+      return true;
+    }
+    String message = t.getMessage();
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    String normalized = message.toLowerCase();
+    return normalized.contains("http 404")
+        || normalized.contains("status 404")
+        || normalized.contains("not found")
+        || normalized.contains("does not exist");
   }
 
   @Override
@@ -969,6 +1008,35 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
             () ->
                 GrpcErrors.notFound(
                     ctx.correlationId(), CONNECTOR, Map.of("connector_id", connectorId.getId())));
+  }
+
+  private ConnectorConfig resolveCredentials(Connector connector) {
+    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+    AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (connector == null
+        || !connector.hasResourceId()
+        || auth.getScheme().isBlank()
+        || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
+  }
+
+  private AuthConfig resolvedAuth(Connector connector) {
+    ConnectorConfig.Auth resolved = resolveCredentials(connector).auth();
+    return AuthConfig.newBuilder()
+        .setScheme(resolved.scheme() == null ? "" : resolved.scheme())
+        .putAllProperties(resolved.props())
+        .putAllHeaderHints(resolved.headerHints())
+        .build();
   }
 
   @Override

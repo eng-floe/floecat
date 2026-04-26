@@ -18,10 +18,10 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 
-final class ReconcileFailureException extends RuntimeException {
+public final class ReconcileFailureException extends RuntimeException {
   private final ReconcileExecutor.ExecutionResult.FailureKind failureKind;
 
-  ReconcileFailureException(
+  public ReconcileFailureException(
       ReconcileExecutor.ExecutionResult.FailureKind failureKind, String message, Throwable cause) {
     super(message, cause);
     this.failureKind =

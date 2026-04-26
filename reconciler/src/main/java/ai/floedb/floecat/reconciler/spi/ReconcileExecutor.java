@@ -100,6 +100,7 @@ public interface ReconcileExecutor {
     public enum FailureKind {
       NONE,
       CONNECTOR_MISSING,
+      TABLE_MISSING,
       INTERNAL
     }
 

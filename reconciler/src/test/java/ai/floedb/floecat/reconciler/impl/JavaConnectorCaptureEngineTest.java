@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import java.util.List;
@@ -44,6 +45,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 class JavaConnectorCaptureEngineTest {
+  private static final Connector SOURCE_CONNECTOR =
+      Connector.newBuilder().setKind(ConnectorKind.CK_ICEBERG).build();
 
   @Test
   void capabilitiesAdvertiseFileGroupContract() {
@@ -78,7 +81,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest missingPlannedFiles =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -103,7 +106,7 @@ class JavaConnectorCaptureEngineTest {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -177,7 +180,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -262,7 +265,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -313,7 +316,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -425,7 +428,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,
@@ -592,7 +595,7 @@ class JavaConnectorCaptureEngineTest {
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
-            Connector.getDefaultInstance(),
+            SOURCE_CONNECTOR,
             "db",
             "events",
             tableId,

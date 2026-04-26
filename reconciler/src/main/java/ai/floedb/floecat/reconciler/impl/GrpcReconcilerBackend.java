@@ -73,14 +73,17 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
@@ -134,6 +137,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private final Duration statsTimeout;
   ConnectorOpener connectorOpener = ConnectorFactory::create;
   @Inject CaptureEngineRegistry captureEngineRegistry;
+  @Inject CredentialResolver credentialResolver;
 
   public GrpcReconcilerBackend(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
@@ -1366,15 +1370,68 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return emptyValue;
     }
     Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
-    ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    ResourceId connectorId = sourceContext.get().connectorId();
+    ConnectorConfig config =
+        resolveCredentials(
+            ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId);
     try (FloecatConnector source = connectorOpener.open(config)) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw new ReconcileFailureException(
+            ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult.FailureKind
+                .TABLE_MISSING,
+            "source object missing: "
+                + sourceContext.get().sourceNamespace()
+                + "."
+                + sourceContext.get().sourceTable(),
+            e);
+      }
       throw e;
     } catch (Exception e) {
       throw new IllegalStateException(
           "Failed to open source connector for table " + tableId.getId(), e);
     }
+  }
+
+  private ConnectorConfig resolveCredentials(
+      ConnectorConfig base,
+      ai.floedb.floecat.connector.rpc.AuthConfig auth,
+      ResourceId connectorId) {
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != ai.floedb.floecat.connector.rpc.AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (auth == null || auth.getScheme().isBlank() || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connectorId.getAccountId(), connectorId.getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
+  }
+
+  private static boolean isMissingObjectFailure(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    String className = t.getClass().getName();
+    if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchViewException")
+        || className.endsWith("NoSuchObjectException")
+        || className.endsWith("NotFoundException")) {
+      return true;
+    }
+    String message = t.getMessage();
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    String normalized = message.toLowerCase();
+    return normalized.contains("http 404")
+        || normalized.contains("status 404")
+        || normalized.contains("not found")
+        || normalized.contains("does not exist");
   }
 
   @FunctionalInterface
