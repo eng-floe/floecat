@@ -2278,8 +2278,10 @@ and no marker file/state is required.</p>
 <li><strong>Integration tests:</strong> <code>IcebergRestFixtureIT</code> boots real services (via <code>RealServiceTestResource</code>) and exercises stage-create, commit, plan, and view flows end-to-end.</li>
 <li><strong>Unit tests:</strong> live under <code>src/test/java/.../services/*</code> mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.</li>
 <li><strong>Compose smoke:</strong> <code>make compose-smoke</code> runs DuckDB table federation checks plus Trino table and
-  view lifecycle checks in LocalStack mode. The Trino block creates and replaces an Iceberg view
-  via SQL and verifies both definitions are queryable.</li>
+  view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
+  <code>COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke</code>, which starts the service in
+  <code>reconciler-control</code> mode and enables the remote <code>executor</code> profile. The Trino block creates and
+  replaces an Iceberg view via SQL and verifies both definitions are queryable.</li>
 </ul>
 <hr />
 <h2 id="operational-notes-current-limitations">Operational Notes &amp; Current Limitations<a class="headerlink" href="#operational-notes-current-limitations" title="Permanent link">&para;</a></h2>
