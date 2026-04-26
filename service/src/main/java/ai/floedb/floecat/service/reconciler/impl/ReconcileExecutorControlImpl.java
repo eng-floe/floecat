@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -420,10 +421,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
 
   private static ai.floedb.floecat.reconciler.rpc.CaptureMode toProtoCaptureMode(
       CaptureMode captureMode) {
-    return switch (captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode) {
+    return switch (java.util.Objects.requireNonNull(captureMode, "captureMode")) {
       case METADATA_ONLY -> ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY;
-      case STATS_ONLY -> ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_STATS_ONLY;
-      case METADATA_AND_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_STATS;
+      case CAPTURE_ONLY -> ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY;
+      case METADATA_AND_CAPTURE ->
+          ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE;
     };
   }
 
@@ -463,16 +465,46 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     for (String namespaceId : scope.destinationNamespaceIds()) {
       builder.addDestinationNamespaceIds(namespaceId);
     }
-    for (ReconcileScope.ScopedStatsRequest request : scope.destinationStatsRequests()) {
-      builder.addDestinationStatsRequests(
-          ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+    for (ReconcileScope.ScopedCaptureRequest request : scope.destinationCaptureRequests()) {
+      builder.addDestinationCaptureRequests(
+          ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest.newBuilder()
               .setTableId(request.tableId())
               .setSnapshotId(request.snapshotId())
               .setTargetSpec(request.targetSpec())
               .addAllColumnSelectors(request.columnSelectors())
               .build());
     }
+    if (scope.hasCapturePolicy()) {
+      builder.setCapturePolicy(
+          ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+              .addAllColumns(
+                  scope.capturePolicy().columns().stream()
+                      .map(
+                          column ->
+                              ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
+                                  .setSelector(column.selector())
+                                  .setCaptureStats(column.captureStats())
+                                  .setCaptureIndex(column.captureIndex())
+                                  .build())
+                      .toList())
+              .addAllOutputs(
+                  scope.capturePolicy().outputs().stream()
+                      .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
+                      .toList())
+              .build());
+    }
     return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.CaptureOutput toProtoCaptureOutput(
+      ReconcileCapturePolicy.Output output) {
+    return switch (output) {
+      case TABLE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_TABLE_STATS;
+      case FILE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_FILE_STATS;
+      case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
+      case PARQUET_PAGE_INDEX ->
+          ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+    };
   }
 
   private static String blankToEmpty(String value) {

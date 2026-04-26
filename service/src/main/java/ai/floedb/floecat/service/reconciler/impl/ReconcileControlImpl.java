@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -118,12 +119,16 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
                     var connectorId =
                         validatedConnectorId(pc.getAccountId(), request.getScope(), corr);
+                    var mode = mapCaptureMode(request.getMode());
+                    requireExplicitCapturePolicy(mode, request.getScope(), corr);
+                    var scope = scopeFromCaptureScope(request.getScope());
+                    validateCaptureRequestScope(mode, scope, corr);
                     var jobId =
                         enqueueCapture(
                             connectorId,
                             request.getFullRescan(),
-                            mapCaptureMode(request.getMode()),
-                            scopeFromCaptureScope(request.getScope()),
+                            mode,
+                            scope,
                             ReconcileExecutionPolicy.of(
                                 ReconcileExecutionClass.INTERACTIVE, "", Map.of()));
                     var job =
@@ -191,13 +196,17 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                     correlationId,
                                     GeneratedErrorMessages.MessageKey.CONNECTOR,
                                     Map.of("id", connectorId.getId())));
+                    var mode = mapCaptureMode(request.getMode());
+                    requireExplicitCapturePolicy(mode, request.getScope(), correlationId);
+                    var scope = scopeFromRequest(request);
+                    validateCaptureRequestScope(mode, scope, correlationId);
 
                     var jobId =
                         enqueueCapture(
                             connectorId,
                             request.getFullRescan(),
-                            mapCaptureMode(request.getMode()),
-                            scopeFromRequest(request),
+                            mode,
+                            scope,
                             mapExecutionPolicy(request.getExecutionPolicy()));
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.START_CAPTURE,
@@ -579,15 +588,41 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         scope.getDestinationNamespaceIdsList(),
         scope.getDestinationTableId(),
         scope.getDestinationViewId(),
-        scope.getDestinationStatsRequestsList().stream()
+        scope.getDestinationCaptureRequestsList().stream()
             .map(
                 request ->
-                    new ReconcileScope.ScopedStatsRequest(
+                    new ReconcileScope.ScopedCaptureRequest(
                         request.getTableId(),
                         request.getSnapshotId(),
                         request.getTargetSpec(),
                         request.getColumnSelectorsList()))
-            .toList());
+            .toList(),
+        scope.hasCapturePolicy()
+            ? ReconcileCapturePolicy.of(
+                scope.getCapturePolicy().getColumnsList().stream()
+                    .map(
+                        column ->
+                            new ReconcileCapturePolicy.Column(
+                                column.getSelector(),
+                                column.getCaptureStats(),
+                                column.getCaptureIndex()))
+                    .toList(),
+                scope.getCapturePolicy().getOutputsList().stream()
+                    .map(ReconcileControlImpl::mapCaptureOutput)
+                    .collect(java.util.stream.Collectors.toSet()))
+            : ReconcileCapturePolicy.empty());
+  }
+
+  private static ReconcileCapturePolicy.Output mapCaptureOutput(
+      ai.floedb.floecat.reconciler.rpc.CaptureOutput output) {
+    return switch (output) {
+      case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
+      case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
+      case CO_COLUMN_STATS -> ReconcileCapturePolicy.Output.COLUMN_STATS;
+      case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
+      case CO_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("capture output is required");
+    };
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {
@@ -600,9 +635,40 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   private static CaptureMode mapCaptureMode(ai.floedb.floecat.reconciler.rpc.CaptureMode mode) {
     return switch (mode) {
       case CM_METADATA_ONLY -> CaptureMode.METADATA_ONLY;
-      case CM_STATS_ONLY -> CaptureMode.STATS_ONLY;
-      case CM_METADATA_AND_STATS, CM_UNSPECIFIED, UNRECOGNIZED -> CaptureMode.METADATA_AND_STATS;
+      case CM_CAPTURE_ONLY -> CaptureMode.CAPTURE_ONLY;
+      case CM_METADATA_AND_CAPTURE, CM_UNSPECIFIED, UNRECOGNIZED ->
+          CaptureMode.METADATA_AND_CAPTURE;
     };
+  }
+
+  private static void requireExplicitCapturePolicy(
+      CaptureMode mode, CaptureScope scope, String correlationId) {
+    if (mode == CaptureMode.METADATA_ONLY) {
+      return;
+    }
+    if (scope == null || !scope.hasCapturePolicy()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", "scope.capture_policy"));
+    }
+    if (scope.getCapturePolicy().getOutputsCount() == 0) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", "scope.capture_policy.outputs"));
+    }
+  }
+
+  private static void validateCaptureRequestScope(
+      CaptureMode mode, ReconcileScope scope, String correlationId) {
+    if (mode == CaptureMode.CAPTURE_ONLY && scope != null && scope.hasViewFilter()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", "scope.destination_view_id"));
+    }
+    if (mode == CaptureMode.CAPTURE_ONLY
+        && scope != null
+        && scope.hasCaptureRequestFilter()
+        && scope.hasNamespaceFilter()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", "scope.destination_namespace_ids"));
+    }
   }
 
   private ResourceId scopedConnectorId(String accountId, ResourceId connectorId, String corr) {
@@ -629,7 +695,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       CaptureMode mode,
       ReconcileScope scope,
       ReconcileExecutionPolicy executionPolicy) {
-    ensureExecutorsAvailable();
+    ensureExecutorsAvailable(mode, scope);
     return jobs.enqueuePlan(
         connectorId.getAccountId(),
         connectorId.getId(),
@@ -640,19 +706,59 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         "");
   }
 
-  private void ensureExecutorsAvailable() {
+  private void ensureExecutorsAvailable(CaptureMode mode, ReconcileScope scope) {
     if (executorRegistry != null
         && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR)) {
       throw Status.FAILED_PRECONDITION
           .withDescription("No enabled reconcile executor is available for PLAN_CONNECTOR jobs")
           .asRuntimeException();
     }
-    if (executorRegistry != null
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
+    if (mode == CaptureMode.CAPTURE_ONLY && scope != null && scope.hasViewFilter()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("capture-only reconcile is not valid for view reconcile")
+          .asRuntimeException();
+    }
+    if (executorRegistry != null) {
+      if (mode == CaptureMode.CAPTURE_ONLY) {
+        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)) {
+          throw Status.FAILED_PRECONDITION
+              .withDescription("No enabled reconcile executor is available for PLAN_TABLE jobs")
+              .asRuntimeException();
+        }
+      } else if (scope != null && scope.hasViewFilter()) {
+        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
+          throw Status.FAILED_PRECONDITION
+              .withDescription("No enabled reconcile executor is available for PLAN_VIEW jobs")
+              .asRuntimeException();
+        }
+      } else if (scope != null && scope.hasTableFilter()) {
+        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)) {
+          throw Status.FAILED_PRECONDITION
+              .withDescription("No enabled reconcile executor is available for PLAN_TABLE jobs")
+              .asRuntimeException();
+        }
+      } else {
+        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)
+            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
+          throw Status.FAILED_PRECONDITION
+              .withDescription(
+                  "No enabled reconcile executor is available for PLAN_TABLE and PLAN_VIEW jobs")
+              .asRuntimeException();
+        }
+      }
+    }
+    if (mode != CaptureMode.METADATA_ONLY
+        && executorRegistry != null
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT)) {
       throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "No enabled reconcile executor is available for PLAN_TABLE or PLAN_VIEW jobs")
+          .withDescription("No enabled reconcile executor is available for PLAN_SNAPSHOT jobs")
+          .asRuntimeException();
+    }
+    if (mode != CaptureMode.METADATA_ONLY
+        && executorRegistry != null
+        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP)) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("No enabled reconcile executor is available for EXEC_FILE_GROUP jobs")
           .asRuntimeException();
     }
   }
@@ -920,7 +1026,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (planJob == null || !supportsChildAggregation(planJob.jobKind)) {
       return List.of();
     }
-    return jobs.childJobs(accountId, planJob.jobId);
+    return jobs.childJobs(accountId, planJob.jobId).stream()
+        .map(child -> aggregateIfPlanJob(accountId, child))
+        .toList();
   }
 
   private void cancelChildJobs(
@@ -928,10 +1036,13 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (job == null || !supportsChildAggregation(job.jobKind)) {
       return;
     }
-    for (var child : childJobsFor(accountId, job)) {
-      var cancelled = jobs.cancel(accountId, child.jobId, reason);
+    for (var effectiveChild : childJobsFor(accountId, job)) {
+      var storedChild = jobs.get(accountId, effectiveChild.jobId).orElse(effectiveChild);
+      var cancelled = jobs.cancel(accountId, effectiveChild.jobId, reason);
       if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
         cancellations.requestCancel(cancelled.get().jobId);
+      } else if (cancelled.isEmpty() && canCancelViaActiveChildren(storedChild, effectiveChild)) {
+        cancelChildJobs(accountId, storedChild, reason);
       }
     }
   }
@@ -945,7 +1056,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static boolean supportsChildAggregation(ReconcileJobKind jobKind) {
-    return jobKind == ReconcileJobKind.PLAN_CONNECTOR || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
   private static String aggregateState(
@@ -1328,9 +1441,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       return "manual";
     }
     return switch (request.getMode()) {
-      case CM_METADATA_ONLY -> "scoped_metadata";
-      case CM_STATS_ONLY -> "scoped_stats_only";
-      case CM_METADATA_AND_STATS, CM_UNSPECIFIED, UNRECOGNIZED -> "scoped_stats";
+      case CM_METADATA_ONLY -> "scoped_metadata_only";
+      case CM_CAPTURE_ONLY -> "scoped_capture_only";
+      case CM_METADATA_AND_CAPTURE, CM_UNSPECIFIED, UNRECOGNIZED -> "scoped_metadata_capture";
     };
   }
 
@@ -1341,7 +1454,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return !scope.getDestinationNamespaceIdsList().isEmpty()
         || (scope.getDestinationTableId() != null && !scope.getDestinationTableId().isBlank())
         || (scope.getDestinationViewId() != null && !scope.getDestinationViewId().isBlank())
-        || !scope.getDestinationStatsRequestsList().isEmpty();
+        || !scope.getDestinationCaptureRequestsList().isEmpty();
   }
 
   private static String blankToEmpty(String value) {

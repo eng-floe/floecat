@@ -19,18 +19,20 @@ package ai.floedb.floecat.reconciler.jobs;
 import java.util.List;
 import java.util.Objects;
 
-/** Scope constraints for a reconcile job (namespaces, tables, and optional stats-target hints). */
+/** Scope constraints for a reconcile job (namespaces, tables, views, and capture-target hints). */
 public final class ReconcileScope {
-  private static final ReconcileScope EMPTY = new ReconcileScope(List.of(), null, null, List.of());
+  private static final ReconcileScope EMPTY =
+      new ReconcileScope(List.of(), null, null, List.of(), ReconcileCapturePolicy.empty());
 
   private final List<String> destinationNamespaceIds;
   private final String destinationTableId;
   private final String destinationViewId;
-  private final List<ScopedStatsRequest> destinationStatsRequests;
+  private final List<ScopedCaptureRequest> destinationCaptureRequests;
+  private final ReconcileCapturePolicy capturePolicy;
 
-  public record ScopedStatsRequest(
+  public record ScopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
-    public ScopedStatsRequest {
+    public ScopedCaptureRequest {
       tableId = tableId == null ? "" : tableId.trim();
       targetSpec = targetSpec == null ? "" : targetSpec.trim();
       columnSelectors =
@@ -48,7 +50,8 @@ public final class ReconcileScope {
       List<String> destinationNamespaceIds,
       String destinationTableId,
       String destinationViewId,
-      List<ScopedStatsRequest> destinationStatsRequests) {
+      List<ScopedCaptureRequest> destinationCaptureRequests,
+      ReconcileCapturePolicy capturePolicy) {
     if (destinationNamespaceIds == null || destinationNamespaceIds.isEmpty()) {
       this.destinationNamespaceIds = List.of();
     } else {
@@ -69,20 +72,21 @@ public final class ReconcileScope {
             ? null
             : destinationViewId.trim();
 
-    this.destinationStatsRequests =
-        destinationStatsRequests == null
+    this.destinationCaptureRequests =
+        destinationCaptureRequests == null
             ? List.of()
-            : destinationStatsRequests.stream()
+            : destinationCaptureRequests.stream()
                 .filter(Objects::nonNull)
                 .map(
                     request ->
-                        new ScopedStatsRequest(
+                        new ScopedCaptureRequest(
                             request.tableId(),
                             request.snapshotId(),
                             request.targetSpec(),
                             request.columnSelectors()))
                 .distinct()
                 .toList();
+    this.capturePolicy = capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
 
     if (this.destinationTableId != null && !this.destinationNamespaceIds.isEmpty()) {
       throw new IllegalArgumentException(
@@ -96,9 +100,20 @@ public final class ReconcileScope {
       throw new IllegalArgumentException(
           "destinationTableId cannot be combined with destinationViewId");
     }
-    if (this.destinationViewId != null && !this.destinationStatsRequests.isEmpty()) {
+    if (this.destinationViewId != null && !this.destinationCaptureRequests.isEmpty()) {
       throw new IllegalArgumentException(
-          "destinationViewId cannot be combined with destinationStatsRequests");
+          "destinationViewId cannot be combined with destinationCaptureRequests");
+    }
+    if (this.destinationTableId != null) {
+      for (ScopedCaptureRequest request : this.destinationCaptureRequests) {
+        if (request == null || request.tableId() == null || request.tableId().isBlank()) {
+          continue;
+        }
+        if (!this.destinationTableId.equals(request.tableId())) {
+          throw new IllegalArgumentException(
+              "destinationCaptureRequests tableId must match destinationTableId");
+        }
+      }
     }
   }
 
@@ -107,34 +122,81 @@ public final class ReconcileScope {
   }
 
   public static ReconcileScope of(List<String> destinationNamespaceIds, String destinationTableId) {
-    return of(destinationNamespaceIds, destinationTableId, null, List.of());
+    return of(
+        destinationNamespaceIds,
+        destinationTableId,
+        null,
+        List.of(),
+        ReconcileCapturePolicy.empty());
   }
 
   public static ReconcileScope ofView(
       List<String> destinationNamespaceIds, String destinationViewId) {
-    return of(destinationNamespaceIds, null, destinationViewId, List.of());
+    return of(
+        destinationNamespaceIds,
+        null,
+        destinationViewId,
+        List.of(),
+        ReconcileCapturePolicy.empty());
   }
 
   public static ReconcileScope of(
       List<String> destinationNamespaceIds,
       String destinationTableId,
-      List<ScopedStatsRequest> destinationStatsRequests) {
-    return of(destinationNamespaceIds, destinationTableId, null, destinationStatsRequests);
+      List<ScopedCaptureRequest> destinationCaptureRequests) {
+    return of(
+        destinationNamespaceIds,
+        destinationTableId,
+        null,
+        destinationCaptureRequests,
+        ReconcileCapturePolicy.empty());
+  }
+
+  public static ReconcileScope of(
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      List<ScopedCaptureRequest> destinationCaptureRequests,
+      ReconcileCapturePolicy capturePolicy) {
+    return of(
+        destinationNamespaceIds,
+        destinationTableId,
+        null,
+        destinationCaptureRequests,
+        capturePolicy);
   }
 
   public static ReconcileScope of(
       List<String> destinationNamespaceIds,
       String destinationTableId,
       String destinationViewId,
-      List<ScopedStatsRequest> destinationStatsRequests) {
+      List<ScopedCaptureRequest> destinationCaptureRequests) {
+    return of(
+        destinationNamespaceIds,
+        destinationTableId,
+        destinationViewId,
+        destinationCaptureRequests,
+        ReconcileCapturePolicy.empty());
+  }
+
+  public static ReconcileScope of(
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      String destinationViewId,
+      List<ScopedCaptureRequest> destinationCaptureRequests,
+      ReconcileCapturePolicy capturePolicy) {
     if ((destinationNamespaceIds == null || destinationNamespaceIds.isEmpty())
         && (destinationTableId == null || destinationTableId.isBlank())
         && (destinationViewId == null || destinationViewId.isBlank())
-        && (destinationStatsRequests == null || destinationStatsRequests.isEmpty())) {
+        && (destinationCaptureRequests == null || destinationCaptureRequests.isEmpty())
+        && (capturePolicy == null || capturePolicy.isEmpty())) {
       return EMPTY;
     }
     return new ReconcileScope(
-        destinationNamespaceIds, destinationTableId, destinationViewId, destinationStatsRequests);
+        destinationNamespaceIds,
+        destinationTableId,
+        destinationViewId,
+        destinationCaptureRequests,
+        capturePolicy);
   }
 
   public List<String> destinationNamespaceIds() {
@@ -149,8 +211,12 @@ public final class ReconcileScope {
     return destinationViewId;
   }
 
-  public List<ScopedStatsRequest> destinationStatsRequests() {
-    return destinationStatsRequests;
+  public List<ScopedCaptureRequest> destinationCaptureRequests() {
+    return destinationCaptureRequests;
+  }
+
+  public ReconcileCapturePolicy capturePolicy() {
+    return capturePolicy;
   }
 
   public boolean hasNamespaceFilter() {
@@ -195,7 +261,11 @@ public final class ReconcileScope {
     return destinationViewId.equals(viewId);
   }
 
-  public boolean hasStatsRequestFilter() {
-    return !destinationStatsRequests.isEmpty();
+  public boolean hasCaptureRequestFilter() {
+    return !destinationCaptureRequests.isEmpty();
+  }
+
+  public boolean hasCapturePolicy() {
+    return !capturePolicy.isEmpty();
   }
 }

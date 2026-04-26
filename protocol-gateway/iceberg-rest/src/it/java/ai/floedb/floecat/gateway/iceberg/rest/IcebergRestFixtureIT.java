@@ -101,8 +101,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 
@@ -1814,8 +1816,13 @@ class IcebergRestFixtureIT {
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
                             .setDestinationTableId(tableId.getId())
+                            .setCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
                             .build())
-                    .setMode(CaptureMode.CM_STATS_ONLY)
+                    .setMode(CaptureMode.CM_CAPTURE_ONLY)
                     .setFullRescan(true)
                     .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(30).build())
                     .build());
@@ -1824,8 +1831,13 @@ class IcebergRestFixtureIT {
                     .setScope(
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
+                            .setCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
                             .build())
-                    .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                    .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                     .setFullRescan(true)
                     .build());
             return null;

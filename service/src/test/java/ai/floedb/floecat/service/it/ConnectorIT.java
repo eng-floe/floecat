@@ -48,6 +48,8 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
@@ -532,7 +534,17 @@ public class ConnectorIT {
                 .putAllProperties(props)
                 .build());
 
-    var job = runReconcile(conn.getResourceId(), true);
+    var job =
+        runReconcile(
+            conn.getResourceId(),
+            true,
+            scopeWithCaptureOutputs(
+                CaptureScope.newBuilder().setConnectorId(conn.getResourceId()).build(),
+                CaptureOutput.CO_TABLE_STATS,
+                CaptureOutput.CO_FILE_STATS,
+                CaptureOutput.CO_COLUMN_STATS,
+                CaptureOutput.CO_PARQUET_PAGE_INDEX),
+            false);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
 
@@ -621,10 +633,9 @@ public class ConnectorIT {
     var metadataJob = runReconcile(conn.getResourceId(), true);
     assertNotNull(metadataJob);
     assertEquals("JS_SUCCEEDED", metadataJob.state, () -> "job failed: " + metadataJob.message);
-    assertEquals(
-        0L,
-        metadataJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        metadataJob.statsProcessed > 0L,
+        "metadata+stats reconcile should include capture work in the same job flow");
 
     var catId =
         catalogs
@@ -639,12 +650,9 @@ public class ConnectorIT {
             .orElseThrow();
 
     var immediate = listCurrentFileStats(table.getResourceId(), 200);
-    assertTrue(
+    assertFalse(
         immediate.isEmpty(),
-        "metadata+stats should complete before follow-up STATS_ONLY capture makes stats visible");
-
-    var eventual = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
-    assertFalse(eventual.isEmpty(), "expected follow-up STATS_ONLY job to materialize file stats");
+        "metadata+stats should materialize file stats through the unified capture flow");
   }
 
   @Test
@@ -691,10 +699,9 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
-    assertEquals(
-        0L,
-        fullJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        fullJob.statsProcessed > 0L,
+        "metadata+stats reconcile should include file-group capture work in the same job flow");
 
     var catId =
         catalogs
@@ -717,7 +724,8 @@ public class ConnectorIT {
         "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
     assertFalse(incrementalJob.fullRescan);
     assertEquals(0L, incrementalJob.snapshotsProcessed, "incremental should find no new snapshots");
-    assertEquals(0L, incrementalJob.statsProcessed, "incremental should process no new stats");
+    assertEquals(
+        0L, incrementalJob.statsProcessed, "incremental should process no new capture work");
     assertEquals(snapshotCountAfterFull, snaps.count(table.getResourceId()));
   }
 
@@ -797,10 +805,9 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one new snapshot");
-    assertEquals(
-        0L,
-        incrementalJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        incrementalJob.statsProcessed > 0L,
+        "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
         2,
         snaps.count(table.getResourceId()),
@@ -887,10 +894,9 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one delete snapshot");
-    assertEquals(
-        0L,
-        incrementalJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        incrementalJob.statsProcessed > 0L,
+        "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
         3,
         snaps.count(table.getResourceId()),
@@ -949,10 +955,9 @@ public class ConnectorIT {
         job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
     assertTrue(
         job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
-    assertEquals(
-        0L,
-        job.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        job.statsProcessed > 0L,
+        "metadata+stats reconcile should include file-group capture work in the same job flow");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
@@ -1492,13 +1497,15 @@ public class ConnectorIT {
       ResourceId rid, boolean fullRescan, CaptureScope scope, boolean returnPlanJob)
       throws Exception {
     assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
+    CaptureScope effectiveScope =
+        scopeWithDefaultCapturePolicy(
+            scope == null ? CaptureScope.newBuilder().setConnectorId(rid).build() : scope);
 
     var trig =
         reconcileControl.startCapture(
             StartCaptureRequest.newBuilder()
-                .setScope(
-                    scope == null ? CaptureScope.newBuilder().setConnectorId(rid).build() : scope)
-                .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                .setScope(effectiveScope)
+                .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                 .setFullRescan(fullRescan)
                 .build());
 
@@ -1568,9 +1575,8 @@ public class ConnectorIT {
       long viewsScanned = descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum();
       long viewsChanged = descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum();
       long errors = descendantJobs.stream().mapToLong(job -> job.errors).sum();
-      long snapshotsProcessed =
-          descendantJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
-      long statsProcessed = descendantJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+      long snapshotsProcessed = aggregateSnapshotsProcessed(descendantJobs);
+      long statsProcessed = aggregateStatsProcessed(descendantJobs);
 
       return new ReconcileJobStore.ReconcileJob(
           planJob.jobId,
@@ -1624,9 +1630,8 @@ public class ConnectorIT {
     long viewsScanned = descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum();
     long viewsChanged = descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum();
     long errors = descendantJobs.stream().mapToLong(job -> job.errors).sum();
-    long snapshotsProcessed =
-        descendantJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
-    long statsProcessed = descendantJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+    long snapshotsProcessed = aggregateSnapshotsProcessed(descendantJobs);
+    long statsProcessed = aggregateStatsProcessed(descendantJobs);
 
     return new ReconcileJobStore.ReconcileJob(
         planJob.jobId,
@@ -1674,10 +1679,12 @@ public class ConnectorIT {
     List<ReconcileJobStore.ReconcileJob> descendants = new ArrayList<>();
     List<ReconcileJobStore.ReconcileJob> frontier = childJobsFor(rootJob);
     while (!frontier.isEmpty()) {
-      List<ReconcileJobStore.ReconcileJob> nonExecutionJobs =
-          frontier.stream().filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP).toList();
-      descendants.addAll(nonExecutionJobs);
-      frontier = nonExecutionJobs.stream().flatMap(job -> childJobsFor(job).stream()).toList();
+      descendants.addAll(frontier);
+      frontier =
+          frontier.stream()
+              .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
+              .flatMap(job -> childJobsFor(job).stream())
+              .toList();
     }
     return descendants;
   }
@@ -1695,6 +1702,45 @@ public class ConnectorIT {
       }
       Thread.sleep(250);
     }
+  }
+
+  private static CaptureScope scopeWithDefaultCapturePolicy(CaptureScope scope) {
+    if (scope == null || scope.hasCapturePolicy()) {
+      return scope;
+    }
+    return scopeWithCaptureOutputs(
+        scope,
+        CaptureOutput.CO_TABLE_STATS,
+        CaptureOutput.CO_FILE_STATS,
+        CaptureOutput.CO_COLUMN_STATS);
+  }
+
+  private static CaptureScope scopeWithCaptureOutputs(
+      CaptureScope scope, CaptureOutput... outputs) {
+    if (scope == null || scope.hasCapturePolicy()) {
+      return scope;
+    }
+    CapturePolicy.Builder policy = CapturePolicy.newBuilder();
+    if (outputs != null) {
+      for (CaptureOutput output : outputs) {
+        if (output != null) {
+          policy.addOutputs(output);
+        }
+      }
+    }
+    return scope.toBuilder().setCapturePolicy(policy.build()).build();
+  }
+
+  private static long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
+    return jobs.stream()
+        .filter(job -> job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT)
+        .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
+        .mapToLong(job -> job.snapshotsProcessed)
+        .sum();
+  }
+
+  private static long aggregateStatsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
+    return jobs.stream().mapToLong(job -> job.statsProcessed).sum();
   }
 
   private static boolean isTerminal(String state) {
@@ -2366,8 +2412,10 @@ public class ConnectorIT {
             () ->
                 reconcileControl.startCapture(
                     StartCaptureRequest.newBuilder()
-                        .setScope(CaptureScope.newBuilder().setConnectorId(rid).build())
-                        .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                        .setScope(
+                            scopeWithDefaultCapturePolicy(
+                                CaptureScope.newBuilder().setConnectorId(rid).build()))
+                        .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                         .build()));
 
     TestSupport.assertGrpcAndMc(

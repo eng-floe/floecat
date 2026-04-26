@@ -42,6 +42,8 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import com.google.protobuf.Duration;
@@ -246,7 +248,7 @@ final class StatsCliSupport {
     printFileColumnStats(all, out);
   }
 
-  // analyze runs a synchronous table-scoped CaptureNow call for metadata and table stats.
+  // analyze runs a synchronous table-scoped CaptureNow call that defaults to stats-only capture.
   private static void analyze(
       List<String> args,
       PrintStream out,
@@ -259,8 +261,10 @@ final class StatsCliSupport {
       out.println(
           "usage: analyze <tableFQ> [--columns c1,c2,...]"
               + " [--snapshot <id>|--current]"
-              + " [--mode metadata-only|metadata-and-stats|stats-only]"
-              + " [--full] [--wait-seconds <n>]");
+              + " [--mode metadata-only|metadata-and-capture|capture-only]"
+              + " [--capture stats|table-stats|file-stats|column-stats|index,...]"
+              + " [--full] [--wait-seconds <n>]"
+              + "  (defaults: --mode capture-only --capture stats)");
       return;
     }
 
@@ -268,8 +272,16 @@ final class StatsCliSupport {
     List<String> columns =
         CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
     String snapshotToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot", ""));
+    String modeToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", ""));
     CaptureMode mode =
-        CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
+        modeToken == null || modeToken.isBlank()
+            ? CaptureMode.CM_CAPTURE_ONLY
+            : CliUtils.parseCaptureMode(modeToken);
+    String captureToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--capture", ""));
+    java.util.Set<CaptureOutput> requestedOutputs =
+        captureToken == null || captureToken.isBlank()
+            ? defaultAnalyzeCaptureOutputs(mode)
+            : CliUtils.parseCaptureOutputs(captureToken);
     boolean full = CliArgs.hasFlag(args, "--full");
     int waitSeconds = CliArgs.parseIntFlag(args, "--wait-seconds", 10);
     if (waitSeconds <= 0) {
@@ -298,13 +310,17 @@ final class StatsCliSupport {
     if (snapshotId != null || !columns.isEmpty()) {
       long effectiveSnapshotId =
           snapshotId != null ? snapshotId : resolveSnapshotId("current", tableId, snapshotsService);
-      scope.addDestinationStatsRequests(
-          ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+      scope.addDestinationCaptureRequests(
+          ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest.newBuilder()
               .setTableId(tableId.getId())
               .setSnapshotId(effectiveSnapshotId)
               .setTargetSpec(TABLE_TARGET_SPEC)
               .addAllColumnSelectors(columns)
               .build());
+    }
+    CapturePolicy capturePolicy = CliUtils.buildCapturePolicy(mode, requestedOutputs, columns);
+    if (capturePolicy != null) {
+      scope.setCapturePolicy(capturePolicy);
     }
 
     var response =
@@ -318,6 +334,14 @@ final class StatsCliSupport {
     out.printf(
         "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
         fq, response.getTablesScanned(), response.getTablesChanged(), response.getErrors());
+  }
+
+  private static java.util.Set<CaptureOutput> defaultAnalyzeCaptureOutputs(CaptureMode mode) {
+    if (mode == CaptureMode.CM_METADATA_ONLY) {
+      return java.util.Set.of();
+    }
+    return java.util.Set.of(
+        CaptureOutput.CO_TABLE_STATS, CaptureOutput.CO_FILE_STATS, CaptureOutput.CO_COLUMN_STATS);
   }
 
   private static long resolveSnapshotId(

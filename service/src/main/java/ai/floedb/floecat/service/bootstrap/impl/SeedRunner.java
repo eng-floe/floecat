@@ -39,6 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -63,6 +64,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
@@ -71,6 +73,14 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SeedRunner {
+  private static final ReconcileCapturePolicy FIXTURE_CAPTURE_POLICY =
+      ReconcileCapturePolicy.of(
+          List.of(),
+          Set.of(
+              ReconcileCapturePolicy.Output.TABLE_STATS,
+              ReconcileCapturePolicy.Output.FILE_STATS,
+              ReconcileCapturePolicy.Output.COLUMN_STATS));
+
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
   private static final String EXAMPLES_CATALOG = "examples";
   private static final List<String> ICEBERG_NAMESPACE = List.of("iceberg");
@@ -678,16 +688,22 @@ public class SeedRunner {
                 .orElse(null);
     var scope =
         table != null
-            ? ReconcileScope.of(List.of(), table.getResourceId().getId())
+            ? ReconcileScope.of(
+                List.of(), table.getResourceId().getId(), List.of(), FIXTURE_CAPTURE_POLICY)
             : namespace == null
-                ? ReconcileScope.empty()
-                : ReconcileScope.of(List.of(namespace.getResourceId().getId()), null);
+                ? ReconcileScope.of(List.of(), null, null, List.of(), FIXTURE_CAPTURE_POLICY)
+                : ReconcileScope.of(
+                    List.of(namespace.getResourceId().getId()),
+                    null,
+                    null,
+                    List.of(),
+                    FIXTURE_CAPTURE_POLICY);
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
         var result =
             reconcileWithSeedAuth(
-                connectorId, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+                connectorId, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
         if (result.ok()) {
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",

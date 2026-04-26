@@ -531,7 +531,7 @@ class ConstraintsIT {
                             .setTotalSizeBytes(withConstraintsStats.getTotalSizeBytes())
                             .build())
                     .build())
-            .setIdempotency(IdempotencyKey.newBuilder().setKey("stats-only-replay").build())
+            .setIdempotency(IdempotencyKey.newBuilder().setKey("capture-only-replay").build())
             .build();
     statisticMutiny
         .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(replayRequest))

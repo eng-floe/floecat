@@ -46,6 +46,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetad
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -553,11 +555,16 @@ public class TransactionCommitService {
       try {
         grpcClient.startCapture(
             StartCaptureRequest.newBuilder()
-                .setMode(CaptureMode.CM_STATS_ONLY)
+                .setMode(CaptureMode.CM_CAPTURE_ONLY)
                 .setScope(
                     CaptureScope.newBuilder()
                         .setConnectorId(request.connectorId())
-                        .setDestinationTableId(request.tableId().getId()))
+                        .setDestinationTableId(request.tableId().getId())
+                        .setCapturePolicy(
+                            CapturePolicy.newBuilder()
+                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                .addOutputs(CaptureOutput.CO_COLUMN_STATS)))
                 .build());
       } catch (RuntimeException e) {
         LOG.warnf(

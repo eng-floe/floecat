@@ -52,6 +52,8 @@ import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
@@ -490,9 +492,11 @@ final class ConnectorCliSupport {
         if (args.size() < 2) {
           out.println(
               "usage: connector trigger <display_name|id> [--full]"
-                  + " [--mode metadata-only|metadata-and-stats|stats-only]"
+                  + " [--mode metadata-only|metadata-and-capture|capture-only]"
+                  + " [--capture stats|table-stats|file-stats|column-stats|index,...]"
                   + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]"
-                  + " [--snapshot <id>|--current] [--columns c1,#id2,...]");
+                  + " [--snapshot <id>|--current] [--columns c1,#id2,...]"
+                  + "  (--capture required for capture modes)");
           return;
         }
         boolean full = args.contains("--full");
@@ -502,14 +506,22 @@ final class ConnectorCliSupport {
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
         String destView = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-view", ""));
         String snapshotToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot", ""));
+        boolean currentSnapshot = CliArgs.hasFlag(args, "--current");
+        java.util.Set<CaptureOutput> requestedOutputs =
+            CliUtils.parseCaptureOutputs(
+                Quotes.unquote(CliArgs.parseStringFlag(args, "--capture", "")));
         List<String> columns =
             CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+        if (currentSnapshot && !snapshotToken.isBlank()) {
+          throw new IllegalArgumentException("--snapshot cannot be combined with --current");
+        }
         if (!destTable.isBlank() && !destView.isBlank()) {
           throw new IllegalArgumentException("--dest-table cannot be combined with --dest-view");
         }
-        if (!destView.isBlank() && (!columns.isEmpty() || !snapshotToken.isBlank())) {
+        if (!destView.isBlank()
+            && (!columns.isEmpty() || !snapshotToken.isBlank() || currentSnapshot)) {
           throw new IllegalArgumentException(
-              "--dest-view cannot be combined with --snapshot or --columns");
+              "--dest-view cannot be combined with --snapshot, --current, or --columns");
         }
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);
@@ -527,12 +539,12 @@ final class ConnectorCliSupport {
                   .getConnector();
           addResolvedDestinationScope(scope, connector, destNs, destTable, destView, directory);
         }
-        if (!columns.isEmpty() || !snapshotToken.isBlank()) {
+        if (!columns.isEmpty() || !snapshotToken.isBlank() || currentSnapshot) {
           if (mode == CaptureMode.CM_METADATA_ONLY) {
             throw new IllegalArgumentException(
                 !columns.isEmpty()
                     ? "--columns requires a stats mode"
-                    : "--snapshot requires a stats mode");
+                    : "--snapshot/--current requires a stats mode");
           }
           addAdHocStatsScope(
               scope,
@@ -544,10 +556,14 @@ final class ConnectorCliSupport {
                   : connector,
               destNs,
               destTable,
-              snapshotToken,
+              currentSnapshot ? "current" : snapshotToken,
               columns,
               snapshots,
               directory);
+        }
+        CapturePolicy capturePolicy = CliUtils.buildCapturePolicy(mode, requestedOutputs, columns);
+        if (capturePolicy != null) {
+          scope.setCapturePolicy(capturePolicy);
         }
         var resp =
             reconcileControl.startCapture(
@@ -1121,8 +1137,8 @@ final class ConnectorCliSupport {
         resolveScopedDestinationTableId(connector, destNs, destTable, columns, directory);
 
     long snapshotId = resolveSnapshotId(snapshotToken, tableId, snapshots);
-    scope.addDestinationStatsRequests(
-        ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest.newBuilder()
+    scope.addDestinationCaptureRequests(
+        ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest.newBuilder()
             .setTableId(tableId.getId())
             .setSnapshotId(snapshotId)
             .setTargetSpec(TABLE_TARGET_SPEC)

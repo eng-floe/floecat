@@ -457,7 +457,7 @@ class ReconcilerServiceViewPassTest extends AbstractReconcilerServiceTestBase {
             connectorId,
             true,
             ReconcileScope.empty(),
-            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY);
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.CAPTURE_ONLY);
 
     assertThat(result.ok()).isTrue();
     assertThat(result.errors).isEqualTo(0);

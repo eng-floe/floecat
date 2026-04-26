@@ -55,7 +55,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -94,7 +94,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
-            eq(CaptureMode.METADATA_AND_STATS),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
             argThat(
                 scope -> scope != null && !scope.hasTableFilter() && !scope.hasNamespaceFilter()),
             eq(ReconcileTableTask.discovery("sales", "orders", "ns-1", "orders")),
@@ -106,7 +106,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
-            eq(CaptureMode.METADATA_AND_STATS),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
             argThat(
                 scope -> scope != null && !scope.hasTableFilter() && !scope.hasNamespaceFilter()),
             eq(ReconcileTableTask.discovery("sales", "customers", "ns-1", "customers")),
@@ -118,7 +118,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
-            eq(CaptureMode.METADATA_AND_STATS),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
             eq(ReconcileScope.empty()),
             eq(ReconcileViewTask.discovery("sales", "orders_view", "ns-1", "orders_view")),
             eq(ReconcileExecutionPolicy.defaults()),
@@ -140,7 +140,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -176,7 +176,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
-            eq(CaptureMode.METADATA_AND_STATS),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
             eq(ReconcileScope.empty()),
             eq(task),
             eq(ReconcileExecutionPolicy.defaults()),
@@ -200,7 +200,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -234,7 +234,7 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("acct"),
             eq("connector-1"),
             anyBoolean(),
-            eq(CaptureMode.METADATA_AND_STATS),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
             eq(ReconcileScope.empty()),
             eq(task),
             eq(ReconcileExecutionPolicy.defaults()),
@@ -258,7 +258,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -305,7 +305,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -357,7 +357,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -407,7 +407,7 @@ class ConnectorPlanningReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.STATS_ONLY,
+            CaptureMode.CAPTURE_ONLY,
             ReconcileScope.of(java.util.List.of(), "trino_test"),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -442,5 +442,238 @@ class ConnectorPlanningReconcileExecutorTest {
         .planViewTasks(any(), any(), any(), any());
     verify(jobs, org.mockito.Mockito.never())
         .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeCaptureOnlyFailsWhenScopedCaptureRequestsMatchNoPlannedTables() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var scope =
+        ReconcileScope.of(
+            List.of(),
+            null,
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest(
+                    "missing-table-id", 42L, "table", List.of("c1"))));
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    when(reconcilerService.planTableTasks(
+            any(),
+            any(),
+            eq(
+                ReconcileScope.of(
+                    List.of(),
+                    "missing-table-id",
+                    List.of(
+                        new ReconcileScope.ScopedCaptureRequest(
+                            "missing-table-id", 42L, "table", List.of("c1"))),
+                    scope.capturePolicy())),
+            any()))
+        .thenReturn(List.of());
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.message)
+        .contains("No tables matched scoped capture requests: missing-table-id");
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueTablePlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeCaptureOnlyScopedRequestsPlanStrictTableTasksByTableId() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)).thenReturn(true);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var scopedRequest =
+        new ReconcileScope.ScopedCaptureRequest("table-1", 42L, "table", List.of("c1"));
+    var scope =
+        ReconcileScope.of(
+            List.of(),
+            null,
+            List.of(scopedRequest),
+            ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
+    var strictScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(scopedRequest), scope.capturePolicy());
+    var plannedTask = ReconcileTableTask.of("sales", "orders", "table-1", "orders");
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    when(reconcilerService.planTableTasks(any(), any(), eq(strictScope), any()))
+        .thenReturn(List.of(plannedTask));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    verify(reconcilerService, org.mockito.Mockito.never())
+        .planTableTasks(any(), any(), eq(scope), any());
+    verify(jobs)
+        .enqueueTablePlan(
+            eq("acct"),
+            eq("connector-1"),
+            anyBoolean(),
+            eq(CaptureMode.CAPTURE_ONLY),
+            eq(strictScope),
+            eq(plannedTask),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            any());
+  }
+
+  @Test
+  void executeCaptureOnlyRejectsViewScopeBeforePlanning() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var scope = ReconcileScope.ofView(List.of(), "view-1");
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.message).contains("capture-only reconcile is not valid for view reconcile");
+    verify(reconcilerService, org.mockito.Mockito.never())
+        .planViewTasks(any(), any(), any(), any());
+    verify(jobs, org.mockito.Mockito.never())
+        .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeCaptureOnlyRejectsScopedRequestsWithNamespaceScopeBeforePlanning() {
+    var reconcilerService = mock(ReconcilerService.class);
+    var jobs = mock(ReconcileJobStore.class);
+    var executorRegistry = mock(ReconcileExecutorRegistry.class);
+    var executor =
+        new ConnectorPlanningReconcileExecutor(reconcilerService, jobs, executorRegistry, true);
+    var scope =
+        ReconcileScope.of(
+            List.of("ns-1"),
+            null,
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest("table-1", 42L, "table", List.of("c1"))));
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.message)
+        .contains("capture-only scoped capture requests cannot be combined with namespace scope");
+    verify(reconcilerService, org.mockito.Mockito.never())
+        .planTableTasks(any(), any(), any(), any());
   }
 }

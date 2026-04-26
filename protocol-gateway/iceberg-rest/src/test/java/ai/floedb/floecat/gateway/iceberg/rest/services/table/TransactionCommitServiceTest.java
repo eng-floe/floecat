@@ -874,7 +874,7 @@ class TransactionCommitServiceTest {
         org.mockito.ArgumentCaptor.forClass(StartCaptureRequest.class);
     verify(grpcClient).startCapture(requestCaptor.capture());
     StartCaptureRequest request = requestCaptor.getValue();
-    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertEquals(CaptureMode.CM_CAPTURE_ONLY, request.getMode());
     assertEquals("conn-1", request.getScope().getConnectorId().getId());
     assertEquals("tbl-id", request.getScope().getDestinationTableId());
     assertEquals(0, request.getScope().getDestinationNamespaceIdsCount());

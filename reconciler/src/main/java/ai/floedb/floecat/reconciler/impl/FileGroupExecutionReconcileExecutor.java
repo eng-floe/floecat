@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -29,12 +30,14 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -152,20 +155,55 @@ public class FileGroupExecutionReconcileExecutor implements ReconcileExecutor {
             .setId(plannedTask.tableId())
             .build();
     try {
-      var stats =
-          backend.capturePlannedFileGroupStats(
-              reconcileContext, tableId, plannedTask.snapshotId(), plannedTask.filePaths());
-      var pageIndexEntries =
-          backend.capturePlannedFileGroupPageIndexEntries(
-              reconcileContext, tableId, plannedTask.snapshotId(), plannedTask.filePaths());
-      var artifacts =
-          backend.materializePlannedFileGroupIndexArtifacts(
+      ReconcileCapturePolicy capturePolicy = effectiveCapturePolicy(lease);
+      if (!capturePolicy.requestsStats() && !capturePolicy.requestsIndexes()) {
+        jobs.persistFileGroupResult(
+            lease.jobId,
+            plannedTask.withFileResults(fileResultsForSuccess(plannedTask, List.of(), List.of())));
+        return ExecutionResult.success(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "Skipped file group " + plannedTask.groupId() + " (no capture outputs requested)");
+      }
+      Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind> statsTargetKinds =
+          requestedStatsTargetKinds(capturePolicy);
+      Set<String> statsColumns = capturePolicy.selectorsForStats();
+      Set<String> indexColumns = capturePolicy.selectorsForIndex();
+      var capture =
+          backend.capturePlannedFileGroup(
               reconcileContext,
-              tableId,
-              plannedTask.snapshotId(),
-              plannedTask.filePaths(),
-              stats,
-              pageIndexEntries);
+              PlannedFileGroupCaptureRequest.of(
+                  plannedTask.planId(),
+                  plannedTask.groupId(),
+                  tableId,
+                  plannedTask.snapshotId(),
+                  plannedTask.filePaths(),
+                  statsColumns,
+                  indexColumns,
+                  statsTargetKinds,
+                  capturePolicy.requestsIndexes()));
+      var stats = capture.statsRecords();
+      var artifacts = capture.stagedIndexArtifacts();
+      if (capturePolicy.requestsIndexes() && artifacts.isEmpty()) {
+        throw new IllegalStateException(
+            "page-index capture produced no staged artifacts for file group "
+                + plannedTask.groupId());
+      }
+      if (capturePolicy.requestsIndexes()) {
+        List<String> missingArtifactFiles = missingIndexArtifactFiles(plannedTask, artifacts);
+        if (!missingArtifactFiles.isEmpty()) {
+          throw new IllegalStateException(
+              "page-index capture did not produce artifacts for planned files in file group "
+                  + plannedTask.groupId()
+                  + ": "
+                  + String.join(", ", missingArtifactFiles));
+        }
+      }
       if (!stats.isEmpty()) {
         backend.putTargetStats(reconcileContext, stats);
       }
@@ -200,6 +238,32 @@ public class FileGroupExecutionReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.failure(
           0, 0, 0, 0, 1, 0, 0, "File-group capture failed: " + e.getMessage(), e);
     }
+  }
+
+  private static ReconcileCapturePolicy effectiveCapturePolicy(ReconcileJobStore.LeasedJob lease) {
+    if (lease != null && lease.scope != null && lease.scope.hasCapturePolicy()) {
+      return lease.scope.capturePolicy();
+    }
+    if (lease != null && lease.captureMode == ReconcilerService.CaptureMode.METADATA_ONLY) {
+      return ReconcileCapturePolicy.empty();
+    }
+    throw new IllegalArgumentException("capture policy is required for capture reconcile modes");
+  }
+
+  private static Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind>
+      requestedStatsTargetKinds(ReconcileCapturePolicy capturePolicy) {
+    EnumSet<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind> kinds =
+        EnumSet.noneOf(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.class);
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.TABLE_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE);
+    }
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+    }
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.COLUMN);
+    }
+    return kinds;
   }
 
   private static List<ReconcileFileResult> fileResultsForSuccess(
@@ -257,6 +321,27 @@ public class FileGroupExecutionReconcileExecutor implements ReconcileExecutor {
     return plannedTask.filePaths().stream()
         .map(filePath -> ReconcileFileResult.failed(filePath, message))
         .toList();
+  }
+
+  private static List<String> missingIndexArtifactFiles(
+      ReconcileFileGroupTask plannedTask, List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
+    LinkedHashSet<String> plannedFiles = new LinkedHashSet<>(plannedTask.filePaths());
+    LinkedHashSet<String> artifactFiles = new LinkedHashSet<>();
+    for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
+      if (artifact == null || artifact.record() == null) {
+        continue;
+      }
+      var record = artifact.record();
+      if (!record.hasTarget() || !record.getTarget().hasFile()) {
+        continue;
+      }
+      String filePath = record.getTarget().getFile().getFilePath();
+      if (filePath != null && !filePath.isBlank()) {
+        artifactFiles.add(filePath);
+      }
+    }
+    plannedFiles.removeAll(artifactFiles);
+    return List.copyOf(plannedFiles);
   }
 
   private Optional<ReconcileFileGroupTask> resolvePlannedTask(

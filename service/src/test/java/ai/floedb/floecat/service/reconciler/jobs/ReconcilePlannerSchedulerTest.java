@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -34,9 +35,11 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.ArrayList;
@@ -296,6 +299,40 @@ class ReconcilePlannerSchedulerTest {
       restoreProperty("floecat.reconciler.auto.execution-class", priorClass);
       restoreProperty("floecat.reconciler.auto.execution-lane", priorLane);
     }
+  }
+
+  @Test
+  void runPlannerPassEnqueuesDefaultCapturePolicy() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+
+    List<ReconcileScope> enqueuedScopes = new ArrayList<>();
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenAnswer(
+            invocation -> {
+              enqueuedScopes.add(invocation.getArgument(4, ReconcileScope.class));
+              return "job-1";
+            });
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    assertEquals(1, enqueuedScopes.size());
+    assertTrue(enqueuedScopes.getFirst().hasCapturePolicy());
+    assertEquals(
+        java.util.Set.of(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.FILE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS),
+        enqueuedScopes.getFirst().capturePolicy().outputs());
   }
 
   @Test

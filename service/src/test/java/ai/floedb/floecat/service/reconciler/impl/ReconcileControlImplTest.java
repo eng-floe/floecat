@@ -42,6 +42,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
@@ -92,6 +94,10 @@ class ReconcileControlImplTest {
         .thenReturn(true);
     when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
         .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT))
+        .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP))
+        .thenReturn(true);
   }
 
   @Test
@@ -107,10 +113,7 @@ class ReconcileControlImplTest {
 
     var response =
         service
-            .captureNow(
-                CaptureNowRequest.newBuilder()
-                    .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                    .build())
+            .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
             .await()
             .indefinitely();
 
@@ -134,11 +137,7 @@ class ReconcileControlImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .captureNow(
-                        CaptureNowRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                            .build())
+                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
                     .await()
                     .indefinitely());
 
@@ -162,8 +161,7 @@ class ReconcileControlImplTest {
                 service
                     .captureNow(
                         CaptureNowRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .setScope(captureScope())
                             .setMaxWait(
                                 Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                             .build())
@@ -186,11 +184,7 @@ class ReconcileControlImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .captureNow(
-                        CaptureNowRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                            .build())
+                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
                     .await()
                     .indefinitely());
 
@@ -211,8 +205,7 @@ class ReconcileControlImplTest {
                 service
                     .startCapture(
                         ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .setScope(captureScope())
                             .build())
                     .await()
                     .indefinitely());
@@ -234,8 +227,175 @@ class ReconcileControlImplTest {
             StatusRuntimeException.class,
             () ->
                 service
+                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowFailsFastWhenNoSnapshotPlanningExecutorIsAvailable() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT))
+        .thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureFailsFastWhenNoFileGroupExecutorIsAvailable() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP))
+        .thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsCaptureOnlyViewScopeEarly() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
+                            .setScope(
+                                captureScope().toBuilder().setDestinationViewId("view-1").build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowCaptureOnlyRequiresTablePlannerExecutor() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
+        .thenReturn(false);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
+        .thenReturn(true);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
                     .captureNow(
                         CaptureNowRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureViewScopeRequiresViewPlannerExecutor() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
+        .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
+        .thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                            .setScope(
+                                CaptureScope.newBuilder()
+                                    .setConnectorId(connectorId())
+                                    .setDestinationViewId("view-1")
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureTableScopeRequiresTablePlannerExecutor() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
+        .thenReturn(false);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
+        .thenReturn(true);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                            .setScope(
+                                CaptureScope.newBuilder()
+                                    .setConnectorId(connectorId())
+                                    .setDestinationTableId("table-1")
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureBroadMetadataRequiresTableAndViewPlannerExecutors() {
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
+        .thenReturn(true);
+    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
+        .thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
                             .setScope(
                                 CaptureScope.newBuilder().setConnectorId(connectorId()).build())
                             .build())
@@ -243,6 +403,66 @@ class ReconcileControlImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsCaptureOnlyScopedRequestsWithNamespaceScope() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
+                            .setScope(
+                                captureScope().toBuilder()
+                                    .addDestinationNamespaceIds("ns-1")
+                                    .addDestinationCaptureRequests(
+                                        ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest
+                                            .newBuilder()
+                                            .setTableId("table-1")
+                                            .setSnapshotId(1L)
+                                            .setTargetSpec("table")
+                                            .build())
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsMismatchedTableScopedCaptureRequests() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
+                            .setScope(
+                                captureScope().toBuilder()
+                                    .setDestinationTableId("table-a")
+                                    .addDestinationCaptureRequests(
+                                        ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest
+                                            .newBuilder()
+                                            .setTableId("table-b")
+                                            .setSnapshotId(1L)
+                                            .setTargetSpec("table")
+                                            .build())
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
     verify(service.jobs, never())
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
@@ -263,7 +483,7 @@ class ReconcileControlImplTest {
             service
                 .captureNow(
                     CaptureNowRequest.newBuilder()
-                        .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                        .setScope(captureScope())
                         .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                         .build())
                 .await()
@@ -303,7 +523,7 @@ class ReconcileControlImplTest {
             service
                 .captureNow(
                     CaptureNowRequest.newBuilder()
-                        .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                        .setScope(captureScope())
                         .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                         .build())
                 .await()
@@ -359,6 +579,71 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void getReconcileJobKeepsConnectorPlanRunningWhileNestedSnapshotChildrenRun() {
+    when(service.jobs.get("acct", "plan-1"))
+        .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 0, 0, 0, "")));
+    when(service.jobs.childJobs("acct", "plan-1"))
+        .thenReturn(
+            java.util.List.of(childJob("table-plan-1", "JS_SUCCEEDED", 1, 1, 0, "", "plan-1")));
+    when(service.jobs.childJobs("acct", "table-plan-1"))
+        .thenReturn(
+            java.util.List.of(
+                snapshotChildJob("snapshot-1", "JS_RUNNING", 0, 0, 0, "", "table-plan-1")));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING, response.getState());
+    assertEquals(0L, response.getFinishedAt().getSeconds());
+  }
+
+  @Test
+  void captureNowRejectsCaptureModeWithoutCapturePolicy() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowRejectsCaptureModeWithEmptyCapturePolicy() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder()
+                                    .setConnectorId(connectorId())
+                                    .setCapturePolicy(CapturePolicy.newBuilder().build())
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
   void getReconcileJobDoesNotDoubleCountPlannerProgress() {
     when(service.jobs.get("acct", "plan-1"))
         .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 7, 4, 0, "")));
@@ -393,7 +678,7 @@ class ReconcileControlImplTest {
             0L,
             0L,
             false,
-            null,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
             0L,
             0L,
             null,
@@ -457,7 +742,7 @@ class ReconcileControlImplTest {
             0L,
             0L,
             false,
-            null,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
             0L,
             0L,
             null,
@@ -498,7 +783,8 @@ class ReconcileControlImplTest {
                     0L,
                     0L,
                     false,
-                    null,
+                    ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode
+                        .METADATA_AND_CAPTURE,
                     0L,
                     0L,
                     null,
@@ -551,7 +837,7 @@ class ReconcileControlImplTest {
             0L,
             0L,
             false,
-            null,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
             0L,
             0L,
             null,
@@ -624,6 +910,18 @@ class ReconcileControlImplTest {
     return ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
   }
 
+  private static CaptureScope captureScope() {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .addOutputs(CaptureOutput.CO_FILE_STATS)
+                .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+                .build())
+        .build();
+  }
+
   private static ReconcileJobStore.ReconcileJob job(
       String jobId, String state, long scanned, long changed, long errors, String message) {
     return new ReconcileJobStore.ReconcileJob(
@@ -640,7 +938,7 @@ class ReconcileControlImplTest {
         0L,
         errors,
         false,
-        null,
+        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
         null,
@@ -674,7 +972,7 @@ class ReconcileControlImplTest {
         0L,
         errors,
         false,
-        null,
+        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
         null,
@@ -683,6 +981,42 @@ class ReconcileControlImplTest {
         ReconcileJobKind.PLAN_TABLE,
         null,
         null,
+        parentJobId);
+  }
+
+  private static ReconcileJobStore.ReconcileJob snapshotChildJob(
+      String jobId,
+      String state,
+      long scanned,
+      long changed,
+      long errors,
+      String message,
+      String parentJobId) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        state,
+        message,
+        0L,
+        0L,
+        scanned,
+        changed,
+        0L,
+        0L,
+        errors,
+        false,
+        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        null,
+        null,
+        "executor-1",
+        ReconcileJobKind.PLAN_SNAPSHOT,
+        null,
+        null,
+        ReconcileSnapshotTask.of("table-1", 100L, "ns", "tbl", java.util.List.of()),
+        ReconcileFileGroupTask.empty(),
         parentJobId);
   }
 
@@ -702,7 +1036,7 @@ class ReconcileControlImplTest {
         0L,
         0L,
         false,
-        null,
+        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
         null,

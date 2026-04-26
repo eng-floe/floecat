@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -43,6 +44,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -138,7 +140,12 @@ class IndexArtifactsIT {
                     PutIndexArtifactsRequest.newBuilder()
                         .setTableId(tableId)
                         .setSnapshotId(oldSnapshotId)
-                        .addRecords(oldRecord)
+                        .addItems(
+                            PutIndexArtifactItem.newBuilder()
+                                .setRecord(oldRecord)
+                                .setContent(ByteString.copyFromUtf8("old-index"))
+                                .setContentType("application/x-parquet")
+                                .build())
                         .setIdempotency(
                             IdempotencyKey.newBuilder().setKey("old-snapshot-write").build())
                         .build()))
@@ -152,8 +159,18 @@ class IndexArtifactsIT {
                     PutIndexArtifactsRequest.newBuilder()
                         .setTableId(tableId)
                         .setSnapshotId(currentSnapshotId)
-                        .addRecords(currentRecordA)
-                        .addRecords(currentRecordB)
+                        .addItems(
+                            PutIndexArtifactItem.newBuilder()
+                                .setRecord(currentRecordA)
+                                .setContent(ByteString.copyFromUtf8("current-index-a"))
+                                .setContentType("application/x-parquet")
+                                .build())
+                        .addItems(
+                            PutIndexArtifactItem.newBuilder()
+                                .setRecord(currentRecordB)
+                                .setContent(ByteString.copyFromUtf8("current-index-b"))
+                                .setContentType("application/x-parquet")
+                                .build())
                         .setIdempotency(
                             IdempotencyKey.newBuilder().setKey("current-snapshot-write").build())
                         .build()))

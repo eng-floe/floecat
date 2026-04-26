@@ -82,9 +82,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String first =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String second =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
   }
@@ -99,7 +99,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of()),
             "");
@@ -108,7 +108,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -126,14 +126,14 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String childJobId =
         store.enqueue(
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders"),
@@ -144,7 +144,7 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         CONNECTOR_ID,
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         ReconcileJobKind.PLAN_TABLE,
         ReconcileTableTask.of("src.ns", "customers", "customers-table-id", "customers"),
@@ -168,7 +168,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -196,7 +196,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
             ReconcileExecutionPolicy.defaults(),
@@ -234,7 +234,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.EXEC_FILE_GROUP,
             ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
@@ -281,7 +281,7 @@ class DurableReconcileJobStoreTest {
                     ACCOUNT_ID,
                     CONNECTOR_ID,
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(List.of("analytics-namespace-id"), null),
                     ReconcileJobKind.PLAN_VIEW,
                     ReconcileTableTask.empty(),
@@ -305,7 +305,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
@@ -317,7 +317,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
@@ -337,7 +337,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -351,7 +351,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -373,7 +373,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -386,7 +386,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -406,7 +406,7 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         "conn-default",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "");
@@ -415,7 +415,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             "conn-remote",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -441,7 +441,7 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         "conn-a",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
         "remote-a");
@@ -450,7 +450,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             "conn-b",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -475,8 +475,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String metadataJob =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
-    String statsJob = store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.STATS_ONLY, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String statsJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(metadataJob, firstLease.jobId);
@@ -495,9 +496,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String firstJob =
-        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String secondJob =
-        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -517,9 +518,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope secondScope = ReconcileScope.of(List.of("a", "b"), null);
 
     String firstJob =
-        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
     String secondJob =
-        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.CAPTURE_ONLY, secondScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -537,32 +538,32 @@ class DurableReconcileJobStoreTest {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
     String first =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var leased = store.leaseNext().orElseThrow();
     store.markSucceeded(first, leased.leaseEpoch, System.currentTimeMillis(), 10, 2, 4, 20);
 
     String second =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     assertNotEquals(first, second);
   }
 
   @Test
-  void enqueuePreservesScopedStatsRequests() {
+  void enqueuePreservesScopedCaptureRequests() {
     store.init();
     ReconcileScope scope =
         ReconcileScope.of(
             List.of(),
             "tbl",
-            List.of(scopedStatsRequest("tbl", 42L, "table", List.of("c1", "#3"))));
+            List.of(scopedCaptureRequest("tbl", 42L, "table", List.of("c1", "#3"))));
 
     String jobId =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     ReconcileJob job = store.get(jobId).orElseThrow();
     assertEquals(
-        List.of(scopedStatsRequest("tbl", 42L, "table", List.of("#3", "c1"))),
-        job.scope.destinationStatsRequests());
+        List.of(scopedCaptureRequest("tbl", 42L, "table", List.of("#3", "c1"))),
+        job.scope.destinationCaptureRequests());
   }
 
   @Test
@@ -574,7 +575,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of("tier", "gold")),
@@ -607,7 +608,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
 
@@ -634,7 +635,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
@@ -663,7 +664,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
     assertTrue(store.get(ACCOUNT_ID, jobId).isPresent());
@@ -679,14 +680,14 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "t1"));
     String second =
         store.enqueue(
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "t2"));
 
     var firstPage = store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of());
@@ -714,7 +715,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext();
     assertTrue(firstLease.isPresent());
@@ -738,7 +739,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -776,7 +777,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -809,7 +810,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -836,7 +837,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -861,7 +862,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -895,9 +896,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope runningScope = ReconcileScope.of(List.of(), "tbl-r");
     ReconcileScope cancellingScope = ReconcileScope.of(List.of(), "tbl-c");
 
-    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, queuedScope);
-    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, runningScope);
-    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, cancellingScope);
+    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_CAPTURE, queuedScope);
+    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_CAPTURE, runningScope);
+    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_CAPTURE, cancellingScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -935,7 +936,7 @@ class DurableReconcileJobStoreTest {
     store.init();
 
     store.enqueue(
-        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
     // Take the first lease so the job is removed from the ready queue.
     // leaseNext() short-circuits via leaseReadyDue() here — reclaim is NOT triggered yet.
     store.leaseNext().orElseThrow();
@@ -993,8 +994,9 @@ class DurableReconcileJobStoreTest {
     }
   }
 
-  private static ReconcileScope.ScopedStatsRequest scopedStatsRequest(
+  private static ReconcileScope.ScopedCaptureRequest scopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
-    return new ReconcileScope.ScopedStatsRequest(tableId, snapshotId, targetSpec, columnSelectors);
+    return new ReconcileScope.ScopedCaptureRequest(
+        tableId, snapshotId, targetSpec, columnSelectors);
   }
 }

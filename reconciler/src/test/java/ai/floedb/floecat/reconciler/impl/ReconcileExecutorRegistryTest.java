@@ -194,7 +194,7 @@ class ReconcileExecutorRegistryTest {
         "acct",
         "connector",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         executionPolicy,
         "lease-1",

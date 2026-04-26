@@ -88,6 +88,10 @@ connector validate <kind> <uri>
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
+    [--mode metadata-only|metadata-and-capture|capture-only]
+    [--capture stats|table-stats|file-stats|column-stats|index,...]
+    [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
+    [--snapshot <id>|--current] [--columns c1,#id2,...]
 connector job <jobId>
 
 Credential types (`--cred-type`):
@@ -117,6 +121,11 @@ Auth properties (generic options):
 - `--auth aws.profile_path=<path>` – optional shared credentials/config file path.
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
 - `--auth cache_path=<path>` – optional CLI cache path.
+
+Trigger notes:
+- `connector trigger` defaults to `metadata-and-capture`.
+- `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 
 CLI cache examples:
 - Databricks:

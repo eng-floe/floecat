@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsResponse;
+import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -43,6 +44,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
@@ -59,11 +61,13 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject IndexArtifactRepository indexArtifacts;
+  @Inject BlobStore blobStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
 
   private static final Logger LOG = Logger.getLogger(TableIndexService.class);
+  private static final String DEFAULT_INDEX_CONTENT_TYPE = "application/x-parquet";
 
   @Override
   public Uni<GetIndexArtifactResponse> getIndexArtifact(GetIndexArtifactRequest request) {
@@ -242,12 +246,11 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
 
     String accountId = principal.get().getAccountId();
     var nowTs = nowTs();
-
-    for (IndexArtifactRecord raw : req.getRecordsList()) {
-      var record = validateRecord(raw, next.tableId(), next.snapshotId());
+    for (PutIndexArtifactItem raw : req.getItemsList()) {
+      var item = validateItem(raw, next.tableId(), next.snapshotId());
 
       if (next.idempotencyKey() == null) {
-        indexArtifacts.putIndexArtifact(record);
+        persistItem(item);
         upserted.incrementAndGet();
         continue;
       }
@@ -256,25 +259,25 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
           itemIdempotencyKey(
               next.idempotencyKey(),
               "index_artifact",
-              hashString(targetStorageId(record.getTarget())));
+              hashString(targetStorageId(item.getRecord().getTarget())));
 
       MutationOps.createProto(
           accountId,
           "PutIndexArtifacts",
           itemKey,
-          record::toByteArray,
+          item::toByteArray,
           () -> {
-            indexArtifacts.putIndexArtifact(record);
-            return new IdempotencyGuard.CreateResult<>(record, next.tableId());
+            persistItem(item);
+            return new IdempotencyGuard.CreateResult<>(item, next.tableId());
           },
-          rec ->
+          staged ->
               indexArtifacts.metaForIndexArtifact(
-                  next.tableId(), next.snapshotId(), rec.getTarget(), nowTs),
+                  next.tableId(), next.snapshotId(), staged.getRecord().getTarget(), nowTs),
           idempotencyStore,
           nowTs,
           idempotencyTtlSeconds(),
           this::correlationId,
-          IndexArtifactRecord::parseFrom);
+          PutIndexArtifactItem::parseFrom);
 
       upserted.incrementAndGet();
     }
@@ -299,6 +302,38 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
     }
     requireTarget(record.getTarget());
     return record;
+  }
+
+  private PutIndexArtifactItem validateItem(
+      PutIndexArtifactItem item, ResourceId tableId, long snapshotId) {
+    if (item == null) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("reason", "item missing"));
+    }
+    IndexArtifactRecord record = validateRecord(item.getRecord(), tableId, snapshotId);
+    if (item.getContent().isEmpty()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId(), null, Map.of("reason", "item.content is required"));
+    }
+    if (item.getContentType() == null || item.getContentType().isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId(), null, Map.of("reason", "item.content_type is required"));
+    }
+    return item.toBuilder().setRecord(record).build();
+  }
+
+  private void persistItem(PutIndexArtifactItem item) {
+    IndexArtifactRecord record = item.getRecord();
+    String contentType =
+        item.getContentType() == null || item.getContentType().isBlank()
+            ? DEFAULT_INDEX_CONTENT_TYPE
+            : item.getContentType();
+    blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
+    String etag =
+        blobStore
+            .head(record.getArtifactUri())
+            .map(h -> h.getEtag())
+            .orElse(record.getContentEtag());
+    indexArtifacts.putIndexArtifact(record.toBuilder().setContentEtag(etag).build());
   }
 
   private IndexTarget requireTarget(IndexTarget target) {

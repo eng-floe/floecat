@@ -41,8 +41,8 @@ class InMemoryReconcileJobStoreTest {
     var store = new InMemoryReconcileJobStore();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
-    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_STATS, scope);
-    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_STATS, scope);
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
   }
@@ -57,7 +57,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of()),
             "");
@@ -66,7 +66,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -87,7 +87,7 @@ class InMemoryReconcileJobStoreTest {
                     "acct",
                     "conn",
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(List.of("analytics-namespace-id"), null),
                     ReconcileJobKind.PLAN_VIEW,
                     ReconcileTableTask.empty(),
@@ -111,7 +111,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
@@ -123,7 +123,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
@@ -142,7 +142,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
             ReconcileExecutionPolicy.defaults(),
@@ -179,7 +179,7 @@ class InMemoryReconcileJobStoreTest {
             "acct",
             "conn",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.EXEC_FILE_GROUP,
             ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
@@ -219,9 +219,10 @@ class InMemoryReconcileJobStoreTest {
     var store = new InMemoryReconcileJobStore();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
-    String firstJob = store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+    String firstJob =
+        store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String secondJob =
-        store.enqueue("acct", "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue("acct", "conn-b", false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -241,8 +242,9 @@ class InMemoryReconcileJobStoreTest {
     ReconcileScope secondScope = ReconcileScope.of(List.of("a", "b"), null);
 
     String firstJob =
-        store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
-    String secondJob = store.enqueue("acct", "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+        store.enqueue("acct", "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String secondJob =
+        store.enqueue("acct", "conn-b", false, CaptureMode.CAPTURE_ONLY, secondScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -271,7 +273,7 @@ class InMemoryReconcileJobStoreTest {
       var store = new InMemoryReconcileJobStore();
       String jobId =
           store.enqueue(
-              "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+              "acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
       var firstLease = store.leaseNext().orElseThrow();
 
       store.markFailed(
@@ -304,7 +306,7 @@ class InMemoryReconcileJobStoreTest {
               "acct",
               "conn",
               false,
-              CaptureMode.METADATA_AND_STATS,
+              CaptureMode.METADATA_AND_CAPTURE,
               ReconcileScope.empty(),
               ReconcileJobKind.PLAN_VIEW,
               ReconcileTableTask.empty(),
@@ -332,7 +334,7 @@ class InMemoryReconcileJobStoreTest {
     var store = new InMemoryReconcileJobStore();
     String jobId =
         store.enqueue(
-            "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+            "acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
 
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
@@ -361,7 +363,7 @@ class InMemoryReconcileJobStoreTest {
       var store = new InMemoryReconcileJobStore();
       String jobId =
           store.enqueue(
-              "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+              "acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
       var lease = store.leaseNext().orElseThrow();
       store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
@@ -390,7 +392,7 @@ class InMemoryReconcileJobStoreTest {
       var store = new InMemoryReconcileJobStore();
       String jobId =
           store.enqueue(
-              "acct", "conn", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+              "acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
       var lease = store.leaseNext().orElseThrow();
       store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
       store.cancel("acct", jobId, "stop");

@@ -48,11 +48,16 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.impl.FileGroupIndexArtifactStager;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
@@ -63,7 +68,6 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -152,6 +156,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   @Inject ConnectorRepository connectorRepo;
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
+  @Inject CaptureEngineRegistry captureEngineRegistry;
 
   @Override
   public ResourceId ensureNamespace(
@@ -485,10 +490,14 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
         : null;
   }
 
-  private static ResourceId sourceConnectorId(String connectorId) {
+  private static ResourceId sourceConnectorId(String accountId, String connectorId) {
     return connectorId == null || connectorId.isBlank()
         ? null
-        : ResourceId.newBuilder().setKind(ResourceKind.RK_CONNECTOR).setId(connectorId).build();
+        : ResourceId.newBuilder()
+            .setAccountId(accountId == null ? "" : accountId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId(connectorId)
+            .build();
   }
 
   @Override
@@ -623,6 +632,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
                     view.getPropertiesOrDefault(SOURCE_NAMESPACE_PROPERTY, ""),
                     view.getPropertiesOrDefault(SOURCE_NAME_PROPERTY, ""),
                     sourceConnectorId(
+                        view.getResourceId().getAccountId(),
                         view.getPropertiesOrDefault(SOURCE_CONNECTOR_ID_PROPERTY, ""))));
   }
 
@@ -707,148 +717,89 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public List<TargetStatsRecord> capturePlannedFileGroupStats(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    if (plannedFilePaths == null || plannedFilePaths.isEmpty() || snapshotId < 0) {
-      return List.of();
+  public CaptureEngineResult capturePlannedFileGroup(
+      ReconcileContext ctx, PlannedFileGroupCaptureRequest request) {
+    if (request == null
+        || request.tableId() == null
+        || request.plannedFilePaths() == null
+        || request.plannedFilePaths().isEmpty()
+        || request.snapshotId() < 0) {
+      return CaptureEngineResult.empty();
     }
-    Table table = tableRepo.getById(tableId).orElse(null);
+    Table table = tableRepo.getById(request.tableId()).orElse(null);
     if (table == null || !table.hasUpstream()) {
-      return List.of();
+      return CaptureEngineResult.empty();
     }
     ResourceId connectorId = sourceConnectorId(table);
     if (connectorId == null || connectorId.getId().isBlank()) {
-      return List.of();
+      return CaptureEngineResult.empty();
     }
     String sourceNamespace = sourceNamespace(table);
     String sourceTable = sourceName(table);
     if (sourceNamespace.isBlank() || sourceTable.isBlank()) {
-      return List.of();
+      return CaptureEngineResult.empty();
     }
-
+    if (captureEngineRegistry == null) {
+      return CaptureEngineResult.empty();
+    }
     Connector connector = lookupConnector(ctx, connectorId);
-    try (var source = ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector))) {
-      return source.capturePlannedFileGroupStats(
-          sourceNamespace,
-          sourceTable,
-          tableId,
-          snapshotId,
-          Set.copyOf(plannedFilePaths),
-          Set.of(),
-          Set.of(FloecatConnector.StatsTargetKind.FILE));
+    CaptureEngineResult capture =
+        captureEngineRegistry.capture(
+            new CaptureEngineRequest(
+                connector,
+                sourceNamespace,
+                sourceTable,
+                request.tableId(),
+                request.snapshotId(),
+                request.planId(),
+                request.groupId(),
+                request.plannedFilePaths(),
+                request.statsColumns(),
+                request.indexColumns(),
+                request.requestedStatsTargetKinds(),
+                request.capturePageIndex()));
+    if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
+      return capture;
     }
+    return CaptureEngineResult.of(
+        capture.statsRecords(),
+        List.of(),
+        FileGroupIndexArtifactStager.stage(
+            request.tableId(),
+            request.snapshotId(),
+            request.plannedFilePaths(),
+            capture.statsRecords(),
+            capture.pageIndexEntries()));
   }
 
-  @Override
-  public List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    if (plannedFilePaths == null || plannedFilePaths.isEmpty() || snapshotId < 0) {
-      return List.of();
+  private static FileTargetStats synthesizeIndexOnlyFileStats(
+      String filePath, List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
+    FileTargetStats.Builder builder =
+        FileTargetStats.newBuilder().setFilePath(filePath).setFileFormat("parquet");
+    long rowsIndexed =
+        pageIndexEntries == null
+            ? 0L
+            : pageIndexEntries.stream()
+                .map(FloecatConnector.ParquetPageIndexEntry::liveRowCount)
+                .filter(value -> value > 0)
+                .mapToLong(Integer::longValue)
+                .max()
+                .orElse(0L);
+    if (rowsIndexed > 0L) {
+      builder.setRowCount(rowsIndexed);
     }
-    Table table = tableRepo.getById(tableId).orElse(null);
-    if (table == null || !table.hasUpstream()) {
-      return List.of();
+    long bytesScanned =
+        pageIndexEntries == null
+            ? 0L
+            : pageIndexEntries.stream()
+                .map(FloecatConnector.ParquetPageIndexEntry::pageTotalCompressedSize)
+                .filter(value -> value > 0L)
+                .mapToLong(Integer::longValue)
+                .sum();
+    if (bytesScanned > 0L) {
+      builder.setSizeBytes(bytesScanned);
     }
-    ResourceId connectorId = sourceConnectorId(table);
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return List.of();
-    }
-    String sourceNamespace = sourceNamespace(table);
-    String sourceTable = sourceName(table);
-    if (sourceNamespace.isBlank() || sourceTable.isBlank()) {
-      return List.of();
-    }
-
-    Connector connector = lookupConnector(ctx, connectorId);
-    try (var source = ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector))) {
-      return source.capturePlannedFileGroupPageIndexEntries(
-          sourceNamespace, sourceTable, tableId, snapshotId, Set.copyOf(plannedFilePaths));
-    }
-  }
-
-  @Override
-  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats) {
-    return materializePlannedFileGroupIndexArtifacts(
-        ctx, tableId, snapshotId, plannedFilePaths, stats, List.of());
-  }
-
-  @Override
-  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats,
-      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
-    if (plannedFilePaths == null
-        || plannedFilePaths.isEmpty()
-        || stats == null
-        || stats.isEmpty()) {
-      return List.of();
-    }
-    Map<String, FileTargetStats> byPath = fileStatsByPath(stats);
-    if (byPath.isEmpty()) {
-      return List.of();
-    }
-    Map<String, List<FloecatConnector.ParquetPageIndexEntry>> pageEntriesByFile =
-        pageIndexEntriesByFile(pageIndexEntries);
-    var now = nowTs();
-    List<StagedIndexArtifact> artifacts = new ArrayList<>();
-    for (String filePath : plannedFilePaths) {
-      FileTargetStats fileStats = byPath.get(filePath);
-      if (fileStats == null) {
-        continue;
-      }
-      List<FloecatConnector.ParquetPageIndexEntry> filePageEntries =
-          pageEntriesByFile.getOrDefault(filePath, List.of());
-      byte[] sidecar = writeIndexSidecar(fileStats, filePageEntries);
-      String targetId = indexArtifactTargetStorageId(filePath);
-      String contentSha256B64 = sha256B64(sidecar);
-      String artifactUri =
-          Keys.snapshotIndexSidecarBlobUri(
-              tableId.getAccountId(),
-              tableId.getId(),
-              snapshotId,
-              targetId,
-              base64ToHex(contentSha256B64));
-      IndexArtifactRecord record =
-          IndexArtifactRecord.newBuilder()
-              .setTableId(tableId)
-              .setSnapshotId(snapshotId)
-              .setTarget(
-                  IndexTarget.newBuilder()
-                      .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
-                      .build())
-              .setArtifactUri(artifactUri)
-              .setArtifactFormat("parquet")
-              .setArtifactFormatVersion(1)
-              .setContentEtag(contentSha256B64)
-              .setContentSha256B64(contentSha256B64)
-              .setState(IndexArtifactState.IAS_READY)
-              .setCoverage(indexCoverage(fileStats, filePageEntries))
-              .setCreatedAt(now)
-              .setRefreshedAt(now)
-              .setSourceFileFormat(
-                  fileStats.getFileFormat().isBlank() ? "parquet" : fileStats.getFileFormat())
-              .putProperties(
-                  "materialization", filePageEntries.isEmpty() ? "bootstrap" : "page_index")
-              .build();
-      IndexArtifactRecord.Builder withProps = record.toBuilder();
-      if (fileStats.hasSequenceNumber()) {
-        withProps.putProperties(
-            "source_sequence_number", Long.toString(fileStats.getSequenceNumber()));
-      }
-      if (fileStats.getFileContentValue() != 0) {
-        withProps.putProperties("source_file_content", fileStats.getFileContent().name());
-      }
-      artifacts.add(new StagedIndexArtifact(withProps.build(), sidecar, INDEX_CONTENT_TYPE));
-    }
-    return List.copyOf(artifacts);
+    return builder.build();
   }
 
   @Override
@@ -924,6 +875,41 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
         return false;
       }
       if (statsStore.getTargetStats(tableId, snapshotId, target).isEmpty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public boolean indexArtifactsCapturedForFilePaths(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> filePaths,
+      Set<String> selectors) {
+    if (filePaths == null || filePaths.isEmpty()) {
+      return true;
+    }
+    Set<String> normalizedSelectors = normalizeIndexSelectors(selectors);
+    if (normalizedSelectors == null) {
+      return false;
+    }
+    for (String filePath : filePaths) {
+      if (filePath == null || filePath.isBlank()) {
+        return false;
+      }
+      IndexTarget target =
+          IndexTarget.newBuilder()
+              .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
+              .build();
+      IndexArtifactRecord record =
+          indexArtifactRepo.getIndexArtifact(tableId, snapshotId, target).orElse(null);
+      if (record == null || record.getState() != IndexArtifactState.IAS_READY) {
+        return false;
+      }
+      if (!normalizedSelectors.isEmpty()
+          && !persistedIndexSelectors(record).containsAll(normalizedSelectors)) {
         return false;
       }
     }
@@ -1099,6 +1085,55 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
   private static String indexArtifactTargetStorageId(String filePath) {
     return "file:" + filePath;
+  }
+
+  private static String indexedColumnsProperty(
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
+    if (pageIndexEntries == null || pageIndexEntries.isEmpty()) {
+      return "";
+    }
+    return pageIndexEntries.stream()
+        .map(FloecatConnector.ParquetPageIndexEntry::columnName)
+        .filter(name -> name != null && !name.isBlank())
+        .map(String::trim)
+        .distinct()
+        .sorted()
+        .collect(java.util.stream.Collectors.joining(","));
+  }
+
+  private static Set<String> normalizeIndexSelectors(Set<String> selectors) {
+    if (selectors == null || selectors.isEmpty()) {
+      return Set.of();
+    }
+    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    for (String selector : selectors) {
+      if (selector == null || selector.isBlank()) {
+        continue;
+      }
+      String trimmed = selector.trim();
+      if (trimmed.startsWith("#")) {
+        return null;
+      }
+      normalized.add(trimmed);
+    }
+    return Set.copyOf(normalized);
+  }
+
+  private static Set<String> persistedIndexSelectors(IndexArtifactRecord record) {
+    if (record == null) {
+      return Set.of();
+    }
+    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
+    if (encoded.isBlank()) {
+      return Set.of();
+    }
+    LinkedHashSet<String> selectors = new LinkedHashSet<>();
+    for (String token : encoded.split(",")) {
+      if (token != null && !token.isBlank()) {
+        selectors.add(token.trim());
+      }
+    }
+    return Set.copyOf(selectors);
   }
 
   private static byte[] writeIndexSidecar(

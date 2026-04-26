@@ -741,7 +741,7 @@ public interface ReconcileJobStore {
       this.viewsChanged = viewsChanged;
       this.errors = errors;
       this.fullRescan = fullRescan;
-      this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
+      this.captureMode = java.util.Objects.requireNonNull(captureMode, "captureMode");
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
@@ -893,7 +893,7 @@ public interface ReconcileJobStore {
       this.accountId = accountId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
-      this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
+      this.captureMode = java.util.Objects.requireNonNull(captureMode, "captureMode");
       this.scope = scope == null ? ReconcileScope.empty() : scope;
       this.executionPolicy =
           executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;

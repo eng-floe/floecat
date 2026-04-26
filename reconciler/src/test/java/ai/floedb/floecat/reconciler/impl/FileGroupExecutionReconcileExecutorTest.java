@@ -28,8 +28,13 @@ import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -39,11 +44,21 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class FileGroupExecutionReconcileExecutorTest {
+
+  private static final ResourceId TABLE_ID =
+      ResourceId.newBuilder()
+          .setAccountId("acct")
+          .setKind(ResourceKind.RK_TABLE)
+          .setId("table-1")
+          .build();
 
   @Test
   void executeResolvesPlannedGroupFromParentSnapshotPlan() {
@@ -66,10 +81,10 @@ class FileGroupExecutionReconcileExecutorTest {
                     0L,
                     0L,
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     0L,
                     0L,
-                    ReconcileScope.empty(),
+                    defaultCaptureScope(),
                     ReconcileExecutionPolicy.defaults(),
                     "",
                     ReconcileJobKind.PLAN_SNAPSHOT,
@@ -89,83 +104,60 @@ class FileGroupExecutionReconcileExecutorTest {
                                 List.of("s3://bucket/path/file-1.parquet")))),
                     ReconcileFileGroupTask.empty(),
                     "")));
-    when(backend.capturePlannedFileGroupStats(
+    when(backend.capturePlannedFileGroup(
             org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.eq(55L),
-            org.mockito.ArgumentMatchers.eq(List.of("s3://bucket/path/file-1.parquet"))))
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.snapshotId() == 55L
+                        && request.capturePageIndex()
+                        && request
+                            .requestedStatsTargetKinds()
+                            .contains(
+                                ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                    .FILE)
+                        && request
+                            .plannedFilePaths()
+                            .equals(List.of("s3://bucket/path/file-1.parquet")))))
         .thenReturn(
-            List.of(
-                TargetStatsRecord.newBuilder()
-                    .setFile(
-                        FileTargetStats.newBuilder()
-                            .setFilePath("s3://bucket/path/file-1.parquet")
-                            .setFileFormat("parquet")
-                            .setRowCount(123L)
-                            .setSizeBytes(4096L)
-                            .setFileContent(FileContent.FC_DATA)
-                            .setSequenceNumber(77L))
-                    .build()));
-    when(backend.capturePlannedFileGroupPageIndexEntries(
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.eq(55L),
-            org.mockito.ArgumentMatchers.eq(List.of("s3://bucket/path/file-1.parquet"))))
-        .thenReturn(
-            List.of(
-                new ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry(
-                    "s3://bucket/path/file-1.parquet",
-                    "id",
-                    0,
-                    0,
-                    0L,
-                    123,
-                    123,
-                    128L,
-                    512,
-                    64L,
-                    64,
-                    true,
-                    "INT64",
-                    "ZSTD",
-                    (short) 1,
-                    (short) 0,
-                    null,
-                    null,
-                    null)));
-    when(backend.materializePlannedFileGroupIndexArtifacts(
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.eq(55L),
-            org.mockito.ArgumentMatchers.eq(List.of("s3://bucket/path/file-1.parquet")),
-            org.mockito.ArgumentMatchers.anyList(),
-            org.mockito.ArgumentMatchers.anyList()))
-        .thenReturn(
-            List.of(
-                new ReconcilerBackend.StagedIndexArtifact(
-                    IndexArtifactRecord.newBuilder()
-                        .setTableId(
-                            ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-                                .setAccountId("acct")
-                                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-                                .setId("table-1")
-                                .build())
-                        .setSnapshotId(55L)
-                        .setTarget(
-                            IndexTarget.newBuilder()
-                                .setFile(
-                                    IndexFileTarget.newBuilder()
-                                        .setFilePath("s3://bucket/path/file-1.parquet")
-                                        .build())
-                                .build())
-                        .setArtifactUri(
-                            "/accounts/acct/tables/table-1/index-sidecars/0000000000000000055/file%3As3%3A%2F%2Fbucket%2Fpath%2Ffile-1.parquet/abc.parquet")
-                        .setArtifactFormat("parquet")
-                        .setArtifactFormatVersion(1)
-                        .setState(IndexArtifactState.IAS_READY)
-                        .build(),
-                    new byte[] {1, 2, 3},
-                    "application/x-parquet")));
+            CaptureEngineResult.of(
+                List.of(
+                    TargetStatsRecord.newBuilder()
+                        .setFile(
+                            FileTargetStats.newBuilder()
+                                .setFilePath("s3://bucket/path/file-1.parquet")
+                                .setFileFormat("parquet")
+                                .setRowCount(123L)
+                                .setSizeBytes(4096L)
+                                .setFileContent(FileContent.FC_DATA)
+                                .setSequenceNumber(77L))
+                        .build()),
+                List.of(),
+                List.of(
+                    new ReconcilerBackend.StagedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setTableId(
+                                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+                                    .setId("table-1")
+                                    .build())
+                            .setSnapshotId(55L)
+                            .setTarget(
+                                IndexTarget.newBuilder()
+                                    .setFile(
+                                        IndexFileTarget.newBuilder()
+                                            .setFilePath("s3://bucket/path/file-1.parquet")
+                                            .build())
+                                    .build())
+                            .setArtifactUri(
+                                "/accounts/acct/tables/table-1/index-sidecars/0000000000000000055/file%3As3%3A%2F%2Fbucket%2Fpath%2Ffile-1.parquet/abc.parquet")
+                            .setArtifactFormat("parquet")
+                            .setArtifactFormatVersion(1)
+                            .setState(IndexArtifactState.IAS_READY)
+                            .build(),
+                        new byte[] {1, 2, 3},
+                        "application/x-parquet"))));
     var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
     var lease =
         new ReconcileJobStore.LeasedJob(
@@ -173,8 +165,8 @@ class FileGroupExecutionReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
-            ReconcileScope.empty(),
+            CaptureMode.METADATA_AND_CAPTURE,
+            defaultCaptureScope(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
             "",
@@ -223,24 +215,394 @@ class FileGroupExecutionReconcileExecutorTest {
         .putIndexArtifacts(
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
     verify(backend)
-        .materializePlannedFileGroupIndexArtifacts(
+        .capturePlannedFileGroup(
             org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.snapshotId() == 55L
+                        && request.capturePageIndex()
+                        && request
+                            .requestedStatsTargetKinds()
+                            .contains(
+                                ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                    .FILE)));
+  }
+
+  @Test
+  void executePublishesTableColumnAndFileStatsAlongsideIndexArtifacts() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            55L,
+            TableValueStats.newBuilder().setRowCount(123L).setDataFileCount(1L).build(),
+            null);
+    TargetStatsRecord columnRecord =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            55L,
+            7L,
+            ScalarStats.newBuilder()
+                .setDisplayName("id")
+                .setLogicalType("BIGINT")
+                .setValueCount(123L)
+                .setNullCount(0L)
+                .build(),
+            null);
+    TargetStatsRecord fileRecord =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            55L,
+            FileTargetStats.newBuilder()
+                .setFilePath("s3://bucket/path/file-1.parquet")
+                .setFileFormat("parquet")
+                .setRowCount(123L)
+                .setSizeBytes(4096L)
+                .setFileContent(FileContent.FC_DATA)
+                .build());
+
+    when(backend.capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            CaptureEngineResult.of(
+                List.of(tableRecord, columnRecord, fileRecord),
+                List.of(),
+                List.of(
+                    new ReconcilerBackend.StagedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setTableId(TABLE_ID)
+                            .setSnapshotId(55L)
+                            .setTarget(
+                                IndexTarget.newBuilder()
+                                    .setFile(
+                                        IndexFileTarget.newBuilder()
+                                            .setFilePath("s3://bucket/path/file-1.parquet")
+                                            .build())
+                                    .build())
+                            .setArtifactUri("s3://artifacts/file-1.parquet.idx")
+                            .setArtifactFormat("parquet")
+                            .setArtifactFormatVersion(1)
+                            .setState(IndexArtifactState.IAS_READY)
+                            .build(),
+                        new byte[] {1, 2, 3},
+                        "application/x-parquet"))));
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease = simpleFileGroupLease();
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.statsProcessed).isEqualTo(3);
+    verify(backend)
+        .putTargetStats(
             org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.eq(55L),
-            org.mockito.ArgumentMatchers.eq(List.of("s3://bucket/path/file-1.parquet")),
             org.mockito.ArgumentMatchers.argThat(
                 stats ->
                     stats != null
-                        && stats.size() == 1
-                        && ((TargetStatsRecord) stats.getFirst()).getFile().getRowCount() == 123L),
+                        && stats.size() == 3
+                        && ((List<TargetStatsRecord>) stats)
+                            .stream().anyMatch(TargetStatsRecord::hasTable)
+                        && ((List<TargetStatsRecord>) stats)
+                            .stream().anyMatch(TargetStatsRecord::hasScalar)
+                        && ((List<TargetStatsRecord>) stats)
+                            .stream().anyMatch(TargetStatsRecord::hasFile)
+                        && ((List<TargetStatsRecord>) stats)
+                            .stream()
+                                .filter(TargetStatsRecord::hasFile)
+                                .findFirst()
+                                .map(record -> record.getFile().getFilePath())
+                                .orElse("")
+                                .equals("s3://bucket/path/file-1.parquet")));
+    verify(backend)
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.argThat(
-                entries ->
-                    entries != null
-                        && entries.size() == 1
-                        && ((ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry)
-                                    entries.getFirst())
-                                .pageTotalCompressedSize()
-                            == 512));
+                artifacts ->
+                    artifacts != null
+                        && artifacts.size() == 1
+                        && ((List<ReconcilerBackend.StagedIndexArtifact>) artifacts)
+                            .getFirst()
+                            .record()
+                            .getTarget()
+                            .getFile()
+                            .getFilePath()
+                            .equals("s3://bucket/path/file-1.parquet")
+                        && ((List<ReconcilerBackend.StagedIndexArtifact>) artifacts)
+                            .getFirst()
+                            .record()
+                            .getArtifactFormat()
+                            .equals("parquet")));
+  }
+
+  @Test
+  void executeFailsWhenIndexCaptureReturnsNoArtifacts() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    when(backend.capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            CaptureEngineResult.of(
+                List.of(
+                    TargetStatsRecord.newBuilder()
+                        .setFile(
+                            FileTargetStats.newBuilder()
+                                .setFilePath("s3://bucket/path/file-1.parquet")
+                                .setRowCount(4L)
+                                .build())
+                        .build()),
+                List.of(),
+                List.of()));
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease = simpleFileGroupLease();
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    verify(backend)
+        .capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.capturePageIndex()
+                        && request
+                            .requestedStatsTargetKinds()
+                            .equals(
+                                Set.of(
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .TABLE,
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .COLUMN,
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .FILE))));
+    verify(backend, never())
+        .putTargetStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+    verify(backend, never())
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+  }
+
+  @Test
+  void executeHonorsStatsOnlyCapturePolicy() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    when(backend.capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            CaptureEngineResult.of(
+                List.of(
+                    TargetStatsRecord.newBuilder()
+                        .setFile(
+                            FileTargetStats.newBuilder()
+                                .setFilePath("s3://bucket/path/file-1.parquet")
+                                .setRowCount(4L)
+                                .build())
+                        .build()),
+                List.of(),
+                List.of()));
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease =
+        simpleFileGroupLease(
+            ReconcileScope.of(
+                List.of(),
+                "table-1",
+                List.of(),
+                ReconcileCapturePolicy.of(
+                    List.of(new ReconcileCapturePolicy.Column("id", true, false)),
+                    Set.of(
+                        ReconcileCapturePolicy.Output.TABLE_STATS,
+                        ReconcileCapturePolicy.Output.FILE_STATS,
+                        ReconcileCapturePolicy.Output.COLUMN_STATS))));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    verify(backend)
+        .capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && !request.capturePageIndex()
+                        && request.statsColumns().equals(Set.of("id"))
+                        && request.indexColumns().isEmpty()
+                        && request
+                            .requestedStatsTargetKinds()
+                            .equals(
+                                Set.of(
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .TABLE,
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .COLUMN,
+                                    ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind
+                                        .FILE))));
+    verify(backend)
+        .putTargetStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+    verify(backend, never())
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+    verify(backend, never())
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+  }
+
+  @Test
+  void executePublishesPreStagedIndexArtifacts() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    when(backend.capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            CaptureEngineResult.of(
+                List.of(),
+                List.of(),
+                List.of(
+                    new ReconcilerBackend.StagedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setTarget(
+                                IndexTarget.newBuilder()
+                                    .setFile(
+                                        IndexFileTarget.newBuilder()
+                                            .setFilePath("s3://bucket/path/file-1.parquet")
+                                            .build())
+                                    .build())
+                            .setArtifactUri("s3://artifacts/file-1.parquet.idx")
+                            .setArtifactFormat("parquet")
+                            .setArtifactFormatVersion(1)
+                            .setState(IndexArtifactState.IAS_READY)
+                            .build(),
+                        new byte[] {1},
+                        "application/x-parquet"))));
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease = simpleFileGroupLease();
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.statsProcessed).isZero();
+    verify(backend)
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+  }
+
+  @Test
+  void executeHonorsIndexOnlyCapturePolicy() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    when(backend.capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            CaptureEngineResult.of(
+                List.of(),
+                List.of(),
+                List.of(
+                    new ReconcilerBackend.StagedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setTarget(
+                                IndexTarget.newBuilder()
+                                    .setFile(
+                                        IndexFileTarget.newBuilder()
+                                            .setFilePath("s3://bucket/path/file-1.parquet")
+                                            .build())
+                                    .build())
+                            .setArtifactUri("s3://artifacts/file-1.parquet.idx")
+                            .setArtifactFormat("parquet")
+                            .setArtifactFormatVersion(1)
+                            .setState(IndexArtifactState.IAS_READY)
+                            .build(),
+                        new byte[] {1},
+                        "application/x-parquet"))));
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease =
+        simpleFileGroupLease(
+            ReconcileScope.of(
+                List.of(),
+                "table-1",
+                List.of(),
+                ReconcileCapturePolicy.of(
+                    List.of(new ReconcileCapturePolicy.Column("id", false, true)),
+                    Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX))));
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isTrue();
+    verify(backend)
+        .capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.requestedStatsTargetKinds().isEmpty()
+                        && request.capturePageIndex()
+                        && request.statsColumns().isEmpty()
+                        && request.indexColumns().equals(Set.of("id"))));
+    verify(backend, never())
+        .putTargetStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
+    verify(backend)
+        .putIndexArtifacts(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList());
   }
 
   @Test
@@ -254,7 +616,7 @@ class FileGroupExecutionReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -297,7 +659,7 @@ class FileGroupExecutionReconcileExecutorTest {
             "acct",
             "connector-1",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
@@ -329,5 +691,90 @@ class FileGroupExecutionReconcileExecutorTest {
     verify(jobs, never())
         .persistFileGroupResult(
             org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void executeFailsWhenCapturePolicyIsMissingForCaptureMode() {
+    var jobs = mock(ReconcileJobStore.class);
+    var backend = mock(ReconcilerBackend.class);
+    var executor = new FileGroupExecutionReconcileExecutor(jobs, backend, true);
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/path/file-1.parquet")),
+            "");
+
+    var result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    message) -> {}));
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.message).contains("capture policy is required");
+    verify(backend, never())
+        .capturePlannedFileGroup(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+  }
+
+  private static ReconcileJobStore.LeasedJob simpleFileGroupLease() {
+    return simpleFileGroupLease(defaultCaptureScope());
+  }
+
+  private static ReconcileJobStore.LeasedJob simpleFileGroupLease(ReconcileScope scope) {
+    return new ReconcileJobStore.LeasedJob(
+        "job-1",
+        "acct",
+        "connector-1",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "lease-1",
+        "",
+        "",
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/path/file-1.parquet")),
+        "");
+  }
+
+  private static ReconcileScope defaultCaptureScope() {
+    return ReconcileScope.of(
+        List.of(),
+        "table-1",
+        List.of(),
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
   }
 }

@@ -130,6 +130,7 @@ wait_for_connector_job() {
   local sleep_seconds="${5:-2}"
   local attempt
   local out
+  local cleaned_out
   local state
   local message
 
@@ -142,16 +143,17 @@ wait_for_connector_job() {
     out=$(run_cli_script "$compose_cmd" "account t-0001
 connector job $job_id
 quit")
+    cleaned_out=$(printf "%s\n" "$out" | tr -d '\r' | sed -E 's/^floecat>[[:space:]]*//')
     state=$(
-      printf "%s\n" "$out" \
+      printf "%s\n" "$cleaned_out" \
         | sed -n \
-            -e 's/.*state=\([A-Za-z_]*\).*/\1/p' \
+            -e '/job_id=/s/.* state=\([A-Za-z_]*\).*/\1/p' \
             -e 's/^[[:space:]]*state:[[:space:]]*//p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
     )
     message=$(
-      printf "%s\n" "$out" \
+      printf "%s\n" "$cleaned_out" \
         | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
@@ -171,6 +173,15 @@ quit")
   echo "$out"
   echo "[FAIL] $label job timed out waiting for terminal success ($job_id)"
   return 1
+}
+
+extract_cli_job_id() {
+  local cli_output="$1"
+  printf "%s\n" "$cli_output" \
+    | tr -d '\r' \
+    | sed -E 's/^floecat>[[:space:]]*//' \
+    | sed -n '/^[0-9a-fA-F-]\{36\}[[:space:]]*$/p' \
+    | tail -n1
 }
 
 assert_contains() {
@@ -537,25 +548,33 @@ run_mode() {
   done
 
   local out_iceberg
-  out_iceberg=$(printf "account t-0001\nresolve table examples.iceberg.trino_types\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.iceberg.trino_types
+quit")
   echo "$out_iceberg"
   assert_contains "$label cli resolve iceberg account" "$out_iceberg" "account set:"
   assert_contains "$label cli resolve iceberg table" "$out_iceberg" "table id:"
 
   local out_delta
-  out_delta=$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.call_center
+quit")
   echo "$out_delta"
   assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
   assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
 
   local out_delta_local
-  out_delta_local=$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta_local=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.my_local_delta_table
+quit")
   echo "$out_delta_local"
   assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
   assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
 
   local out_delta_dv
-  out_delta_dv=$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta_dv=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.dv_demo_delta
+quit")
   echo "$out_delta_dv"
   assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
   assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
@@ -644,15 +663,10 @@ quit")
 
     local trigger_rest_out
     trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-iceberg --full
+connector trigger smoke-upstream-iceberg --full --capture stats
 quit")
     local rest_job_id
-    rest_job_id=$(
-      printf "%s\n" "$trigger_rest_out" \
-        | tr -d '\r' \
-        | sed -E 's/^floecat>[[:space:]]*//' \
-        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
-    )
+    rest_job_id=$(extract_cli_job_id "$trigger_rest_out")
     wait_for_connector_job "$compose_cmd" "$label upstream iceberg connector" "$rest_job_id" 120 2
 
     local out_upstream_iceberg
@@ -737,15 +751,10 @@ quit")
 
     local trigger_unity_out
     trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-delta-unity --full
+connector trigger smoke-upstream-delta-unity --full --capture stats
 quit")
     local unity_job_id
-    unity_job_id=$(
-      printf "%s\n" "$trigger_unity_out" \
-        | tr -d '\r' \
-        | sed -E 's/^floecat>[[:space:]]*//' \
-        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
-    )
+    unity_job_id=$(extract_cli_job_id "$trigger_unity_out")
     wait_for_connector_job "$compose_cmd" "$label upstream delta unity connector" "$unity_job_id" 120 2
 
     local out_upstream_delta_unity
@@ -875,12 +884,13 @@ EOF
       "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
 
     local alter_out
-    if alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
-      duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
-      echo "$alter_out"
+    local alter_status=0
+    alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
+      duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1) || alter_status=$?
+    echo "$alter_out"
+    if [ "$alter_status" -eq 0 ]; then
       assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
     else
-      echo "$alter_out"
       assert_contains_any "$label duckdb mutation alter unsupported" "$alter_out" \
         "Not implemented Error: Alter Schema Entry" \
         "Not implemented Error: Alter table type not supported:"

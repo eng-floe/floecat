@@ -70,7 +70,7 @@ message FetchTargetStatsRequest {
    * Bundles are keyed by (table_id, snapshot_id) and may include both table and
    * column-level constraints (for example NOT NULL).
    *
-   * Defaults to false to preserve existing stats-only behavior for older clients.
+   * Defaults to false to preserve existing capture-only behavior for older clients.
    */
   bool include_constraints = 3;
 }

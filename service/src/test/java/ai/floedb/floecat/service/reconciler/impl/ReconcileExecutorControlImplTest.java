@@ -75,7 +75,7 @@ class ReconcileExecutorControlImplTest {
                     "acct",
                     "connector-1",
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(java.util.List.of(), "orders"),
                     ReconcileExecutionPolicy.of(
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
@@ -119,7 +119,7 @@ class ReconcileExecutorControlImplTest {
                     "acct",
                     "connector-2",
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(java.util.List.of("analytics-namespace-id"), null),
                     ReconcileExecutionPolicy.defaults(),
                     "lease-2",

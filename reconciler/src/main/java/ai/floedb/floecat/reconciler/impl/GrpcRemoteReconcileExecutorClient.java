@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -235,8 +236,9 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
       ai.floedb.floecat.reconciler.rpc.CaptureMode captureMode) {
     return switch (captureMode) {
       case CM_METADATA_ONLY -> CaptureMode.METADATA_ONLY;
-      case CM_STATS_ONLY -> CaptureMode.STATS_ONLY;
-      case CM_METADATA_AND_STATS, CM_UNSPECIFIED, UNRECOGNIZED -> CaptureMode.METADATA_AND_STATS;
+      case CM_CAPTURE_ONLY -> CaptureMode.CAPTURE_ONLY;
+      case CM_METADATA_AND_CAPTURE, CM_UNSPECIFIED, UNRECOGNIZED ->
+          CaptureMode.METADATA_AND_CAPTURE;
     };
   }
 
@@ -249,15 +251,41 @@ class GrpcRemoteReconcileExecutorClient implements RemoteReconcileExecutorClient
         scope.getDestinationNamespaceIdsList(),
         scope.getDestinationTableId(),
         scope.getDestinationViewId(),
-        scope.getDestinationStatsRequestsList().stream()
+        scope.getDestinationCaptureRequestsList().stream()
             .map(
                 request ->
-                    new ReconcileScope.ScopedStatsRequest(
+                    new ReconcileScope.ScopedCaptureRequest(
                         request.getTableId(),
                         request.getSnapshotId(),
                         request.getTargetSpec(),
                         request.getColumnSelectorsList()))
-            .toList());
+            .toList(),
+        scope.hasCapturePolicy()
+            ? ReconcileCapturePolicy.of(
+                scope.getCapturePolicy().getColumnsList().stream()
+                    .map(
+                        column ->
+                            new ReconcileCapturePolicy.Column(
+                                column.getSelector(),
+                                column.getCaptureStats(),
+                                column.getCaptureIndex()))
+                    .toList(),
+                scope.getCapturePolicy().getOutputsList().stream()
+                    .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
+                    .collect(java.util.stream.Collectors.toSet()))
+            : ReconcileCapturePolicy.empty());
+  }
+
+  private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(
+      ai.floedb.floecat.reconciler.rpc.CaptureOutput output) {
+    return switch (output) {
+      case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
+      case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
+      case CO_COLUMN_STATS -> ReconcileCapturePolicy.Output.COLUMN_STATS;
+      case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
+      case CO_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("capture output is required");
+    };
   }
 
   private static ReconcileExecutionPolicy fromProtoExecutionPolicy(

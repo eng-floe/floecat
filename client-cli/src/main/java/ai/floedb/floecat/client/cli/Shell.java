@@ -514,7 +514,9 @@ public class Shell implements Runnable {
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-stats|stats-only]
+         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
+             [--capture stats|table-stats|file-stats|column-stats|index,...]
+             # Defaults to --mode capture-only --capture stats.
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -543,7 +545,9 @@ public class Shell implements Runnable {
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
-             [--mode metadata-only|metadata-and-stats|stats-only]
+             [--mode metadata-only|metadata-and-capture|capture-only]
+             [--capture stats|table-stats|file-stats|column-stats|index,...]
+             # --capture is required for capture modes.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--snapshot <id>|--current] [--columns c1,#id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]

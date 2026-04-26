@@ -141,7 +141,8 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
 - **Triggering a connector to read an upstream table**
 
   ```
-  connector trigger glue-iceberg
+  connector trigger glue-iceberg --mode metadata-only
+  connector trigger glue-iceberg --full --capture stats
   ```
 
 - **Managing snapshot constraints**

@@ -299,6 +299,16 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public boolean indexArtifactsCapturedForFilePaths(
+        ReconcileContext ctx,
+        ResourceId tableId,
+        long snapshotId,
+        List<String> filePaths,
+        Set<String> selectors) {
+      return false;
+    }
+
+    @Override
     public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
       if (catalogId == null || catalogId.getId().isBlank()) {
         throw new IllegalArgumentException("catalogId is required");
@@ -473,6 +483,19 @@ abstract class AbstractReconcilerServiceTestBase {
         long snapshotId,
         Set<String> includeColumns) {
       return List.of();
+    }
+
+    @Override
+    public FileGroupCaptureResult capturePlannedFileGroup(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
+        Set<String> plannedFilePaths,
+        Set<String> includeColumns,
+        Set<StatsTargetKind> includeTargetKinds,
+        boolean captureIndexes) {
+      return FileGroupCaptureResult.empty();
     }
 
     @Override

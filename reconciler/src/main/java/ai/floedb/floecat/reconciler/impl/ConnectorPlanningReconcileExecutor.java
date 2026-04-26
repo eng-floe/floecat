@@ -28,8 +28,12 @@ import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -122,6 +126,16 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
 
     try {
       ReconcileScope scope = lease.scope == null ? ReconcileScope.empty() : lease.scope;
+      if (!includesMetadata(lease.captureMode) && scope.hasViewFilter()) {
+        throw new IllegalArgumentException(
+            "capture-only reconcile is not valid for view reconcile");
+      }
+      if (!includesMetadata(lease.captureMode)
+          && scope.hasCaptureRequestFilter()
+          && scope.hasNamespaceFilter()) {
+        throw new IllegalArgumentException(
+            "capture-only scoped capture requests cannot be combined with namespace scope");
+      }
       if (scope.hasTableFilter()) {
         var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
         ensureTableExecutorAvailable();
@@ -155,7 +169,10 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
             lease.fullRescan,
             lease.captureMode,
             ReconcileScope.of(
-                List.of(), scope.destinationTableId(), scope.destinationStatsRequests()),
+                List.of(),
+                scope.destinationTableId(),
+                scope.destinationCaptureRequests(),
+                scope.capturePolicy()),
             task,
             lease.executionPolicy,
             lease.jobId,
@@ -175,9 +192,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
       } else if (scope.hasViewFilter()) {
         List<ReconcileViewTask> viewTasks =
-            lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
-                ? List.of()
-                : reconcilerService.planViewTasks(principal, connectorId, scope, null);
+            reconcilerService.planViewTasks(principal, connectorId, scope, null);
         ensureViewExecutorAvailable();
         if (viewTasks.isEmpty()) {
           return ExecutionResult.failure(
@@ -226,13 +241,17 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
                 0,
                 "Planned view " + task.sourceNamespace() + "." + task.sourceView());
       } else {
-        var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
+        List<ReconcileTableTask> tableTasks =
+            !includesMetadata(lease.captureMode) && scope.hasCaptureRequestFilter()
+                ? planCaptureOnlyScopedTableTasks(principal, connectorId, scope)
+                : reconcilerService.planTableTasks(principal, connectorId, scope, null);
         List<ReconcileViewTask> viewTasks =
-            lease.captureMode == ReconcilerService.CaptureMode.STATS_ONLY
-                ? List.of()
-                : reconcilerService.planViewTasks(principal, connectorId, scope, null);
-        ensureExecutionExecutorAvailable(tableTasks, viewTasks, false);
-        if (lease.captureMode != ReconcilerService.CaptureMode.STATS_ONLY) {
+            includesMetadata(lease.captureMode)
+                ? reconcilerService.planViewTasks(principal, connectorId, scope, null)
+                : List.of();
+        validateScopedCaptureRequestsMatched(lease.captureMode, scope, tableTasks);
+        ensureExecutionExecutorAvailable(tableTasks, viewTasks);
+        if (includesMetadata(lease.captureMode)) {
           for (ReconcileViewTask task : viewTasks) {
             if (context.shouldStop().getAsBoolean()) {
               return cancelled(
@@ -285,7 +304,7 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
               lease.connectorId,
               lease.fullRescan,
               lease.captureMode,
-              scope,
+              scopedTableExecutionScope(scope, lease.captureMode, task),
               task,
               lease.executionPolicy,
               lease.jobId,
@@ -346,15 +365,14 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
 
   private void ensureExecutionExecutorAvailable(
       List<ai.floedb.floecat.reconciler.jobs.ReconcileTableTask> tableTasks,
-      List<ReconcileViewTask> viewTasks,
-      boolean namespaceViewExecution) {
+      List<ReconcileViewTask> viewTasks) {
     if (!tableTasks.isEmpty()
         && (executorRegistry == null
             || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))) {
       throw new IllegalStateException(
           "No enabled reconcile executor is available for PLAN_TABLE jobs");
     }
-    if ((!viewTasks.isEmpty() || namespaceViewExecution)
+    if (!viewTasks.isEmpty()
         && (executorRegistry == null
             || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))) {
       throw new IllegalStateException(
@@ -375,6 +393,79 @@ public class ConnectorPlanningReconcileExecutor implements ReconcileExecutor {
         || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
       throw new IllegalStateException(
           "No enabled reconcile executor is available for PLAN_VIEW jobs");
+    }
+  }
+
+  private static boolean includesMetadata(ReconcilerService.CaptureMode captureMode) {
+    return captureMode != ReconcilerService.CaptureMode.CAPTURE_ONLY;
+  }
+
+  private List<ReconcileTableTask> planCaptureOnlyScopedTableTasks(
+      PrincipalContext principal, ResourceId connectorId, ReconcileScope scope) {
+    Map<String, List<ReconcileScope.ScopedCaptureRequest>> requestsByTableId =
+        scope.destinationCaptureRequests().stream()
+            .filter(request -> request != null && !request.tableId().isBlank())
+            .collect(
+                Collectors.groupingBy(
+                    ReconcileScope.ScopedCaptureRequest::tableId,
+                    LinkedHashMap::new,
+                    Collectors.toList()));
+    List<ReconcileTableTask> plannedTasks = new java.util.ArrayList<>();
+    for (Map.Entry<String, List<ReconcileScope.ScopedCaptureRequest>> entry :
+        requestsByTableId.entrySet()) {
+      ReconcileScope strictScope =
+          ReconcileScope.of(List.of(), entry.getKey(), entry.getValue(), scope.capturePolicy());
+      plannedTasks.addAll(
+          reconcilerService.planTableTasks(principal, connectorId, strictScope, null));
+    }
+    return plannedTasks;
+  }
+
+  private static ReconcileScope scopedTableExecutionScope(
+      ReconcileScope scope, ReconcilerService.CaptureMode captureMode, ReconcileTableTask task) {
+    if (includesMetadata(captureMode)
+        || scope == null
+        || !scope.hasCaptureRequestFilter()
+        || task == null
+        || task.destinationTableId() == null
+        || task.destinationTableId().isBlank()) {
+      return scope;
+    }
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        scope.destinationCaptureRequests().stream()
+            .filter(
+                request -> request != null && task.destinationTableId().equals(request.tableId()))
+            .toList();
+    return ReconcileScope.of(List.of(), task.destinationTableId(), requests, scope.capturePolicy());
+  }
+
+  private static void validateScopedCaptureRequestsMatched(
+      ReconcilerService.CaptureMode captureMode,
+      ReconcileScope scope,
+      List<ReconcileTableTask> tableTasks) {
+    if (includesMetadata(captureMode)
+        || scope == null
+        || scope.destinationCaptureRequests().isEmpty()) {
+      return;
+    }
+    LinkedHashSet<String> unmatchedTableIds =
+        scope.destinationCaptureRequests().stream()
+            .map(ReconcileScope.ScopedCaptureRequest::tableId)
+            .filter(tableId -> tableId != null && !tableId.isBlank())
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+    for (ReconcileTableTask task :
+        tableTasks == null ? List.<ReconcileTableTask>of() : tableTasks) {
+      if (task == null
+          || task.destinationTableId() == null
+          || task.destinationTableId().isBlank()) {
+        continue;
+      }
+      unmatchedTableIds.remove(task.destinationTableId());
+    }
+    if (!unmatchedTableIds.isEmpty()) {
+      throw new IllegalArgumentException(
+          "No tables matched scoped capture requests: "
+              + unmatchedTableIds.stream().sorted().collect(Collectors.joining(", ")));
     }
   }
 

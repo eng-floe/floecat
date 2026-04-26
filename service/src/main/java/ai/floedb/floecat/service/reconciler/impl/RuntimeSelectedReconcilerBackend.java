@@ -32,6 +32,8 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.impl.GrpcReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -142,39 +144,9 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public List<TargetStatsRecord> capturePlannedFileGroupStats(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    return delegate.capturePlannedFileGroupStats(ctx, tableId, snapshotId, plannedFilePaths);
-  }
-
-  @Override
-  public List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    return delegate.capturePlannedFileGroupPageIndexEntries(
-        ctx, tableId, snapshotId, plannedFilePaths);
-  }
-
-  @Override
-  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats) {
-    return delegate.materializePlannedFileGroupIndexArtifacts(
-        ctx, tableId, snapshotId, plannedFilePaths, stats);
-  }
-
-  @Override
-  public List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats,
-      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
-    return delegate.materializePlannedFileGroupIndexArtifacts(
-        ctx, tableId, snapshotId, plannedFilePaths, stats, pageIndexEntries);
+  public CaptureEngineResult capturePlannedFileGroup(
+      ReconcileContext ctx, PlannedFileGroupCaptureRequest request) {
+    return delegate.capturePlannedFileGroup(ctx, request);
   }
 
   @Override
@@ -193,6 +165,17 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   public boolean statsCapturedForTargets(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets) {
     return delegate.statsCapturedForTargets(ctx, tableId, snapshotId, targets);
+  }
+
+  @Override
+  public boolean indexArtifactsCapturedForFilePaths(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> filePaths,
+      Set<String> selectors) {
+    return delegate.indexArtifactsCapturedForFilePaths(
+        ctx, tableId, snapshotId, filePaths, selectors);
   }
 
   @Override

@@ -182,57 +182,32 @@ public interface FloecatConnector extends Closeable {
         namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
   }
 
-  /**
-   * Captures stats for one planned file-group within a snapshot.
-   *
-   * <p>The default implementation falls back to snapshot-scoped capture and filters file-target
-   * records to the requested file paths. This preserves correctness for file-target stats, but
-   * connectors should override it to avoid rescanning the full snapshot when they can execute the
-   * file group directly.
-   */
-  default List<TargetStatsRecord> capturePlannedFileGroupStats(
+  /** Captures requested outputs for one planned file-group within a snapshot. */
+  FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
-    Set<String> effectivePaths =
-        plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
-    if (effectivePaths.isEmpty()) {
-      return List.of();
-    }
-    List<TargetStatsRecord> captured =
-        captureSnapshotTargetStats(
-            namespaceFq,
-            tableName,
-            destinationTableId,
-            snapshotId,
-            includeColumns == null ? Set.of() : includeColumns,
-            includeTargetKinds == null || includeTargetKinds.isEmpty()
-                ? Set.of(StatsTargetKind.FILE)
-                : includeTargetKinds);
-    return captured.stream()
-        .filter(TargetStatsRecord::hasFile)
-        .filter(record -> effectivePaths.contains(record.getFile().getFilePath()))
-        .toList();
-  }
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes);
 
-  /**
-   * Captures page-index rows for one planned file group within a snapshot.
-   *
-   * <p>This is reconcile/execution-only metadata and intentionally separate from query scan
-   * planning. Connectors should return one entry per indexed page and may return an empty result
-   * when page indexes are unavailable for the planned files.
-   */
-  default List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths) {
-    return List.of();
+  record FileGroupCaptureResult(
+      List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
+    public FileGroupCaptureResult {
+      statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
+      pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
+    }
+
+    public static FileGroupCaptureResult of(
+        List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries);
+    }
+
+    public static FileGroupCaptureResult empty() {
+      return new FileGroupCaptureResult(List.of(), List.of());
+    }
   }
 
   enum StatsTargetKind {

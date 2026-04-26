@@ -98,7 +98,10 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
                 null,
                 context.shouldStop(),
                 context.progressListener()::onProgress)
-            : reconcilerService.reconcile(
+            : reconcilerService.reconcilePlannedTableExecution(
+                // PLAN_TABLE jobs ingest metadata and resolve destination ids here;
+                // snapshot/file-group
+                // capture remains queued so the direct and executor paths do not double-execute.
                 principal,
                 connectorId,
                 lease.fullRescan,
@@ -134,7 +137,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
           result.error);
     }
     if (lease.jobKind == ReconcileJobKind.PLAN_TABLE
-        && lease.captureMode == ReconcilerService.CaptureMode.METADATA_AND_STATS) {
+        && lease.captureMode != ReconcilerService.CaptureMode.METADATA_ONLY) {
       List<ReconcileSnapshotTask> snapshotTasks =
           snapshotTasksForSuccessfulPlan(principal, connectorId, lease, result);
       ensureSnapshotPlanningExecutorAvailable(snapshotTasks);
@@ -165,7 +168,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
       ResourceId connectorId,
       ReconcileJobStore.LeasedJob lease,
       ReconcilerService.Result result) {
-    if (lease.captureMode != ReconcilerService.CaptureMode.METADATA_AND_STATS) {
+    if (lease.captureMode == ReconcilerService.CaptureMode.METADATA_ONLY) {
       return List.of();
     }
     ReconcileTableTask task = resolvedTableTaskForSnapshotPlanning(lease.tableTask, result);
@@ -176,7 +179,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
     }
     ReconcileScope scope = lease.scope == null ? ReconcileScope.empty() : lease.scope;
     return reconcilerService.planSnapshotTasks(
-        principal, connectorId, lease.fullRescan, scope, task, null);
+        principal, connectorId, lease.fullRescan, scope, task, lease.captureMode, null);
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(

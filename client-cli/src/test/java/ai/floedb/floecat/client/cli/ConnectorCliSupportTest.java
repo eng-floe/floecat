@@ -17,6 +17,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
@@ -57,7 +58,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.rpc.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.rpc.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.rpc.ScopedStatsRequest;
+import ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -293,60 +294,31 @@ class ConnectorCliSupportTest {
   // --- connector trigger ---
 
   @Test
-  void connectorTriggerCallsReconcileService() throws Exception {
+  void connectorTriggerCaptureModeRequiresExplicitOutputs() throws Exception {
     try (Harness h = new Harness()) {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder().setResourceId(connectorId()).build();
 
-      ByteArrayOutputStream buf = new ByteArrayOutputStream();
-      ConnectorCliSupport.handle(
-          "connector",
-          List.of("trigger", CONNECTOR_UUID),
-          new PrintStream(buf),
-          h.connectorsStub,
-          h.reconcileControlStub,
-          h.directoryStub,
-          () -> "acct-1");
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of("trigger", CONNECTOR_UUID),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
 
-      assertEquals(1, h.reconcileControlService.startCaptureCalls.get());
+      assertTrue(error.getMessage().contains("--capture is required"));
+      assertEquals(0, h.reconcileControlService.startCaptureCalls.get());
     }
   }
 
   @Test
-  void connectorTriggerColumnsCreatesScopedStatsRequest() throws Exception {
-    try (Harness h = new Harness()) {
-      h.connectorsService.connectorToReturn =
-          Connector.newBuilder()
-              .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
-              .build();
-      h.directoryService.tableDisplayName = "events";
-      h.snapshotService.currentSnapshotId = 42L;
-
-      ConnectorCliSupport.handle(
-          "connector",
-          List.of("trigger", CONNECTOR_UUID, "--mode", "stats-only", "--columns", "c1,#7"),
-          new PrintStream(new ByteArrayOutputStream()),
-          h.connectorsStub,
-          h.reconcileControlStub,
-          h.snapshotStub,
-          h.directoryStub,
-          () -> "acct-1");
-
-      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
-      ScopedStatsRequest statsRequest = request.getScope().getDestinationStatsRequests(0);
-      assertEquals("table-1", statsRequest.getTableId());
-      assertEquals(42L, statsRequest.getSnapshotId());
-      assertEquals(List.of("c1", "#7"), statsRequest.getColumnSelectorsList());
-    }
-  }
-
-  @Test
-  void connectorTriggerExplicitSnapshotCreatesScopedStatsRequest() throws Exception {
+  void connectorTriggerColumnsCreatesScopedCaptureRequest() throws Exception {
     try (Harness h = new Harness()) {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
@@ -366,7 +338,73 @@ class ConnectorCliSupportTest {
               "trigger",
               CONNECTOR_UUID,
               "--mode",
-              "stats-only",
+              "capture-only",
+              "--capture",
+              "stats,index",
+              "--columns",
+              "c1,#7"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      ScopedCaptureRequest captureRequest = request.getScope().getDestinationCaptureRequests(0);
+      assertEquals("table-1", captureRequest.getTableId());
+      assertEquals(42L, captureRequest.getSnapshotId());
+      assertEquals(List.of("c1", "#7"), captureRequest.getColumnSelectorsList());
+      assertEquals(4, request.getScope().getCapturePolicy().getOutputsCount());
+      assertEquals("c1", request.getScope().getCapturePolicy().getColumns(0).getSelector());
+      assertEquals("#7", request.getScope().getCapturePolicy().getColumns(1).getSelector());
+    }
+  }
+
+  @Test
+  void connectorTriggerCaptureFlagsCreateCapturePolicy() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder().setResourceId(connectorId()).build();
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("trigger", CONNECTOR_UUID, "--capture", "stats,index"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals(4, request.getScope().getCapturePolicy().getOutputsCount());
+    }
+  }
+
+  @Test
+  void connectorTriggerExplicitSnapshotCreatesScopedCaptureRequest() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+      h.snapshotService.currentSnapshotId = 42L;
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "capture-only",
+              "--capture",
+              "stats,index",
               "--snapshot",
               "99",
               "--columns",
@@ -379,7 +417,7 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
-      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(99L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
     }
   }
 
@@ -399,7 +437,15 @@ class ConnectorCliSupportTest {
 
       ConnectorCliSupport.handle(
           "connector",
-          List.of("trigger", CONNECTOR_UUID, "--mode", "stats-only", "--snapshot", "99"),
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "capture-only",
+              "--capture",
+              "stats,index",
+              "--snapshot",
+              "99"),
           new PrintStream(new ByteArrayOutputStream()),
           h.connectorsStub,
           h.reconcileControlStub,
@@ -408,10 +454,90 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
-      assertEquals(1, request.getScope().getDestinationStatsRequestsCount());
-      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(1, request.getScope().getDestinationCaptureRequestsCount());
+      assertEquals(99L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
+      assertEquals("table", request.getScope().getDestinationCaptureRequests(0).getTargetSpec());
       assertEquals(
-          List.of(), request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+          List.of(), request.getScope().getDestinationCaptureRequests(0).getColumnSelectorsList());
+    }
+  }
+
+  @Test
+  void connectorTriggerCurrentWithoutColumnsStillScopesCapture() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+      h.snapshotService.currentSnapshotId = 42L;
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "capture-only",
+              "--capture",
+              "stats,index",
+              "--current"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals(1, request.getScope().getDestinationCaptureRequestsCount());
+      assertEquals(42L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
+      assertEquals("table", request.getScope().getDestinationCaptureRequests(0).getTargetSpec());
+    }
+  }
+
+  @Test
+  void connectorTriggerTableStatsAndIndexDoNotMarkColumnStatsRequested() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder()
+              .setResourceId(connectorId())
+              .setDestination(
+                  DestinationTarget.newBuilder()
+                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                      .build())
+              .build();
+      h.directoryService.tableDisplayName = "events";
+      h.snapshotService.currentSnapshotId = 42L;
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "capture-only",
+              "--capture",
+              "table-stats,index",
+              "--columns",
+              "c1"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.snapshotStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals("c1", request.getScope().getCapturePolicy().getColumns(0).getSelector());
+      assertEquals(false, request.getScope().getCapturePolicy().getColumns(0).getCaptureStats());
+      assertEquals(true, request.getScope().getCapturePolicy().getColumns(0).getCaptureIndex());
     }
   }
 
@@ -430,7 +556,15 @@ class ConnectorCliSupportTest {
 
       ConnectorCliSupport.handle(
           "connector",
-          List.of("trigger", CONNECTOR_UUID, "--dest-ns", "ns", "--dest-view", "orders_v"),
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--capture",
+              "stats",
+              "--dest-ns",
+              "ns",
+              "--dest-view",
+              "orders_v"),
           new PrintStream(new ByteArrayOutputStream()),
           h.connectorsStub,
           h.reconcileControlStub,

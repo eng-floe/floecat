@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -1070,7 +1071,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       return effectiveScope.hasTableFilter()
           ? effectiveScope
           : ReconcileScope.of(
-              List.of(), tableTask.destinationTableId(), effectiveScope.destinationStatsRequests());
+              List.of(),
+              tableTask.destinationTableId(),
+              effectiveScope.destinationCaptureRequests(),
+              effectiveScope.capturePolicy());
     }
     if (jobKind == ReconcileJobKind.PLAN_VIEW
         && viewTask != null
@@ -1088,9 +1092,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         throw new IllegalArgumentException(
             "view task destinationNamespaceId does not match scope destinationNamespaceIds");
       }
-      if (effectiveScope.hasTableFilter() || effectiveScope.hasStatsRequestFilter()) {
+      if (effectiveScope.hasTableFilter() || effectiveScope.hasCaptureRequestFilter()) {
         throw new IllegalArgumentException(
-            "view task destinationViewId cannot be combined with table or stats scope");
+            "view task destinationViewId cannot be combined with table or capture scope");
       }
       return effectiveScope.hasViewFilter()
           ? effectiveScope
@@ -1153,12 +1157,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
-    String statsRequests =
-        scope.destinationStatsRequests().stream()
-            .map(InMemoryReconcileJobStore::canonicalStatsRequest)
+    String captureRequests =
+        scope.destinationCaptureRequests().stream()
+            .map(InMemoryReconcileJobStore::canonicalCaptureRequest)
             .sorted()
             .reduce((a, b) -> a + "," + b)
             .orElse("");
+    String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
             ? ""
@@ -1179,7 +1184,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "full_rescan=" + fullRescan,
             "capture_mode="
                 + (captureMode == null
-                    ? CaptureMode.METADATA_AND_STATS.name()
+                    ? CaptureMode.METADATA_AND_CAPTURE.name()
                     : captureMode.name()),
             "table_task.source_namespace="
                 + (tableTask == null ? "" : blankToEmpty(tableTask.sourceNamespace())),
@@ -1221,7 +1226,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "scope.namespaces=" + namespaces,
             "scope.table=" + table,
             "scope.view=" + blankToEmpty(scope.destinationViewId()),
-            "scope.stats_requests=" + statsRequests,
+            "scope.capture_requests=" + captureRequests,
+            "scope.capture_policy=" + capturePolicy,
             "policy.execution_class=" + policy.executionClass().name(),
             "policy.lane=" + policy.lane(),
             "policy.attributes=" + canonicalAttributes(policy.attributes()),
@@ -1230,7 +1236,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return hashValue(payload);
   }
 
-  private static String canonicalStatsRequest(ReconcileScope.ScopedStatsRequest request) {
+  private static String canonicalCaptureRequest(ReconcileScope.ScopedCaptureRequest request) {
     return request.tableId()
         + "|"
         + request.snapshotId()
@@ -1240,13 +1246,30 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         + String.join(",", request.columnSelectors());
   }
 
+  private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
+    if (policy == null || policy.isEmpty()) {
+      return "";
+    }
+    String columns =
+        policy.columns().stream()
+            .map(
+                column ->
+                    column.selector() + ":" + column.captureStats() + ":" + column.captureIndex())
+            .sorted()
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
+    String outputs =
+        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
+    return columns + "|" + outputs;
+  }
+
   private static String canonicalAttributes(Map<String, String> attributes) {
     if (attributes == null || attributes.isEmpty()) {
       return "";
     }
     return attributes.entrySet().stream()
         .sorted(Map.Entry.comparingByKey())
-        .map(entry -> entry.getKey() + "=" + blankToEmpty(entry.getValue()))
+        .map(entry -> blankToEmpty(entry.getKey()) + "=" + blankToEmpty(entry.getValue()))
         .reduce((a, b) -> a + "," + b)
         .orElse("");
   }

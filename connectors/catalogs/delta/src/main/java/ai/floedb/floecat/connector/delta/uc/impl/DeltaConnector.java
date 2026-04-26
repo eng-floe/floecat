@@ -187,53 +187,40 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
-  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+  public FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
-      return List.of();
+      return FileGroupCaptureResult.empty();
     }
     final String tableRoot = storageLocation(namespaceFq, tableName);
     final Table table = loadTable(tableRoot);
     Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
     if (snapshot == null) {
-      return List.of();
+      return FileGroupCaptureResult.empty();
     }
-    return buildTargetStats(
-        tableRoot,
-        destinationTableId,
-        includeColumns,
-        snapshotId,
-        snapshot,
-        includeTargetKinds == null || includeTargetKinds.isEmpty()
-            ? Set.of(StatsTargetKind.FILE)
-            : includeTargetKinds,
-        plannedFilePaths);
-  }
-
-  @Override
-  public List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths) {
-    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
-      return List.of();
-    }
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
-    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
-    if (snapshot == null) {
-      return List.of();
-    }
-    var reader = new ParquetPageIndexReader(parquetInput);
-    return reader.readEntries(plannedFilePaths);
+    List<TargetStatsRecord> stats =
+        buildTargetStats(
+            tableRoot,
+            destinationTableId,
+            includeColumns,
+            snapshotId,
+            snapshot,
+            includeTargetKinds == null || includeTargetKinds.isEmpty()
+                ? Set.of(StatsTargetKind.FILE)
+                : includeTargetKinds,
+            plannedFilePaths);
+    List<ParquetPageIndexEntry> pageIndexEntries =
+        captureIndexes
+            ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
+            : List.of();
+    return FileGroupCaptureResult.of(stats, pageIndexEntries);
   }
 
   @Override

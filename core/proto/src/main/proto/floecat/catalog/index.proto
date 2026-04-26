@@ -76,8 +76,14 @@ message IndexArtifactRecord {
 message PutIndexArtifactsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  repeated IndexArtifactRecord records = 3;
-  ai.floedb.floecat.common.IdempotencyKey idempotency = 4;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 3;
+  repeated PutIndexArtifactItem items = 4;
+}
+
+message PutIndexArtifactItem {
+  IndexArtifactRecord record = 1;
+  bytes content = 2;
+  string content_type = 3;
 }
 
 message PutIndexArtifactsResponse {

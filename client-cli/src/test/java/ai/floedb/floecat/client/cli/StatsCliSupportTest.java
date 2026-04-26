@@ -45,6 +45,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -271,7 +272,7 @@ class StatsCliSupportTest {
   }
 
   @Test
-  void analyzeColumnsCreatesScopedStatsRequest() throws Exception {
+  void analyzeColumnsCreatesScopedCaptureRequest() throws Exception {
     try (Harness h = new Harness()) {
       h.tableService.tableToReturn =
           Table.newBuilder()
@@ -289,7 +290,14 @@ class StatsCliSupportTest {
 
       StatsCliSupport.handle(
           "analyze",
-          List.of("catalog.ns.tbl", "--mode", "stats-only", "--columns", "c1,#7"),
+          List.of(
+              "catalog.ns.tbl",
+              "--mode",
+              "capture-only",
+              "--capture",
+              "stats",
+              "--columns",
+              "c1,#7"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
           h.snapshotStub,
@@ -300,10 +308,84 @@ class StatsCliSupportTest {
 
       CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
       assertEquals(
-          tableId().getId(), request.getScope().getDestinationStatsRequests(0).getTableId());
+          tableId().getId(), request.getScope().getDestinationCaptureRequests(0).getTableId());
       assertEquals(
           List.of("c1", "#7"),
-          request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+          request.getScope().getDestinationCaptureRequests(0).getColumnSelectorsList());
+      assertEquals(3, request.getScope().getCapturePolicy().getOutputsCount());
+    }
+  }
+
+  @Test
+  void analyzeDefaultsToStatsOnlyCapture() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+
+      StatsCliSupport.handle(
+          "analyze",
+          List.of("catalog.ns.tbl"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.statisticsStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
+      assertEquals(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY, request.getMode());
+      assertEquals(
+          java.util.Set.of(
+              CaptureOutput.CO_TABLE_STATS,
+              CaptureOutput.CO_FILE_STATS,
+              CaptureOutput.CO_COLUMN_STATS),
+          java.util.Set.copyOf(request.getScope().getCapturePolicy().getOutputsList()));
+    }
+  }
+
+  @Test
+  void analyzeCaptureFlagsAllowIndexOnly() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+      h.snapshotService.currentSnapshotId = 42L;
+
+      StatsCliSupport.handle(
+          "analyze",
+          List.of(
+              "catalog.ns.tbl", "--mode", "capture-only", "--capture", "index", "--columns", "c1"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.statisticsStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
+      assertEquals(
+          List.of(CaptureOutput.CO_PARQUET_PAGE_INDEX),
+          request.getScope().getCapturePolicy().getOutputsList());
+      assertEquals("c1", request.getScope().getCapturePolicy().getColumns(0).getSelector());
+      assertEquals(false, request.getScope().getCapturePolicy().getColumns(0).getCaptureStats());
+      assertEquals(true, request.getScope().getCapturePolicy().getColumns(0).getCaptureIndex());
     }
   }
 
@@ -327,7 +409,15 @@ class StatsCliSupportTest {
       StatsCliSupport.handle(
           "analyze",
           List.of(
-              "catalog.ns.tbl", "--mode", "stats-only", "--snapshot", "99", "--columns", "c1,#7"),
+              "catalog.ns.tbl",
+              "--mode",
+              "capture-only",
+              "--capture",
+              "stats",
+              "--snapshot",
+              "99",
+              "--columns",
+              "c1,#7"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
           h.snapshotStub,
@@ -337,7 +427,7 @@ class StatsCliSupportTest {
           ignored -> tableId());
 
       CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
-      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(99L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
     }
   }
 
@@ -359,7 +449,8 @@ class StatsCliSupportTest {
 
       StatsCliSupport.handle(
           "analyze",
-          List.of("catalog.ns.tbl", "--mode", "stats-only", "--snapshot", "99"),
+          List.of(
+              "catalog.ns.tbl", "--mode", "capture-only", "--capture", "stats", "--snapshot", "99"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
           h.snapshotStub,
@@ -369,10 +460,10 @@ class StatsCliSupportTest {
           ignored -> tableId());
 
       CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
-      assertEquals(1, request.getScope().getDestinationStatsRequestsCount());
-      assertEquals(99L, request.getScope().getDestinationStatsRequests(0).getSnapshotId());
+      assertEquals(1, request.getScope().getDestinationCaptureRequestsCount());
+      assertEquals(99L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
       assertEquals(
-          List.of(), request.getScope().getDestinationStatsRequests(0).getColumnSelectorsList());
+          List.of(), request.getScope().getDestinationCaptureRequests(0).getColumnSelectorsList());
     }
   }
 

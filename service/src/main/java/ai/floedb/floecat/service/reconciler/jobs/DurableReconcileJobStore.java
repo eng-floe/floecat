@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -1689,7 +1690,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return effectiveScope.hasTableFilter()
           ? effectiveScope
           : ReconcileScope.of(
-              List.of(), tableTask.destinationTableId(), effectiveScope.destinationStatsRequests());
+              List.of(),
+              tableTask.destinationTableId(),
+              effectiveScope.destinationCaptureRequests(),
+              effectiveScope.capturePolicy());
     }
     if (jobKind == ReconcileJobKind.PLAN_VIEW
         && viewTask != null
@@ -1707,9 +1711,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         throw new IllegalArgumentException(
             "view task destinationNamespaceId does not match scope destinationNamespaceIds");
       }
-      if (effectiveScope.hasTableFilter() || effectiveScope.hasStatsRequestFilter()) {
+      if (effectiveScope.hasTableFilter() || effectiveScope.hasCaptureRequestFilter()) {
         throw new IllegalArgumentException(
-            "view task destinationViewId cannot be combined with table or stats scope");
+            "view task destinationViewId cannot be combined with table or capture scope");
       }
       return effectiveScope.hasViewFilter()
           ? effectiveScope
@@ -1772,12 +1776,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
-    String statsRequests =
-        scope.destinationStatsRequests().stream()
-            .map(DurableReconcileJobStore::canonicalStatsRequest)
+    String captureRequests =
+        scope.destinationCaptureRequests().stream()
+            .map(DurableReconcileJobStore::canonicalCaptureRequest)
             .sorted()
             .reduce((a, b) -> a + "," + b)
             .orElse("");
+    String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
             ? ""
@@ -1795,9 +1800,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .scalar(
             "job_kind", (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR.name() : jobKind.name()))
         .scalar("full_rescan", fullRescan)
-        .scalar(
-            "capture_mode",
-            captureMode == null ? CaptureMode.METADATA_AND_STATS.name() : captureMode.name())
+        .scalar("capture_mode", java.util.Objects.requireNonNull(captureMode, "captureMode").name())
         .scalar("table_task.source_namespace", tableTask == null ? "" : tableTask.sourceNamespace())
         .scalar("table_task.source_table", tableTask == null ? "" : tableTask.sourceTable())
         .scalar(
@@ -1848,7 +1851,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .scalar("scope.namespaces", namespaces)
         .scalar("scope.table", table)
         .scalar("scope.view", scope.destinationViewId() == null ? "" : scope.destinationViewId())
-        .scalar("scope.stats_requests", statsRequests)
+        .scalar("scope.capture_requests", captureRequests)
+        .scalar("scope.capture_policy", capturePolicy)
         .scalar("policy.execution_class", policy.executionClass().name())
         .scalar("policy.lane", policy.lane())
         .map("policy.attributes", policy.attributes())
@@ -1904,7 +1908,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
-  private static String canonicalStatsRequest(ReconcileScope.ScopedStatsRequest request) {
+  private static String canonicalCaptureRequest(ReconcileScope.ScopedCaptureRequest request) {
     if (request == null) {
       return "";
     }
@@ -1917,6 +1921,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         + request.targetSpec()
         + "|"
         + selectors;
+  }
+
+  private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
+    if (policy == null || policy.isEmpty()) {
+      return "";
+    }
+    String columns =
+        policy.columns().stream()
+            .map(
+                column ->
+                    column.selector() + ":" + column.captureStats() + ":" + column.captureIndex())
+            .sorted()
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
+    String outputs =
+        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
+    return columns + "|" + outputs;
   }
 
   private static String urlEncode(String value) {
@@ -2000,7 +2021,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String destinationTableId;
     public String destinationViewId;
     public List<String> destinationNamespaceIds = List.of();
-    public List<ReconcileScope.ScopedStatsRequest> destinationStatsRequests = List.of();
+    public List<ReconcileScope.ScopedCaptureRequest> destinationCaptureRequests = List.of();
+    public List<ReconcileCapturePolicy.Column> capturePolicyColumns = List.of();
+    public List<String> capturePolicyOutputs = List.of();
     public String state;
     public String message;
     public long startedAtMs;
@@ -2055,7 +2078,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.jobKind = (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind).name();
       rec.parentJobId = parentJobId == null ? "" : parentJobId.trim();
       rec.fullRescan = fullRescan;
-      rec.captureMode = (captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode).name();
+      rec.captureMode = java.util.Objects.requireNonNull(captureMode, "captureMode").name();
       ReconcileExecutionPolicy policy =
           executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
       rec.executionClass = policy.executionClass().name();
@@ -2101,7 +2124,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.destinationNamespaceIds = scope.destinationNamespaceIds();
       rec.destinationTableId = scope.destinationTableId();
       rec.destinationViewId = scope.destinationViewId();
-      rec.destinationStatsRequests = scope.destinationStatsRequests();
+      rec.destinationCaptureRequests = scope.destinationCaptureRequests();
+      rec.capturePolicyColumns = scope.capturePolicy().columns();
+      rec.capturePolicyOutputs = scope.capturePolicy().outputs().stream().map(Enum::name).toList();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -2116,18 +2141,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     CaptureMode captureMode() {
       if (captureMode == null || captureMode.isBlank()) {
-        return CaptureMode.METADATA_AND_STATS;
+        throw new IllegalStateException("reconcile job missing capture mode");
       }
       try {
         return CaptureMode.valueOf(captureMode);
       } catch (IllegalArgumentException ignored) {
-        return CaptureMode.METADATA_AND_STATS;
+        throw new IllegalStateException("reconcile job has invalid capture mode: " + captureMode);
       }
     }
 
     ReconcileScope toScope() {
       return ReconcileScope.of(
-          destinationNamespaceIds, destinationTableId, destinationViewId, destinationStatsRequests);
+          destinationNamespaceIds,
+          destinationTableId,
+          destinationViewId,
+          destinationCaptureRequests,
+          ReconcileCapturePolicy.of(
+              capturePolicyColumns,
+              capturePolicyOutputs.stream()
+                  .map(ReconcileCapturePolicy.Output::valueOf)
+                  .collect(java.util.stream.Collectors.toSet())));
     }
 
     ReconcileJobKind jobKind() {

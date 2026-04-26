@@ -39,10 +39,11 @@ The current job model is split by responsibility:
   4. Instantiates the connector via `ConnectorFactory`.
   5. Handles incremental vs full-rescan logic.
   6. Supports explicit capture modes:
-     - `METADATA_ONLY`: advances catalog, table, view, and snapshot metadata without writing stats.
-     - `STATS_ONLY`: routes batched snapshot-target capture through the stats control plane.
-     - `METADATA_AND_STATS`: ingests metadata and enqueues scoped `STATS_ONLY` follow-up jobs only
-       for tables covered by the scoped stats filter.
+     - `METADATA_ONLY`: advances catalog, table, view, and snapshot metadata without capture.
+     - `CAPTURE_ONLY`: captures stats / index artifacts for explicitly scoped destination tables
+       without reconciling view metadata.
+     - `METADATA_AND_CAPTURE`: ingests metadata and runs capture for matching table work in the same
+       job tree.
 - **Planning executors**:
   - `ConnectorPlanningReconcileExecutor` handles `PLAN_CONNECTOR`.
   - `DefaultReconcileExecutor` handles `PLAN_TABLE` and `PLAN_VIEW`.
@@ -58,8 +59,8 @@ The current job model is split by responsibility:
 While the reconciler itself runs as an internal Quarkus app, it exposes behavior through the
 reconcile control RPCs:
 
-- `ReconcileControl.StartCapture(connector_id, full_rescan)`: enqueues a top-level
-  `PLAN_CONNECTOR` job via `ReconcileJobStore`.
+- `ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)`: enqueues a
+  top-level `PLAN_CONNECTOR` job via `ReconcileJobStore`.
 - `ReconcileControl.CaptureNow(...)`: uses the same split path, but waits for the aggregated
   outcome of the top-level plan job plus any child planning/execution jobs.
 - `ReconcileControl.GetReconcileJob(job_id)` / `ListReconcileJobs(...)`: expose both top-level and
@@ -73,8 +74,9 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
 - **Statistics ingestion**: stats persistence is centralized behind the stats control plane
-  (`StatsCaptureControlPlane` / orchestrator). `STATS_ONLY` runs route capture through registry
-  engines. `METADATA_AND_STATS` schedules those captures asynchronously via follow-up jobs.
+  (`StatsCaptureControlPlane` / orchestrator). `CAPTURE_ONLY` routes capture through registry
+  engines without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata reconciliation
+  and capture within the same planner/executor job tree.
 - **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
   `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. Child `EXEC_FILE_GROUP`
   jobs reference the parent plan by `parentJobId`.
@@ -92,10 +94,13 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.
 - **Mode-aware behavior**:
-  - in `STATS_ONLY`, destination-table misses are treated as skip/no-op rather than job-fatal
+  - in `CAPTURE_ONLY`, destination-table misses are treated as skip/no-op rather than job-fatal
     errors.
-  - in `METADATA_AND_STATS`, follow-up `STATS_ONLY` jobs are only enqueued for tables that actually
-    match the scoped stats filter.
+  - `CAPTURE_ONLY` is table-scoped: view scope is rejected, and scoped capture requests must
+    resolve to explicit destination table IDs.
+  - in `METADATA_AND_CAPTURE`, planner/executor availability is validated up front based on scope:
+    table scope requires `PLAN_TABLE`, view scope requires `PLAN_VIEW`, and broad metadata reconcile
+    requires both.
 - **Plan failure behavior**: if a parent plan job fails or is cancelled after enqueuing child jobs,
   the scheduler cancels those children.
 - **View reconciliation semantics**: reconcile is current-state, not history-preserving. When an
@@ -128,7 +133,6 @@ Connector StartCapture / CaptureNow
           → ensure destination table metadata
           → enumerate snapshots via FloecatConnector
           → enqueue PLAN_SNAPSHOT children
-          → optionally enqueue scoped STATS_ONLY follow-up only for matching tables
       → if PLAN_VIEW:
           → describeView (or listViewDescriptors fallback)
           → ensure destination namespace exists
@@ -165,9 +169,13 @@ instance.
   planning remains separate behind `ScanBundleService`.
 
 ## Examples & Scenarios
-- **Full rescan**: operator triggers `connector trigger demo-glue --full`. The job store enqueues a
-  full `PLAN_CONNECTOR` job, the scheduler leases it, and the reconciler walks connector discovery,
-  table planning, snapshot planning, and file-group execution across the full upstream history.
+- **Full metadata rescan**: operator triggers
+  `connector trigger demo-glue --full --mode metadata-only`. The job store enqueues a
+  full `PLAN_CONNECTOR` job, the scheduler leases it, and the reconciler walks connector discovery
+  and metadata planning across the full upstream history.
+- **Incremental capture run**: operator triggers
+  `connector trigger demo-glue --capture stats`. The reconcile path uses the default
+  `metadata-and-capture` mode and captures table/file/column stats for matching table work.
 - **Incremental run**: without `--full`, `ReconcilerService` restricts its work to the connector's
   configured `source.table` (if set) and only processes newly discovered snapshots.
 

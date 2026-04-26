@@ -31,6 +31,8 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Map;
@@ -100,53 +102,15 @@ public interface ReconcilerBackend {
   }
 
   /**
-   * Captures file-target stats for one planned file group.
+   * Captures requested outputs for one planned file group.
    *
-   * <p>Default behavior returns an empty result so older or remote backends can opt in
-   * incrementally.
+   * <p>This is the unified reconcile/executor-facing entrypoint for file-group scoped stats and
+   * index capture. Implementations may return stats records, page-index rows, pre-materialized
+   * staged artifacts, or any combination that satisfies the request.
    */
-  default List<TargetStatsRecord> capturePlannedFileGroupStats(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    return List.of();
-  }
-
-  /**
-   * Captures page-index rows for one planned file group.
-   *
-   * <p>Default behavior returns an empty result so older or remote backends can opt in
-   * incrementally.
-   */
-  default List<FloecatConnector.ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId, List<String> plannedFilePaths) {
-    return List.of();
-  }
-
-  /**
-   * Materializes staged index artifacts for one planned file group.
-   *
-   * <p>The returned artifacts must not be durably published until {@link #putIndexArtifacts} is
-   * invoked. Default behavior returns an empty result so older or remote backends can opt in
-   * incrementally.
-   */
-  default List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats) {
-    return List.of();
-  }
-
-  /** Materializes staged index artifacts using explicitly captured page-index rows. */
-  default List<StagedIndexArtifact> materializePlannedFileGroupIndexArtifacts(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> plannedFilePaths,
-      List<TargetStatsRecord> stats,
-      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
-    return materializePlannedFileGroupIndexArtifacts(
-        ctx, tableId, snapshotId, plannedFilePaths, stats);
+  default CaptureEngineResult capturePlannedFileGroup(
+      ReconcileContext ctx, PlannedFileGroupCaptureRequest request) {
+    return CaptureEngineResult.empty();
   }
 
   /** Returns whether the snapshot has persisted stats for a specific target kind. */
@@ -174,6 +138,20 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<StatsTarget> targets);
 
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
+
+  /**
+   * Returns whether ready index artifacts exist for all requested file paths in the snapshot.
+   *
+   * <p>This is intentionally file-path scoped so reconciler planning can decide whether snapshot-
+   * wide page-index work is already complete. Implementations should return {@code false} when any
+   * file path is missing an index artifact or when completeness cannot be proven.
+   */
+  boolean indexArtifactsCapturedForFilePaths(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> filePaths,
+      Set<String> selectors);
 
   default void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {}
 

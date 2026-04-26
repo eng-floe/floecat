@@ -17,10 +17,12 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -33,7 +35,10 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -337,12 +342,13 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
       if (context.shouldStop().getAsBoolean()) {
         break;
       }
+      ReconcileScope fileGroupScope = effectiveFileGroupScope(scope, fileGroupTask);
       jobs.enqueueFileGroupExecution(
           lease.accountId,
           lease.connectorId,
           lease.fullRescan,
           lease.captureMode,
-          scope,
+          fileGroupScope,
           fileGroupTask.asReference(),
           executionPolicy,
           lease.jobId,
@@ -359,5 +365,99 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
             .build();
     return new ReconcileContext(
         "reconciler-job-" + lease.jobId, principal, id(), Instant.now(), Optional.empty());
+  }
+
+  private static ReconcileScope effectiveFileGroupScope(
+      ReconcileScope baseScope, ReconcileFileGroupTask fileGroupTask) {
+    if (baseScope == null || !baseScope.hasCaptureRequestFilter() || fileGroupTask == null) {
+      return baseScope == null ? ReconcileScope.empty() : baseScope;
+    }
+    List<ReconcileScope.ScopedCaptureRequest> snapshotRequests =
+        baseScope.destinationCaptureRequests().stream()
+            .filter(request -> request != null)
+            .filter(request -> fileGroupTask.tableId().equals(request.tableId()))
+            .filter(request -> fileGroupTask.snapshotId() == request.snapshotId())
+            .toList();
+    if (snapshotRequests.isEmpty()) {
+      return baseScope;
+    }
+    ReconcileCapturePolicy capturePolicy =
+        mergeCapturePolicy(baseScope.capturePolicy(), snapshotRequests);
+    return ReconcileScope.of(
+        baseScope.destinationNamespaceIds(),
+        baseScope.destinationTableId(),
+        baseScope.destinationViewId(),
+        snapshotRequests,
+        capturePolicy);
+  }
+
+  private static ReconcileCapturePolicy mergeCapturePolicy(
+      ReconcileCapturePolicy basePolicy,
+      List<ReconcileScope.ScopedCaptureRequest> snapshotRequests) {
+    LinkedHashMap<String, ReconcileCapturePolicy.Column> columns = new LinkedHashMap<>();
+    LinkedHashSet<ReconcileCapturePolicy.Output> outputs = new LinkedHashSet<>();
+    if (basePolicy != null) {
+      basePolicy.columns().forEach(column -> columns.put(column.selector(), column));
+      outputs.addAll(basePolicy.outputs());
+    }
+    for (ReconcileScope.ScopedCaptureRequest request : snapshotRequests) {
+      if (request == null) {
+        continue;
+      }
+      StatsTarget target =
+          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec())
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "Invalid scoped capture target spec for table="
+                              + request.tableId()
+                              + " snapshot="
+                              + request.snapshotId()
+                              + " spec="
+                              + request.targetSpec()));
+      switch (target.getTargetCase()) {
+        case TABLE -> {}
+        case COLUMN -> {
+          String selector = "#" + target.getColumn().getColumnId();
+          selectorPolicy(basePolicy, outputs, selector)
+              .ifPresent(column -> columns.putIfAbsent(selector, column));
+        }
+        case FILE, EXPRESSION, TARGET_NOT_SET -> {
+          // FILE is intentionally not an execution scope, and EXPRESSION remains a recognized
+          // placeholder target until unified capture grows explicit expression support.
+        }
+      }
+      for (String selector : request.columnSelectors()) {
+        if (selector == null || selector.isBlank()) {
+          continue;
+        }
+        selectorPolicy(basePolicy, outputs, selector)
+            .ifPresent(column -> columns.putIfAbsent(selector, column));
+      }
+    }
+    return ReconcileCapturePolicy.of(new ArrayList<>(columns.values()), Set.copyOf(outputs));
+  }
+
+  private static Optional<ReconcileCapturePolicy.Column> selectorPolicy(
+      ReconcileCapturePolicy basePolicy,
+      Set<ReconcileCapturePolicy.Output> outputs,
+      String selector) {
+    String normalized = selector == null ? "" : selector.trim();
+    if (normalized.isBlank()) {
+      return Optional.empty();
+    }
+    if (basePolicy != null) {
+      for (ReconcileCapturePolicy.Column existing : basePolicy.columns()) {
+        if (existing.selector().equals(normalized)) {
+          return Optional.of(existing);
+        }
+      }
+    }
+    boolean captureStats = outputs.contains(ReconcileCapturePolicy.Output.COLUMN_STATS);
+    boolean captureIndex = outputs.contains(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+    if (!captureStats && !captureIndex) {
+      return Optional.empty();
+    }
+    return Optional.of(new ReconcileCapturePolicy.Column(normalized, captureStats, captureIndex));
   }
 }

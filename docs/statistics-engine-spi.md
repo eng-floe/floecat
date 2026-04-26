@@ -60,7 +60,7 @@ Service wiring:
 - `StatsOrchestrator` is the internal resolution entrypoint for planner/query reads.
 - `StatsEngineRegistry` handles capability/priority engine selection for compute capture.
 - `StatsCaptureControlPlane` is the explicit capture entrypoint for control-plane callers
-  (for example reconciler `STATS_ONLY` routing); current service implementation delegates to
+  (for example reconciler `CAPTURE_ONLY` routing); current service implementation delegates to
   `StatsOrchestrator.triggerBatch(batchRequest)`.
 - Public read/list RPCs remain `StatsStore` authoritative reads.
 
@@ -109,7 +109,7 @@ order.
 1. checks `StatsStore` for an existing record
 2. for `SYNC`, calls `StatsEngineRegistry.captureBatch()` on miss (single-item requests are
    wrapped via `StatsCaptureBatchRequest.of(request)`)
-3. if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped `STATS_ONLY` follow-up carrying the
+3. if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped `CAPTURE_ONLY` follow-up carrying the
    unresolved table-scoped stats requests and returns empty for unresolved items
 
 Current enqueue policy:

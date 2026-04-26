@@ -48,6 +48,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.impl.FileGroupIndexArtifactStager;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
@@ -256,6 +257,31 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
+  void lookupDestinationViewMetadataPreservesSourceConnectorAccountId() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT)
+            .setId("view-source-1")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    View view =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .putProperties(ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY, "src_cat.src_ns")
+            .putProperties(ReconcilerBackend.SOURCE_NAME_PROPERTY, "orders_view")
+            .putProperties(ReconcilerBackend.SOURCE_CONNECTOR_ID_PROPERTY, connectorId.getId())
+            .build();
+    viewRepo.put(view, MutationMeta.newBuilder().setPointerVersion(1).setEtag("v1").build());
+
+    var metadata = backend.lookupDestinationViewMetadata(ctx, viewId).orElseThrow();
+
+    assertThat(metadata.sourceConnectorId()).isEqualTo(connectorId);
+  }
+
+  @Test
   void snapshotPinsReadFromRepositoryAndCanBeIngested() {
     Snapshot snapshot =
         Snapshot.newBuilder()
@@ -421,8 +447,7 @@ class DirectReconcilerBackendTest {
             null);
 
     List<ReconcilerBackend.StagedIndexArtifact> artifacts =
-        backend.materializePlannedFileGroupIndexArtifacts(
-            ctx,
+        FileGroupIndexArtifactStager.stage(
             tableId,
             SNAPSHOT_ID,
             List.of("/data/file.parquet"),

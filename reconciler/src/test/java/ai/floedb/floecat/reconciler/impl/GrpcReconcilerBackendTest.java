@@ -55,6 +55,12 @@ import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngine;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import io.grpc.Status;
 import java.time.Duration;
 import java.time.Instant;
@@ -377,21 +383,54 @@ class GrpcReconcilerBackendTest {
     when(backend.connector.getConnector(any()))
         .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
 
-    FloecatConnector source = mock(FloecatConnector.class);
     List<TargetStatsRecord> stats = List.of(TargetStatsRecord.getDefaultInstance());
-    when(source.capturePlannedFileGroupStats(
-            anyString(), anyString(), any(), anyLong(), any(), any(), any()))
-        .thenReturn(stats);
+    FloecatConnector source = mock(FloecatConnector.class);
     backend.connectorOpener = cfg -> source;
+    CaptureEngine captureEngine =
+        new CaptureEngine() {
+          @Override
+          public String id() {
+            return "test";
+          }
 
-    List<TargetStatsRecord> result =
-        backend.capturePlannedFileGroupStats(
-            reconcileContext(), tableId, 44L, List.of("s3://bucket/path/file.parquet"));
+          @Override
+          public int priority() {
+            return 0;
+          }
 
-    assertThat(result).isEqualTo(stats);
-    verify(source)
-        .capturePlannedFileGroupStats(
-            anyString(), anyString(), any(), anyLong(), any(), any(), any());
+          @Override
+          public CaptureEngineCapabilities capabilities() {
+            return CaptureEngineCapabilities.of(Set.of(), false);
+          }
+
+          @Override
+          public boolean supports(CaptureEngineRequest request) {
+            return true;
+          }
+
+          @Override
+          public Optional<CaptureEngineResult> capture(CaptureEngineRequest request) {
+            return Optional.of(CaptureEngineResult.of(stats, List.of(), List.of()));
+          }
+        };
+    backend.captureEngineRegistry = new CaptureEngineRegistry(List.of(captureEngine));
+
+    CaptureEngineResult result =
+        backend.capturePlannedFileGroup(
+            reconcileContext(),
+            PlannedFileGroupCaptureRequest.of(
+                "plan-1",
+                "group-1",
+                tableId,
+                44L,
+                List.of("s3://bucket/path/file.parquet"),
+                Set.of(),
+                Set.of(),
+                Set.of(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE),
+                false));
+
+    assertThat(result.statsRecords()).isEqualTo(stats);
+    verify(source).close();
   }
 
   @Test

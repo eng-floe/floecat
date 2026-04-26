@@ -343,50 +343,39 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   @Override
-  public List<TargetStatsRecord> capturePlannedFileGroupStats(
+  public FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
-      return List.of();
+      return FileGroupCaptureResult.empty();
     }
     Table table = loadTable(namespaceFq, tableName);
     Snapshot snapshot = table.snapshot(snapshotId);
     if (snapshot == null) {
-      return List.of();
+      return FileGroupCaptureResult.empty();
     }
-    return buildTargetStats(
-        table,
-        destinationTableId,
-        snapshot,
-        includeColumns,
-        includeTargetKinds == null || includeTargetKinds.isEmpty()
-            ? Set.of(StatsTargetKind.FILE)
-            : includeTargetKinds,
-        plannedFilePaths);
-  }
-
-  @Override
-  public List<ParquetPageIndexEntry> capturePlannedFileGroupPageIndexEntries(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths) {
-    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
-      return List.of();
-    }
-    Table table = loadTable(namespaceFq, tableName);
-    Snapshot snapshot = table.snapshot(snapshotId);
-    if (snapshot == null) {
-      return List.of();
-    }
-    var reader = ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path));
-    return reader.readEntries(plannedFilePaths);
+    List<TargetStatsRecord> stats =
+        buildTargetStats(
+            table,
+            destinationTableId,
+            snapshot,
+            includeColumns,
+            includeTargetKinds == null || includeTargetKinds.isEmpty()
+                ? Set.of(StatsTargetKind.FILE)
+                : includeTargetKinds,
+            plannedFilePaths);
+    List<ParquetPageIndexEntry> pageIndexEntries =
+        captureIndexes
+            ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
+                .readEntries(plannedFilePaths)
+            : List.of();
+    return FileGroupCaptureResult.of(stats, pageIndexEntries);
   }
 
   @Override
