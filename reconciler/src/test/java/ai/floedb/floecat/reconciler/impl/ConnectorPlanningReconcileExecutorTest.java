@@ -546,7 +546,17 @@ class ConnectorPlanningReconcileExecutorTest {
             ReconcileTableTask.empty(),
             "");
 
-    when(reconcilerService.planTableTasks(any(), any(), eq(strictScope), any()))
+    when(reconcilerService.planTableTasks(
+            any(),
+            any(),
+            argThat(
+                plannedScope ->
+                    plannedScope != null
+                        && "table-1".equals(plannedScope.destinationTableId())
+                        && plannedScope.destinationNamespaceIds().isEmpty()
+                        && plannedScope.destinationCaptureRequests().equals(List.of(scopedRequest))
+                        && plannedScope.capturePolicy().equals(scope.capturePolicy())),
+            any()))
         .thenReturn(List.of(plannedTask));
 
     var result =
@@ -572,7 +582,13 @@ class ConnectorPlanningReconcileExecutorTest {
             eq("connector-1"),
             anyBoolean(),
             eq(CaptureMode.CAPTURE_ONLY),
-            eq(strictScope),
+            argThat(
+                plannedScope ->
+                    plannedScope != null
+                        && "table-1".equals(plannedScope.destinationTableId())
+                        && plannedScope.destinationNamespaceIds().isEmpty()
+                        && plannedScope.destinationCaptureRequests().equals(List.of(scopedRequest))
+                        && plannedScope.capturePolicy().equals(scope.capturePolicy())),
             eq(plannedTask),
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
