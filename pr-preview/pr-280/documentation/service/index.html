@@ -1981,8 +1981,8 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   wires reconciliation job submission, and exposes <code>ValidateConnector</code> + <code>StartCapture</code>.
   <code>CaptureNow</code> maps to reconciler capture modes:</li>
 <li>metadata only -&gt; <code>METADATA_ONLY</code></li>
-<li>stats only -&gt; <code>STATS_ONLY</code></li>
-<li>metadata plus stats -&gt; <code>METADATA_AND_STATS</code></li>
+<li>capture only -&gt; <code>CAPTURE_ONLY</code></li>
+<li>metadata plus capture -&gt; <code>METADATA_AND_CAPTURE</code></li>
 <li><strong>QueryServiceImpl</strong> – Administers query leases (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>,
   <code>GetQuery</code>) and exposes <code>FetchScanBundle</code> so planners can request connector scan metadata on
   demand.</li>
@@ -2036,13 +2036,13 @@ intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention
 terminal jobs. <code>SeedRunner</code>
 populates demo data when <code>floecat.seed.enabled=true</code>.</p>
 <p>For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
-using <code>METADATA_AND_STATS</code>.</p>
-<p>This ingests metadata/snapshots first and enqueues scoped <code>STATS_ONLY</code> follow-up capture for stats.
+using <code>METADATA_AND_CAPTURE</code>.</p>
+<p>This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
 Follow-up payloads now use reconcile scoped stats requests
 (<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>, <code>column_selectors</code>) so background capture stays targeted
 without depending on separate unresolved snapshot-id and target lists.
-When a <code>STATS_ONLY</code> follow-up batch captures only a subset of requested items, the reconcile result
+When a <code>CAPTURE_ONLY</code> batch captures only a subset of requested items, the reconcile result
 is degraded; when none of the requested items are captured, the reconcile result fails instead of
 silently reporting zero processed stats.</p>
 <h3 id="statistics-streaming-semantics">Statistics streaming semantics<a class="headerlink" href="#statistics-streaming-semantics" title="Permanent link">&para;</a></h3>

@@ -1780,10 +1780,11 @@ file-scoped execution work do not block public gRPC threads. The service submits
 <li>Instantiates the connector via <code>ConnectorFactory</code>.</li>
 <li>Handles incremental vs full-rescan logic.</li>
 <li>Supports explicit capture modes:<ul>
-<li><code>METADATA_ONLY</code>: advances catalog, table, view, and snapshot metadata without writing stats.</li>
-<li><code>STATS_ONLY</code>: routes batched snapshot-target capture through the stats control plane.</li>
-<li><code>METADATA_AND_STATS</code>: ingests metadata and enqueues scoped <code>STATS_ONLY</code> follow-up jobs only
-   for tables covered by the scoped stats filter.</li>
+<li><code>METADATA_ONLY</code>: advances catalog, table, view, and snapshot metadata without capture.</li>
+<li><code>CAPTURE_ONLY</code>: captures stats / index artifacts for explicitly scoped destination tables
+   without reconciling view metadata.</li>
+<li><code>METADATA_AND_CAPTURE</code>: ingests metadata and runs capture for matching table work in the same
+   job tree.</li>
 </ul>
 </li>
 <li><strong>Planning executors</strong>:</li>
@@ -1801,8 +1802,8 @@ file-scoped execution work do not block public gRPC threads. The service submits
 <p>While the reconciler itself runs as an internal Quarkus app, it exposes behavior through the
 reconcile control RPCs:</p>
 <ul>
-<li><code>ReconcileControl.StartCapture(connector_id, full_rescan)</code>: enqueues a top-level
-  <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>.</li>
+<li><code>ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)</code>: enqueues a
+  top-level <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>.</li>
 <li><code>ReconcileControl.CaptureNow(...)</code>: uses the same split path, but waits for the aggregated
   outcome of the top-level plan job plus any child planning/execution jobs.</li>
 <li><code>ReconcileControl.GetReconcileJob(job_id)</code> / <code>ListReconcileJobs(...)</code>: expose both top-level and
@@ -1816,8 +1817,9 @@ reconcile control RPCs:</p>
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   <code>ConnectorState</code> update or raises conflicts.</li>
 <li><strong>Statistics ingestion</strong>: stats persistence is centralized behind the stats control plane
-  (<code>StatsCaptureControlPlane</code> / orchestrator). <code>STATS_ONLY</code> runs route capture through registry
-  engines. <code>METADATA_AND_STATS</code> schedules those captures asynchronously via follow-up jobs.</li>
+  (<code>StatsCaptureControlPlane</code> / orchestrator). <code>CAPTURE_ONLY</code> routes capture through registry
+  engines without metadata reconciliation. <code>METADATA_AND_CAPTURE</code> performs metadata reconciliation
+  and capture within the same planner/executor job tree.</li>
 <li><strong>Snapshot planning persistence</strong>: the immutable snapshot plan is stored on the parent
   <code>PLAN_SNAPSHOT</code> job payload rather than in a separate plan repository. Child <code>EXEC_FILE_GROUP</code>
   jobs reference the parent plan by <code>parentJobId</code>.</li>
@@ -1835,10 +1837,13 @@ reconcile control RPCs:</p>
   <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.</li>
 <li><strong>Mode-aware behavior</strong>:</li>
-<li>in <code>STATS_ONLY</code>, destination-table misses are treated as skip/no-op rather than job-fatal
+<li>in <code>CAPTURE_ONLY</code>, destination-table misses are treated as skip/no-op rather than job-fatal
     errors.</li>
-<li>in <code>METADATA_AND_STATS</code>, follow-up <code>STATS_ONLY</code> jobs are only enqueued for tables that actually
-    match the scoped stats filter.</li>
+<li><code>CAPTURE_ONLY</code> is table-scoped: view scope is rejected, and scoped capture requests must
+    resolve to explicit destination table IDs.</li>
+<li>in <code>METADATA_AND_CAPTURE</code>, planner/executor availability is validated up front based on scope:
+    table scope requires <code>PLAN_TABLE</code>, view scope requires <code>PLAN_VIEW</code>, and broad metadata reconcile
+    requires both.</li>
 <li><strong>Plan failure behavior</strong>: if a parent plan job fails or is cancelled after enqueuing child jobs,
   the scheduler cancels those children.</li>
 <li><strong>View reconciliation semantics</strong>: reconcile is current-state, not history-preserving. When an
@@ -1871,7 +1876,6 @@ reconcile control RPCs:</p>
           → ensure destination table metadata
           → enumerate snapshots via FloecatConnector
           → enqueue PLAN_SNAPSHOT children
-          → optionally enqueue scoped STATS_ONLY follow-up only for matching tables
       → if PLAN_VIEW:
           → describeView (or listViewDescriptors fallback)
           → ensure destination namespace exists
@@ -1908,9 +1912,13 @@ instance.</p>
 </ul>
 <h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Full rescan</strong>: operator triggers <code>connector trigger demo-glue --full</code>. The job store enqueues a
-  full <code>PLAN_CONNECTOR</code> job, the scheduler leases it, and the reconciler walks connector discovery,
-  table planning, snapshot planning, and file-group execution across the full upstream history.</li>
+<li><strong>Full metadata rescan</strong>: operator triggers
+  <code>connector trigger demo-glue --full --mode metadata-only</code>. The job store enqueues a
+  full <code>PLAN_CONNECTOR</code> job, the scheduler leases it, and the reconciler walks connector discovery
+  and metadata planning across the full upstream history.</li>
+<li><strong>Incremental capture run</strong>: operator triggers
+  <code>connector trigger demo-glue --capture stats</code>. The reconcile path uses the default
+  <code>metadata-and-capture</code> mode and captures table/file/column stats for matching table work.</li>
 <li><strong>Incremental run</strong>: without <code>--full</code>, <code>ReconcilerService</code> restricts its work to the connector's
   configured <code>source.table</code> (if set) and only processes newly discovered snapshots.</li>
 </ul>
