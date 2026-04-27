@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -45,6 +46,7 @@ import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -549,6 +551,87 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueRepairsMissingSecondaryPointersForDedupedQueuedJob() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    var canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob job =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    String expectedReadyKey =
+        Keys.reconcileReadyPointerByDue(job.nextAttemptAtMs, job.accountId, job.laneKey, job.jobId);
+    job.readyPointerKey = "";
+    Pointer repairedCanonicalPointer =
+        overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
+
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    var lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
+
+    var readyPointer = store.pointerStore.get(expectedReadyKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(expectedReadyKey, readyPointer.getVersion()));
+
+    Pointer dedupePointer =
+        firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            dedupePointer.getKey(),
+            dedupePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(dedupePointer.getKey())
+                .setBlobUri(canonicalPointer.getBlobUri())
+                .setVersion(dedupePointer.getVersion() + 1)
+                .build()));
+
+    String dedupedJobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertEquals(jobId, dedupedJobId);
+    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+    assertTrue(store.pointerStore.get(expectedReadyKey).isPresent());
+    Pointer repairedDedupePointer =
+        firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
+    assertEquals(repairedCanonicalPointer.getBlobUri(), repairedDedupePointer.getBlobUri());
+
+    var lease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, lease.jobId);
+  }
+
+  @Test
+  void enqueuePreservesDedupeOwnershipWhenCanonicalPointerBlobIsMissing() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob job =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    Pointer advancedCanonicalPointer =
+        overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
+    assertTrue(store.blobStore.delete(advancedCanonicalPointer.getBlobUri()));
+
+    String dedupedJobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertEquals(jobId, dedupedJobId);
+    assertTrue(store.pointerStore.get(canonicalPointerKey).isPresent());
+  }
+
+  @Test
   void enqueuePreservesScopedCaptureRequests() {
     store.init();
     ReconcileScope scope =
@@ -998,5 +1081,35 @@ class DurableReconcileJobStoreTest {
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
     return new ReconcileScope.ScopedCaptureRequest(
         tableId, snapshotId, targetSpec, columnSelectors);
+  }
+
+  private Optional<Pointer> firstPointerWithPrefix(String prefix) {
+    StringBuilder next = new StringBuilder();
+    List<Pointer> pointers = store.pointerStore.listPointersByPrefix(prefix, 10, "", next);
+    return pointers.stream().findFirst();
+  }
+
+  private Pointer overwriteCanonicalRecordWithoutSync(
+      String canonicalPointerKey, DurableReconcileJobStore.StoredReconcileJob record) {
+    Pointer currentPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    String nextBlobUri =
+        Keys.reconcileJobBlobUri(
+            record.accountId, record.jobId, "test-manual-" + UUID.randomUUID());
+    assertDoesNotThrow(
+        () ->
+            store.blobStore.put(
+                nextBlobUri,
+                store.mapper.writeValueAsBytes(record),
+                "application/json; charset=UTF-8"));
+    Pointer nextPointer =
+        Pointer.newBuilder()
+            .setKey(canonicalPointerKey)
+            .setBlobUri(nextBlobUri)
+            .setVersion(currentPointer.getVersion() + 1L)
+            .build();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            canonicalPointerKey, currentPointer.getVersion(), nextPointer));
+    return nextPointer;
   }
 }

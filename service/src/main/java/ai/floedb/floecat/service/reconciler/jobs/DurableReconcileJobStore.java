@@ -1011,6 +1011,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return Optional.empty();
       }
 
+      if (!tryAcquireSnapshotLease(current, currentPointer.getBlobUri(), now)) {
+        if (readyPointerKey != null && !readyPointerKey.isBlank()) {
+          upsertReadyPointer(readyPointerKey, currentPointer.getBlobUri());
+        }
+        return Optional.empty();
+      }
+
       boolean cancelling = "JS_CANCELLING".equals(current.state);
       if (!cancelling) {
         current.state = "JS_RUNNING";
@@ -1040,6 +1047,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             mapper.writeValueAsBytes(current),
             "application/json; charset=" + StandardCharsets.UTF_8.name());
       } catch (Exception e) {
+        clearSnapshotLeaseIfOwned(current, currentPointer.getBlobUri());
         throw new IllegalStateException("Failed to persist leased reconcile job", e);
       }
 
@@ -1089,6 +1097,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 current.parentJobId()));
       }
 
+      clearSnapshotLeaseIfOwned(current, currentPointer.getBlobUri());
       blobStore.delete(nextBlobUri);
     }
 
@@ -1179,14 +1188,41 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return Optional.empty();
     }
 
-    if (pointerStore.get(Keys.reconcileJobPointerById(record.accountId, record.jobId)).isEmpty()) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(record.accountId, record.jobId);
+    Pointer canonicalPointer = pointerStore.get(canonicalPointerKey).orElse(null);
+    if (canonicalPointer == null) {
       pointerStore.compareAndDelete(dedupePointerKey, dedupePointer.getVersion());
       return Optional.empty();
+    }
+
+    var canonicalRecordOpt = readRecord(canonicalPointer);
+    if (canonicalRecordOpt.isEmpty()) {
+      LOG.errorf(
+          "Canonical reconcile job pointer exists but payload is missing for job %s canonical=%s"
+              + " blob=%s",
+          record.jobId, canonicalPointerKey, canonicalPointer.getBlobUri());
+      return Optional.of(record);
+    }
+    record = canonicalRecordOpt.get();
+
+    replacePointerBlobUriIfMatch(
+        dedupePointerKey, dedupePointer.getBlobUri(), canonicalPointer.getBlobUri());
+
+    if (!repairLookupPointer(record.jobId, canonicalPointer.getBlobUri())) {
+      LOG.warnf("Failed to repair reconcile lookup pointer for active job %s", record.jobId);
     }
 
     if (isTerminalState(record.state)) {
       pointerStore.compareAndDelete(dedupePointerKey, dedupePointer.getVersion());
       return Optional.empty();
+    }
+
+    if ("JS_QUEUED".equals(record.state)
+        && !hasValidReadyPointer(record.readyPointerKey, canonicalPointer.getBlobUri())
+        && !repairReadyPointer(record, canonicalPointer.getBlobUri())) {
+      LOG.warnf(
+          "Active queued reconcile job %s has no valid ready pointer and repair failed",
+          record.jobId);
     }
 
     return Optional.of(record);
@@ -1240,6 +1276,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
                 boolean wasCancelling = "JS_CANCELLING".equals(record.state);
                 clearLaneLeaseIfOwned(record, record.currentBlobUri);
+                clearSnapshotLeaseIfOwned(record, record.currentBlobUri);
                 record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
                 record.message =
                     wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
@@ -1403,12 +1440,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private boolean upsertReadyPointer(String readyPointerKey, String blobUri) {
+    return upsertBlobPointer(readyPointerKey, blobUri);
+  }
+
+  private boolean upsertBlobPointer(String pointerKey, String blobUri) {
     for (int i = 0; i < CAS_MAX; i++) {
-      Pointer existing = pointerStore.get(readyPointerKey).orElse(null);
+      Pointer existing = pointerStore.get(pointerKey).orElse(null);
       if (existing == null) {
         Pointer created =
-            Pointer.newBuilder().setKey(readyPointerKey).setBlobUri(blobUri).setVersion(1L).build();
-        if (pointerStore.compareAndSet(readyPointerKey, 0L, created)) {
+            Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(1L).build();
+        if (pointerStore.compareAndSet(pointerKey, 0L, created)) {
           return true;
         }
         continue;
@@ -1416,11 +1457,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
       Pointer next =
           Pointer.newBuilder()
-              .setKey(readyPointerKey)
+              .setKey(pointerKey)
               .setBlobUri(blobUri)
               .setVersion(existing.getVersion() + 1)
               .build();
-      if (pointerStore.compareAndSet(readyPointerKey, existing.getVersion(), next)) {
+      if (pointerStore.compareAndSet(pointerKey, existing.getVersion(), next)) {
         return true;
       }
     }
@@ -1452,6 +1493,104 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && record.jobId.equals(owner.get().jobId)
         && record.accountId.equals(owner.get().accountId)) {
       pointerStore.compareAndDelete(dedupeKey, existing.getVersion());
+    }
+  }
+
+  private boolean repairLookupPointer(String jobId, String blobUri) {
+    if (jobId == null || jobId.isBlank() || blobUri == null || blobUri.isBlank()) {
+      return false;
+    }
+    return upsertBlobPointer(Keys.reconcileJobLookupPointerById(jobId), blobUri);
+  }
+
+  private boolean hasValidReadyPointer(String readyPointerKey, String expectedBlobUri) {
+    if (readyPointerKey == null
+        || readyPointerKey.isBlank()
+        || expectedBlobUri == null
+        || expectedBlobUri.isBlank()) {
+      return false;
+    }
+    Pointer existing = pointerStore.get(readyPointerKey).orElse(null);
+    return existing != null && expectedBlobUri.equals(existing.getBlobUri());
+  }
+
+  private boolean repairReadyPointer(StoredReconcileJob record, String blobUri) {
+    if (record == null || blobUri == null || blobUri.isBlank()) {
+      return false;
+    }
+    long dueAt = record.nextAttemptAtMs > 0L ? record.nextAttemptAtMs : System.currentTimeMillis();
+    String readyPointerKey =
+        record.readyPointerKey != null && !record.readyPointerKey.isBlank()
+            ? record.readyPointerKey
+            : Keys.reconcileReadyPointerByDue(
+                dueAt, record.accountId, record.laneKey, record.jobId);
+    boolean repaired = upsertReadyPointer(readyPointerKey, blobUri);
+    if (repaired) {
+      record.readyPointerKey = readyPointerKey;
+    }
+    return repaired;
+  }
+
+  private boolean tryAcquireSnapshotLease(
+      StoredReconcileJob record, String expectedBlobUri, long now) {
+    String pointerKey = snapshotLeasePointerKey(record);
+    if (pointerKey.isBlank()) {
+      return true;
+    }
+    for (int i = 0; i < CAS_MAX; i++) {
+      Pointer existing = pointerStore.get(pointerKey).orElse(null);
+      if (existing == null) {
+        Pointer created =
+            Pointer.newBuilder()
+                .setKey(pointerKey)
+                .setBlobUri(expectedBlobUri)
+                .setVersion(1L)
+                .build();
+        if (pointerStore.compareAndSet(pointerKey, 0L, created)) {
+          return true;
+        }
+        continue;
+      }
+      if (expectedBlobUri.equals(existing.getBlobUri())) {
+        return true;
+      }
+      var owner = readRecordByBlobUri(existing.getBlobUri());
+      if (owner.isEmpty()) {
+        pointerStore.compareAndDelete(pointerKey, existing.getVersion());
+        continue;
+      }
+      if (record.jobId.equals(owner.get().jobId)
+          && record.accountId.equals(owner.get().accountId)) {
+        return true;
+      }
+      if (!hasActiveSnapshotLease(owner.get(), now)) {
+        pointerStore.compareAndDelete(pointerKey, existing.getVersion());
+        continue;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  private void clearSnapshotLeaseIfOwned(StoredReconcileJob record, String expectedBlobUri) {
+    String pointerKey = snapshotLeasePointerKey(record);
+    if (pointerKey.isBlank()) {
+      return;
+    }
+    Pointer existing = pointerStore.get(pointerKey).orElse(null);
+    if (existing == null) {
+      return;
+    }
+    if (expectedBlobUri != null
+        && !expectedBlobUri.isBlank()
+        && !expectedBlobUri.equals(existing.getBlobUri())) {
+      return;
+    }
+    var owner = readRecordByBlobUri(existing.getBlobUri());
+    if (owner.isPresent()
+        && record.jobId.equals(owner.get().jobId)
+        && record.accountId.equals(owner.get().accountId)) {
+      pointerStore.compareAndDelete(pointerKey, existing.getVersion());
     }
   }
 
@@ -1517,6 +1656,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (hasActiveLaneLease(record, System.currentTimeMillis())) {
       replacePointerBlobUriIfMatch(
           Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey), oldBlobUri, newBlobUri);
+    }
+    if (hasActiveSnapshotLease(record, System.currentTimeMillis())) {
+      String snapshotLeasePointer = snapshotLeasePointerKey(record);
+      if (!snapshotLeasePointer.isBlank()) {
+        replacePointerBlobUriIfMatch(snapshotLeasePointer, oldBlobUri, newBlobUri);
+      }
     }
     if (record.dedupeKey != null && !record.dedupeKey.isBlank() && !isTerminalState(record.state)) {
       String dedupePointer =
@@ -1601,6 +1746,28 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long backoffMs(int attempts) {
     long base = baseBackoffMs * (1L << Math.min(8, Math.max(0, attempts - 1)));
     return Math.min(maxBackoffMs, base);
+  }
+
+  private boolean hasActiveSnapshotLease(StoredReconcileJob record, long now) {
+    return record != null
+        && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+        && record.snapshotTaskTableId != null
+        && !record.snapshotTaskTableId.isBlank()
+        && record.snapshotTaskSnapshotId >= 0L
+        && ("JS_RUNNING".equals(record.state) || "JS_CANCELLING".equals(record.state))
+        && record.leaseExpiresAtMs > now;
+  }
+
+  private String snapshotLeasePointerKey(StoredReconcileJob record) {
+    if (record == null
+        || record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+        || record.snapshotTaskTableId == null
+        || record.snapshotTaskTableId.isBlank()
+        || record.snapshotTaskSnapshotId < 0L) {
+      return "";
+    }
+    return Keys.reconcileSnapshotLeasePointer(
+        record.snapshotTaskTableId, record.snapshotTaskSnapshotId);
   }
 
   private boolean hasActiveLease(

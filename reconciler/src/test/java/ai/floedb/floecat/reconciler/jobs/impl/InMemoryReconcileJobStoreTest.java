@@ -258,6 +258,43 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextPreventsConcurrentSnapshotPlanningForSameTableSnapshot() {
+    var store = new InMemoryReconcileJobStore();
+
+    String firstJob =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String secondJob =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn-b",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
   void markFailedRequeuesAndEventuallyTransitionsToFailed() throws Exception {
     String maxAttemptsKey = "floecat.reconciler.job-store.max-attempts";
     String baseBackoffKey = "floecat.reconciler.job-store.base-backoff-ms";

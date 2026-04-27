@@ -64,6 +64,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> activeJobIdByDedupeKey = new ConcurrentHashMap<>();
   private final Map<String, String> laneKeysByJobId = new ConcurrentHashMap<>();
   private final Map<String, String> activeJobIdByLaneKey = new ConcurrentHashMap<>();
+  private final Map<String, String> activeJobIdBySnapshotLeaseKey = new ConcurrentHashMap<>();
   private final Map<String, Integer> attemptsByJobId = new ConcurrentHashMap<>();
   private final Map<String, Long> nextAttemptAtMs = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
@@ -437,6 +438,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           continue;
         }
       }
+      if (!tryAcquireSnapshotLease(job, jobId, now)) {
+        ready.add(jobId);
+        continue;
+      }
 
       if (leased.add(jobId)) {
         String leaseEpoch = UUID.randomUUID().toString();
@@ -494,6 +499,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 leasedJob.fileGroupTask,
                 leasedJob.parentJobId));
       }
+      releaseSnapshotLease(jobId);
     }
     return Optional.empty();
   }
@@ -627,6 +633,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
+          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -684,6 +691,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
+          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -804,6 +812,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.parentJobId);
           }
           releaseLane(id);
+          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -879,6 +888,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
+          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -946,6 +956,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               return job;
             }
             releaseLane(id);
+            releaseSnapshotLease(id);
             leaseEpochs.remove(id);
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {
@@ -1031,6 +1042,48 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  private boolean tryAcquireSnapshotLease(ReconcileJob job, String jobId, long nowMs) {
+    String snapshotLeaseKey = snapshotLeaseKey(job);
+    if (snapshotLeaseKey.isBlank()) {
+      return true;
+    }
+    while (true) {
+      String ownerJobId = activeJobIdBySnapshotLeaseKey.get(snapshotLeaseKey);
+      if (ownerJobId == null) {
+        if (activeJobIdBySnapshotLeaseKey.putIfAbsent(snapshotLeaseKey, jobId) == null) {
+          return true;
+        }
+        continue;
+      }
+      if (ownerJobId.equals(jobId)) {
+        return true;
+      }
+      if (hasLiveSnapshotLease(ownerJobId, nowMs)) {
+        return false;
+      }
+      activeJobIdBySnapshotLeaseKey.remove(snapshotLeaseKey, ownerJobId);
+    }
+  }
+
+  private boolean hasLiveSnapshotLease(String jobId, long nowMs) {
+    ReconcileJob job = jobs.get(jobId);
+    if (job == null || job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT) {
+      return false;
+    }
+    if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
+      return false;
+    }
+    return leaseExpiresAtMs.getOrDefault(jobId, 0L) > nowMs;
+  }
+
+  private void releaseSnapshotLease(String jobId) {
+    ReconcileJob job = jobs.get(jobId);
+    String snapshotLeaseKey = snapshotLeaseKey(job);
+    if (!snapshotLeaseKey.isBlank()) {
+      activeJobIdBySnapshotLeaseKey.remove(snapshotLeaseKey, jobId);
+    }
+  }
+
   private void clearDedupe(String jobId) {
     String dedupeKey = dedupeKeysByJobId.get(jobId);
     if (dedupeKey != null && !dedupeKey.isBlank()) {
@@ -1041,6 +1094,17 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private long backoffMs(int attempts) {
     long base = baseBackoffMs * (1L << Math.min(8, Math.max(0, attempts - 1)));
     return Math.min(maxBackoffMs, base);
+  }
+
+  private static String snapshotLeaseKey(ReconcileJob job) {
+    if (job == null
+        || job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || job.snapshotTask == null
+        || blank(job.snapshotTask.tableId())
+        || job.snapshotTask.snapshotId() < 0L) {
+      return "";
+    }
+    return job.snapshotTask.tableId() + "|" + job.snapshotTask.snapshotId();
   }
 
   private static boolean isTerminalState(String state) {

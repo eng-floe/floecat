@@ -826,6 +826,15 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
   }
 
+  public static String reconcileSnapshotLeasePointer(String tableId, long snapshotId) {
+    String tid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return "/accounts/by-id/reconcile/snapshot-leases/"
+        + encode(tid)
+        + "/"
+        + String.format("%019d", sid);
+  }
+
   public static String reconcileLaneLeasePointer(String accountId, String laneKey) {
     String tid = req("account_id", accountId);
     String lane = req("lane_key", laneKey);
