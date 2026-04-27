@@ -102,6 +102,7 @@ public class ReconcilerScheduler {
   private static final Logger LOG = Logger.getLogger(ReconcilerScheduler.class);
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
+  private final AtomicBoolean repollRequested = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile ExecutorService workers;
@@ -132,32 +133,46 @@ public class ReconcilerScheduler {
       every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
+    requestDrain();
+  }
+
+  private void requestDrain() {
     if (!schedulerEnabled || executorRegistry.orderedExecutors().isEmpty()) {
       return;
     }
+    repollRequested.set(true);
     if (!polling.compareAndSet(false, true)) {
       return;
     }
     try {
-      ReconcileJobStore.LeaseRequest leaseRequest = executorRegistry.leaseRequest();
-      while (reserveWorkerSlot()) {
-        Optional<ReconcileJobStore.LeasedJob> leaseOpt;
-        try {
-          leaseOpt = jobs.leaseNext(leaseRequest);
-        } catch (Exception e) {
-          inFlight.decrementAndGet();
-          LOG.errorf(e, "leaseNext() threw unexpectedly; releasing worker slot");
+      while (true) {
+        repollRequested.set(false);
+        ReconcileJobStore.LeaseRequest leaseRequest = executorRegistry.leaseRequest();
+        while (reserveWorkerSlot()) {
+          Optional<ReconcileJobStore.LeasedJob> leaseOpt;
+          try {
+            leaseOpt = jobs.leaseNext(leaseRequest);
+          } catch (Exception e) {
+            inFlight.decrementAndGet();
+            LOG.errorf(e, "leaseNext() threw unexpectedly; releasing worker slot");
+            return;
+          }
+          var lease = leaseOpt.orElse(null);
+          if (lease == null) {
+            inFlight.decrementAndGet();
+            return;
+          }
+          submitLease(lease);
+        }
+        if (!repollRequested.get()) {
           return;
         }
-        var lease = leaseOpt.orElse(null);
-        if (lease == null) {
-          inFlight.decrementAndGet();
-          return;
-        }
-        submitLease(lease);
       }
     } finally {
       polling.set(false);
+      if (repollRequested.get()) {
+        requestDrain();
+      }
     }
   }
 
@@ -185,12 +200,20 @@ public class ReconcilerScheduler {
             try {
               runLease(lease);
             } finally {
-              inFlight.decrementAndGet();
+              releaseWorkerSlot();
             }
           });
     } catch (RuntimeException e) {
-      inFlight.decrementAndGet();
+      releaseWorkerSlot();
       throw e;
+    }
+  }
+
+  private void releaseWorkerSlot() {
+    inFlight.decrementAndGet();
+    ExecutorService executor = workers;
+    if (schedulerEnabled && executor != null && !executor.isShutdown()) {
+      requestDrain();
     }
   }
 
@@ -284,6 +307,9 @@ public class ReconcilerScheduler {
       BooleanSupplier shouldStop =
           () -> {
             if (!leaseValid.get()) {
+              return true;
+            }
+            if (!heartbeat.getAsBoolean()) {
               return true;
             }
             if (Thread.currentThread().isInterrupted()) {
@@ -608,23 +634,56 @@ public class ReconcilerScheduler {
   }
 
   private void cancelChildJobs(ReconcileJobStore.LeasedJob lease, String reason) {
-    if (lease == null || lease.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+    if (lease == null || !supportsChildCancellation(lease.jobKind)) {
+      return;
+    }
+    cancelChildJobs(lease.accountId, lease.jobId, lease.jobKind, reason);
+  }
+
+  private void cancelChildJobs(
+      String accountId, String jobId, ReconcileJobKind jobKind, String reason) {
+    if (accountId == null
+        || accountId.isBlank()
+        || jobId == null
+        || jobId.isBlank()
+        || !supportsChildCancellation(jobKind)) {
       return;
     }
     String message = (reason == null || reason.isBlank()) ? "Parent plan job terminated" : reason;
-    for (var child : childJobsFor(lease)) {
-      var cancelled = jobs.cancel(lease.accountId, child.jobId, message);
-      if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
-        cancellations.requestCancel(cancelled.get().jobId);
+    for (var child : childJobsFor(accountId, jobId, jobKind)) {
+      var cancelled = jobs.cancel(accountId, child.jobId, message);
+      var effectiveChild = cancelled.orElseGet(() -> jobs.get(accountId, child.jobId).orElse(child));
+      if ("JS_CANCELLING".equals(effectiveChild.state)) {
+        cancellations.requestCancel(effectiveChild.jobId);
+      }
+      if (!isTerminalState(effectiveChild.state) && supportsChildCancellation(effectiveChild.jobKind)) {
+        cancelChildJobs(accountId, effectiveChild.jobId, effectiveChild.jobKind, message);
       }
     }
   }
 
-  private List<ReconcileJobStore.ReconcileJob> childJobsFor(ReconcileJobStore.LeasedJob lease) {
-    if (lease == null || lease.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+  private List<ReconcileJobStore.ReconcileJob> childJobsFor(
+      String accountId, String jobId, ReconcileJobKind jobKind) {
+    if (accountId == null
+        || accountId.isBlank()
+        || jobId == null
+        || jobId.isBlank()
+        || !supportsChildCancellation(jobKind)) {
       return List.of();
     }
-    return jobs.childJobs(lease.accountId, lease.jobId);
+    return jobs.childJobs(accountId, jobId);
+  }
+
+  private static boolean supportsChildCancellation(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
   }
 
   private static final class ProgressSnapshot {

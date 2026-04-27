@@ -49,6 +49,7 @@ public class RemoteReconcileExecutorPoller {
   private static final Logger LOG = Logger.getLogger(RemoteReconcileExecutorPoller.class);
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
+  private final AtomicBoolean repollRequested = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile ExecutorService workers;
@@ -79,28 +80,42 @@ public class RemoteReconcileExecutorPoller {
       every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
+    requestDrain();
+  }
+
+  private void requestDrain() {
     if (!remoteExecutorEnabled || executorRegistry.orderedExecutors().isEmpty()) {
       return;
     }
+    repollRequested.set(true);
     if (!polling.compareAndSet(false, true)) {
       return;
     }
     try {
-      while (reserveWorkerSlot()) {
-        try {
-          Optional<LeaseAssignment> assignment = leaseNextAssignment();
-          if (assignment.isEmpty()) {
+      while (true) {
+        repollRequested.set(false);
+        while (reserveWorkerSlot()) {
+          try {
+            Optional<LeaseAssignment> assignment = leaseNextAssignment();
+            if (assignment.isEmpty()) {
+              inFlight.decrementAndGet();
+              return;
+            }
+            submitAssignment(assignment.get());
+          } catch (RuntimeException e) {
             inFlight.decrementAndGet();
-            return;
+            throw e;
           }
-          submitAssignment(assignment.get());
-        } catch (RuntimeException e) {
-          inFlight.decrementAndGet();
-          throw e;
+        }
+        if (!repollRequested.get()) {
+          return;
         }
       }
     } finally {
       polling.set(false);
+      if (repollRequested.get()) {
+        requestDrain();
+      }
     }
   }
 
@@ -138,12 +153,20 @@ public class RemoteReconcileExecutorPoller {
             try {
               runLease(assignment);
             } finally {
-              inFlight.decrementAndGet();
+              releaseWorkerSlot();
             }
           });
     } catch (RuntimeException e) {
-      inFlight.decrementAndGet();
+      releaseWorkerSlot();
       throw e;
+    }
+  }
+
+  private void releaseWorkerSlot() {
+    inFlight.decrementAndGet();
+    ExecutorService executor = workers;
+    if (remoteExecutorEnabled && executor != null && !executor.isShutdown()) {
+      requestDrain();
     }
   }
 

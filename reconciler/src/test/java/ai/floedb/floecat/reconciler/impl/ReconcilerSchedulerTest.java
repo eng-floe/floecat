@@ -15,21 +15,27 @@
  */
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
+import ai.floedb.floecat.telemetry.Observability;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
@@ -72,6 +78,86 @@ class ReconcilerSchedulerTest {
     scheduler.pollOnce(); // must reach leaseNext() again (slot was freed)
 
     verify(jobStore, times(2)).leaseNext(org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void pollOnceDrainsNextLeaseImmediatelyAfterWorkerCompletes() throws Exception {
+    var jobStore = mock(ReconcileJobStore.class);
+    when(jobStore.renewLease(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(true);
+    when(jobStore.isCancellationRequested(org.mockito.ArgumentMatchers.anyString())).thenReturn(false);
+    when(jobStore.childJobs("acct", "job-1")).thenReturn(List.of());
+    when(jobStore.childJobs("acct", "job-2")).thenReturn(List.of());
+
+    var lease1 =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "");
+    var lease2 =
+        new ReconcileJobStore.LeasedJob(
+            "job-2",
+            "acct",
+            "connector",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-2",
+            "",
+            "");
+    when(jobStore.leaseNext(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(Optional.of(lease1), Optional.of(lease2), Optional.empty());
+
+    CountDownLatch completed = new CountDownLatch(2);
+    var executor = mock(ReconcileExecutor.class);
+    when(executor.enabled()).thenReturn(true);
+    when(executor.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
+    when(executor.supportedLanes()).thenReturn(Set.of(""));
+    when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.id()).thenReturn("default_reconciler");
+    when(executor.execute(org.mockito.ArgumentMatchers.any()))
+        .thenAnswer(
+            invocation -> {
+              completed.countDown();
+              return ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "done");
+            });
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.observability = mock(Observability.class);
+    scheduler.config = mock(Config.class);
+    scheduler.schedulerEnabled = true;
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.eq("reconciler.max-parallelism"),
+            org.mockito.ArgumentMatchers.eq(Integer.class)))
+        .thenReturn(Optional.empty());
+    scheduler.init();
+
+    try {
+      scheduler.pollOnce();
+      assertTrue(completed.await(5, TimeUnit.SECONDS));
+      verify(jobStore, timeout(5_000).times(3)).leaseNext(org.mockito.ArgumentMatchers.any());
+    } finally {
+      scheduler.destroy();
+    }
   }
 
   @Test
