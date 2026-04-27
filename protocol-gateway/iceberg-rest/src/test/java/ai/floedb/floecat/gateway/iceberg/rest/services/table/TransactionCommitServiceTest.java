@@ -74,6 +74,8 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import jakarta.ws.rs.core.Response;
 import java.lang.reflect.Method;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -198,6 +200,7 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitCreateBuildsMappedCreateRequestAndUsesTxPath() throws Exception {
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -284,7 +287,25 @@ class TransactionCommitServiceTest {
             any(ResourceId.class),
             eq(createRequest),
             eq(tableSupport));
-    verify(grpcClient).prepareTransaction(any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare -> {
+                  if (prepare == null || prepare.getChangesCount() != 1) {
+                    return false;
+                  }
+                  var tableChange =
+                      prepare.getChangesList().stream()
+                          .filter(change -> change.hasTableId() && change.hasTable())
+                          .findFirst()
+                          .orElse(null);
+                  if (tableChange == null || !tableChange.hasPrecondition()) {
+                    return false;
+                  }
+                  return tableChange.hasTableId()
+                      && tableChange.hasTable()
+                      && tableChange.getPrecondition().getExpectedVersion() == 0L;
+                }));
     verify(grpcClient).commitTransaction(any());
   }
 
@@ -372,7 +393,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitReturnsNoContentWhenAlreadyAppliedAndReplaysSideEffects() {
+  void commitReturnsNoContentWhenAlreadyAppliedWithoutReplayingSideEffects() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -390,6 +411,10 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   private com.fasterxml.jackson.databind.ObjectMapper mapper() {
@@ -481,6 +506,80 @@ class TransactionCommitServiceTest {
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))));
+  }
+
+  @Test
+  void commitReplansAgainstFreshTableVersionWhenPointerAdvancesDuringPlanning() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table staleTable =
+        Table.newBuilder().setResourceId(tableId).putProperties("base", "stale").build();
+    Table freshTable =
+        Table.newBuilder().setResourceId(tableId).putProperties("base", "fresh").build();
+    Table stalePlanned = staleTable.toBuilder().putProperties("planned-version", "stale").build();
+    Table freshPlanned = freshTable.toBuilder().putProperties("planned-version", "fresh").build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(staleTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(freshTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(freshTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(stalePlanned, null))
+        .thenReturn(new TableCommitPlanner.PlanResult(freshPlanned, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(metadataMutator, never()).apply(any(), any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTableId()
+                                    && change.hasPrecondition()
+                                    && change.getPrecondition().getExpectedVersion() == 8L
+                                    && "fresh"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("planned-version")))));
   }
 
   @Test
@@ -1311,6 +1410,12 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
@@ -1330,6 +1435,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
@@ -1804,7 +1911,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void alreadyAppliedReplaysPostCommitUpdates() {
+  void alreadyAppliedDoesNotReplayPostCommitUpdates() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1822,10 +1929,13 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
   }
 
   @Test
-  void alreadyAppliedReplaysPreCommitSnapshotUpdatesWhenPresent() {
+  void alreadyAppliedDoesNotReplayPreCommitSnapshotUpdatesWhenPresent() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1843,6 +1953,9 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
@@ -2433,7 +2546,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void postCommitSnapshotFailureStillReturnsNoContentAfterApplied() {
+  void alreadyAppliedSkipsPostCommitSnapshotWorkAndReturnsNoContent() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2451,6 +2564,9 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
   }
 
   @Test
@@ -2496,7 +2612,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void alreadyAppliedStillRejectsUnknownUpdateAction() {
+  void alreadyAppliedReturnsNoContentWithoutRevalidatingUpdates() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2511,9 +2627,9 @@ class TransactionCommitServiceTest {
 
     Response response = service.commit("pref", "idem", requestWithUnknownUpdate(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -2842,6 +2958,21 @@ class TransactionCommitServiceTest {
       return Snapshot.parseFrom(payload);
     } catch (InvalidProtocolBufferException e) {
       return null;
+    }
+  }
+
+  private String sha256Hex(byte[] bytes) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hash = digest.digest(bytes == null ? new byte[0] : bytes);
+      StringBuilder out = new StringBuilder(hash.length * 2);
+      for (byte b : hash) {
+        out.append(Character.forDigit((b >>> 4) & 0xF, 16));
+        out.append(Character.forDigit(b & 0xF, 16));
+      }
+      return out.toString();
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 not available", e);
     }
   }
 

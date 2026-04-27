@@ -224,7 +224,9 @@ public class TransactionCommitService {
       return IcebergErrorResponses.failure(
           "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
     }
-    boolean alreadyApplied = currentState == TransactionState.TS_APPLIED;
+    if (currentState == TransactionState.TS_APPLIED) {
+      return Response.noContent().build();
+    }
     List<PlannedChange> planned = new ArrayList<>();
     for (TransactionCommitRequest.TableChange change : changes) {
       try {
@@ -296,53 +298,23 @@ public class TransactionCommitService {
           maybeAbortOpenTransaction(currentState, txId, "assert-create requirement failed");
           return assertCreateError;
         }
-        ai.floedb.floecat.catalog.rpc.Table persistedTable =
-            tableResponse == null || !tableResponse.hasTable()
-                ? newCreateTableStub(tableId, catalogId, namespaceId, identifier.name())
-                : tableResponse.getTable();
-        long pointerVersion =
-            tableResponse != null && tableResponse.hasMeta()
-                ? tableResponse.getMeta().getPointerVersion()
-                : 0L;
-        Response nullRefRequirementError =
-            validateNullSnapshotRefRequirements(
-                tableSupport, persistedTable, change.requirements());
-        if (nullRefRequirementError != null) {
-          maybeAbortOpenTransaction(currentState, txId, "null snapshot-id ref requirement failed");
-          return nullRefRequirementError;
-        }
-        ai.floedb.floecat.catalog.rpc.Table updated;
-        boolean shouldPlan = !alreadyApplied;
-        if (!shouldPlan) {
-          updated = persistedTable;
-        } else {
-          Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = () -> persistedTable;
-          Supplier<ai.floedb.floecat.catalog.rpc.Table> requirementTableSupplier =
-              () -> persistedTable;
-          var plan =
-              tableCommitPlanner.plan(
-                  command, workingTableSupplier, requirementTableSupplier, tableId);
-          if (plan.hasError()) {
-            maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
-            return plan.error();
-          }
-          updated = plan.table();
-          PreMaterializedTable preMaterialized =
-              preMaterializeTableBeforeCommit(
-                  namespace,
-                  identifier.name(),
-                  tableId,
-                  updated,
-                  change.requirements() == null ? List.of() : List.copyOf(change.requirements()),
-                  change.updates() == null ? List.of() : List.copyOf(change.updates()),
-                  tableSupport,
-                  preMaterializeAssertCreate);
-          if (preMaterialized.error() != null) {
-            maybeAbortOpenTransaction(
-                currentState, txId, "metadata materialization failed before atomic commit");
-            return preMaterialized.error();
-          }
-          updated = preMaterialized.table();
+        PlannedExistingTableChange plannedChangeResult =
+            planExistingTableChange(
+                currentState,
+                txId,
+                command,
+                tableId,
+                catalogId,
+                namespaceId,
+                namespace,
+                identifier.name(),
+                tableResponse,
+                change.requirements(),
+                change.updates(),
+                tableSupport,
+                preMaterializeAssertCreate);
+        if (plannedChangeResult.error() != null) {
+          return plannedChangeResult.error();
         }
         planned.add(
             new PlannedChange(
@@ -350,9 +322,9 @@ public class TransactionCommitService {
                 namespaceId,
                 identifier.name(),
                 tableId,
-                updated,
+                plannedChangeResult.table(),
                 change.updates() == null ? List.of() : List.copyOf(change.updates()),
-                pointerVersion));
+                plannedChangeResult.pointerVersion()));
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
           maybeAbortOpenTransaction(currentState, txId, "table not found during planning");
@@ -368,7 +340,7 @@ public class TransactionCommitService {
     }
 
     for (var plan : planned) {
-      var tableForTx = plan.table();
+      var tableForTx = normalizeTableIdentity(plan.table(), plan.tableId());
       ResourceId scopedTableId = scopeTableIdWithAccount(plan.tableId(), accountId);
       ConnectorProvisioningService.ProvisionResult connectorResolution =
           connectorProvisioningService.resolveOrCreateForCommit(
@@ -386,7 +358,7 @@ public class TransactionCommitService {
         maybeAbortOpenTransaction(currentState, txId, "connector provisioning failed");
         return connectorResolution.error();
       }
-      tableForTx = connectorResolution.table();
+      tableForTx = normalizeTableIdentity(connectorResolution.table(), plan.tableId());
       ResourceId connectorId = connectorResolution.connectorId();
       if (!connectorResolution.connectorTxChanges().isEmpty()) {
         txChanges.addAll(connectorResolution.connectorTxChanges());
@@ -418,8 +390,7 @@ public class TransactionCommitService {
               tableForTx,
               tableSupport,
               plan.updates(),
-              removedSnapshotIds,
-              alreadyApplied);
+              removedSnapshotIds);
       if (snapshotChangePlan.error() != null) {
         maybeAbortOpenTransaction(currentState, txId, "snapshot metadata planning failed");
         return snapshotChangePlan.error();
@@ -522,6 +493,9 @@ public class TransactionCommitService {
 
   private record PreMaterializedTable(ai.floedb.floecat.catalog.rpc.Table table, Response error) {}
 
+  private record PlannedExistingTableChange(
+      ai.floedb.floecat.catalog.rpc.Table table, long pointerVersion, Response error) {}
+
   private record PostCommitCaptureRequest(
       ResourceId namespaceId,
       ResourceId tableId,
@@ -537,6 +511,85 @@ public class TransactionCommitService {
       ai.floedb.floecat.catalog.rpc.Table table,
       List<Map<String, Object>> updates,
       long expectedVersion) {}
+
+  private PlannedExistingTableChange planExistingTableChange(
+      TransactionState currentState,
+      String txId,
+      TableCommitService.CommitCommand command,
+      ResourceId tableId,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String namespace,
+      String tableName,
+      ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse,
+      List<Map<String, Object>> requirements,
+      List<Map<String, Object>> updates,
+      TableGatewaySupport tableSupport,
+      boolean preMaterializeAssertCreate) {
+    ai.floedb.floecat.catalog.rpc.GetTableResponse currentResponse = tableResponse;
+    for (int attempt = 0; attempt < 2; attempt++) {
+      ai.floedb.floecat.catalog.rpc.Table persistedTable =
+          currentResponse == null || !currentResponse.hasTable()
+              ? newCreateTableStub(tableId, catalogId, namespaceId, tableName)
+              : currentResponse.getTable();
+      long pointerVersion =
+          currentResponse != null && currentResponse.hasMeta()
+              ? currentResponse.getMeta().getPointerVersion()
+              : 0L;
+      Response nullRefRequirementError =
+          validateNullSnapshotRefRequirements(tableSupport, persistedTable, requirements);
+      if (nullRefRequirementError != null) {
+        maybeAbortOpenTransaction(currentState, txId, "null snapshot-id ref requirement failed");
+        return new PlannedExistingTableChange(null, 0L, nullRefRequirementError);
+      }
+      Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = () -> persistedTable;
+      Supplier<ai.floedb.floecat.catalog.rpc.Table> requirementTableSupplier = () -> persistedTable;
+      var plan =
+          tableCommitPlanner.plan(command, workingTableSupplier, requirementTableSupplier, tableId);
+      if (plan.hasError()) {
+        maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+        return new PlannedExistingTableChange(null, 0L, plan.error());
+      }
+
+      PreMaterializedTable preMaterialized =
+          preMaterializeTableBeforeCommit(
+              namespace,
+              tableName,
+              tableId,
+              plan.table(),
+              requirements == null ? List.of() : List.copyOf(requirements),
+              updates == null ? List.of() : List.copyOf(updates),
+              tableSupport,
+              preMaterializeAssertCreate);
+      if (preMaterialized.error() != null) {
+        maybeAbortOpenTransaction(
+            currentState, txId, "metadata materialization failed before atomic commit");
+        return new PlannedExistingTableChange(null, 0L, preMaterialized.error());
+      }
+      if (currentResponse == null) {
+        return new PlannedExistingTableChange(preMaterialized.table(), pointerVersion, null);
+      }
+
+      ai.floedb.floecat.catalog.rpc.GetTableResponse latestResponse =
+          tableLifecycleService.getTableResponse(tableId);
+      long latestPointerVersion =
+          latestResponse != null && latestResponse.hasMeta()
+              ? latestResponse.getMeta().getPointerVersion()
+              : 0L;
+      if (latestPointerVersion == pointerVersion) {
+        return new PlannedExistingTableChange(preMaterialized.table(), pointerVersion, null);
+      }
+      currentResponse = latestResponse;
+    }
+
+    return new PlannedExistingTableChange(
+        null,
+        0L,
+        IcebergErrorResponses.failure(
+            "table changed during commit planning",
+            "CommitFailedException",
+            Response.Status.CONFLICT));
+  }
 
   private void enqueuePostCommitCaptures(List<PostCommitCaptureRequest> requests) {
     if (requests == null || requests.isEmpty() || grpcClient == null) {
@@ -587,6 +640,19 @@ public class TransactionCommitService {
       }
     }
     return null;
+  }
+
+  private ai.floedb.floecat.catalog.rpc.Table normalizeTableIdentity(
+      ai.floedb.floecat.catalog.rpc.Table table, ResourceId tableId) {
+    if (table == null || tableId == null) {
+      return table;
+    }
+    if (table.hasResourceId()
+        && table.getResourceId().getId().equals(tableId.getId())
+        && table.getResourceId().getAccountId().equals(tableId.getAccountId())) {
+      return table;
+    }
+    return table.toBuilder().setResourceId(tableId).build();
   }
 
   private PreMaterializedTable preMaterializeTableBeforeCommit(
@@ -640,11 +706,7 @@ public class TransactionCommitService {
     if (commitView == null || commitView.metadata() == null) {
       return new PreMaterializedTable(plannedTable, null);
     }
-    var commitMetadata =
-        metadataMutator.apply(
-            commitView.metadata(),
-            new TableRequests.Commit(
-                List.of(), updates == null ? List.of() : List.copyOf(updates)));
+    var commitMetadata = commitView.metadata();
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {
@@ -699,9 +761,8 @@ public class TransactionCommitService {
       ai.floedb.floecat.catalog.rpc.Table table,
       TableGatewaySupport tableSupport,
       List<Map<String, Object>> updates,
-      List<Long> removedSnapshotIds,
-      boolean alreadyApplied) {
-    if (alreadyApplied || tableId == null) {
+      List<Long> removedSnapshotIds) {
+    if (tableId == null) {
       return new SnapshotChangePlan(List.of(), null);
     }
     String resolvedAccountId = firstNonBlank(tableId.getAccountId(), accountId);
@@ -1114,6 +1175,21 @@ public class TransactionCommitService {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       byte[] hash = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
       return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 not available", e);
+    }
+  }
+
+  private String sha256Hex(byte[] bytes) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hash = digest.digest(bytes == null ? new byte[0] : bytes);
+      StringBuilder out = new StringBuilder(hash.length * 2);
+      for (byte b : hash) {
+        out.append(Character.forDigit((b >>> 4) & 0xF, 16));
+        out.append(Character.forDigit(b & 0xF, 16));
+      }
+      return out.toString();
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 not available", e);
     }

@@ -29,11 +29,13 @@ import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
@@ -41,14 +43,18 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -58,6 +64,12 @@ import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
+import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
+import ai.floedb.floecat.transaction.rpc.TxChange;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -482,6 +494,105 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(409)
         .body("error.type", equalTo("CommitFailedException"));
+  }
+
+  @Test
+  void competingCreateTransactionsReserveSingleTableName() {
+    String namespace = uniqueName("it_ns_");
+    String tableName = uniqueName("it_tbl_");
+    createNamespace(namespace);
+
+    ResourceId catalogId = resolveCatalogId();
+    ResourceId namespaceId = resolveNamespaceId(namespace);
+    String accountId = resolveSeedAccountId();
+    ResourceId winnerId = randomTableId(accountId);
+    ResourceId loserId = randomTableId(accountId);
+    Table winnerTable =
+        newCreateTableStub(winnerId, catalogId, namespaceId, tableName)
+            .toBuilder()
+            .putProperties("test-owner", "winner")
+            .build();
+    Table loserTable =
+        newCreateTableStub(loserId, catalogId, namespaceId, tableName)
+            .toBuilder()
+            .putProperties("test-owner", "loser")
+            .build();
+
+    try {
+      String winnerTxId =
+          withTransactionsClient(
+              stub ->
+                  stub.beginTransaction(BeginTransactionRequest.newBuilder().build())
+                      .getTransaction()
+                      .getTxId());
+      String loserTxId =
+          withTransactionsClient(
+              stub ->
+                  stub.beginTransaction(BeginTransactionRequest.newBuilder().build())
+                      .getTransaction()
+                      .getTxId());
+
+      var winnerPrepared =
+          withTransactionsClient(
+              stub ->
+                  stub.prepareTransaction(
+                      PrepareTransactionRequest.newBuilder()
+                          .setTxId(winnerTxId)
+                          .addChanges(createTableTxChange(winnerId, winnerTable))
+                          .build()));
+      Assertions.assertEquals(
+          TransactionState.TS_PREPARED, winnerPrepared.getTransaction().getState());
+
+      var loserPrepared =
+          withTransactionsClient(
+              stub ->
+                  stub.prepareTransaction(
+                      PrepareTransactionRequest.newBuilder()
+                          .setTxId(loserTxId)
+                          .addChanges(createTableTxChange(loserId, loserTable))
+                          .build()));
+      Assertions.assertEquals(
+          TransactionState.TS_PREPARED, loserPrepared.getTransaction().getState());
+
+      var winnerCommitted =
+          withTransactionsClient(
+              stub ->
+                  stub.commitTransaction(
+                      CommitTransactionRequest.newBuilder().setTxId(winnerTxId).build()));
+      Assertions.assertEquals(
+          TransactionState.TS_APPLIED, winnerCommitted.getTransaction().getState());
+
+      var loserCommitted =
+          withTransactionsClient(
+              stub ->
+                  stub.commitTransaction(
+                      CommitTransactionRequest.newBuilder().setTxId(loserTxId).build()));
+      Assertions.assertEquals(
+          TransactionState.TS_APPLY_FAILED_CONFLICT, loserCommitted.getTransaction().getState());
+
+      ResourceId resolvedId = resolveTableId(namespace, tableName);
+      Assertions.assertEquals(winnerId.getId(), resolvedId.getId(), "by-name should resolve winner");
+
+      Table resolvedTable =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(resolvedId).build())
+                      .getTable());
+      Assertions.assertEquals(tableName, resolvedTable.getDisplayName());
+      Assertions.assertEquals("winner", resolvedTable.getPropertiesMap().get("test-owner"));
+
+      StatusRuntimeException loserLookupFailure =
+          Assertions.assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  withTableClient(
+                      stub ->
+                          stub.getTable(GetTableRequest.newBuilder().setTableId(loserId).build())));
+      Assertions.assertEquals(Status.Code.NOT_FOUND, loserLookupFailure.getStatus().getCode());
+    } finally {
+      deleteTableResource(namespace, tableName);
+      deleteNamespaceResource(namespace);
+    }
   }
 
   @Test
@@ -2358,6 +2469,38 @@ class IcebergRestFixtureIT {
     return request;
   }
 
+  private TxChange createTableTxChange(ResourceId tableId, Table table) {
+    return TxChange.newBuilder()
+        .setTableId(tableId)
+        .setTable(table)
+        .setPrecondition(Precondition.newBuilder().setExpectedVersion(0L))
+        .build();
+  }
+
+  private Table newCreateTableStub(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId, String tableName) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setDisplayName(tableName)
+        .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(System.currentTimeMillis()))
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .build())
+        .build();
+  }
+
+  private ResourceId randomTableId(String accountId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setId("tbl-" + UUID.randomUUID())
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
+  }
+
   private Map<String, Object> fixtureSchema() {
     if (fixtureSchemaJson == null || fixtureSchemaJson.isBlank()) {
       throw new IllegalStateException("Fixture schema JSON is required");
@@ -2620,6 +2763,20 @@ class IcebergRestFixtureIT {
   private <T> T withStatisticsClient(
       Function<TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub, T> fn) {
     return withServiceClient("Statistics", TableStatisticsServiceGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withTransactionsClient(Function<TransactionsGrpc.TransactionsBlockingStub, T> fn) {
+    return withServiceClient("Transactions", TransactionsGrpc::newBlockingStub, fn);
+  }
+
+  private ResourceId resolveCatalogId() {
+    return withDirectoryClient(
+            stub ->
+                stub.resolveCatalog(
+                        ResolveCatalogRequest.newBuilder()
+                            .setRef(NameRef.newBuilder().setCatalog(CATALOG).build())
+                            .build()))
+        .getResourceId();
   }
 
   private ResourceId resolveTableId(String namespace, String table) {
