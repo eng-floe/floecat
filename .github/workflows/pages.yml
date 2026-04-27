@@ -37,6 +37,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      discussions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,6 +61,12 @@ jobs:
           REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
         run: ./tools/site/publish-gh-pages.sh deploy-prod --source-dir site-src/_site
+
+      - name: Sync blog discussions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: node ./tools/site/sync-blog-discussions.mjs --site-dir site-src
 
   pr-build-check:
     name: Pages build check
@@ -96,6 +103,10 @@ jobs:
       - name: Build and sanity-check site
         if: github.event.action != 'closed'
         run: make test-site
+
+      - name: Validate blog discussion sync plan
+        if: github.event.action != 'closed'
+        run: node ./tools/site/sync-blog-discussions.mjs --site-dir site-src --dry-run
 
       - name: Prepare Preview Root
         if: github.event.action != 'closed'
