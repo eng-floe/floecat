@@ -652,11 +652,13 @@ public class ReconcilerScheduler {
     String message = (reason == null || reason.isBlank()) ? "Parent plan job terminated" : reason;
     for (var child : childJobsFor(accountId, jobId, jobKind)) {
       var cancelled = jobs.cancel(accountId, child.jobId, message);
-      var effectiveChild = cancelled.orElseGet(() -> jobs.get(accountId, child.jobId).orElse(child));
+      var effectiveChild =
+          cancelled.orElseGet(() -> jobs.get(accountId, child.jobId).orElse(child));
       if ("JS_CANCELLING".equals(effectiveChild.state)) {
         cancellations.requestCancel(effectiveChild.jobId);
       }
-      if (!isTerminalState(effectiveChild.state) && supportsChildCancellation(effectiveChild.jobKind)) {
+      if (!isTerminalState(effectiveChild.state)
+          && supportsChildCancellation(effectiveChild.jobKind)) {
         cancelChildJobs(accountId, effectiveChild.jobId, effectiveChild.jobKind, message);
       }
     }

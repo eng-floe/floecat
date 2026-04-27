@@ -83,9 +83,11 @@ class ReconcilerSchedulerTest {
   @Test
   void pollOnceDrainsNextLeaseImmediatelyAfterWorkerCompletes() throws Exception {
     var jobStore = mock(ReconcileJobStore.class);
-    when(jobStore.renewLease(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+    when(jobStore.renewLease(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
         .thenReturn(true);
-    when(jobStore.isCancellationRequested(org.mockito.ArgumentMatchers.anyString())).thenReturn(false);
+    when(jobStore.isCancellationRequested(org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(false);
     when(jobStore.childJobs("acct", "job-1")).thenReturn(List.of());
     when(jobStore.childJobs("acct", "job-2")).thenReturn(List.of());
 
