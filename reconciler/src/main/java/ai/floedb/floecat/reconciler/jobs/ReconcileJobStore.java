@@ -1129,9 +1129,7 @@ public interface ReconcileJobStore {
       boolean kindMatches = jobKinds.isEmpty() || jobKinds.contains(effectiveJobKind);
       String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
       boolean executorMatches =
-          effectivePinnedExecutorId.isEmpty()
-              || executorIds.isEmpty()
-              || executorIds.contains(effectivePinnedExecutorId);
+          effectivePinnedExecutorId.isEmpty() || executorIds.contains(effectivePinnedExecutorId);
       return classMatches && laneMatches && kindMatches && executorMatches;
     }
 

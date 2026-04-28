@@ -473,6 +473,28 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextDoesNotMatchPinnedJobWhenExecutorFilterIsEmpty() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        "conn-pinned",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+        "remote-a");
+
+    assertTrue(
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote")))
+            .isEmpty());
+  }
+
+  @Test
   void leaseNextAllowsOnlyOneRunningJobPerLane() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
@@ -867,7 +889,14 @@ class DurableReconcileJobStoreTest {
     assertEquals("gold", job.executionPolicy.attributes().get("tier"));
     assertEquals("", job.executorId);
 
-    var lease = store.leaseNext().orElseThrow();
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote"),
+                    java.util.Set.of("remote-executor")))
+            .orElseThrow();
     assertEquals(jobId, lease.jobId);
     assertEquals("remote-executor", lease.pinnedExecutorId);
     assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
