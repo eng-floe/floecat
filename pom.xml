@@ -405,7 +405,6 @@
             <inputExclude>**/*.md</inputExclude>
             <inputExclude>**/site-src/**</inputExclude>
             <inputExclude>**/org.mockito.plugins.MockMaker</inputExclude>
-            <inputExclude>**/io.quarkus.test.junit.callback.QuarkusTestBeforeEachCallback</inputExclude>
           </inputExcludes>
         </configuration>
       </plugin>

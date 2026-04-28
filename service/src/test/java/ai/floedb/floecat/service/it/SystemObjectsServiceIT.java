@@ -21,7 +21,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsServiceGrpc;
+import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -46,7 +48,7 @@ class SystemObjectsServiceIT {
   void returnsCatalogWhenVersionProvided() {
     var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "16.0");
 
-    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
+    var resp = getSystemObjects(stub);
 
     assertThat(resp.hasRegistry()).isTrue();
 
@@ -88,14 +90,16 @@ class SystemObjectsServiceIT {
     // service responds without error for this engine kind.  No assertions on specific object names:
     // the bundled pbtxt files are user-replaceable templates, so catalog content is not fixed.
     var stub = withEngineHeaders("example", "1.0");
-    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
+    var resp = getSystemObjects(stub);
     assertThat(resp.hasRegistry()).isTrue();
   }
 
   @Test
   void missingHeaderFails() {
     assertThatThrownBy(
-            () -> builtins.getSystemObjects(GetSystemObjectsRequest.newBuilder().build()))
+            () ->
+                TestSupport.callWhenGrpcReady(
+                    () -> builtins.getSystemObjects(GetSystemObjectsRequest.newBuilder().build())))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
@@ -105,7 +109,7 @@ class SystemObjectsServiceIT {
   void unknownEngineVersionReturnsOnlyRuleFreeObjects() {
     var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "does-not-exist");
 
-    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
+    var resp = getSystemObjects(stub);
     assertThat(resp.hasRegistry()).isTrue();
 
     var names =
@@ -127,7 +131,7 @@ class SystemObjectsServiceIT {
 
     var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
 
-    assertThatThrownBy(() -> stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance()))
+    assertThatThrownBy(() -> getSystemObjects(stub))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
@@ -141,6 +145,12 @@ class SystemObjectsServiceIT {
     metadata.put(ENGINE_VERSION_HEADER, engineVersion);
 
     return builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+  }
+
+  private GetSystemObjectsResponse getSystemObjects(
+      SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub stub) {
+    return TestSupport.callWhenGrpcReady(
+        () -> stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance()));
   }
 
   /** Build a fully qualified name from NameRef.path + NameRef.name (ignores catalog). */

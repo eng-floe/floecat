@@ -28,6 +28,7 @@ import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.FlightDevProfile;
 import ai.floedb.floecat.service.util.TestDataResetter;
+import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -107,15 +108,16 @@ public class SystemTableFlightIT {
     allocator = new RootAllocator(Long.MAX_VALUE);
     assertTrue(grpcPort > 0, "gRPC server should be running on a valid port");
     client =
-        FlightClient.builder(allocator, Location.forGrpcInsecure("127.0.0.1", grpcPort)).build();
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort)).build();
     queryId =
-        queries
-            .beginQuery(
-                BeginQueryRequest.newBuilder()
-                    .setDefaultCatalogId(
-                        SystemNodeRegistry.systemCatalogContainerId(
-                            EngineCatalogNames.FLOECAT_DEFAULT_CATALOG))
-                    .build())
+        TestSupport.callWhenGrpcReady(
+                () ->
+                    queries.beginQuery(
+                        BeginQueryRequest.newBuilder()
+                            .setDefaultCatalogId(
+                                SystemNodeRegistry.systemCatalogContainerId(
+                                    EngineCatalogNames.FLOECAT_DEFAULT_CATALOG))
+                            .build()))
             .getQuery()
             .getQueryId();
     assertFalse(queryId.isBlank(), "BeginQuery must return a queryId");
@@ -166,7 +168,7 @@ public class SystemTableFlightIT {
     HeaderCaptureMiddleware.Factory capture = new HeaderCaptureMiddleware.Factory();
 
     try (FlightClient clientWithCapture =
-        FlightClient.builder(allocator, Location.forGrpcInsecure("127.0.0.1", grpcPort))
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort))
             .intercept(capture)
             .build()) {
       clientWithCapture.getInfo(descriptor, queryHeader(queryId), correlationHeader(correlationId));
