@@ -44,7 +44,6 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
-import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
@@ -126,7 +125,6 @@ public class ConnectorIT {
   TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
 
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerScheduler scheduler;
   @Inject AccountRepository accountRepository;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;

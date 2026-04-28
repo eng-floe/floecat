@@ -45,6 +45,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -53,7 +54,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationViewMetadata;
@@ -110,6 +110,10 @@ public class ReconcilerService {
         long statsProcessed,
         String message);
   }
+
+  record ViewMutationPlan(ResourceId destinationViewId, ViewSpec viewSpec, String idempotencyKey) {}
+
+  record PlannedViewMutationResult(Result result, ViewMutationPlan mutation) {}
 
   @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
@@ -729,6 +733,362 @@ public class ReconcilerService {
         return new Result(0, 0, 0, 0, 0, 0, 0, e);
       }
       return new Result(0, 0, 1, 0, 1, 0, 0, e);
+    }
+  }
+
+  PlannedViewMutationResult planPlannedViewExecution(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      ReconcileScope scopeIn,
+      ReconcileViewTask viewTask,
+      String bearerToken,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress) {
+    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
+    Optional<String> invalidScope =
+        validateScopeCombinations(scope, CaptureMode.METADATA_ONLY, true);
+    if (invalidScope.isPresent()) {
+      return new PlannedViewMutationResult(
+          new Result(0, 0, 0, 0, 1, 0, 0, new IllegalArgumentException(invalidScope.get())), null);
+    }
+    ReconcileViewTask effectiveViewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+    if (effectiveViewTask.isEmpty()) {
+      return new PlannedViewMutationResult(
+          new Result(0, 0, 0, 0, 1, 0, 0, new IllegalArgumentException("view task is required")),
+          null);
+    }
+    return effectiveViewTask.discoveryMode()
+        ? planDiscoveryViewMutation(
+            principal,
+            connectorId,
+            scope,
+            effectiveViewTask,
+            bearerToken,
+            cancelRequested,
+            progress)
+        : planStrictViewMutation(
+            principal,
+            connectorId,
+            scope,
+            effectiveViewTask,
+            bearerToken,
+            cancelRequested,
+            progress);
+  }
+
+  private PlannedViewMutationResult planStrictViewMutation(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      ReconcileScope scope,
+      ReconcileViewTask viewTask,
+      String bearerToken,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress) {
+    if (viewTask.destinationViewId().isBlank()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "destinationViewId is required for single-view reconcile")),
+          null);
+    }
+    if (viewTask.sourceNamespace().isBlank() || viewTask.sourceView().isBlank()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "sourceNamespace and sourceView are required for single-view reconcile")),
+          null);
+    }
+    if (scope.hasViewFilter() && !scope.destinationViewId().equals(viewTask.destinationViewId())) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "Connector destination view id "
+                      + viewTask.destinationViewId()
+                      + " does not match requested scope")),
+          null);
+    }
+
+    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+    final BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
+    final ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
+
+    final ActiveConnector active;
+    try {
+      active = activeConnectorForResult(ctx, connectorId);
+    } catch (RuntimeException e) {
+      return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 1, 0, 0, e), null);
+    }
+
+    ResourceId destinationViewId =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_VIEW)
+            .setId(viewTask.destinationViewId())
+            .build();
+    DestinationViewMetadata destinationViewMetadata;
+    try {
+      destinationViewMetadata =
+          backend
+              .lookupDestinationViewMetadata(ctx, destinationViewId)
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "Destination view id does not exist: " + viewTask.destinationViewId()));
+    } catch (Exception e) {
+      return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 1, 0, 0, e), null);
+    }
+    if (destinationViewMetadata.namespaceId() == null
+        || destinationViewMetadata.namespaceId().getId().isBlank()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "Destination view namespace cannot be resolved from id: "
+                      + viewTask.destinationViewId())),
+          null);
+    }
+    if (destinationViewMetadata.catalogId() == null
+        || destinationViewMetadata.catalogId().getId().isBlank()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "Destination view catalog cannot be resolved from id: "
+                      + viewTask.destinationViewId())),
+          null);
+    }
+
+    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+      ensureNotCancelled(cancelCheck);
+      FloecatConnector.ViewDescriptor view =
+          connector
+              .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "View not found: "
+                              + viewTask.sourceNamespace()
+                              + "."
+                              + viewTask.sourceView()));
+
+      ResourceId destNamespaceId = destinationViewMetadata.namespaceId();
+      if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+        return new PlannedViewMutationResult(
+            new Result(
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                new IllegalArgumentException(
+                    "Connector destination namespace id "
+                        + destNamespaceId.getId()
+                        + " does not match requested scope")),
+            null);
+      }
+
+      ensureNotCancelled(cancelCheck);
+      String destinationViewDisplayName = destinationViewMetadata.displayName();
+      List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
+      if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
+        return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 0, 0, 0, null), null);
+      }
+
+      progressOut.onProgress(
+          0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
+      ViewSpec viewSpec =
+          ViewSpec.newBuilder()
+              .setCatalogId(destinationViewMetadata.catalogId())
+              .setNamespaceId(destNamespaceId)
+              .setDisplayName(destinationViewDisplayName)
+              .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
+              .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
+              .addAllOutputColumns(outputColumns)
+              .putAllProperties(
+                  sourceIdentityProperties(connectorId, view.namespaceFq(), view.name()))
+              .build();
+      return new PlannedViewMutationResult(
+          new Result(0, 0, 1, 0, 0, 0, 0, null),
+          new ViewMutationPlan(destinationViewId, viewSpec, ""));
+    } catch (Exception e) {
+      if (e instanceof ReconcileCancelledException) {
+        return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 0, 0, 0, e), null);
+      }
+      return new PlannedViewMutationResult(new Result(0, 0, 1, 0, 1, 0, 0, e), null);
+    }
+  }
+
+  private PlannedViewMutationResult planDiscoveryViewMutation(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      ReconcileScope scope,
+      ReconcileViewTask viewTask,
+      String bearerToken,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress) {
+    if (viewTask.sourceNamespace().isBlank() || viewTask.sourceView().isBlank()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "sourceNamespace and sourceView are required for discovery view reconcile")),
+          null);
+    }
+    if (scope.hasTableFilter() || scope.hasViewFilter()) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "Discovery view execution cannot be combined with table or view id scope")),
+          null);
+    }
+
+    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+    final BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
+    final ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
+
+    final ActiveConnector active;
+    try {
+      active = activeConnectorForResult(ctx, connectorId);
+    } catch (RuntimeException e) {
+      return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 1, 0, 0, e), null);
+    }
+
+    ResourceId destNamespaceId =
+        resolveDiscoveryNamespaceId(
+            ctx,
+            connectorId,
+            active.source(),
+            active.destination(),
+            viewTask.destinationNamespaceId());
+    if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+      return new PlannedViewMutationResult(
+          new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "Connector destination namespace id "
+                      + destNamespaceId.getId()
+                      + " does not match requested scope")),
+          null);
+    }
+    ResourceId destCatalogId = active.destination().getCatalogId();
+    String destNsFq = resolveNamespaceFq(ctx, destNamespaceId);
+    String displayName =
+        viewTask.destinationViewDisplayName().isBlank()
+            ? viewTask.sourceView()
+            : viewTask.destinationViewDisplayName();
+
+    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+      ensureNotCancelled(cancelCheck);
+      FloecatConnector.ViewDescriptor view =
+          connector
+              .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "View not found: "
+                              + viewTask.sourceNamespace()
+                              + "."
+                              + viewTask.sourceView()));
+      List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
+      if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
+        return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 0, 0, 0, null), null);
+      }
+      progressOut.onProgress(
+          0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
+      ViewSpec viewSpec =
+          ViewSpec.newBuilder()
+              .setCatalogId(destCatalogId)
+              .setNamespaceId(destNamespaceId)
+              .setDisplayName(displayName)
+              .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
+              .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
+              .addAllOutputColumns(outputColumns)
+              .putAllProperties(
+                  sourceIdentityProperties(connectorId, view.namespaceFq(), view.name()))
+              .build();
+      Optional<ResourceId> existingViewId =
+          !blank(viewTask.destinationViewId())
+              ? Optional.of(
+                  destinationResourceId(
+                      connectorId, ResourceKind.RK_VIEW, viewTask.destinationViewId()))
+              : lookupDestinationViewIdByName(
+                  ctx, destCatalogId, destNamespaceId, destNsFq, displayName);
+      return existingViewId
+          .map(
+              viewId ->
+                  new PlannedViewMutationResult(
+                      new Result(0, 0, 1, 0, 0, 0, 0, null),
+                      new ViewMutationPlan(viewId, viewSpec, "")))
+          .orElseGet(
+              () ->
+                  new PlannedViewMutationResult(
+                      new Result(0, 0, 1, 0, 0, 0, 0, null),
+                      new ViewMutationPlan(
+                          null,
+                          viewSpec,
+                          "namespace-id:"
+                              + destNamespaceId.getId()
+                              + "|view-name:"
+                              + displayName)));
+    } catch (Exception e) {
+      if (e instanceof ReconcileCancelledException) {
+        return new PlannedViewMutationResult(new Result(0, 0, 0, 0, 0, 0, 0, e), null);
+      }
+      return new PlannedViewMutationResult(new Result(0, 0, 1, 0, 1, 0, 0, e), null);
     }
   }
 

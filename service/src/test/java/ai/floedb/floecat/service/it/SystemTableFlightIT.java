@@ -107,7 +107,7 @@ public class SystemTableFlightIT {
     allocator = new RootAllocator(Long.MAX_VALUE);
     assertTrue(grpcPort > 0, "gRPC server should be running on a valid port");
     client =
-        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort)).build();
+        FlightClient.builder(allocator, Location.forGrpcInsecure("127.0.0.1", grpcPort)).build();
     queryId =
         queries
             .beginQuery(
@@ -166,7 +166,7 @@ public class SystemTableFlightIT {
     HeaderCaptureMiddleware.Factory capture = new HeaderCaptureMiddleware.Factory();
 
     try (FlightClient clientWithCapture =
-        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort))
+        FlightClient.builder(allocator, Location.forGrpcInsecure("127.0.0.1", grpcPort))
             .intercept(capture)
             .build()) {
       clientWithCapture.getInfo(descriptor, queryHeader(queryId), correlationHeader(correlationId));

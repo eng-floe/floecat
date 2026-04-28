@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
@@ -33,6 +34,16 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanSnapshotInputRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanSnapshotInputResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanViewInputRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanViewInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationResponse;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
@@ -46,6 +57,16 @@ import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressResponse;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -63,6 +84,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject ReconcileJobStore jobs;
+  @Inject ReconcileCancellationRegistry cancellations;
+  @Inject LeasedFileGroupExecutionService leasedFileGroupExecutionService;
+  @Inject LeasedPlannerWorkerService leasedPlannerWorkerService;
 
   @Override
   public Uni<LeaseReconcileJobResponse> leaseReconcileJob(LeaseReconcileJobRequest request) {
@@ -72,12 +96,27 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               var principalContext = principalProvider.get();
               authz.require(principalContext, "connector.manage");
               String corr = principalContext.getCorrelationId();
-              String executorId = mustNonEmpty(request.getExecutorId(), "executor_id", corr);
+              Set<String> executorIds;
+              if (request == null) {
+                executorIds = Set.of();
+              } else {
+                java.util.LinkedHashSet<String> mergedExecutorIds = new java.util.LinkedHashSet<>();
+                request.getExecutorIdsList().stream()
+                    .map(executorId -> executorId == null ? "" : executorId.trim())
+                    .filter(executorId -> !executorId.isEmpty())
+                    .forEach(mergedExecutorIds::add);
+                String executorId =
+                    request.getExecutorId() == null ? "" : request.getExecutorId().trim();
+                if (!executorId.isBlank()) {
+                  mergedExecutorIds.add(executorId);
+                }
+                executorIds = Set.copyOf(mergedExecutorIds);
+              }
               var leaseRequest =
                   ReconcileJobStore.LeaseRequest.of(
                       executionClassesFrom(request),
                       lanesFrom(request),
-                      Set.of(executorId),
+                      executorIds,
                       jobKindsFrom(request));
               var lease = jobs.leaseNext(leaseRequest);
               if (lease.isEmpty()) {
@@ -193,32 +232,36 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getViewsChanged(),
                         request.getSnapshotsProcessed(),
                         request.getStatsProcessed());
-                case RCS_FAILED ->
-                    jobs.markFailed(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                case RCS_CANCELLED ->
-                    jobs.markCancelled(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
+                case RCS_FAILED -> {
+                  jobs.markFailed(
+                      jobId,
+                      leaseEpoch,
+                      finishedAtMs,
+                      request.getMessage(),
+                      request.getTablesScanned(),
+                      request.getTablesChanged(),
+                      request.getViewsScanned(),
+                      request.getViewsChanged(),
+                      request.getErrors(),
+                      request.getSnapshotsProcessed(),
+                      request.getStatsProcessed());
+                  cancelChildJobs(jobId, request.getMessage());
+                }
+                case RCS_CANCELLED -> {
+                  jobs.markCancelled(
+                      jobId,
+                      leaseEpoch,
+                      finishedAtMs,
+                      request.getMessage(),
+                      request.getTablesScanned(),
+                      request.getTablesChanged(),
+                      request.getViewsScanned(),
+                      request.getViewsChanged(),
+                      request.getErrors(),
+                      request.getSnapshotsProcessed(),
+                      request.getStatsProcessed());
+                  cancelChildJobs(jobId, request.getMessage());
+                }
                 case RCS_UNSPECIFIED, UNRECOGNIZED ->
                     throw GrpcErrors.invalidArgument(
                         corr, null, java.util.Map.of("field", "state"));
@@ -226,6 +269,45 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build();
             }),
         correlationId());
+  }
+
+  private void cancelChildJobs(String jobId, String reason) {
+    jobs.get(null, jobId).ifPresent(job -> cancelChildJobs(job.accountId, job, reason));
+  }
+
+  private void cancelChildJobs(
+      String accountId, ReconcileJobStore.ReconcileJob job, String reason) {
+    if (job == null
+        || accountId == null
+        || accountId.isBlank()
+        || !supportsChildCancellation(job.jobKind)) {
+      return;
+    }
+    String message = (reason == null || reason.isBlank()) ? "Parent plan job terminated" : reason;
+    for (var child : jobs.childJobs(accountId, job.jobId)) {
+      var storedChild = jobs.get(accountId, child.jobId).orElse(child);
+      var cancelled = jobs.cancel(accountId, child.jobId, message);
+      if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
+        cancellations.requestCancel(cancelled.get().jobId);
+      } else if (cancelled.isEmpty()
+          && storedChild != null
+          && supportsChildCancellation(storedChild.jobKind)
+          && !isTerminalState(storedChild.state)) {
+        cancelChildJobs(accountId, storedChild, message);
+      }
+    }
+  }
+
+  private static boolean supportsChildCancellation(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
   }
 
   @Override
@@ -241,6 +323,405 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               return GetReconcileCancellationResponse.newBuilder()
                   .setCancellationRequested(jobs.isCancellationRequested(jobId))
                   .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetLeasedPlanConnectorInputResponse> getLeasedPlanConnectorInput(
+      GetLeasedPlanConnectorInputRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              var payload =
+                  leasedPlannerWorkerService.resolvePlanConnector(
+                      principalContext, jobId, leaseEpoch);
+              return GetLeasedPlanConnectorInputResponse.newBuilder()
+                  .setInput(
+                      ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput.newBuilder()
+                          .setJobId(payload.jobId())
+                          .setLeaseEpoch(payload.leaseEpoch())
+                          .setConnectorId(payload.connectorId())
+                          .setMode(toProtoCaptureMode(payload.captureMode()))
+                          .setFullRescan(payload.fullRescan())
+                          .setScope(toProtoScope(payload.scope(), payload.connectorId()))
+                          .setExecutionPolicy(toProtoExecutionPolicy(payload.executionPolicy()))
+                          .setPinnedExecutorId(payload.pinnedExecutorId())
+                          .build())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedPlanConnectorResultResponse> submitLeasedPlanConnectorResult(
+      SubmitLeasedPlanConnectorResultRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasSuccess()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanConnectorSuccess(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getSuccess().getTableJobsList().stream()
+                            .map(
+                                job ->
+                                    new LeasedPlannerWorkerService.PlannedTableJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoTableTask(job.getTableTask())))
+                            .toList(),
+                        request.getSuccess().getViewJobsList().stream()
+                            .map(
+                                job ->
+                                    new LeasedPlannerWorkerService.PlannedViewJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoViewTask(job.getViewTask())))
+                            .toList());
+                return SubmitLeasedPlanConnectorResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              if (request.hasFailure()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanConnectorFailure(
+                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                return SubmitLeasedPlanConnectorResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetLeasedPlanTableInputResponse> getLeasedPlanTableInput(
+      GetLeasedPlanTableInputRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              var payload =
+                  leasedPlannerWorkerService.resolvePlanTable(principalContext, jobId, leaseEpoch);
+              return GetLeasedPlanTableInputResponse.newBuilder()
+                  .setInput(
+                      ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput.newBuilder()
+                          .setJobId(payload.jobId())
+                          .setLeaseEpoch(payload.leaseEpoch())
+                          .setParentJobId(payload.parentJobId())
+                          .setConnectorId(payload.connectorId())
+                          .setMode(toProtoCaptureMode(payload.captureMode()))
+                          .setFullRescan(payload.fullRescan())
+                          .setScope(toProtoScope(payload.scope(), payload.connectorId()))
+                          .setTableTask(toProtoTableTask(payload.tableTask()))
+                          .build())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedPlanTableResultResponse> submitLeasedPlanTableResult(
+      SubmitLeasedPlanTableResultRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasSuccess()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanTableSuccess(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getSuccess().getSnapshotJobsList().stream()
+                            .map(
+                                job ->
+                                    new LeasedPlannerWorkerService.PlannedSnapshotJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoSnapshotTask(job.getSnapshotTask())))
+                            .toList());
+                return SubmitLeasedPlanTableResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              if (request.hasFailure()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanTableFailure(
+                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                return SubmitLeasedPlanTableResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetLeasedPlanViewInputResponse> getLeasedPlanViewInput(
+      GetLeasedPlanViewInputRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              var payload =
+                  leasedPlannerWorkerService.resolvePlanView(principalContext, jobId, leaseEpoch);
+              return GetLeasedPlanViewInputResponse.newBuilder()
+                  .setInput(
+                      ai.floedb.floecat.reconciler.rpc.LeasedPlanViewInput.newBuilder()
+                          .setJobId(payload.jobId())
+                          .setLeaseEpoch(payload.leaseEpoch())
+                          .setParentJobId(payload.parentJobId())
+                          .setConnectorId(payload.connectorId())
+                          .setScope(toProtoScope(payload.scope(), payload.connectorId()))
+                          .setViewTask(toProtoViewTask(payload.viewTask()))
+                          .build())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedPlanViewResultResponse> submitLeasedPlanViewResult(
+      SubmitLeasedPlanViewResultRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasSuccess()) {
+                var result =
+                    leasedPlannerWorkerService.persistPlanViewSuccess(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getSuccess().hasMutation()
+                            ? new LeasedPlannerWorkerService.PlannedViewMutation(
+                                request.getSuccess().getMutation().hasDestinationViewId()
+                                    ? request.getSuccess().getMutation().getDestinationViewId()
+                                    : null,
+                                request.getSuccess().getMutation().hasViewSpec()
+                                    ? request.getSuccess().getMutation().getViewSpec()
+                                    : null,
+                                request.getSuccess().getMutation().getIdempotencyKey())
+                            : null);
+                return SubmitLeasedPlanViewResultResponse.newBuilder()
+                    .setAccepted(result.accepted())
+                    .setViewsChanged(result.viewsChanged())
+                    .build();
+              }
+              if (request.hasFailure()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanViewFailure(
+                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                return SubmitLeasedPlanViewResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetLeasedPlanSnapshotInputResponse> getLeasedPlanSnapshotInput(
+      GetLeasedPlanSnapshotInputRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              var payload =
+                  leasedPlannerWorkerService.resolvePlanSnapshot(
+                      principalContext, jobId, leaseEpoch);
+              return GetLeasedPlanSnapshotInputResponse.newBuilder()
+                  .setInput(
+                      ai.floedb.floecat.reconciler.rpc.LeasedPlanSnapshotInput.newBuilder()
+                          .setJobId(payload.jobId())
+                          .setLeaseEpoch(payload.leaseEpoch())
+                          .setParentJobId(payload.parentJobId())
+                          .setConnectorId(payload.connectorId())
+                          .setMode(toProtoCaptureMode(payload.captureMode()))
+                          .setFullRescan(payload.fullRescan())
+                          .setScope(toProtoScope(payload.scope(), payload.connectorId()))
+                          .setSnapshotTask(toProtoSnapshotTask(payload.snapshotTask()))
+                          .build())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedPlanSnapshotResultResponse> submitLeasedPlanSnapshotResult(
+      SubmitLeasedPlanSnapshotResultRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasSuccess()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanSnapshotSuccess(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getSuccess().getFileGroupJobsList().stream()
+                            .map(
+                                job ->
+                                    new LeasedPlannerWorkerService.PlannedFileGroupJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoFileGroupTask(job.getFileGroupTask())))
+                            .toList());
+                return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              if (request.hasFailure()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanSnapshotFailure(
+                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetLeasedFileGroupExecutionResponse> getLeasedFileGroupExecution(
+      GetLeasedFileGroupExecutionRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              var payload =
+                  leasedFileGroupExecutionService.resolve(principalContext, jobId, leaseEpoch);
+              var executionBuilder =
+                  ai.floedb.floecat.reconciler.rpc.LeasedFileGroupExecution.newBuilder()
+                      .setJobId(payload.jobId())
+                      .setLeaseEpoch(payload.leaseEpoch())
+                      .setParentJobId(payload.parentJobId())
+                      .setSourceNamespace(payload.sourceNamespace())
+                      .setSourceTable(payload.sourceTable())
+                      .setSnapshotId(payload.snapshotId())
+                      .setPlanId(payload.planId())
+                      .setGroupId(payload.groupId())
+                      .addAllFilePaths(payload.plannedFilePaths())
+                      .setCapturePolicy(
+                          ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                              .addAllColumns(
+                                  payload.capturePolicy().columns().stream()
+                                      .map(
+                                          column ->
+                                              ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy
+                                                  .newBuilder()
+                                                  .setSelector(column.selector())
+                                                  .setCaptureStats(column.captureStats())
+                                                  .setCaptureIndex(column.captureIndex())
+                                                  .build())
+                                      .toList())
+                              .addAllOutputs(
+                                  payload.capturePolicy().outputs().stream()
+                                      .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
+                                      .toList())
+                              .build());
+              if (payload.sourceConnector() != null) {
+                executionBuilder.setSourceConnector(payload.sourceConnector());
+              }
+              if (payload.tableId() != null) {
+                executionBuilder.setTableId(payload.tableId());
+              }
+              return GetLeasedFileGroupExecutionResponse.newBuilder()
+                  .setExecution(executionBuilder.build())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedFileGroupExecutionResultResponse> submitLeasedFileGroupExecutionResult(
+      SubmitLeasedFileGroupExecutionResultRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+              String corr = principalContext.getCorrelationId();
+              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasSuccess()) {
+                boolean accepted =
+                    leasedFileGroupExecutionService.persistSuccess(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getSuccess().getResultId(),
+                        request.getSuccess().getStatsRecordsList(),
+                        request.getSuccess().getIndexArtifactsList().stream()
+                            .map(
+                                artifact ->
+                                    new ai.floedb.floecat.reconciler.spi.ReconcilerBackend
+                                        .StagedIndexArtifact(
+                                        artifact.getRecord(),
+                                        artifact.getContent().toByteArray(),
+                                        artifact.getContentType()))
+                            .toList());
+                return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              if (request.hasFailure()) {
+                boolean accepted =
+                    leasedFileGroupExecutionService.persistFailure(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getFailure().getResultId(),
+                        request.getFailure().getMessage());
+                return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
             }),
         correlationId());
   }
@@ -450,22 +931,34 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       ReconcileJobStore.LeasedJob lease) {
     ReconcileScope scope =
         lease == null || lease.scope == null ? ReconcileScope.empty() : lease.scope;
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId(lease.connectorId)
+            .build();
+    return toProtoScope(scope, connectorId);
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.CaptureScope toProtoScope(
+      ReconcileScope scope, ResourceId connectorId) {
+    ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
     var builder =
         ai.floedb.floecat.reconciler.rpc.CaptureScope.newBuilder()
-            .setConnectorId(
-                ResourceId.newBuilder()
-                    .setAccountId(lease.accountId)
-                    .setKind(ResourceKind.RK_CONNECTOR)
-                    .setId(lease.connectorId)
-                    .build())
+            .setConnectorId(connectorId == null ? ResourceId.getDefaultInstance() : connectorId)
             .setDestinationTableId(
-                scope.destinationTableId() == null ? "" : scope.destinationTableId())
+                effectiveScope.destinationTableId() == null
+                    ? ""
+                    : effectiveScope.destinationTableId())
             .setDestinationViewId(
-                scope.destinationViewId() == null ? "" : scope.destinationViewId());
-    for (String namespaceId : scope.destinationNamespaceIds()) {
+                effectiveScope.destinationViewId() == null
+                    ? ""
+                    : effectiveScope.destinationViewId());
+    for (String namespaceId : effectiveScope.destinationNamespaceIds()) {
       builder.addDestinationNamespaceIds(namespaceId);
     }
-    for (ReconcileScope.ScopedCaptureRequest request : scope.destinationCaptureRequests()) {
+    for (ReconcileScope.ScopedCaptureRequest request :
+        effectiveScope.destinationCaptureRequests()) {
       builder.addDestinationCaptureRequests(
           ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest.newBuilder()
               .setTableId(request.tableId())
@@ -474,11 +967,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               .addAllColumnSelectors(request.columnSelectors())
               .build());
     }
-    if (scope.hasCapturePolicy()) {
+    if (effectiveScope.hasCapturePolicy()) {
       builder.setCapturePolicy(
           ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
               .addAllColumns(
-                  scope.capturePolicy().columns().stream()
+                  effectiveScope.capturePolicy().columns().stream()
                       .map(
                           column ->
                               ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
@@ -488,7 +981,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   .build())
                       .toList())
               .addAllOutputs(
-                  scope.capturePolicy().outputs().stream()
+                  effectiveScope.capturePolicy().outputs().stream()
                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                       .toList())
               .build());
@@ -509,5 +1002,158 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
+  }
+
+  private static ReconcileScope fromProtoScope(
+      ai.floedb.floecat.reconciler.rpc.CaptureScope scope) {
+    if (scope == null) {
+      return ReconcileScope.empty();
+    }
+    return ReconcileScope.of(
+        scope.getDestinationNamespaceIdsList(),
+        blankToNull(scope.getDestinationTableId()),
+        blankToNull(scope.getDestinationViewId()),
+        scope.getDestinationCaptureRequestsList().stream()
+            .map(
+                request ->
+                    new ReconcileScope.ScopedCaptureRequest(
+                        request.getTableId(),
+                        request.getSnapshotId(),
+                        request.getTargetSpec(),
+                        request.getColumnSelectorsList()))
+            .toList(),
+        scope.hasCapturePolicy()
+            ? ReconcileCapturePolicy.of(
+                scope.getCapturePolicy().getColumnsList().stream()
+                    .map(
+                        column ->
+                            new ReconcileCapturePolicy.Column(
+                                column.getSelector(),
+                                column.getCaptureStats(),
+                                column.getCaptureIndex()))
+                    .toList(),
+                scope.getCapturePolicy().getOutputsList().stream()
+                    .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
+                    .collect(java.util.stream.Collectors.toSet()))
+            : ReconcileCapturePolicy.empty());
+  }
+
+  private static ReconcileTableTask fromProtoTableTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileTableTask tableTask) {
+    if (tableTask == null) {
+      return ReconcileTableTask.empty();
+    }
+    if (ReconcileTableTask.Mode.DISCOVERY.name().equals(tableTask.getMode())) {
+      return ReconcileTableTask.discovery(
+          tableTask.getSourceNamespace(),
+          tableTask.getSourceTable(),
+          tableTask.getDestinationNamespaceId(),
+          blankToNull(tableTask.getDestinationTableId()),
+          tableTask.getDestinationTableDisplayName());
+    }
+    return ReconcileTableTask.of(
+        tableTask.getSourceNamespace(),
+        tableTask.getSourceTable(),
+        tableTask.getDestinationNamespaceId(),
+        tableTask.getDestinationTableId(),
+        tableTask.getDestinationTableDisplayName());
+  }
+
+  private static ReconcileViewTask fromProtoViewTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileViewTask viewTask) {
+    if (viewTask == null) {
+      return ReconcileViewTask.empty();
+    }
+    if (ReconcileViewTask.Mode.DISCOVERY.name().equals(viewTask.getMode())) {
+      return ReconcileViewTask.discovery(
+          viewTask.getSourceNamespace(),
+          viewTask.getSourceView(),
+          viewTask.getDestinationNamespaceId(),
+          blankToNull(viewTask.getDestinationViewId()),
+          viewTask.getDestinationViewDisplayName());
+    }
+    return ReconcileViewTask.of(
+        viewTask.getSourceNamespace(),
+        viewTask.getSourceView(),
+        viewTask.getDestinationNamespaceId(),
+        viewTask.getDestinationViewId(),
+        viewTask.getDestinationViewDisplayName());
+  }
+
+  private static ReconcileSnapshotTask fromProtoSnapshotTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask == null) {
+      return ReconcileSnapshotTask.empty();
+    }
+    return ReconcileSnapshotTask.of(
+        snapshotTask.getTableId(),
+        snapshotTask.getSnapshotId(),
+        snapshotTask.getSourceNamespace(),
+        snapshotTask.getSourceTable(),
+        snapshotTask.getFileGroupsList().stream()
+            .map(ReconcileExecutorControlImpl::fromProtoFileGroupTask)
+            .toList());
+  }
+
+  private static ReconcileFileGroupTask fromProtoFileGroupTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    return ReconcileFileGroupTask.of(
+        fileGroupTask.getPlanId(),
+        fileGroupTask.getGroupId(),
+        fileGroupTask.getTableId(),
+        fileGroupTask.getSnapshotId(),
+        fileGroupTask.getFilePathsList(),
+        fileGroupTask.getFileResultsList().stream()
+            .map(ReconcileExecutorControlImpl::fromProtoFileResult)
+            .toList());
+  }
+
+  private static ReconcileFileResult fromProtoFileResult(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult fileResult) {
+    if (fileResult == null) {
+      return ReconcileFileResult.empty();
+    }
+    return ReconcileFileResult.of(
+        fileResult.getFilePath(),
+        switch (fileResult.getState()) {
+          case RFRS_SUCCEEDED -> ReconcileFileResult.State.SUCCEEDED;
+          case RFRS_FAILED -> ReconcileFileResult.State.FAILED;
+          case RFRS_SKIPPED -> ReconcileFileResult.State.SKIPPED;
+          case RFRS_UNSPECIFIED, UNRECOGNIZED -> ReconcileFileResult.State.UNSPECIFIED;
+        },
+        fileResult.getStatsProcessed(),
+        fileResult.getMessage(),
+        fromProtoIndexArtifact(fileResult.getIndexArtifact()));
+  }
+
+  private static ReconcileIndexArtifactResult fromProtoIndexArtifact(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+          indexArtifact) {
+    if (indexArtifact == null) {
+      return ReconcileIndexArtifactResult.empty();
+    }
+    return ReconcileIndexArtifactResult.of(
+        indexArtifact.getArtifactUri(),
+        indexArtifact.getArtifactFormat(),
+        indexArtifact.getArtifactFormatVersion());
+  }
+
+  private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(
+      ai.floedb.floecat.reconciler.rpc.CaptureOutput output) {
+    return switch (output) {
+      case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
+      case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
+      case CO_COLUMN_STATS -> ReconcileCapturePolicy.Output.COLUMN_STATS;
+      case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
+      case CO_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("capture output is required");
+    };
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
   }
 }

@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
-
 public final class ReconcileFailureException extends RuntimeException {
   private final ReconcileExecutor.ExecutionResult.FailureKind failureKind;
 

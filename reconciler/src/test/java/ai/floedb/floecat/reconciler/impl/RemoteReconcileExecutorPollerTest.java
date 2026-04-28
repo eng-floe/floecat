@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -27,9 +28,9 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -69,7 +70,7 @@ class RemoteReconcileExecutorPollerTest {
     poller.client = client;
     poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
     poller.config = ConfigProvider.getConfig();
-    poller.remoteExecutorEnabled = true;
+    poller.workerModeValue = "local";
     poller.init();
 
     RemoteLeasedJob lease =
@@ -86,7 +87,7 @@ class RemoteReconcileExecutorPollerTest {
                 "",
                 ""));
 
-    when(client.lease(eq(executor)))
+    when(client.lease(any(), eq("local-poller")))
         .thenReturn(java.util.Optional.of(lease), java.util.Optional.empty());
     when(client.renew(any()))
         .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
@@ -137,17 +138,17 @@ class RemoteReconcileExecutorPollerTest {
     poller.client = client;
     poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
     poller.config = ConfigProvider.getConfig();
-    poller.remoteExecutorEnabled = true;
+    poller.workerModeValue = "local";
     poller.init();
 
-    when(client.lease(eq(executor)))
+    when(client.lease(any(), eq("local-poller")))
         .thenThrow(new RuntimeException("lease failed"))
         .thenReturn(java.util.Optional.empty());
 
     assertThrows(RuntimeException.class, () -> poller.pollOnce());
     poller.pollOnce();
 
-    verify(client, times(2)).lease(eq(executor));
+    verify(client, times(2)).lease(any(), eq("local-poller"));
   }
 
   @Test
@@ -180,7 +181,7 @@ class RemoteReconcileExecutorPollerTest {
     poller.client = client;
     poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
     poller.config = ConfigProvider.getConfig();
-    poller.remoteExecutorEnabled = true;
+    poller.workerModeValue = "local";
     poller.init();
 
     RemoteLeasedJob lease =
@@ -253,7 +254,7 @@ class RemoteReconcileExecutorPollerTest {
     poller.client = client;
     poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
     poller.config = ConfigProvider.getConfig();
-    poller.remoteExecutorEnabled = true;
+    poller.workerModeValue = "local";
     poller.init();
 
     RemoteLeasedJob lease =
@@ -293,5 +294,159 @@ class RemoteReconcileExecutorPollerTest {
     poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
 
     assertTrue(completed.await(5, TimeUnit.SECONDS));
+  }
+
+  @Test
+  void pollOnceSkipsPollingWhenNoExecutorsAreEnabled() {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of());
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    poller.pollOnce();
+
+    verify(client, times(0)).lease(any(), any());
+  }
+
+  @Test
+  void pollOnceLeasesAcrossAggregateRemoteCapabilities() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch completed = new CountDownLatch(1);
+    ReconcileExecutor plannerExecutor =
+        remoteExecutor(
+            "planner",
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
+    ReconcileExecutor fileGroupExecutor =
+        remoteExecutor(
+            "file-group",
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "file-group"));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry =
+        new ReconcileExecutorRegistry(List.of(plannerExecutor, fileGroupExecutor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob fileGroupLease = leasedJob("job-3", ReconcileJobKind.EXEC_FILE_GROUP);
+
+    when(client.lease(
+            argThat(
+                request ->
+                    request != null
+                        && request.jobKinds.contains(ReconcileJobKind.PLAN_CONNECTOR)
+                        && request.jobKinds.contains(ReconcileJobKind.EXEC_FILE_GROUP)
+                        && request.executorIds.contains("planner")
+                        && request.executorIds.contains("file-group")),
+            eq("local-poller")))
+        .thenAnswer(
+            invocation -> {
+              return java.util.Optional.of(fileGroupLease);
+            });
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.complete(
+            any(), any(), eq(0L), eq(0L), eq(0L), eq(0L), eq(0L), eq(0L), eq(0L), any()))
+        .thenAnswer(
+            invocation -> {
+              completed.countDown();
+              return new RemoteReconcileExecutorClient.CompletionResult(true);
+            });
+
+    poller.pollOnce();
+
+    assertTrue(completed.await(5, TimeUnit.SECONDS));
+    verify(client).start(fileGroupLease, "file-group");
+  }
+
+  @Test
+  void pollOnceUsesRemoteLeaseSourceInRemoteMode() {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "remote";
+    poller.init();
+
+    when(client.lease(any(), eq("remote-poller"))).thenReturn(java.util.Optional.empty());
+
+    poller.pollOnce();
+
+    verify(client).lease(any(), eq("remote-poller"));
+  }
+
+  @Test
+  void pollOnceSwallowsUnavailableDuringLocalStartup() {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    when(client.lease(any(), eq("local-poller")))
+        .thenThrow(new io.grpc.StatusRuntimeException(io.grpc.Status.UNAVAILABLE));
+
+    poller.pollOnce();
+
+    verify(client).lease(any(), eq("local-poller"));
+  }
+
+  private static ReconcileExecutor remoteExecutor(
+      String id,
+      java.util.function.Function<
+              ReconcileExecutor.ExecutionContext, ReconcileExecutor.ExecutionResult>
+          fn) {
+    return new ReconcileExecutor() {
+      @Override
+      public String id() {
+        return id;
+      }
+
+      @Override
+      public ExecutionResult execute(ExecutionContext context) {
+        return fn.apply(context);
+      }
+    };
+  }
+
+  private static RemoteLeasedJob leasedJob(String jobId) {
+    return leasedJob(jobId, ReconcileJobKind.PLAN_CONNECTOR);
+  }
+
+  private static RemoteLeasedJob leasedJob(String jobId, ReconcileJobKind jobKind) {
+    return new RemoteLeasedJob(
+        new ReconcileJobStore.LeasedJob(
+            jobId,
+            "acct",
+            "connector-1",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-" + jobId,
+            "",
+            "",
+            jobKind,
+            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+            ""));
   }
 }

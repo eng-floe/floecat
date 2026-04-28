@@ -41,11 +41,16 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 public final class TestSupport {
+  private static final Duration GRPC_READY_TIMEOUT = Duration.ofSeconds(5);
+  private static final long GRPC_READY_POLL_MS = 100L;
+
   private TestSupport() {}
 
   public static final String DEFAULT_SEED_ACCOUNT = "t-0001";
@@ -96,13 +101,15 @@ public final class TestSupport {
       String description,
       long now) {
     var resp =
-        accounts.createAccount(
-            CreateAccountRequest.newBuilder()
-                .setSpec(
-                    AccountSpec.newBuilder()
-                        .setDisplayName(displayName)
-                        .setDescription(description))
-                .build());
+        callWhenGrpcReady(
+            () ->
+                accounts.createAccount(
+                    CreateAccountRequest.newBuilder()
+                        .setSpec(
+                            AccountSpec.newBuilder()
+                                .setDisplayName(displayName)
+                                .setDescription(description))
+                        .build()));
     return resp.getAccount();
   }
 
@@ -111,13 +118,15 @@ public final class TestSupport {
       String displayName,
       String description) {
     var resp =
-        mutation.createCatalog(
-            CreateCatalogRequest.newBuilder()
-                .setSpec(
-                    CatalogSpec.newBuilder()
-                        .setDisplayName(displayName)
-                        .setDescription(description))
-                .build());
+        callWhenGrpcReady(
+            () ->
+                mutation.createCatalog(
+                    CreateCatalogRequest.newBuilder()
+                        .setSpec(
+                            CatalogSpec.newBuilder()
+                                .setDisplayName(displayName)
+                                .setDescription(description))
+                        .build()));
     return resp.getCatalog();
   }
 
@@ -135,7 +144,11 @@ public final class TestSupport {
     if (path != null) {
       specB.addAllPath(path);
     }
-    var resp = mutation.createNamespace(CreateNamespaceRequest.newBuilder().setSpec(specB).build());
+    var resp =
+        callWhenGrpcReady(
+            () ->
+                mutation.createNamespace(
+                    CreateNamespaceRequest.newBuilder().setSpec(specB).build()));
     return resp.getNamespace();
   }
 
@@ -152,21 +165,23 @@ public final class TestSupport {
     ColumnIdAlgorithm cidAlgo =
         isGenericSchema ? ColumnIdAlgorithm.CID_PATH_ORDINAL : ColumnIdAlgorithm.CID_FIELD_ID;
     var resp =
-        mutation.createTable(
-            CreateTableRequest.newBuilder()
-                .setSpec(
-                    TableSpec.newBuilder()
-                        .setCatalogId(catalogId)
-                        .setNamespaceId(namespaceId)
-                        .setDisplayName(displayName)
-                        .setDescription(desc)
-                        .setUpstream(
-                            UpstreamRef.newBuilder()
-                                .setFormat(format)
-                                .setColumnIdAlgorithm(cidAlgo)
-                                .build())
-                        .setSchemaJson(schemaJson))
-                .build());
+        callWhenGrpcReady(
+            () ->
+                mutation.createTable(
+                    CreateTableRequest.newBuilder()
+                        .setSpec(
+                            TableSpec.newBuilder()
+                                .setCatalogId(catalogId)
+                                .setNamespaceId(namespaceId)
+                                .setDisplayName(displayName)
+                                .setDescription(desc)
+                                .setUpstream(
+                                    UpstreamRef.newBuilder()
+                                        .setFormat(format)
+                                        .setColumnIdAlgorithm(cidAlgo)
+                                        .build())
+                                .setSchemaJson(schemaJson))
+                        .build()));
     Table created = resp.getTable();
     ResourceId createdId = created.getResourceId();
     ResourceId normalizedId =
@@ -188,14 +203,16 @@ public final class TestSupport {
     ResourceId normalizedTableId =
         tableId.toBuilder().setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE).build();
     var resp =
-        mutation.createSnapshot(
-            CreateSnapshotRequest.newBuilder()
-                .setSpec(
-                    SnapshotSpec.newBuilder()
-                        .setTableId(normalizedTableId)
-                        .setSnapshotId(snapshotId)
-                        .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
-                .build());
+        callWhenGrpcReady(
+            () ->
+                mutation.createSnapshot(
+                    CreateSnapshotRequest.newBuilder()
+                        .setSpec(
+                            SnapshotSpec.newBuilder()
+                                .setTableId(normalizedTableId)
+                                .setSnapshotId(snapshotId)
+                                .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
+                        .build()));
     return resp.getSnapshot();
   }
 
@@ -207,21 +224,26 @@ public final class TestSupport {
       String sql,
       String desc) {
     var resp =
-        mutation.createView(
-            CreateViewRequest.newBuilder()
-                .setSpec(
-                    ViewSpec.newBuilder()
-                        .setCatalogId(catalogId)
-                        .setNamespaceId(namespaceId)
-                        .setDisplayName(displayName)
-                        .setDescription(desc)
-                        .addSqlDefinitions(
-                            ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
-                                .setSql(sql)
-                                .build())
-                        .addOutputColumns(
-                            SchemaColumn.newBuilder().setName("_col0").setNullable(true).build()))
-                .build());
+        callWhenGrpcReady(
+            () ->
+                mutation.createView(
+                    CreateViewRequest.newBuilder()
+                        .setSpec(
+                            ViewSpec.newBuilder()
+                                .setCatalogId(catalogId)
+                                .setNamespaceId(namespaceId)
+                                .setDisplayName(displayName)
+                                .setDescription(desc)
+                                .addSqlDefinitions(
+                                    ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                                        .setSql(sql)
+                                        .build())
+                                .addOutputColumns(
+                                    SchemaColumn.newBuilder()
+                                        .setName("_col0")
+                                        .setNullable(true)
+                                        .build()))
+                        .build()));
     return resp.getView();
   }
 
@@ -258,9 +280,36 @@ public final class TestSupport {
 
   public static Connector createConnector(
       ConnectorsGrpc.ConnectorsBlockingStub connectors, ConnectorSpec spec) {
-    return connectors
-        .createConnector(CreateConnectorRequest.newBuilder().setSpec(spec).build())
+    return callWhenGrpcReady(
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder().setSpec(spec).build()))
         .getConnector();
+  }
+
+  public static <T> T callWhenGrpcReady(Supplier<T> call) {
+    long deadlineNanos = System.nanoTime() + GRPC_READY_TIMEOUT.toNanos();
+    StatusRuntimeException lastFailure = null;
+    while (System.nanoTime() < deadlineNanos) {
+      try {
+        return call.get();
+      } catch (StatusRuntimeException ex) {
+        if (ex.getStatus().getCode() != Status.Code.UNAVAILABLE) {
+          throw ex;
+        }
+        lastFailure = ex;
+        try {
+          Thread.sleep(GRPC_READY_POLL_MS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw ex;
+        }
+      }
+    }
+    if (lastFailure == null) {
+      throw new AssertionError("Timed out waiting for gRPC service readiness");
+    }
+    throw lastFailure;
   }
 
   public static ResourceId resolveCatalogId(

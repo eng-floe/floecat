@@ -225,6 +225,20 @@ assert_contains_any() {
   return 1
 }
 
+assert_remote_file_group_worker_activity() {
+  local compose_cmd="$1"
+  local label="$2"
+  local out
+
+  out=$(eval "$compose_cmd logs executor 2>&1" || true)
+  assert_contains_any \
+    "$label standalone worker activity" \
+    "$out" \
+    "remote_file_group_worker" \
+    "Executed file group" \
+    "submitLeasedFileGroupExecutionResult"
+}
+
 assert_table_stats_available() {
   local compose_cmd="$1"
   local label="$2"
@@ -1313,6 +1327,10 @@ PY
         "$COMPOSE_SMOKE_STATS_RETRIES" \
         "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
     fi
+  fi
+
+  if [ "$label" = "localstack-remote" ]; then
+    assert_remote_file_group_worker_activity "$compose_cmd" "$label"
   fi
 
   trap - ERR

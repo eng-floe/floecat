@@ -66,11 +66,12 @@ The reconciler can now run in three shapes from the same artifact:
 Key reconciler mode flags live in `service/src/main/resources/application.properties`:
 
 ```properties
-floecat.reconciler.scheduler.enabled
-floecat.reconciler.remote-executor.enabled
-floecat.reconciler.executor.planner.enabled
-floecat.reconciler.executor.default.enabled
-floecat.reconciler.backend
+floecat.reconciler.worker.mode
+reconciler.max-parallelism
+floecat.reconciler.executor.remote-planner.enabled
+floecat.reconciler.executor.remote-default.enabled
+floecat.reconciler.executor.remote-snapshot-planner.enabled
+floecat.reconciler.executor.remote-file-group.enabled
 floecat.reconciler.authorization.header
 floecat.reconciler.authorization.token
 floecat.reconciler.auto.execution-class
@@ -82,11 +83,15 @@ Recommended split deployment:
 - Control plane: `QUARKUS_PROFILE=reconciler-control`
 - Executor plane: `QUARKUS_PROFILE=reconciler-executor`
 - Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
+- Control-plane-specific setting: `reconciler.max-parallelism=0`
+- Executor-plane-specific setting: `floecat.reconciler.worker.mode=remote`
 
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
 and `EXEC_FILE_GROUP` work. `CaptureNow` follows the same plan-plus-child execution path rather
-than a legacy connector-wide execution mode.
+than a legacy connector-wide execution mode. File-group workers submit results through
+`SubmitLeasedFileGroupExecutionResult`, which now requires `result_id` so the control plane can
+enforce replay safety across worker retries.
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
 Planner jobs also need to remain leaseable under the configured execution lane semantics: planner

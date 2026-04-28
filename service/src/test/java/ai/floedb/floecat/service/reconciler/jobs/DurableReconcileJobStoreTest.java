@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -493,6 +494,90 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void staleLaneLeasePointerStillBlocksConcurrentLease() throws Exception {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    var firstLease = store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob currentJob =
+        store.mapper.readValue(
+            store.blobStore.get(currentCanonical.getBlobUri()),
+            DurableReconcileJobStore.StoredReconcileJob.class);
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, currentJob.laneKey);
+    Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lanePointerKey,
+            lanePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lanePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(lanePointer.getVersion() + 1)
+                .build()));
+
+    store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.CAPTURE_ONLY, scope);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    assertEquals("conn-b", store.leaseNext().orElseThrow().connectorId);
+  }
+
+  @Test
+  void clearLaneLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner() throws Exception {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+
+    store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    assertNotEquals(initialCanonical.getBlobUri(), currentCanonical.getBlobUri());
+
+    DurableReconcileJobStore.StoredReconcileJob activeRecord =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(currentCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, activeRecord.laneKey);
+    Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lanePointerKey,
+            lanePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lanePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(lanePointer.getVersion() + 1)
+                .build()));
+
+    Method clearLaneLeaseIfOwned =
+        DurableReconcileJobStore.class.getDeclaredMethod(
+            "clearLaneLeaseIfOwned",
+            DurableReconcileJobStore.StoredReconcileJob.class,
+            String.class);
+    clearLaneLeaseIfOwned.setAccessible(true);
+
+    assertDoesNotThrow(
+        () -> clearLaneLeaseIfOwned.invoke(store, activeRecord, initialCanonical.getBlobUri()));
+
+    Pointer repairedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertEquals(currentCanonical.getBlobUri(), repairedPointer.getBlobUri());
+  }
+
+  @Test
   void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
@@ -511,6 +596,111 @@ class DurableReconcileJobStoreTest {
 
     var secondLease = store.leaseNext().orElseThrow();
     assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void staleSnapshotLeasePointerStillBlocksConcurrentSnapshotLease() throws Exception {
+    store.init();
+
+    String firstJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-a",
+            "");
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    var firstLease = store.leaseNext().orElseThrow();
+
+    String snapshotLeasePointerKey = Keys.reconcileSnapshotLeasePointer("table-1", 55L);
+    Pointer snapshotLeasePointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            snapshotLeasePointerKey,
+            snapshotLeasePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(snapshotLeasePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(snapshotLeasePointer.getVersion() + 1)
+                .build()));
+
+    store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        "conn-b",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+        ReconcileExecutionPolicy.defaults(),
+        "parent-b",
+        "");
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    assertEquals("conn-b", store.leaseNext().orElseThrow().connectorId);
+  }
+
+  @Test
+  void clearSnapshotLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner()
+      throws Exception {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-a",
+            "");
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+
+    store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    assertNotEquals(initialCanonical.getBlobUri(), currentCanonical.getBlobUri());
+
+    String snapshotLeasePointerKey = Keys.reconcileSnapshotLeasePointer("table-1", 55L);
+    Pointer snapshotLeasePointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            snapshotLeasePointerKey,
+            snapshotLeasePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(snapshotLeasePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(snapshotLeasePointer.getVersion() + 1)
+                .build()));
+
+    DurableReconcileJobStore.StoredReconcileJob activeRecord =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(currentCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+
+    Method clearSnapshotLeaseIfOwned =
+        DurableReconcileJobStore.class.getDeclaredMethod(
+            "clearSnapshotLeaseIfOwned",
+            DurableReconcileJobStore.StoredReconcileJob.class,
+            String.class);
+    clearSnapshotLeaseIfOwned.setAccessible(true);
+
+    assertDoesNotThrow(
+        () -> clearSnapshotLeaseIfOwned.invoke(store, activeRecord, initialCanonical.getBlobUri()));
+
+    Pointer repairedPointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertEquals(currentCanonical.getBlobUri(), repairedPointer.getBlobUri());
   }
 
   @Test
@@ -568,8 +758,7 @@ class DurableReconcileJobStoreTest {
     String expectedReadyKey =
         Keys.reconcileReadyPointerByDue(job.nextAttemptAtMs, job.accountId, job.laneKey, job.jobId);
     job.readyPointerKey = "";
-    Pointer repairedCanonicalPointer =
-        overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
+    overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
 
     String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
     var lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
@@ -596,9 +785,17 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, dedupedJobId);
     assertTrue(store.pointerStore.get(lookupKey).isPresent());
     assertTrue(store.pointerStore.get(expectedReadyKey).isPresent());
+    Pointer repairedCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
     Pointer repairedDedupePointer =
         firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
-    assertEquals(repairedCanonicalPointer.getBlobUri(), repairedDedupePointer.getBlobUri());
+    assertEquals(repairedCanonical.getBlobUri(), repairedDedupePointer.getBlobUri());
+    DurableReconcileJobStore.StoredReconcileJob repairedJob =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(repairedCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    assertEquals(expectedReadyKey, repairedJob.readyPointerKey);
 
     var lease = store.leaseNext().orElseThrow();
     assertEquals(jobId, lease.jobId);
@@ -812,6 +1009,40 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextRepairsCanonicalJobWhenLookupAndReadyPointersAreMissing() {
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob record =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    String readyKey = record.readyPointerKey;
+
+    Pointer lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
+    Pointer readyPointer = store.pointerStore.get(readyKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(readyKey, readyPointer.getVersion()));
+
+    var repairedLease = store.leaseNext().orElseThrow();
+
+    assertEquals(jobId, repairedLease.jobId);
+    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+  }
+
+  @Test
   void cancellingLeaseIsReclaimedWithoutLosingCancellationIntent() throws Exception {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
@@ -866,6 +1097,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(
         firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
+    assertFalse(store.leaseNext().isPresent());
 
     // Cancel should poke lease expiry, allowing reclaim well before the original 5s lease.
     Thread.sleep(1300L);

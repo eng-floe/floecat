@@ -457,6 +457,7 @@ public interface ReconcileJobStore {
     public final long statsProcessed;
     public final ReconcileScope scope;
     public final ReconcileExecutionPolicy executionPolicy;
+    public final String pinnedExecutorId;
     public final String executorId;
     public final ReconcileJobKind jobKind;
     public final ReconcileTableTask tableTask;
@@ -502,6 +503,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           scope,
           executionPolicy,
+          "",
           executorId);
     }
 
@@ -524,6 +526,7 @@ public interface ReconcileJobStore {
         long statsProcessed,
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
         String executorId) {
       this(
           jobId,
@@ -544,6 +547,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           scope,
           executionPolicy,
+          pinnedExecutorId,
           executorId,
           ReconcileJobKind.PLAN_CONNECTOR,
           ReconcileTableTask.empty(),
@@ -570,6 +574,7 @@ public interface ReconcileJobStore {
         long statsProcessed,
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
         String executorId,
         ReconcileJobKind jobKind,
         ReconcileTableTask tableTask,
@@ -593,54 +598,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           scope,
           executionPolicy,
-          executorId,
-          jobKind,
-          tableTask,
-          parentJobId);
-    }
-
-    public ReconcileJob(
-        String jobId,
-        String accountId,
-        String connectorId,
-        String state,
-        String message,
-        long startedAtMs,
-        long finishedAtMs,
-        long tablesScanned,
-        long tablesChanged,
-        long viewsScanned,
-        long viewsChanged,
-        long errors,
-        boolean fullRescan,
-        CaptureMode captureMode,
-        long snapshotsProcessed,
-        long statsProcessed,
-        ReconcileScope scope,
-        ReconcileExecutionPolicy executionPolicy,
-        String executorId,
-        ReconcileJobKind jobKind,
-        ReconcileTableTask tableTask,
-        String parentJobId) {
-      this(
-          jobId,
-          accountId,
-          connectorId,
-          state,
-          message,
-          startedAtMs,
-          finishedAtMs,
-          tablesScanned,
-          tablesChanged,
-          viewsScanned,
-          viewsChanged,
-          errors,
-          fullRescan,
-          captureMode,
-          snapshotsProcessed,
-          statsProcessed,
-          scope,
-          executionPolicy,
+          pinnedExecutorId,
           executorId,
           jobKind,
           tableTask,
@@ -672,6 +630,59 @@ public interface ReconcileJobStore {
         String executorId,
         ReconcileJobKind jobKind,
         ReconcileTableTask tableTask,
+        String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          scope,
+          executionPolicy,
+          "",
+          executorId,
+          jobKind,
+          tableTask,
+          ReconcileViewTask.empty(),
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
         ReconcileViewTask viewTask,
         String parentJobId) {
       this(
@@ -693,6 +704,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           scope,
           executionPolicy,
+          pinnedExecutorId,
           executorId,
           jobKind,
           tableTask,
@@ -728,6 +740,115 @@ public interface ReconcileJobStore {
         ReconcileSnapshotTask snapshotTask,
         ReconcileFileGroupTask fileGroupTask,
         String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          scope,
+          executionPolicy,
+          "",
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          scope,
+          executionPolicy,
+          "",
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          ReconcileSnapshotTask.empty(),
+          ReconcileFileGroupTask.empty(),
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -747,6 +868,7 @@ public interface ReconcileJobStore {
       this.scope = scope == null ? ReconcileScope.empty() : scope;
       this.executionPolicy =
           executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+      this.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId;
       this.executorId = executorId == null ? "" : executorId;
       this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
       this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;

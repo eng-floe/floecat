@@ -55,10 +55,10 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.impl.FileGroupIndexArtifactStager;
+import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.impl.ReconcileFailureException;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
@@ -1030,7 +1030,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
         .orElse(base);
   }
 
-  private AuthConfig resolvedAuth(Connector connector) {
+  AuthConfig resolvedAuth(Connector connector) {
     ConnectorConfig.Auth resolved = resolveCredentials(connector).auth();
     return AuthConfig.newBuilder()
         .setScheme(resolved.scheme() == null ? "" : resolved.scheme())

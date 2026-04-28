@@ -28,12 +28,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
@@ -58,6 +61,7 @@ class ReconcileExecutorControlImplTest {
     service.principalProvider = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
+    service.cancellations = mock(ReconcileCancellationRegistry.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -211,6 +215,84 @@ class ReconcileExecutorControlImplTest {
     verify(service.jobs)
         .markSucceeded(
             eq("job-1"), eq("lease-1"), anyLong(), eq(7L), eq(3L), eq(0L), eq(0L), eq(2L), eq(9L));
+  }
+
+  @Test
+  void completeLeasedReconcileJobCancelsDescendantsOnFailure() {
+    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.get(null, "job-1"))
+        .thenReturn(Optional.of(job("job-1", "acct", ReconcileJobKind.PLAN_CONNECTOR, "")));
+    when(service.jobs.childJobs("acct", "job-1"))
+        .thenReturn(
+            java.util.List.of(job("child-1", "acct", ReconcileJobKind.PLAN_TABLE, "job-1")));
+    when(service.jobs.cancel("acct", "child-1", "boom"))
+        .thenReturn(
+            Optional.of(
+                job("child-1", "acct", ReconcileJobKind.PLAN_TABLE, "job-1", "JS_CANCELLING")));
+
+    var response =
+        service
+            .completeLeasedReconcileJob(
+                CompleteLeasedReconcileJobRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setState(ReconcileCompletionState.RCS_FAILED)
+                    .setMessage("boom")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs)
+        .markFailed(
+            eq("job-1"),
+            eq("lease-1"),
+            anyLong(),
+            eq("boom"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
+    verify(service.jobs).cancel("acct", "child-1", "boom");
+    verify(service.cancellations).requestCancel("child-1");
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId, String accountId, ReconcileJobKind jobKind, String parentJobId) {
+    return job(jobId, accountId, jobKind, parentJobId, "JS_QUEUED");
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId, String accountId, ReconcileJobKind jobKind, String parentJobId, String state) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        accountId,
+        "connector",
+        state,
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        jobKind,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        parentJobId);
   }
 
   @Test

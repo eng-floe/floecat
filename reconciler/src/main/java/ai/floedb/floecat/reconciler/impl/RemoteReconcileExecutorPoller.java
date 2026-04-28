@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -39,32 +41,54 @@ public class RemoteReconcileExecutorPoller {
   private static final long MIN_CANCEL_CHECK_MS = 500L;
   private static final int DEFAULT_MAX_PARALLELISM = 1;
 
+  enum WorkerMode {
+    LOCAL,
+    REMOTE;
+
+    static WorkerMode fromConfig(String value) {
+      if (value == null) {
+        return LOCAL;
+      }
+      try {
+        return WorkerMode.valueOf(value.trim().toUpperCase());
+      } catch (IllegalArgumentException ex) {
+        throw new IllegalArgumentException(
+            "Unsupported floecat.reconciler.worker.mode: " + value, ex);
+      }
+    }
+
+    boolean runsWorkers() {
+      return true;
+    }
+  }
+
   @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject RemoteReconcileExecutorClient client;
   @Inject Config config;
 
-  @ConfigProperty(name = "floecat.reconciler.remote-executor.enabled", defaultValue = "false")
-  boolean remoteExecutorEnabled;
+  @ConfigProperty(name = "floecat.reconciler.worker.mode", defaultValue = "local")
+  String workerModeValue;
 
   private static final Logger LOG = Logger.getLogger(RemoteReconcileExecutorPoller.class);
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
   private final AtomicBoolean repollRequested = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
+  private volatile WorkerMode workerMode = WorkerMode.LOCAL;
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile ExecutorService workers;
 
   @PostConstruct
   void init() {
-    if (!remoteExecutorEnabled) {
+    workerMode = WorkerMode.fromConfig(workerModeValue);
+    maxParallelism =
+        config
+            .getOptionalValue("reconciler.max-parallelism", Integer.class)
+            .orElse(DEFAULT_MAX_PARALLELISM);
+    if (maxParallelism <= 0 || !workerMode.runsWorkers()) {
+      maxParallelism = 0;
       return;
     }
-    maxParallelism =
-        Math.max(
-            1,
-            config
-                .getOptionalValue("reconciler.max-parallelism", Integer.class)
-                .orElse(DEFAULT_MAX_PARALLELISM));
     workers = Executors.newFixedThreadPool(maxParallelism);
   }
 
@@ -84,7 +108,9 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private void requestDrain() {
-    if (!remoteExecutorEnabled || executorRegistry.orderedExecutors().isEmpty()) {
+    if (!workerMode.runsWorkers()
+        || maxParallelism <= 0
+        || executorRegistry.orderedExecutors().isEmpty()) {
       return;
     }
     repollRequested.set(true);
@@ -120,13 +146,33 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private Optional<LeaseAssignment> leaseNextAssignment() {
-    for (ReconcileExecutor executor : executorRegistry.orderedExecutors()) {
-      Optional<RemoteLeasedJob> lease = client.lease(executor);
-      if (lease.isPresent()) {
-        return Optional.of(new LeaseAssignment(executor, lease.get()));
+    ReconcileJobStore.LeaseRequest request = remoteLeaseRequest();
+    Optional<RemoteLeasedJob> lease;
+    try {
+      lease = client.lease(request, workerLeaseSource());
+    } catch (RuntimeException e) {
+      if (shouldIgnoreStartupUnavailable(e)) {
+        LOG.debugf(
+            "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
+        return Optional.empty();
       }
+      throw e;
     }
-    return Optional.empty();
+    if (lease.isEmpty()) {
+      return Optional.empty();
+    }
+    Optional<ReconcileExecutor> executor = executorRegistry.executorFor(lease.get().lease());
+    if (executor.isEmpty()) {
+      LOG.warnf(
+          "Leased reconcile job jobId=%s kind=%s but no eligible executor matched locally",
+          lease.get().lease().jobId, lease.get().lease().jobKind);
+      return Optional.empty();
+    }
+    return Optional.of(new LeaseAssignment(executor.get(), lease.get()));
+  }
+
+  private ReconcileJobStore.LeaseRequest remoteLeaseRequest() {
+    return executorRegistry.leaseRequest();
   }
 
   private boolean reserveWorkerSlot() {
@@ -139,6 +185,20 @@ public class RemoteReconcileExecutorPoller {
         return true;
       }
     }
+  }
+
+  private String workerLeaseSource() {
+    return switch (workerMode) {
+      case LOCAL -> "local-poller";
+      case REMOTE -> "remote-poller";
+    };
+  }
+
+  private boolean shouldIgnoreStartupUnavailable(RuntimeException error) {
+    if (workerMode != WorkerMode.LOCAL || !(error instanceof StatusRuntimeException statusError)) {
+      return false;
+    }
+    return statusError.getStatus().getCode() == Status.Code.UNAVAILABLE;
   }
 
   private void submitAssignment(LeaseAssignment assignment) {
@@ -165,7 +225,7 @@ public class RemoteReconcileExecutorPoller {
   private void releaseWorkerSlot() {
     inFlight.decrementAndGet();
     ExecutorService executor = workers;
-    if (remoteExecutorEnabled && executor != null && !executor.isShutdown()) {
+    if (workerMode.runsWorkers() && executor != null && !executor.isShutdown()) {
       requestDrain();
     }
   }

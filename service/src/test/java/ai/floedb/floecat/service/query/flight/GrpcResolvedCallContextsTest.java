@@ -30,7 +30,7 @@ class GrpcResolvedCallContextsTest {
   @Test
   void currentOrUnauthenticatedReturnsUnauthenticatedWhenPrincipalMissing() {
     Context callContext =
-        Context.current()
+        Context.ROOT
             .withValue(InboundContextInterceptor.QUERY_KEY, "query-1")
             .withValue(InboundContextInterceptor.CORR_KEY, "corr-1");
 
@@ -53,7 +53,7 @@ class GrpcResolvedCallContextsTest {
   void currentOrUnauthenticatedUsesDefaultsForMissingOptionalValues() {
     PrincipalContext principal =
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("subject-1").build();
-    Context callContext = Context.current().withValue(InboundContextInterceptor.PC_KEY, principal);
+    Context callContext = Context.ROOT.withValue(InboundContextInterceptor.PC_KEY, principal);
 
     Context previous = callContext.attach();
     try {
@@ -76,7 +76,7 @@ class GrpcResolvedCallContextsTest {
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("subject-1").build();
     EngineContext engineContext = EngineContext.of("floedb", "9.9.9");
     Context callContext =
-        Context.current()
+        Context.ROOT
             .withValue(InboundContextInterceptor.PC_KEY, principal)
             .withValue(InboundContextInterceptor.QUERY_KEY, "query-1")
             .withValue(InboundContextInterceptor.CORR_KEY, "corr-1")

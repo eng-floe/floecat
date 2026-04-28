@@ -52,7 +52,7 @@ CLI, and reconciler.
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
-| `CaptureExecutionService` | `ExecuteFileGroup` | Combined worker-facing file-group execution contract for planned stats and index capture. |
+| `ReconcileExecutorControl` | `LeaseReconcileJob`, `GetLeasedPlan*Input`, `SubmitLeasedPlan*Result`, `GetLeasedFileGroupExecution`, `SubmitLeasedFileGroupExecutionResult` | Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs. |
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
@@ -92,6 +92,13 @@ engine release.
 - **Index artifact streams** – `PutIndexArtifacts` requires each client stream to target exactly one
   `table_id` and one `snapshot_id`. Multiple snapshots must be written through separate client
   streams.
+- **Leased file-group result submission** – `SubmitLeasedFileGroupExecutionResult.Success` and
+  `.Failure` both require `result_id`. The control plane uses that identifier for top-level replay
+  protection on the entire request payload, while service-side writes also keep per-item
+  idempotency for stats and index artifacts.
+- **Executor leasing filters** – `LeaseReconcileJobRequest` accepts execution class, lane, job kind,
+  `executor_id`, and repeated `executor_ids` selectors so a worker fleet can advertise both its
+  concrete worker identity and the executor implementations it is willing to run.
 - **Stats vs constraints snapshot policy** – `PutTargetStats` currently accepts unknown snapshots
   (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while

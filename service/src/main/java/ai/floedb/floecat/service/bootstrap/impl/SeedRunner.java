@@ -136,13 +136,17 @@ public class SeedRunner {
     }
 
     LOG.infof("Starting seedData() mode=%s", seedMode);
-    try {
-      seedData();
-      LOG.info("Startup seeding completed successfully");
-    } catch (Throwable t) {
-      LOG.error("Startup seeding failed", t);
-      throw t;
-    }
+    Thread.ofPlatform()
+        .name("floecat-startup-seed")
+        .start(
+            () -> {
+              try {
+                seedData();
+                LOG.info("Startup seeding completed successfully");
+              } catch (Throwable t) {
+                LOG.error("Startup seeding failed", t);
+              }
+            });
   }
 
   public void seedData() {

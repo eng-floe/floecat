@@ -24,6 +24,7 @@ public class OidcTenantDisabledProfile implements QuarkusTestProfile {
   public Map<String, String> getConfigOverrides() {
     return Map.of(
         "floecat.auth.mode", "oidc",
+        "reconciler.max-parallelism", "0",
         "floecat.interceptor.session.header", "x-floe-session",
         "quarkus.oidc.tenant-enabled", "false");
   }

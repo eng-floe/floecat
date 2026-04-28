@@ -23,6 +23,7 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.AuthModeDevProfile;
 import ai.floedb.floecat.service.util.TestDataResetter;
+import ai.floedb.floecat.service.util.TestSupport;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -48,7 +49,9 @@ class AuthModeDevIT {
 
   @Test
   void listAccountsAcceptsDevContext() {
-    var response = accounts.listAccounts(ListAccountsRequest.getDefaultInstance());
+    var response =
+        TestSupport.callWhenGrpcReady(
+            () -> accounts.listAccounts(ListAccountsRequest.getDefaultInstance()));
     assertFalse(response.getAccountsList().isEmpty());
   }
 }

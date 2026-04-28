@@ -25,6 +25,7 @@ public class OidcSessionHeaderValidateAccountProfile implements QuarkusTestProfi
   public Map<String, String> getConfigOverrides() {
     return Map.of(
         "floecat.auth.mode", "oidc",
+        "reconciler.max-parallelism", "0",
         "quarkus.oidc.enabled", "true",
         "quarkus.oidc.discovery-enabled", "false",
         "quarkus.oidc.tenant-enabled", "true",

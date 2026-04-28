@@ -23,14 +23,12 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
-import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -46,38 +44,35 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
-  private static final Logger LOG = Logger.getLogger(SnapshotPlanningReconcileExecutor.class);
+public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
+  private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
 
   private final ReconcilerBackend backend;
-  private final ReconcileJobStore jobs;
-  private final ReconcileExecutorRegistry executorRegistry;
+  private final RemotePlannerWorkerClient workerClient;
   private final boolean enabled;
   private final int maxFilesPerGroup;
 
   @Inject
-  public SnapshotPlanningReconcileExecutor(
+  public RemoteSnapshotPlanningReconcileExecutor(
       ReconcilerBackend backend,
-      ReconcileJobStore jobs,
-      ReconcileExecutorRegistry executorRegistry,
+      RemotePlannerWorkerClient workerClient,
       @ConfigProperty(
               name = "floecat.reconciler.snapshot-plan.max-files-per-group",
               defaultValue = "128")
           int maxFilesPerGroup,
       @ConfigProperty(
-              name = "floecat.reconciler.executor.snapshot-planner.enabled",
-              defaultValue = "true")
+              name = "floecat.reconciler.executor.remote-snapshot-planner.enabled",
+              defaultValue = "false")
           boolean enabled) {
     this.backend = backend;
-    this.jobs = jobs;
-    this.executorRegistry = executorRegistry;
+    this.workerClient = workerClient;
     this.maxFilesPerGroup = Math.max(1, maxFilesPerGroup);
     this.enabled = enabled;
   }
 
   @Override
   public String id() {
-    return "snapshot_planner_reconciler";
+    return "remote_snapshot_planner_worker";
   }
 
   @Override
@@ -117,8 +112,15 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.failure(
           0, 0, 0, 0, 1, 0, 0, "Unsupported reconcile job kind", new IllegalArgumentException());
     }
+    if (context.shouldStop().getAsBoolean()) {
+      return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
+    }
+
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    StandalonePlanSnapshotPayload payload = workerClient.getPlanSnapshotInput(remoteLease);
     ReconcileSnapshotTask task =
-        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+        payload.snapshotTask() == null ? ReconcileSnapshotTask.empty() : payload.snapshotTask();
+
     LOG.infof(
         "execute PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
         lease.jobId,
@@ -144,18 +146,18 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
           "snapshot task is required for PLAN_SNAPSHOT jobs",
           new IllegalArgumentException("snapshot task is required"));
     }
-    if (context.shouldStop().getAsBoolean()) {
-      return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
-    }
 
     Snapshot snapshot;
     try {
       snapshot = fetchSnapshot(lease, task).orElse(null);
     } catch (Exception e) {
+      workerClient.submitPlanSnapshotFailure(remoteLease, e.getMessage());
       return ExecutionResult.failure(
           0, 0, 0, 0, 1, 0, 0, "Failed to fetch snapshot " + task.snapshotId(), e);
     }
     if (snapshot == null) {
+      IllegalStateException error = new IllegalStateException("snapshot not found");
+      workerClient.submitPlanSnapshotFailure(remoteLease, error.getMessage());
       return ExecutionResult.failure(
           0,
           0,
@@ -165,52 +167,73 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
           0,
           0,
           "Snapshot " + task.snapshotId() + " was not found for table " + task.tableId(),
-          new IllegalStateException("snapshot not found"));
+          error);
     }
-    List<ReconcileFileGroupTask> fileGroupTasks =
-        !task.fileGroups().isEmpty() ? task.fileGroups() : buildFileGroupTasks(lease, task);
-    LOG.infof(
-        "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
-        lease.jobId, task.tableId(), task.snapshotId(), fileGroupTasks.size());
-    if (task.fileGroups().isEmpty()) {
-      jobs.persistSnapshotPlan(lease.jobId, plannedSnapshotTask(task, fileGroupTasks));
+
+    try {
+      List<ReconcileFileGroupTask> fileGroupTasks =
+          !task.fileGroups().isEmpty() ? task.fileGroups() : buildFileGroupTasks(lease, task);
+      LOG.infof(
+          "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
+          lease.jobId, task.tableId(), task.snapshotId(), fileGroupTasks.size());
+      List<PlannedFileGroupJob> fileGroupJobs =
+          fileGroupTasks.stream()
+              .map(
+                  group ->
+                      new PlannedFileGroupJob(
+                          effectiveFileGroupScope(payload.scope(), group), group))
+              .toList();
+      if (!workerClient.submitPlanSnapshotSuccess(remoteLease, fileGroupJobs)) {
+        return ExecutionResult.failure(
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            "standalone planner result submission was rejected",
+            new IllegalStateException("planner result submission rejected"));
+      }
+      context
+          .progressListener()
+          .onProgress(
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              "Planned snapshot "
+                  + task.snapshotId()
+                  + " for "
+                  + task.sourceNamespace()
+                  + "."
+                  + task.sourceTable()
+                  + " into "
+                  + fileGroupTasks.size()
+                  + " file group(s)");
+      return ExecutionResult.success(
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Snapshot plan recorded for "
+              + task.sourceNamespace()
+              + "."
+              + task.sourceTable()
+              + " with "
+              + fileGroupTasks.size()
+              + " file group(s)");
+    } catch (RuntimeException e) {
+      workerClient.submitPlanSnapshotFailure(remoteLease, e.getMessage());
+      return ExecutionResult.failure(
+          0, 0, 0, 0, 1, 0, 0, "Snapshot planning failed: " + e.getMessage(), e);
     }
-    ensureFileGroupExecutorAvailable(fileGroupTasks);
-    enqueueFileGroupExecution(lease, fileGroupTasks, context);
-    context
-        .progressListener()
-        .onProgress(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            "Planned snapshot "
-                + task.snapshotId()
-                + " for "
-                + task.sourceNamespace()
-                + "."
-                + task.sourceTable()
-                + " into "
-                + fileGroupTasks.size()
-                + " file group(s)");
-    return ExecutionResult.success(
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        "Snapshot plan recorded for "
-            + task.sourceNamespace()
-            + "."
-            + task.sourceTable()
-            + " with "
-            + fileGroupTasks.size()
-            + " file group(s)");
   }
 
   private Optional<Snapshot> fetchSnapshot(
@@ -303,59 +326,6 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
     return List.copyOf(groups);
   }
 
-  private static ReconcileSnapshotTask plannedSnapshotTask(
-      ReconcileSnapshotTask task, List<ReconcileFileGroupTask> fileGroupTasks) {
-    if (task == null) {
-      return ReconcileSnapshotTask.empty();
-    }
-    return ReconcileSnapshotTask.of(
-        task.tableId(),
-        task.snapshotId(),
-        task.sourceNamespace(),
-        task.sourceTable(),
-        fileGroupTasks);
-  }
-
-  private void ensureFileGroupExecutorAvailable(List<ReconcileFileGroupTask> fileGroupTasks) {
-    if (fileGroupTasks == null || fileGroupTasks.isEmpty()) {
-      return;
-    }
-    if (executorRegistry != null
-        && executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP)) {
-      return;
-    }
-    throw new IllegalStateException(
-        "No enabled reconcile executor is available for EXEC_FILE_GROUP jobs");
-  }
-
-  private void enqueueFileGroupExecution(
-      ReconcileJobStore.LeasedJob lease,
-      List<ReconcileFileGroupTask> fileGroupTasks,
-      ExecutionContext context) {
-    if (fileGroupTasks == null || fileGroupTasks.isEmpty() || context.shouldStop().getAsBoolean()) {
-      return;
-    }
-    ReconcileScope scope = lease.scope == null ? ReconcileScope.empty() : lease.scope;
-    ReconcileExecutionPolicy executionPolicy =
-        lease.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : lease.executionPolicy;
-    for (ReconcileFileGroupTask fileGroupTask : fileGroupTasks) {
-      if (context.shouldStop().getAsBoolean()) {
-        break;
-      }
-      ReconcileScope fileGroupScope = effectiveFileGroupScope(scope, fileGroupTask);
-      jobs.enqueueFileGroupExecution(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          fileGroupScope,
-          fileGroupTask.asReference(),
-          executionPolicy,
-          lease.jobId,
-          lease.pinnedExecutorId);
-    }
-  }
-
   private ReconcileContext reconcileContext(ReconcileJobStore.LeasedJob lease) {
     PrincipalContext principal =
         PrincipalContext.newBuilder()
@@ -422,10 +392,7 @@ public class SnapshotPlanningReconcileExecutor implements ReconcileExecutor {
           selectorPolicy(basePolicy, outputs, selector)
               .ifPresent(column -> columns.putIfAbsent(selector, column));
         }
-        case FILE, EXPRESSION, TARGET_NOT_SET -> {
-          // FILE is intentionally not an execution scope, and EXPRESSION remains a recognized
-          // placeholder target until unified capture grows explicit expression support.
-        }
+        case FILE, EXPRESSION, TARGET_NOT_SET -> {}
       }
       for (String selector : request.columnSelectors()) {
         if (selector == null || selector.isBlank()) {

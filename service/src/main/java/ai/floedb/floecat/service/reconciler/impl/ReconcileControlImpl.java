@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
-import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -91,7 +90,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcileCancellationRegistry cancellations;
-  @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject ReconcilerSettingsStore settings;
   @Inject Observability observability;
 
@@ -707,58 +705,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private void ensureExecutorsAvailable(CaptureMode mode, ReconcileScope scope) {
-    if (executorRegistry != null
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR)) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("No enabled reconcile executor is available for PLAN_CONNECTOR jobs")
-          .asRuntimeException();
-    }
     if (mode == CaptureMode.CAPTURE_ONLY && scope != null && scope.hasViewFilter()) {
       throw Status.INVALID_ARGUMENT
           .withDescription("capture-only reconcile is not valid for view reconcile")
-          .asRuntimeException();
-    }
-    if (executorRegistry != null) {
-      if (mode == CaptureMode.CAPTURE_ONLY) {
-        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription("No enabled reconcile executor is available for PLAN_TABLE jobs")
-              .asRuntimeException();
-        }
-      } else if (scope != null && scope.hasViewFilter()) {
-        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription("No enabled reconcile executor is available for PLAN_VIEW jobs")
-              .asRuntimeException();
-        }
-      } else if (scope != null && scope.hasTableFilter()) {
-        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription("No enabled reconcile executor is available for PLAN_TABLE jobs")
-              .asRuntimeException();
-        }
-      } else {
-        if (!executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE)
-            || !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription(
-                  "No enabled reconcile executor is available for PLAN_TABLE and PLAN_VIEW jobs")
-              .asRuntimeException();
-        }
-      }
-    }
-    if (mode != CaptureMode.METADATA_ONLY
-        && executorRegistry != null
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT)) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("No enabled reconcile executor is available for PLAN_SNAPSHOT jobs")
-          .asRuntimeException();
-    }
-    if (mode != CaptureMode.METADATA_ONLY
-        && executorRegistry != null
-        && !executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP)) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("No enabled reconcile executor is available for EXEC_FILE_GROUP jobs")
           .asRuntimeException();
     }
   }

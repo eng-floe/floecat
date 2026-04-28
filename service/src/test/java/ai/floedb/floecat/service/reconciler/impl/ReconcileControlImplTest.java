@@ -33,7 +33,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
-import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -68,7 +67,6 @@ class ReconcileControlImplTest {
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
-    service.executorRegistry = mock(ReconcileExecutorRegistry.class);
     service.settings = mock(ReconcilerSettingsStore.class);
     service.captureNowDefaultWait = java.time.Duration.ofSeconds(10);
     service.captureNowMaxWait = java.time.Duration.ofSeconds(30);
@@ -88,16 +86,6 @@ class ReconcileControlImplTest {
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(Connector.newBuilder().setResourceId(connectorId).build()));
     when(service.jobs.childJobs(anyString(), anyString())).thenReturn(java.util.List.of());
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP))
-        .thenReturn(true);
   }
 
   @Test
@@ -175,106 +163,55 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void captureNowFailsFastWhenNoPlannerExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR))
-        .thenReturn(false);
+  void captureNowEnqueuesWhenNoExecutionExecutorIsAvailableLocally() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
-                    .await()
-                    .indefinitely());
+    service
+        .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+        .await()
+        .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
+    verify(service.jobs)
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
-  void startCaptureFailsFastWhenNoPlannerExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_CONNECTOR))
-        .thenReturn(false);
+  void captureNowEnqueuesWhenNoSnapshotPlanningExecutorIsAvailableLocally() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setScope(captureScope())
-                            .build())
-                    .await()
-                    .indefinitely());
+    service
+        .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+        .await()
+        .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
+    verify(service.jobs)
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
-  void captureNowFailsFastWhenNoExecutionExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(false);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(false);
+  void startCaptureEnqueuesWhenNoFileGroupExecutorIsAvailableLocally() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
-                    .await()
-                    .indefinitely());
+    var response =
+        service
+            .startCapture(
+                ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                    .setScope(captureScope())
+                    .build())
+            .await()
+            .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
-  }
-
-  @Test
-  void captureNowFailsFastWhenNoSnapshotPlanningExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_SNAPSHOT))
-        .thenReturn(false);
-
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
-  }
-
-  @Test
-  void startCaptureFailsFastWhenNoFileGroupExecutorIsAvailable() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.EXEC_FILE_GROUP))
-        .thenReturn(false);
-
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setScope(captureScope())
-                            .build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+    assertEquals("job-1", response.getJobId());
   }
 
   @Test
@@ -299,112 +236,89 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void captureNowCaptureOnlyRequiresTablePlannerExecutor() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(false);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(true);
+  void captureNowCaptureOnlyEnqueuesWithoutLocalTablePlannerExecutor() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(
-                        CaptureNowRequest.newBuilder()
-                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
-                            .setScope(captureScope())
-                            .build())
-                    .await()
-                    .indefinitely());
+    service
+        .captureNow(
+            CaptureNowRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_CAPTURE_ONLY)
+                .setScope(captureScope())
+                .build())
+        .await()
+        .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
+    verify(service.jobs)
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
-  void startCaptureViewScopeRequiresViewPlannerExecutor() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(false);
+  void startCaptureViewScopeEnqueuesWithoutLocalViewPlannerExecutor() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
-                            .setScope(
-                                CaptureScope.newBuilder()
-                                    .setConnectorId(connectorId())
-                                    .setDestinationViewId("view-1")
-                                    .build())
+    var response =
+        service
+            .startCapture(
+                ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                    .setScope(
+                        CaptureScope.newBuilder()
+                            .setConnectorId(connectorId())
+                            .setDestinationViewId("view-1")
                             .build())
-                    .await()
-                    .indefinitely());
+                    .build())
+            .await()
+            .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+    assertEquals("job-1", response.getJobId());
   }
 
   @Test
-  void startCaptureTableScopeRequiresTablePlannerExecutor() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(false);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(true);
+  void startCaptureTableScopeEnqueuesWithoutLocalTablePlannerExecutor() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
-                            .setScope(
-                                CaptureScope.newBuilder()
-                                    .setConnectorId(connectorId())
-                                    .setDestinationTableId("table-1")
-                                    .build())
+    var response =
+        service
+            .startCapture(
+                ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                    .setScope(
+                        CaptureScope.newBuilder()
+                            .setConnectorId(connectorId())
+                            .setDestinationTableId("table-1")
                             .build())
-                    .await()
-                    .indefinitely());
+                    .build())
+            .await()
+            .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+    assertEquals("job-1", response.getJobId());
   }
 
   @Test
-  void startCaptureBroadMetadataRequiresTableAndViewPlannerExecutors() {
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_TABLE))
-        .thenReturn(true);
-    when(service.executorRegistry.hasExecutorForJobKind(ReconcileJobKind.PLAN_VIEW))
-        .thenReturn(false);
+  void startCaptureBroadMetadataEnqueuesWithoutLocalViewPlannerExecutor() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
 
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                            .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                            .build())
-                    .await()
-                    .indefinitely());
+    var response =
+        service
+            .startCapture(
+                ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                    .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                    .build())
+            .await()
+            .indefinitely();
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+    assertEquals("job-1", response.getJobId());
   }
 
   @Test

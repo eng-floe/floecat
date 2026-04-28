@@ -107,7 +107,6 @@ import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -122,7 +121,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-@Typed(GrpcReconcilerBackend.class)
 public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
 
@@ -1379,7 +1377,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
         throw new ReconcileFailureException(
-            ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult.FailureKind
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
                 .TABLE_MISSING,
             "source object missing: "
                 + sourceContext.get().sourceNamespace()

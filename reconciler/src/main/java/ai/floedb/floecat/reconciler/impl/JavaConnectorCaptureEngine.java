@@ -83,7 +83,7 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
         throw new ReconcileFailureException(
-            ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult.FailureKind
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
                 .TABLE_MISSING,
             "source object missing",
             e);

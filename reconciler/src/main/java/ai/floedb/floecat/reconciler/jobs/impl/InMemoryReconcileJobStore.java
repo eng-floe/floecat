@@ -247,7 +247,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     if (accountId != null && !accountId.isBlank() && !accountId.equals(job.accountId)) {
       return Optional.empty();
     }
-    return Optional.of(job);
+    return Optional.of(withPinnedExecutor(job));
   }
 
   @Override
@@ -282,7 +282,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
     int end = Math.min(filtered.size(), offset + limit);
     String next = end < filtered.size() ? Integer.toString(end) : "";
-    return new ReconcileJobPage(filtered.subList(offset, end), next);
+    return new ReconcileJobPage(
+        filtered.subList(offset, end).stream().map(this::withPinnedExecutor).toList(), next);
   }
 
   @Override
@@ -298,7 +299,41 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 Long.compare(
                     b.startedAtMs == 0L ? b.finishedAtMs : b.startedAtMs,
                     a.startedAtMs == 0L ? a.finishedAtMs : a.startedAtMs))
+        .map(this::withPinnedExecutor)
         .collect(Collectors.toUnmodifiableList());
+  }
+
+  private ReconcileJob withPinnedExecutor(ReconcileJob job) {
+    if (job == null) {
+      return null;
+    }
+    return new ReconcileJob(
+        job.jobId,
+        job.accountId,
+        job.connectorId,
+        job.state,
+        job.message,
+        job.startedAtMs,
+        job.finishedAtMs,
+        job.tablesScanned,
+        job.tablesChanged,
+        job.viewsScanned,
+        job.viewsChanged,
+        job.errors,
+        job.fullRescan,
+        job.captureMode,
+        job.snapshotsProcessed,
+        job.statsProcessed,
+        job.scope,
+        job.executionPolicy,
+        pinnedExecutors.getOrDefault(job.jobId, ""),
+        job.executorId,
+        job.jobKind,
+        job.tableTask,
+        job.viewTask,
+        job.snapshotTask,
+        job.fileGroupTask,
+        job.parentJobId);
   }
 
   @Override

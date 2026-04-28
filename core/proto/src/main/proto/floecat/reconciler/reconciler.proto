@@ -18,6 +18,9 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.reconciler.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/catalog/index.proto";
+import "floecat/catalog/stats.proto";
+import "floecat/catalog/view.proto";
 import "floecat/connector/connector.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
@@ -276,6 +279,8 @@ message LeaseReconcileJobRequest {
   repeated string lanes = 3;
   // Job kinds this worker accepts.
   repeated ReconcileJobKind job_kinds = 4;
+  // Local executor ids available to satisfy pinned-executor routing.
+  repeated string executor_ids = 5;
 }
 
 message LeaseReconcileJobResponse {
@@ -366,6 +371,255 @@ message GetReconcileCancellationRequest {
 
 message GetReconcileCancellationResponse {
   bool cancellation_requested = 1;
+}
+
+message GetLeasedFileGroupExecutionRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message GetLeasedPlanConnectorInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanConnectorInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  ai.floedb.floecat.common.ResourceId connector_id = 3;
+  CaptureMode mode = 4;
+  bool full_rescan = 5;
+  CaptureScope scope = 6;
+  ExecutionPolicy execution_policy = 7;
+  string pinned_executor_id = 8;
+}
+
+message GetLeasedPlanConnectorInputResponse {
+  LeasedPlanConnectorInput input = 1;
+}
+
+message PlannedTablePlanJob {
+  CaptureScope scope = 1;
+  ReconcileTableTask table_task = 2;
+}
+
+message PlannedViewPlanJob {
+  CaptureScope scope = 1;
+  ReconcileViewTask view_task = 2;
+}
+
+message SubmitLeasedPlanConnectorResultRequest {
+  message Success {
+    repeated PlannedTablePlanJob table_jobs = 1;
+    repeated PlannedViewPlanJob view_jobs = 2;
+  }
+
+  message Failure {
+    string message = 1;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanConnectorResultResponse {
+  bool accepted = 1;
+}
+
+message GetLeasedPlanTableInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanTableInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureMode mode = 5;
+  bool full_rescan = 6;
+  CaptureScope scope = 7;
+  ReconcileTableTask table_task = 8;
+}
+
+message GetLeasedPlanTableInputResponse {
+  LeasedPlanTableInput input = 1;
+}
+
+message PlannedSnapshotPlanJob {
+  CaptureScope scope = 1;
+  ReconcileSnapshotTask snapshot_task = 2;
+}
+
+message SubmitLeasedPlanTableResultRequest {
+  message Success {
+    repeated PlannedSnapshotPlanJob snapshot_jobs = 1;
+  }
+
+  message Failure {
+    string message = 1;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanTableResultResponse {
+  bool accepted = 1;
+}
+
+message GetLeasedPlanViewInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanViewInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureScope scope = 5;
+  ReconcileViewTask view_task = 6;
+}
+
+message GetLeasedPlanViewInputResponse {
+  LeasedPlanViewInput input = 1;
+}
+
+message PlannedViewMutation {
+  ai.floedb.floecat.common.ResourceId destination_view_id = 1;
+  ai.floedb.floecat.catalog.ViewSpec view_spec = 2;
+  string idempotency_key = 3;
+}
+
+message SubmitLeasedPlanViewResultRequest {
+  message Success {
+    PlannedViewMutation mutation = 1;
+  }
+
+  message Failure {
+    string message = 1;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanViewResultResponse {
+  bool accepted = 1;
+  uint64 views_changed = 2;
+}
+
+message GetLeasedPlanSnapshotInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanSnapshotInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureMode mode = 5;
+  bool full_rescan = 6;
+  CaptureScope scope = 7;
+  ReconcileSnapshotTask snapshot_task = 8;
+}
+
+message GetLeasedPlanSnapshotInputResponse {
+  LeasedPlanSnapshotInput input = 1;
+}
+
+message PlannedFileGroupExecutionJob {
+  CaptureScope scope = 1;
+  ReconcileFileGroupTask file_group_task = 2;
+}
+
+message SubmitLeasedPlanSnapshotResultRequest {
+  message Success {
+    repeated PlannedFileGroupExecutionJob file_group_jobs = 1;
+  }
+
+  message Failure {
+    string message = 1;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanSnapshotResultResponse {
+  bool accepted = 1;
+}
+
+message LeasedFileGroupExecution {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.connector.Connector source_connector = 4;
+  string source_namespace = 5;
+  string source_table = 6;
+  ai.floedb.floecat.common.ResourceId table_id = 7;
+  uint64 snapshot_id = 8;
+  string plan_id = 9;
+  string group_id = 10;
+  repeated string file_paths = 11;
+  CapturePolicy capture_policy = 12;
+}
+
+message GetLeasedFileGroupExecutionResponse {
+  LeasedFileGroupExecution execution = 1;
+}
+
+message LeasedFileGroupIndexArtifact {
+  ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
+  bytes content = 2;
+  string content_type = 3;
+}
+
+message SubmitLeasedFileGroupExecutionResultRequest {
+  message Success {
+    string result_id = 1;
+    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 2;
+    repeated LeasedFileGroupIndexArtifact index_artifacts = 3;
+  }
+
+  message Failure {
+    string result_id = 1;
+    string message = 2;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedFileGroupExecutionResultResponse {
+  bool accepted = 1;
 }
 
 message GetReconcileJobRequest {
@@ -530,4 +784,34 @@ service ReconcileExecutorControl {
   // Reads current cancellation state for a job.
   rpc GetReconcileCancellation(GetReconcileCancellationRequest)
       returns (GetReconcileCancellationResponse);
+  // Returns the planner worker payload for one leased PLAN_CONNECTOR job.
+  rpc GetLeasedPlanConnectorInput(GetLeasedPlanConnectorInputRequest)
+      returns (GetLeasedPlanConnectorInputResponse);
+  // Persists one planner worker result for a leased PLAN_CONNECTOR job.
+  rpc SubmitLeasedPlanConnectorResult(SubmitLeasedPlanConnectorResultRequest)
+      returns (SubmitLeasedPlanConnectorResultResponse);
+  // Returns the planner worker payload for one leased PLAN_TABLE job.
+  rpc GetLeasedPlanTableInput(GetLeasedPlanTableInputRequest)
+      returns (GetLeasedPlanTableInputResponse);
+  // Persists one planner worker result for a leased PLAN_TABLE job.
+  rpc SubmitLeasedPlanTableResult(SubmitLeasedPlanTableResultRequest)
+      returns (SubmitLeasedPlanTableResultResponse);
+  // Returns the planner worker payload for one leased PLAN_VIEW job.
+  rpc GetLeasedPlanViewInput(GetLeasedPlanViewInputRequest)
+      returns (GetLeasedPlanViewInputResponse);
+  // Acknowledges one planner worker result for a leased PLAN_VIEW job.
+  rpc SubmitLeasedPlanViewResult(SubmitLeasedPlanViewResultRequest)
+      returns (SubmitLeasedPlanViewResultResponse);
+  // Returns the planner worker payload for one leased PLAN_SNAPSHOT job.
+  rpc GetLeasedPlanSnapshotInput(GetLeasedPlanSnapshotInputRequest)
+      returns (GetLeasedPlanSnapshotInputResponse);
+  // Persists one planner worker result for a leased PLAN_SNAPSHOT job.
+  rpc SubmitLeasedPlanSnapshotResult(SubmitLeasedPlanSnapshotResultRequest)
+      returns (SubmitLeasedPlanSnapshotResultResponse);
+  // Returns the standalone worker payload for one leased EXEC_FILE_GROUP job.
+  rpc GetLeasedFileGroupExecution(GetLeasedFileGroupExecutionRequest)
+      returns (GetLeasedFileGroupExecutionResponse);
+  // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
+  rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
+      returns (SubmitLeasedFileGroupExecutionResultResponse);
 }
