@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/metadata-graph/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/rust-remote-capture-executor/">
       
       
-        <link rel="prev" href="../arrow-flight/">
+        <link rel="prev" href="../reconciler/">
       
       
-        <link rel="next" href="../system-objects/">
+        <link rel="next" href="../transactions/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Metadata Graph - Floecat Documentation</title>
+        <title>Rust Remote Capture Executor - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#metadata-graph" class="md-skip">
+        <a href="#rust-remote-capture-executor" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Metadata Graph
+              Rust Remote Capture Executor
             
           </span>
         </div>
@@ -666,32 +666,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Metadata Graph
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
         
   
   
@@ -702,197 +680,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
-    <span class="md-ellipsis">
-      Overview
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Overview">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#implementation-structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      Implementation Structure
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#node-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      Node Model
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Node Model">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#engine-hints" class="md-nav__link">
-    <span class="md-ellipsis">
-      Engine Hints
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#versionspecificity-and-matching-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Version‑Specificity and Matching Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#builtin-nodes-engine-filtering" class="md-nav__link">
-    <span class="md-ellipsis">
-      Builtin Nodes &amp; Engine Filtering
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deterministic-hint-caching" class="md-nav__link">
-    <span class="md-ellipsis">
-      Deterministic Hint Caching
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#graph-apis" class="md-nav__link">
-    <span class="md-ellipsis">
-      Graph APIs
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Graph APIs">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#engine-hint-retrieval" class="md-nav__link">
-    <span class="md-ellipsis">
-      Engine Hint Retrieval
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#snapshot-pinning-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Snapshot Pinning Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#name-resolution-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Name Resolution Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#fully-qualified-resolvefq-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Fully Qualified (ResolveFQ*) Semantics
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#usage-guidelines" class="md-nav__link">
-    <span class="md-ellipsis">
-      Usage Guidelines
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#query-catalog-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Query Catalog Service
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Metrics
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testing" class="md-nav__link">
-    <span class="md-ellipsis">
-      Testing
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#future-work" class="md-nav__link">
-    <span class="md-ellipsis">
-      Future Work
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -994,10 +781,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1008,6 +817,212 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-are-replacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      What You Are Replacing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required Protocol Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-plane-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Control-Plane Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worker-identity-and-leasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worker Identity and Leasing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution Loop
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-file-group-payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standalone File-Group Payload
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result Contract
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-id-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result ID Rules
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idempotency-and-retry-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Idempotency and Retry Semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-and-lease-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cancellation and Lease Handling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-rust-worker-must-produce" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the Rust Worker Must Produce
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimal Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-integration-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Integration Strategy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#duplicate-submit-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      Duplicate submit rejected
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lease-lost-during-long-parquet-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lease lost during long parquet work
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-completed-but-artifacts-missing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job completed but artifacts missing
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1744,13 +1759,166 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Overview">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-are-replacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      What You Are Replacing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required Protocol Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-plane-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Control-Plane Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worker-identity-and-leasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worker Identity and Leasing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution Loop
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-file-group-payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standalone File-Group Payload
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result Contract
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-id-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result ID Rules
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idempotency-and-retry-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Idempotency and Retry Semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-and-lease-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cancellation and Lease Handling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-rust-worker-must-produce" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the Rust Worker Must Produce
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimal Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-integration-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Integration Strategy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#implementation-structure" class="md-nav__link">
+  <a href="#duplicate-submit-rejected" class="md-nav__link">
     <span class="md-ellipsis">
-      Implementation Structure
+      Duplicate submit rejected
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lease-lost-during-long-parquet-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lease lost during long parquet work
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-completed-but-artifacts-missing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job completed but artifacts missing
     </span>
   </a>
   
@@ -1762,147 +1930,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#node-model" class="md-nav__link">
+  <a href="#cross-references" class="md-nav__link">
     <span class="md-ellipsis">
-      Node Model
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Node Model">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#engine-hints" class="md-nav__link">
-    <span class="md-ellipsis">
-      Engine Hints
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#versionspecificity-and-matching-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Version‑Specificity and Matching Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#builtin-nodes-engine-filtering" class="md-nav__link">
-    <span class="md-ellipsis">
-      Builtin Nodes &amp; Engine Filtering
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deterministic-hint-caching" class="md-nav__link">
-    <span class="md-ellipsis">
-      Deterministic Hint Caching
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#graph-apis" class="md-nav__link">
-    <span class="md-ellipsis">
-      Graph APIs
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Graph APIs">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#engine-hint-retrieval" class="md-nav__link">
-    <span class="md-ellipsis">
-      Engine Hint Retrieval
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#snapshot-pinning-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Snapshot Pinning Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#name-resolution-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Name Resolution Semantics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#fully-qualified-resolvefq-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Fully Qualified (ResolveFQ*) Semantics
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#usage-guidelines" class="md-nav__link">
-    <span class="md-ellipsis">
-      Usage Guidelines
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#query-catalog-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Query Catalog Service
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Metrics
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testing" class="md-nav__link">
-    <span class="md-ellipsis">
-      Testing
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#future-work" class="md-nav__link">
-    <span class="md-ellipsis">
-      Future Work
+      Cross-References
     </span>
   </a>
   
@@ -1924,7 +1954,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/mc-floescan-indexer/docs/metadata-graph.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/mc-floescan-indexer/docs/rust-remote-capture-executor.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1932,298 +1962,262 @@
   
 
 
-<h1 id="metadata-graph">Metadata Graph<a class="headerlink" href="#metadata-graph" title="Permanent link">&para;</a></h1>
+<h1 id="rust-remote-capture-executor">Rust Remote Capture Executor<a class="headerlink" href="#rust-remote-capture-executor" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p>Floecat’s query-facing services share a common metadata cache called the <strong>Metadata Graph</strong>. It sits
-between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
-or views. The graph provides:</p>
-<ul>
-<li>Immutable node models that can be safely reused across requests.</li>
-<li>A per-account Caffeine-backed cache keyed by resource ID + pointer version so invalidation is
-  deterministic (can be disabled by setting <code>floecat.metadata.graph.cache-max-size</code> to 0; the limit
-  applies to each account independently).</li>
-<li>Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).</li>
-<li>Extension points (<code>EngineHint</code>) so planners/executors can attach engine-specific payloads without
-  mutating the base metadata structures.</li>
-</ul>
-<div class="highlight"><pre><span></span><code>┌────────────┐      ┌────────────────────┐      ┌───────────────────────┐
-│ gRPC RPCs  │ ---&gt; │ MetadataGraph APIs │ ---&gt; │ Repositories / RPCs   │
-│ (Query,    │      │  - resolve()       │      │  - Catalog/Table/View │
-│  Planner,  │      │  - catalog()/...   │      │  - Directory/Snapshot │
-│  Executors)│      │  - snapshotPinFor  │      │  - Storage backends   │
-└────────────┘      └────────────────────┘      └───────────────────────┘
-</code></pre></div>
-<h3 id="implementation-structure">Implementation Structure<a class="headerlink" href="#implementation-structure" title="Permanent link">&para;</a></h3>
-<p>Immutable node models live under <code>core/metagraph/model</code>, while the runtime helpers and
-facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
-<ul>
-<li><code>core/metagraph/model/</code> – Immutable node records (<code>CatalogNode</code>, <code>NamespaceNode</code>, <code>TableNode</code>,
-  <code>ViewNode</code>, <code>SystemViewNode</code>) plus shared enums (<code>GraphNodeKind</code>, <code>EngineKey</code>, <code>EngineHint</code>,
-  <code>GraphNodeOrigin</code>, etc.).</li>
-<li><code>service/metagraph/cache/</code> – <code>GraphCacheManager</code> + <code>GraphCacheKey</code> implement the per-account
-  cache-of-caches and expose meters for hit/miss counts, account count, and total entries.</li>
-<li><code>service/metagraph/loader/</code> – <code>NodeLoader</code> wraps the catalog/namespace/table/view repositories to
-  hydrate immutable nodes from protobuf metadata (<code>metaForSafe</code> + pointer fetches).</li>
-<li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups, while
-  <code>FullyQualifiedResolver</code> mirrors DirectoryService’s ResolveFQ list/prefix semantics.</li>
-<li><code>service/metagraph/snapshot/</code> – <code>SnapshotHelper</code> encapsulates snapshot pinning and schema resolution,
-  wrapping the SnapshotService RPC stub.</li>
-<li><code>service/metagraph/hint/</code> – <code>EngineHintManager</code> routes registered hint providers, matches them
-  against <code>EngineKey</code>, and caches payloads so planners never race over engine versions.</li>
-<li><code>service/metagraph/overlay/</code> – <code>UserGraph</code> (the Metadata Graph façade, see
-  <code>service/metagraph/overlay/user/UserGraph.java</code>) composes the helpers above, exposes the public API,
-  and keeps a <code>CatalogOverlay</code>-friendly view via <code>MetaGraph</code>. <code>SystemGraph</code> (in
-  <code>overlay/systemobjects/SystemGraph.java</code>) consumes <code>SystemNodeRegistry</code> snapshots so pg_catalog-style
-  system tables/views merge with the user metadata when callers go through the overlay.</li>
-</ul>
-<h2 id="node-model">Node Model<a class="headerlink" href="#node-model" title="Permanent link">&para;</a></h2>
-<p>Nodes live under <code>core/metagraph/model</code> and each implements <code>GraphNode</code>. They are Java records with
-defensive copies to guarantee immutability.</p>
-<ul>
-<li><code>CatalogNode</code> – Lightweight display + connector/policy metadata. Optionally exposes namespace IDs
-  for listing RPCs.</li>
-<li><code>NamespaceNode</code> – Captures catalog ancestry, path segments, display name, and optional child IDs.</li>
-<li><code>TableNode</code> – Holds logical schema JSON, partition keys, field-ID map, snapshot pointers (current,
-  previous, resolved sets), optional stats summary, dependent view IDs, and engine hints.</li>
-<li><code>ViewNode</code> – Stores SQL text, dialect, output columns, base relation IDs, creation search path, and
-  optional owner.</li>
-<li><code>SystemViewNode</code> – Reserved for virtual/system relations (e.g., <code>$files</code>, <code>$snapshots</code>).</li>
-</ul>
-<p>Common fields:</p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>id()</code></td>
-<td>Stable <code>ResourceId</code> carrying account/kind/UUID.</td>
-</tr>
-<tr>
-<td><code>version()</code></td>
-<td>Pointer version used to compose cache keys.</td>
-</tr>
-<tr>
-<td><code>metadataUpdatedAt()</code></td>
-<td>Repository mutation timestamp; informative only (not tied to snapshots).</td>
-</tr>
-<tr>
-<td><code>engineHints()</code></td>
-<td>Map keyed by <code>EngineHintKey(engineKind, engineVersion, payloadType)</code> → opaque <code>EngineHint</code>.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="engine-hints">Engine Hints<a class="headerlink" href="#engine-hints" title="Permanent link">&para;</a></h3>
-<p><code>EngineHint</code> is a small struct with <code>payloadType</code>, <code>payload</code>, and optional metadata; the <code>payloadType</code> string
-matches the hint provider’s advertised <code>payloadType</code>/<code>payload_type</code> so callers can fetch the right payload. Planners can register
-adapters that compute hints on demand and stash them inside the node map. Consumers should treat the
-payload as immutable and versioned.</p>
-<h3 id="versionspecificity-and-matching-semantics">Version‑Specificity and Matching Semantics<a class="headerlink" href="#versionspecificity-and-matching-semantics" title="Permanent link">&para;</a></h3>
-<p>Engine‑specific hint providers rely on <code>EngineSpecificMatcher</code>, which compares an engine’s
-(engine_kind, engine_version) against each rule’s declared constraints. Version matching is
-inclusive: <code>min_version</code> and <code>max_version</code> both participate in ≥ / ≤ comparisons. Versions are
-compared using natural ordering: numeric segments compare by magnitude, while mixed alphanumeric
-segments (e.g., <code>16.0beta2</code>, <code>16.0rc1</code>) follow prefix ordering where numeric segments always sort
-after alphabetic suffixes. Pre‑release versions (<code>alpha</code>, <code>beta</code>, <code>rc</code>) therefore sort strictly
-before the corresponding final release. Rules omitting <code>engine_kind</code> inherit the catalog file’s
-engine kind. Hint providers compute a fingerprint per node and engine so cached hints remain
-isolated across engine versions and hint revisions.</p>
-<h3 id="builtin-nodes-engine-filtering">Builtin Nodes &amp; Engine Filtering<a class="headerlink" href="#builtin-nodes-engine-filtering" title="Permanent link">&para;</a></h3>
-<p>Builtin SQL objects (types, functions, operators, casts, collations, aggregates) never hit the
-pointer/blob repositories. Instead, <code>SystemNodeRegistry</code> (core/catalog) loads the pb/pbtxt catalogs once
-per engine kind, materialises immutable relation nodes, and caches the result per
-<code>(engine_kind, engine_version)</code>. Catalog files live under <code>resources/builtins</code> and follow the
-<code>&lt;engine_kind&gt;.pb[pbtxt]</code> naming convention. Each builtin definition can declare one or more
-<code>engine_specific</code> rules (engine kind + min/max versions + optional properties). The registry filters
-definitions using those rules so a planner that sets <code>x-engine-kind=postgres</code> and
-<code>x-engine-version=16.0</code> only sees builtin nodes that actually exist in that release. Callers that omit
-either header simply receive an empty builtin bundle (the catalog files stay untouched), and
-<code>GetSystemObjects</code> rejects the request until both headers are provided.</p>
-<p>Each <code>engine_specific</code> block may also attach arbitrary key/value <code>properties</code>. When the registry
-materialises a <code>(engine_kind, engine_version)</code> bundle it keeps only the rules that match the requested
-engine/version, so the filtered catalog (and <code>GetSystemObjects</code> response) contains exactly the
-entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
-entries that omit it inherit the file’s engine kind. Builtin nodes intentionally stay rule-free; the
-<code>SystemCatalogHintProvider</code> exposes the matching rules’ properties through publisher-defined payload
-types (the <code>payload_type</code> field in the catalog rule), so planners request the hint whose <code>payloadType</code>
-matches the catalog payload. Documented payload types live alongside the catalog definitions. Catalog
-authors should prefer stable, namespaced strings (e.g., <code>builtin.systemcatalog.function.semantic+json</code>
-or <code>floe.type+proto</code>) so that consumers can register decoders per payload family and avoid accidental
-collisions. Catalog authors control override behavior by ordering <code>engine_specific</code> rules intentionally:
-entries stay in pbtxt order (including overlay merges), and the provider treats the <em>last</em> matching
-rule as the one to publish.</p>
-<p>The matcher applies all engine-specific constraints eagerly when materialising builtin bundles. For a
-given <code>(engine_kind, engine_version)</code> pair, only the rules that match the naturally-ordered version
-boundaries are retained. The <code>BuiltinNodes</code> returned by <code>SystemNodeRegistry.nodesFor</code> therefore already
-represent the exact set applicable for that engine release. <code>SystemGraph</code> consumes those nodes to build
-a <code>_system</code> <code>GraphSnapshot</code> that <code>MetaGraph</code> exposes via <code>CatalogOverlay</code>, so pg_catalog-style system
-objects live alongside the user metadata when scanners run. <code>SystemObjectsServiceImpl</code> reuses the same
-<code>SystemNodeRegistry</code>/<code>SystemCatalogProtoMapper</code> pipeline to answer <code>GetSystemObjects()</code> calls without
-recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
-keeps them entirely in memory until FloeCAT restarts.</p>
-<h3 id="deterministic-hint-caching">Deterministic Hint Caching<a class="headerlink" href="#deterministic-hint-caching" title="Permanent link">&para;</a></h3>
-<p>The hint system used by builtin catalog providers and other planners is backed by a weight-bounded
-Caffeine cache keyed on <code>(resourceId, pointerVersion, engineKey, payloadType, fingerprint)</code>. The
-fingerprint is provider‑defined and ensures that changes in provider logic (e.g., version of a
-builtin definition, rule filtering logic, or planner‑specific metadata) produce new cached entries.
-Cache eviction is weight‑aware: inserts that exceed the configured maximum immediately trigger
-synchronous eviction when running in test mode, and asynchronous eviction in production. Eviction
-can invalidate old hints even when pointer versions are unchanged, ensuring stale engine‑specific
-metadata is not reused beyond its boundary conditions.</p>
-<h2 id="graph-apis">Graph APIs<a class="headerlink" href="#graph-apis" title="Permanent link">&para;</a></h2>
-<p>The <code>UserGraph</code> façade (CDI <code>@ApplicationScoped</code>, see <code>service/metagraph/overlay/user/UserGraph.java</code>)
-exposes the Metadata Graph APIs that higher layers call. Key methods:</p>
-<table>
-<thead>
-<tr>
-<th>Method</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Optional&lt;GraphNode&gt; resolve(ResourceId)</code></td>
-<td>Loads a node from cache or repository by ID/kind.</td>
-</tr>
-<tr>
-<td><code>Optional&lt;CatalogNode&gt; catalog(...)</code> / <code>namespace</code> / <code>table</code> / <code>view</code></td>
-<td>Typed convenience wrappers around <code>resolve</code>.</td>
-</tr>
-<tr>
-<td><code>ResourceId resolveName(String cid, NameRef ref)</code></td>
-<td>Mirrors DirectoryService semantics for planner RPCs (NameRef → ID).</td>
-</tr>
-<tr>
-<td><code>ResolveResult resolveTables(String cid, List&lt;NameRef&gt; list, int limit, String token)</code></td>
-<td>Resolves explicit table names (DirectoryService parity) with best-effort semantics.</td>
-</tr>
-<tr>
-<td><code>ResolveResult resolveTables(String cid, NameRef prefix, int limit, String token)</code></td>
-<td>Lists tables under a namespace prefix while enforcing Directory pagination contracts.</td>
-</tr>
-<tr>
-<td><code>ResolveResult resolveViews(String cid, List&lt;NameRef&gt; list, int limit, String token)</code></td>
-<td>Resolves explicit view names, returning canonical <code>NameRef</code>s and resource IDs.</td>
-</tr>
-<tr>
-<td><code>ResolveResult resolveViews(String cid, NameRef prefix, int limit, String token)</code></td>
-<td>Lists views below a prefix with next-page tokens and total counts.</td>
-</tr>
-<tr>
-<td><code>SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional&lt;Timestamp&gt; asOfDefault)</code></td>
-<td>Normalises snapshot selection (override → as-of → current).</td>
-</tr>
-<tr>
-<td><code>void invalidate(ResourceId id)</code></td>
-<td>Evicts every cached version of an ID (call after successful mutations).</td>
-</tr>
-</tbody>
-</table>
-<h3 id="engine-hint-retrieval">Engine Hint Retrieval<a class="headerlink" href="#engine-hint-retrieval" title="Permanent link">&para;</a></h3>
-<p>All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
-delegates hint evaluation to the EngineHintManager, which selects providers based on node kind,
-hint type, and engine availability. Hints are cached per fingerprint and engine key so that
-planners requesting different engine versions or planner modes never interfere with one another.</p>
-<p>Internally the graph:</p>
+<p>This page describes how to replace the current Java <code>EXEC_FILE_GROUP</code> worker with a Rust remote
+worker that speaks Floecat's leased reconcile protocol directly.</p>
+<p>The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:</p>
 <ol>
-<li>Calls the matching repository’s <code>metaForSafe</code> to fetch pointer version and mutation metadata.</li>
-<li>Composes a cache key <code>(ResourceId, pointerVersion)</code>.</li>
-<li>Rehydrates the protobuf record (<code>Catalog</code>, <code>Namespace</code>, <code>Table</code>, <code>View</code>) into the immutable node.</li>
-<li>Returns cached nodes for future lookups until the pointer version changes.</li>
+<li>Leases eligible reconcile jobs from the control plane.</li>
+<li>Fetches the standalone file-group execution payload for each leased job.</li>
+<li>Reads parquet files and computes stats and parquet page-index sidecars.</li>
+<li>Submits success or failure back through the control plane.</li>
 </ol>
-<h3 id="snapshot-pinning-semantics">Snapshot Pinning Semantics<a class="headerlink" href="#snapshot-pinning-semantics" title="Permanent link">&para;</a></h3>
+<p>If you only need file-group capture replacement, you do not need to replace the Java planner
+workers. <code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, and <code>PLAN_SNAPSHOT</code> can remain in the
+existing JVM control plane or executor fleet.</p>
+<h2 id="what-you-are-replacing">What You Are Replacing<a class="headerlink" href="#what-you-are-replacing" title="Permanent link">&para;</a></h2>
+<p>The current JVM path for file-group execution is:</p>
 <ul>
-<li>Explicit snapshot ID overrides always win.</li>
-<li>Explicit AS-OF timestamps produce pins with <code>snapshot_id=0</code> and <code>as_of</code> set.</li>
-<li><code>asOfDefault</code> is applied when no overrides exist (to support <code>BEGIN QUERY AS OF ...</code> semantics).</li>
-<li>Otherwise the graph calls <code>SnapshotService.GetSnapshot(SS_CURRENT)</code> to discover the latest ID.</li>
+<li><code>RemoteReconcileExecutorPoller</code> leases <code>EXEC_FILE_GROUP</code> jobs.</li>
+<li><code>RemoteFileGroupReconcileExecutor</code> fetches <code>LeasedFileGroupExecution</code>.</li>
+<li><code>StandaloneJavaFileGroupExecutionRunner</code> performs the actual parquet work.</li>
+<li><code>SubmitLeasedFileGroupExecutionResult</code> persists stats, index artifacts, and per-file results.</li>
 </ul>
-<h3 id="name-resolution-semantics">Name Resolution Semantics<a class="headerlink" href="#name-resolution-semantics" title="Permanent link">&para;</a></h3>
-<p><code>resolveName</code> first short-circuits when the NameRef embeds a <code>ResourceId</code>. Otherwise it performs the
-table/view lookups directly (using the same repositories DirectoryService previously used) and
-throws the same ambiguity/unresolved error codes as <code>DirectoryService.Resolve*</code>. Graph callers get
-consistent NameRef → ResourceId translations without depending on a secondary RPC hop.</p>
-<h3 id="fully-qualified-resolvefq-semantics">Fully Qualified (ResolveFQ*) Semantics<a class="headerlink" href="#fully-qualified-resolvefq-semantics" title="Permanent link">&para;</a></h3>
-<p><code>resolveTables/resolveViews</code> mirror the <code>ResolveFQ*</code> RPCs. The helpers accept either a list selector
-or a namespace prefix, apply input validation, paginate using Directory-compatible tokens, and
-return canonical <code>NameRef</code> + <code>ResourceId</code> pairs. DirectoryService now delegates to these helpers so
-the graph defines the single source of truth for list/prefix resolution.</p>
-<h2 id="usage-guidelines">Usage Guidelines<a class="headerlink" href="#usage-guidelines" title="Permanent link">&para;</a></h2>
+<p>A Rust worker replaces the execution portion of that flow. It should behave like an external
+implementation of the current worker contract, not like a new public API.</p>
+<h2 id="required-protocol-surface">Required Protocol Surface<a class="headerlink" href="#required-protocol-surface" title="Permanent link">&para;</a></h2>
+<p>At minimum, the Rust worker must implement these <code>ReconcileExecutorControl</code> RPCs from
+<a href="../proto/"><code>docs/proto.md</code></a>:</p>
 <ul>
-<li><strong>Always go through the graph</strong> for read paths instead of hitting repositories directly. This keeps
-  cache hit rate predictable and ensures planner/executor code sees immutable snapshots.</li>
-<li><strong>Call <code>invalidate</code></strong> whenever a catalog/namespace/table/view mutation succeeds. Pointer version
-  bumps will naturally invalidate cache entries, but eviction shortens the window before readers see
-  the new data.</li>
-<li><strong>Treat node instances as read-only</strong>. They are immutable records but they may still be shared
-  across requests via the cache, so do not mutate maps or lists after retrieval.</li>
-<li><strong>Attach engine hints sparingly</strong>. Hints should be small (think JSON blobs or compact protobufs)
-  and versioned so planners/executors can safely down-level or up-level between releases.</li>
+<li><code>LeaseReconcileJob</code></li>
+<li><code>StartLeasedReconcileJob</code></li>
+<li><code>RenewReconcileLease</code></li>
+<li><code>ReportReconcileProgress</code></li>
+<li><code>GetReconcileCancellation</code></li>
+<li><code>GetLeasedFileGroupExecution</code></li>
+<li><code>SubmitLeasedFileGroupExecutionResult</code></li>
+<li><code>CompleteLeasedReconcileJob</code></li>
 </ul>
-<h2 id="query-catalog-service">Query Catalog Service<a class="headerlink" href="#query-catalog-service" title="Permanent link">&para;</a></h2>
-<p><code>UserObjectsService.GetUserObjects</code> now streams <code>UserObjectsBundleChunk</code>s directly from the metadata
-graph. Each chunk carries a header, batched relation resolutions (<code>RelationResolutions</code>) and a final
-summary, so planners can start binding as soon as the service resolves each relation. The service
-shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogOverlay.resolve</code>,
-<code>snapshotPinFor</code>, and view metadata stored in <code>ViewNode</code> to produce canonical names, pruned schemas,
-and view definitions without issuing a second RPC batch.
-Resolved tables/views also go through <code>QueryInputResolver</code> so their snapshot pins are merged into
-<code>QueryContext</code> before the response hits the planner—<code>FetchScanBundle</code> can therefore find the same
-pins later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
-relations are materialized in the engine-specific overlays for <code>_system</code> scans but do not appear in the RPC
-response to avoid exposing synthetic tables twice.
-Column decorations are surfaced per column via <code>RelationInfo.columns[*]</code> (<code>ColumnResult</code>), so a relation can
-still resolve as <code>FOUND</code> while individual columns report <code>COLUMN_STATUS_FAILED</code> with structured failure reasons.</p>
-<h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
-<p>The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:</p>
-<table>
-<thead>
-<tr>
-<th>Metric</th>
-<th>Type</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>floecat.metadata.graph.cache.enabled</code></td>
-<td>Gauge</td>
-<td>1.0 when caching is enabled, 0.0 when <code>cache-max-size=0</code>.</td>
-</tr>
-<tr>
-<td><code>floecat.metadata.graph.cache.max_size</code></td>
-<td>Gauge</td>
-<td>Per-account configured max size (0 when caching is disabled).</td>
-</tr>
-<tr>
-<td><code>floecat.metadata.graph.cache.accounts</code></td>
-<td>Gauge</td>
-<td>Number of account cache partitions that currently exist.</td>
-</tr>
-<tr>
-<td><code>floecat.metadata.graph.cache.entries</code></td>
-<td>Gauge</td>
-<td>Total estimated entries across all account caches.</td>
-</tr>
-</tbody>
-</table>
-<p>These gauges complement the per-account <code>floecat.metadata.graph.cache{result=hit|miss,account=&lt;id&gt;}</code>
-counters and the <code>floecat.metadata.graph.load</code> timer that track cache effectiveness.</p>
-<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
-<p><code>MetadataGraphTest</code> uses in-memory repository/snapshot/directory fakes to exercise cache behavior and
-helper semantics without Mockito or bytecode agents. Any new helper should be covered there. Higher
-level components (e.g., <code>QueryInputResolverTest</code>) rely on lightweight graph fakes to validate their
-own logic while still mirroring real graph responses.</p>
-<h2 id="future-work">Future Work<a class="headerlink" href="#future-work" title="Permanent link">&para;</a></h2>
+<p>For a file-group-only worker, lease only <code>RJK_EXEC_FILE_GROUP</code>.</p>
+<h2 id="control-plane-configuration">Control-Plane Configuration<a class="headerlink" href="#control-plane-configuration" title="Permanent link">&para;</a></h2>
+<p>Run the service as the reconcile control plane:</p>
+<div class="highlight"><pre><span></span><code><span class="na">%reconciler-control.floecat.reconciler.worker.mode</span><span class="o">=</span><span class="s">remote</span>
+<span class="na">%reconciler-control.reconciler.max-parallelism</span><span class="o">=</span><span class="s">0</span>
+<span class="na">%reconciler-control.floecat.reconciler.auto.enabled</span><span class="o">=</span><span class="s">true</span>
+</code></pre></div>
+<p>Relevant shared settings:</p>
+<div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.job-store</span><span class="o">=</span><span class="s">durable</span>
+<span class="na">floecat.reconciler.authorization.header</span><span class="o">=</span><span class="s">authorization</span>
+<span class="na">floecat.reconciler.authorization.token</span><span class="o">=</span><span class="s">&lt;shared-token&gt;</span>
+<span class="na">floecat.reconciler.job-store.lease-ms</span><span class="o">=</span><span class="s">30000</span>
+</code></pre></div>
+<p>The Rust worker should target the control-plane gRPC endpoint and send the same authorization
+header/token pair configured on the service.</p>
+<h2 id="worker-identity-and-leasing">Worker Identity and Leasing<a class="headerlink" href="#worker-identity-and-leasing" title="Permanent link">&para;</a></h2>
+<p>The lease request supports:</p>
 <ul>
-<li>Add traversal helpers that expand view dependency trees into stable <code>RelationInfo</code> products.</li>
-<li>Surface resolved snapshot sets on <code>TableNode</code> for multi-table AS OF operations.</li>
-<li>Provide SPI hooks so connectors can contribute engine hints lazily.</li>
-<li>Harden per-account cache lifecycle (limit live account shards, auto-evict idle shards, and release
-  account-specific metrics) so multi-account churn cannot exhaust heap or Micrometer registries.</li>
+<li>execution classes</li>
+<li>lanes</li>
+<li>job kinds</li>
+<li><code>executor_id</code></li>
+<li>repeated <code>executor_ids</code></li>
+</ul>
+<p>For a Rust file-group worker, use:</p>
+<ul>
+<li><code>job_kinds = [RJK_EXEC_FILE_GROUP]</code></li>
+<li><code>executor_id = &lt;stable worker instance id&gt;</code></li>
+<li><code>executor_ids</code> containing the executor implementations this process can satisfy</li>
+</ul>
+<p>The current Java poller advertises local executor ids so pinned jobs can route to compatible
+workers. A Rust fleet should do the same if you intend to use pinned executor routing.</p>
+<h2 id="execution-loop">Execution Loop<a class="headerlink" href="#execution-loop" title="Permanent link">&para;</a></h2>
+<p>The happy-path loop is:</p>
+<div class="highlight"><pre><span></span><code>LeaseReconcileJob
+  → StartLeasedReconcileJob
+  → GetLeasedFileGroupExecution
+  → run parquet capture
+  → SubmitLeasedFileGroupExecutionResult(success)
+  → CompleteLeasedReconcileJob(RCS_SUCCEEDED)
+</code></pre></div>
+<p>The failure path is:</p>
+<div class="highlight"><pre><span></span><code>LeaseReconcileJob
+  → StartLeasedReconcileJob
+  → GetLeasedFileGroupExecution
+  → run parquet capture
+  → SubmitLeasedFileGroupExecutionResult(failure)
+  → CompleteLeasedReconcileJob(RCS_FAILED)
+</code></pre></div>
+<p>During execution:</p>
+<ul>
+<li>renew the lease before expiry</li>
+<li>report progress periodically</li>
+<li>check cancellation periodically</li>
+<li>stop work if the lease is no longer valid</li>
+</ul>
+<h2 id="standalone-file-group-payload">Standalone File-Group Payload<a class="headerlink" href="#standalone-file-group-payload" title="Permanent link">&para;</a></h2>
+<p><code>GetLeasedFileGroupExecution</code> returns the standalone worker payload. The important fields are:</p>
+<ul>
+<li><code>job_id</code></li>
+<li><code>lease_epoch</code></li>
+<li><code>parent_job_id</code></li>
+<li><code>source_connector</code></li>
+<li><code>source_namespace</code></li>
+<li><code>source_table</code></li>
+<li><code>table_id</code></li>
+<li><code>snapshot_id</code></li>
+<li><code>plan_id</code></li>
+<li><code>group_id</code></li>
+<li><code>file_paths</code></li>
+<li><code>capture_policy</code></li>
+</ul>
+<p>For a Rust worker, <code>source_connector</code> is important because it carries the resolved upstream
+connector definition and auth material needed to read source files.</p>
+<h2 id="result-contract">Result Contract<a class="headerlink" href="#result-contract" title="Permanent link">&para;</a></h2>
+<p><code>SubmitLeasedFileGroupExecutionResult</code> has two outcomes:</p>
+<ul>
+<li><code>success</code></li>
+<li><code>failure</code></li>
+</ul>
+<p>Both now require <code>result_id</code>.</p>
+<p>Success carries:</p>
+<ul>
+<li><code>result_id</code></li>
+<li><code>stats_records</code></li>
+<li><code>index_artifacts</code></li>
+</ul>
+<p>Failure carries:</p>
+<ul>
+<li><code>result_id</code></li>
+<li><code>message</code></li>
+</ul>
+<p>The service enforces top-level idempotency on <code>job_id + result_id</code> and also keeps per-item
+idempotency for stats and artifact writes. This gives you safe replay semantics if the worker loses
+the gRPC response and retries the same submission.</p>
+<h2 id="result-id-rules">Result ID Rules<a class="headerlink" href="#result-id-rules" title="Permanent link">&para;</a></h2>
+<p>For the same durable outcome, reuse the same <code>result_id</code> on retries.</p>
+<p>Recommended shape:</p>
+<div class="highlight"><pre><span></span><code>&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:success
+&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:failure
+</code></pre></div>
+<p>That is the same stability rule the current Java file-group executor now follows when <code>plan_id</code>
+and <code>group_id</code> are available.</p>
+<p>Do not reuse one <code>result_id</code> for different payloads. The control plane now rejects replay with the
+same <code>result_id</code> if the full request payload changes.</p>
+<h2 id="idempotency-and-retry-semantics">Idempotency and Retry Semantics<a class="headerlink" href="#idempotency-and-retry-semantics" title="Permanent link">&para;</a></h2>
+<p>The worker should assume the following:</p>
+<ul>
+<li><code>SubmitLeasedFileGroupExecutionResult</code> is safe to retry only if the same <code>result_id</code> and the
+  same payload are reused.</li>
+<li>success and failure are different outcomes and must not share a <code>result_id</code>.</li>
+<li><code>CompleteLeasedReconcileJob</code> is a separate terminal-state RPC. Do not assume a successful result
+  submit also marks the job terminal.</li>
+</ul>
+<p>Recommended retry behavior:</p>
+<ol>
+<li>Generate one stable <code>result_id</code> per durable success or failure outcome.</li>
+<li>If the submit RPC times out or the response is lost, retry the same request unchanged.</li>
+<li>If <code>CompleteLeasedReconcileJob</code> times out after a successful submit, retry completion with the
+   same terminal counters/message.</li>
+</ol>
+<h2 id="cancellation-and-lease-handling">Cancellation and Lease Handling<a class="headerlink" href="#cancellation-and-lease-handling" title="Permanent link">&para;</a></h2>
+<p>The worker should treat lease expiry and cancellation as first-class control signals.</p>
+<p>Recommended loop:</p>
+<ol>
+<li>Start a heartbeat task after <code>StartLeasedReconcileJob</code>.</li>
+<li>Call <code>RenewReconcileLease</code> on a cadence comfortably below <code>lease-ms</code>.</li>
+<li>Treat <code>renewed=false</code> as loss of ownership and stop work.</li>
+<li>Poll <code>GetReconcileCancellation</code> or rely on the cancellation flag returned by renew/progress.</li>
+<li>If cancellation is requested, stop execution and submit:</li>
+<li><code>SubmitLeasedFileGroupExecutionResult(failure)</code> only if you want a durable failure payload, or</li>
+<li>no result payload if no per-file result should be persisted</li>
+<li>Finish with <code>CompleteLeasedReconcileJob(RCS_CANCELLED)</code> when appropriate.</li>
+</ol>
+<h2 id="what-the-rust-worker-must-produce">What the Rust Worker Must Produce<a class="headerlink" href="#what-the-rust-worker-must-produce" title="Permanent link">&para;</a></h2>
+<p>The service expects the same logical outputs the Java runner currently produces:</p>
+<ul>
+<li><code>TargetStatsRecord</code> values for requested capture outputs</li>
+<li><code>LeasedFileGroupIndexArtifact</code> records with:</li>
+<li><code>IndexArtifactRecord</code></li>
+<li>raw artifact bytes</li>
+<li>content type</li>
+</ul>
+<p>The worker is responsible for ensuring:</p>
+<ul>
+<li>every planned file requested for page-index capture gets a matching artifact</li>
+<li>artifact metadata matches the target file identity</li>
+<li>null or missing outputs are not sent for required planned files</li>
+</ul>
+<h2 id="minimal-architecture">Minimal Architecture<a class="headerlink" href="#minimal-architecture" title="Permanent link">&para;</a></h2>
+<p>A practical Rust implementation usually has these pieces:</p>
+<ul>
+<li>protobuf-generated Rust client/server types for <code>core/proto</code></li>
+<li>a gRPC client for <code>ReconcileExecutorControl</code></li>
+<li>a lease manager</li>
+<li>a heartbeat/cancellation task</li>
+<li>a parquet execution engine</li>
+<li>an adapter that converts engine outputs into Floecat protobuf messages</li>
+</ul>
+<p>Keep the protobuf adapter isolated from the parquet engine. That makes it easier to test retry and
+idempotency behavior separately from file scanning logic.</p>
+<h2 id="recommended-integration-strategy">Recommended Integration Strategy<a class="headerlink" href="#recommended-integration-strategy" title="Permanent link">&para;</a></h2>
+<p>Start small:</p>
+<ol>
+<li>Implement a Rust worker that only leases <code>RJK_EXEC_FILE_GROUP</code>.</li>
+<li>Initially support <code>requestsStats=false</code> / <code>capturePageIndex=false</code> no-op file groups correctly.</li>
+<li>Add stats capture.</li>
+<li>Add parquet page-index artifact generation.</li>
+<li>Run the Rust worker alongside the existing JVM planner workers.</li>
+<li>Disable <code>floecat.reconciler.executor.remote-file-group.enabled</code> on JVM executor nodes once the
+   Rust worker is ready to own all file-group jobs.</li>
+</ol>
+<p>This keeps the planner/control-plane behavior stable while you replace only the parquet execution
+layer.</p>
+<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<p>This worker does not need to:</p>
+<ul>
+<li>implement public catalog CRUD APIs</li>
+<li>replace <code>ReconcileControl</code></li>
+<li>replace planner workers unless you want full non-JVM reconcile</li>
+<li>embed into the Quarkus service process</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="duplicate-submit-rejected">Duplicate submit rejected<a class="headerlink" href="#duplicate-submit-rejected" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>same <code>result_id</code>, different success/failure payload</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>make <code>result_id</code> stable per durable outcome</li>
+<li>retry with identical payload bytes</li>
+</ul>
+<h3 id="lease-lost-during-long-parquet-work">Lease lost during long parquet work<a class="headerlink" href="#lease-lost-during-long-parquet-work" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>renew cadence too slow</li>
+<li>worker blocked heartbeat thread</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>renew on a dedicated async task</li>
+<li>renew well before <code>lease-ms</code></li>
+</ul>
+<h3 id="job-completed-but-artifacts-missing">Job completed but artifacts missing<a class="headerlink" href="#job-completed-but-artifacts-missing" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>page-index capture returned incomplete artifact set</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>validate one artifact per planned file before calling success submit</li>
+</ul>
+<h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Reconcile architecture: <a href="../reconciler/"><code>reconciler.md</code></a></li>
+<li>RPC contracts: <a href="../proto/"><code>proto.md</code></a></li>
+<li>Operations and split deployment: <a href="../operations/"><code>operations.md</code></a></li>
+<li>Docker split deployment examples: <a href="../docker/"><code>docker.md</code></a></li>
 </ul>
 
 

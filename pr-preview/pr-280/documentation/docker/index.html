@@ -910,6 +910,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../transactions/" class="md-nav__link">
         
   
@@ -1792,13 +1815,12 @@ docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> 
 <li>For a true split deployment, run <code>service</code> as the control plane by setting
   <code>QUARKUS_PROFILE_SERVICE=reconciler-control</code>. The compose file pins <code>executor</code> to
   <code>QUARKUS_PROFILE_EXECUTOR=reconciler-executor</code> by default. That keeps the public APIs,
-  durable queue ownership, and automatic scheduling on the <code>service</code> container while disabling
-  local execution there.</li>
+  durable queue ownership, and automatic scheduling on the <code>service</code> container while setting
+  <code>reconciler.max-parallelism=0</code> there.</li>
 <li><code>executor</code> uses the same image but sets:
-  <code>FLOECAT_RECONCILER_SCHEDULER_ENABLED=false</code>,
-  <code>FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED=true</code>,
-  <code>FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED=true</code>,
-  <code>FLOECAT_RECONCILER_BACKEND=remote</code>,
+  <code>QUARKUS_PROFILE=reconciler-executor</code>,
+  <code>FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED=true</code>,
+  <code>FLOECAT_RECONCILER_WORKER_MODE=remote</code>,
   and <code>FLOECAT_RECONCILER_AUTO_ENABLED=false</code>.</li>
 <li><code>docker compose --scale executor=3</code> starts three identical executor replicas. Each replica
   connects to <code>service:9100</code>, leases work independently, and heartbeats/completes jobs through
@@ -1853,8 +1875,11 @@ in <code>docker/docker-compose.yml</code>, and per-mode overrides live in <code>
   <code>FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS</code> for non-default endpoints.</li>
 <li><strong>Seed/fixtures</strong>: <code>FLOECAT_SEED_ENABLED</code>, <code>FLOECAT_SEED_MODE</code>, <code>FLOECAT_FIXTURES_USE_AWS_S3</code>.</li>
 <li><strong>Reconciler split deployment</strong>:
-  <code>FLOECAT_RECONCILER_SCHEDULER_ENABLED</code>, <code>FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED</code>,
-  <code>FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED</code>, <code>FLOECAT_RECONCILER_BACKEND</code>,
+  <code>FLOECAT_RECONCILER_WORKER_MODE</code>, <code>FLOECAT_RECONCILER_MAX_PARALLELISM</code>,
+  <code>FLOECAT_RECONCILER_REMOTE_DEFAULT_EXECUTOR_ENABLED</code>,
+  <code>FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED</code>,
+  <code>FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED</code>,
+  <code>FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED</code>,
   <code>FLOECAT_RECONCILER_AUTHORIZATION_HEADER</code>, <code>FLOECAT_RECONCILER_AUTHORIZATION_TOKEN</code>,
   <code>QUARKUS_PROFILE_SERVICE</code>, <code>QUARKUS_PROFILE_EXECUTOR</code>.</li>
 </ul>

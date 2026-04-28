@@ -16,7 +16,7 @@
         <link rel="prev" href="../system-scans-grpc/">
       
       
-        <link rel="next" href="../transactions/">
+        <link rel="next" href="../rust-remote-capture-executor/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -848,9 +848,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#backend-selection" class="md-nav__link">
+  <a href="#grpc-auth" class="md-nav__link">
     <span class="md-ellipsis">
-      Backend selection
+      gRPC auth
     </span>
   </a>
   
@@ -901,6 +901,29 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -1668,9 +1691,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#backend-selection" class="md-nav__link">
+  <a href="#grpc-auth" class="md-nav__link">
     <span class="md-ellipsis">
-      Backend selection
+      gRPC auth
     </span>
   </a>
   
@@ -1768,9 +1791,12 @@ file-scoped execution work do not block public gRPC threads. The service submits
   the default is the durable implementation (<code>DurableReconcileJobStore</code>) selected by
   <code>floecat.reconciler.job-store=durable</code>; in-memory (<code>InMemoryReconcileJobStore</code>) remains available
   for lightweight/local usage when <code>floecat.reconciler.job-store=memory</code>.</li>
-<li><strong><code>ReconcilerScheduler</code></strong>: Quarkus scheduled bean that polls the job store, leases a job,
-  transitions it to running, invokes the appropriate executor, records success/failure counters, and
-  cancels child jobs when a parent plan job terminates unsuccessfully after partial enqueue.</li>
+<li><strong><code>RemoteReconcileExecutorPoller</code></strong>: Quarkus scheduled bean that leases reconcile jobs through
+  the <code>ReconcileExecutorControl</code> gRPC control plane, starts heartbeats, invokes the matching local
+  executor implementation, reports progress/completion, and repolls while worker capacity is
+  available. In <code>worker.mode=local</code>, the poller talks to the colocated service over gRPC; in
+  <code>worker.mode=remote</code>, executor-only nodes use the same lease protocol against a separate control
+  plane.</li>
 <li><strong><code>ReconcilerService</code></strong>: core planning/orchestration:</li>
 <li>Resolves connector metadata via the service's <code>Connectors</code> RPC.</li>
 <li>Plans connector-scoped table and view work while preserving destination namespace/table
@@ -1787,11 +1813,11 @@ file-scoped execution work do not block public gRPC threads. The service submits
    job tree.</li>
 </ul>
 </li>
-<li><strong>Planning executors</strong>:</li>
-<li><code>ConnectorPlanningReconcileExecutor</code> handles <code>PLAN_CONNECTOR</code>.</li>
-<li><code>DefaultReconcileExecutor</code> handles <code>PLAN_TABLE</code> and <code>PLAN_VIEW</code>.</li>
-<li><code>SnapshotPlanningReconcileExecutor</code> handles <code>PLAN_SNAPSHOT</code>.</li>
-<li><code>FileGroupExecutionReconcileExecutor</code> handles <code>EXEC_FILE_GROUP</code>.</li>
+<li><strong>Lease executors</strong>:</li>
+<li><code>RemotePlannerReconcileExecutor</code> handles <code>PLAN_CONNECTOR</code>.</li>
+<li><code>RemoteDefaultReconcileExecutor</code> handles <code>PLAN_TABLE</code> and <code>PLAN_VIEW</code>.</li>
+<li><code>RemoteSnapshotPlanningReconcileExecutor</code> handles <code>PLAN_SNAPSHOT</code>.</li>
+<li><code>RemoteFileGroupReconcileExecutor</code> handles <code>EXEC_FILE_GROUP</code>.</li>
 <li><strong><code>GrpcClients</code></strong>: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).</li>
 <li><strong><code>FloecatConnector</code></strong>: remains the only component allowed to touch upstream catalogs, table
@@ -1810,7 +1836,7 @@ reconcile control RPCs:</p>
   child jobs. <code>PLAN_CONNECTOR</code> and <code>PLAN_SNAPSHOT</code> reads aggregate child counters for user-facing
   status.</li>
 </ul>
-<p>Internally, the scheduler exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
+<p>Internally, the worker poller exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Destination binding</strong>: when reconciling, the service ensures the connector's declared
@@ -1827,6 +1853,9 @@ reconcile control RPCs:</p>
 <li><code>EXEC_FILE_GROUP</code> resolves the parent snapshot plan, captures file-target stats, and records
     per-file execution results on the child job payload.</li>
 <li>Sidecar generation and artifact registration happen per source parquet file.</li>
+<li><code>SubmitLeasedFileGroupExecutionResult</code> requires <code>result_id</code>. The service records top-level
+    idempotency for the whole submit payload and per-item idempotency for individual stats/artifact
+    writes so worker retries can safely replay the same result.</li>
 <li>Current snapshot reads surface <code>file_groups_total</code>, <code>file_groups_completed</code>,
     <code>file_groups_failed</code>, <code>files_total</code>, <code>files_completed</code>, and <code>files_failed</code>.</li>
 <li><strong>Index artifacts</strong>:</li>
@@ -1845,7 +1874,7 @@ reconcile control RPCs:</p>
     table scope requires <code>PLAN_TABLE</code>, view scope requires <code>PLAN_VIEW</code>, and broad metadata reconcile
     requires both.</li>
 <li><strong>Plan failure behavior</strong>: if a parent plan job fails or is cancelled after enqueuing child jobs,
-  the scheduler cancels those children.</li>
+  the control plane cancels those children.</li>
 <li><strong>View reconciliation semantics</strong>: reconcile is current-state, not history-preserving. When an
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
   place rather than appending a backend version history.</li>
@@ -1854,19 +1883,18 @@ reconcile control RPCs:</p>
   interval. Failed jobs are retried with backoff up to configured attempt limits before terminal
   failure.</li>
 </ul>
-<h3 id="backend-selection">Backend selection<a class="headerlink" href="#backend-selection" title="Permanent link">&para;</a></h3>
+<h3 id="grpc-auth">gRPC auth<a class="headerlink" href="#grpc-auth" title="Permanent link">&para;</a></h3>
 <ul>
-<li><code>floecat.reconciler.backend</code> (default <code>local</code>) selects which backend implementation
-  <code>ReconcilerService</code> uses. Set it to <code>remote</code> when the reconciler runs as a separate process and
-  must talk to the service over gRPC. In remote mode the reconciler uses
-  <code>floecat.reconciler.authorization.header</code> / <code>token</code> to send an authorization header on every
-  call. Per-request tokens supplied via <code>ReconcileContext</code> override the static token, so the
-  precedence is request-scoped token, then configured token, then no header.</li>
+<li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
+  payload/result exchange.</li>
+<li><code>floecat.reconciler.authorization.header</code> / <code>token</code> configure the authorization header used on
+  worker-to-control-plane calls. Per-request tokens supplied via <code>ReconcileContext</code> override the
+  static token, so the precedence is request-scoped token, then configured token, then no header.</li>
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector StartCapture / CaptureNow
   → ReconcileJobStore.enqueue(PLAN_CONNECTOR)
-  → ReconcilerScheduler.pollOnce
+  → RemoteReconcileExecutorPoller.pollOnce
       → leaseNext
       → markRunning
       → if PLAN_CONNECTOR:
@@ -1894,17 +1922,27 @@ reconcile control RPCs:</p>
 </code></pre></div>
 <p>Jobs include <code>fullRescan</code>, <code>executionPolicy</code>, <code>jobKind</code>, and optional task payloads. Snapshot plan
 jobs and file-group jobs also surface file-group/file counters for current execution state.
-<code>ReconcilerScheduler</code> uses an <code>AtomicBoolean</code> guard to prevent concurrent runs within the same
-instance.</p>
+<code>RemoteReconcileExecutorPoller</code> uses <code>AtomicBoolean</code> and in-flight counters to avoid over-leasing
+within the same instance while continuing to repoll until worker slots are full.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Scheduling cadence via <code>reconciler.pollEvery</code> (defaults to <code>1s</code>).</li>
+<li>Worker mode via <code>floecat.reconciler.worker.mode</code>:</li>
+<li><code>local</code> runs the lease poller in the same JVM as the control plane.</li>
+<li><code>remote</code> keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
+    <code>reconciler.max-parallelism=0</code> on control-plane-only nodes.</li>
+<li>Worker capacity via <code>reconciler.max-parallelism</code>.</li>
 <li>Job store selection:</li>
 <li><code>floecat.reconciler.job-store=durable</code> (service default) uses persisted queue records plus
     retry/lease tuning via:
     <code>floecat.reconciler.job-store.max-attempts</code>, <code>base-backoff-ms</code>, <code>max-backoff-ms</code>, <code>lease-ms</code>,
     <code>reclaim-interval-ms</code>, and <code>ready-scan-limit</code>.</li>
 <li><code>floecat.reconciler.job-store=memory</code> uses the in-memory queue implementation.</li>
+<li>Executor toggles:</li>
+<li><code>floecat.reconciler.executor.remote-default.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-planner.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-snapshot-planner.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-file-group.enabled</code></li>
 <li>Swap out <code>ReconcileJobStore</code> for additional backends by providing a CDI alternative (job ID
   references must remain stable for <code>GetReconcileJob</code>).</li>
 <li>Extend <code>FloecatConnector</code> to add richer snapshot planning or file execution behavior. Query scan
@@ -1914,8 +1952,8 @@ instance.</p>
 <ul>
 <li><strong>Full metadata rescan</strong>: operator triggers
   <code>connector trigger demo-glue --full --mode metadata-only</code>. The job store enqueues a
-  full <code>PLAN_CONNECTOR</code> job, the scheduler leases it, and the reconciler walks connector discovery
-  and metadata planning across the full upstream history.</li>
+  full <code>PLAN_CONNECTOR</code> job, the worker poller leases it, and the reconciler walks connector
+  discovery and metadata planning across the full upstream history.</li>
 <li><strong>Incremental capture run</strong>: operator triggers
   <code>connector trigger demo-glue --capture stats</code>. The reconcile path uses the default
   <code>metadata-and-capture</code> mode and captures table/file/column stats for matching table work.</li>
@@ -1926,6 +1964,8 @@ instance.</p>
 <ul>
 <li>Connector SPI details: <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
 <li>Service connector/query RPCs: <a href="../service/"><code>docs/service.md</code></a></li>
+<li>Rust file-group worker implementation guide:
+  <a href="../rust-remote-capture-executor/"><code>docs/rust-remote-capture-executor.md</code></a></li>
 <li>Concrete connectors: <a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a>,
   <a href="../connectors-delta/"><code>docs/connectors-delta.md</code></a></li>
 </ul>

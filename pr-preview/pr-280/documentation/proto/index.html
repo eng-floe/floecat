@@ -784,6 +784,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../transactions/" class="md-nav__link">
         
   
@@ -1915,9 +1938,9 @@ CLI, and reconciler.</p>
 <td></td>
 </tr>
 <tr>
-<td><code>CaptureExecutionService</code></td>
-<td><code>ExecuteFileGroup</code></td>
-<td>Combined worker-facing file-group execution contract for planned stats and index capture.</td>
+<td><code>ReconcileExecutorControl</code></td>
+<td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>SubmitLeasedFileGroupExecutionResult</code></td>
+<td>Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs.</td>
 </tr>
 <tr>
 <td><code>PlannerStatsService</code></td>
@@ -1972,6 +1995,13 @@ engine release.</p>
 <li><strong>Index artifact streams</strong> – <code>PutIndexArtifacts</code> requires each client stream to target exactly one
   <code>table_id</code> and one <code>snapshot_id</code>. Multiple snapshots must be written through separate client
   streams.</li>
+<li><strong>Leased file-group result submission</strong> – <code>SubmitLeasedFileGroupExecutionResult.Success</code> and
+  <code>.Failure</code> both require <code>result_id</code>. The control plane uses that identifier for top-level replay
+  protection on the entire request payload, while service-side writes also keep per-item
+  idempotency for stats and index artifacts.</li>
+<li><strong>Executor leasing filters</strong> – <code>LeaseReconcileJobRequest</code> accepts execution class, lane, job kind,
+  <code>executor_id</code>, and repeated <code>executor_ids</code> selectors so a worker fleet can advertise both its
+  concrete worker identity and the executor implementations it is willing to run.</li>
 <li><strong>Stats vs constraints snapshot policy</strong> – <code>PutTargetStats</code> currently accepts unknown snapshots
   (lenient ordering), while <code>PutTableConstraints</code> is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
