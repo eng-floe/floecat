@@ -24,7 +24,8 @@ public record ReconcileSnapshotTask(
     long snapshotId,
     String sourceNamespace,
     String sourceTable,
-    List<ReconcileFileGroupTask> fileGroups) {
+    List<ReconcileFileGroupTask> fileGroups,
+    boolean fileGroupPlanRecorded) {
 
   public ReconcileSnapshotTask {
     tableId = tableId == null ? "" : tableId.trim();
@@ -39,7 +40,7 @@ public record ReconcileSnapshotTask(
 
   public static ReconcileSnapshotTask of(
       String tableId, long snapshotId, String sourceNamespace, String sourceTable) {
-    return of(tableId, snapshotId, sourceNamespace, sourceTable, List.of());
+    return of(tableId, snapshotId, sourceNamespace, sourceTable, List.of(), false);
   }
 
   public static ReconcileSnapshotTask of(
@@ -48,18 +49,30 @@ public record ReconcileSnapshotTask(
       String sourceNamespace,
       String sourceTable,
       List<ReconcileFileGroupTask> fileGroups) {
+    return of(tableId, snapshotId, sourceNamespace, sourceTable, fileGroups, false);
+  }
+
+  public static ReconcileSnapshotTask of(
+      String tableId,
+      long snapshotId,
+      String sourceNamespace,
+      String sourceTable,
+      List<ReconcileFileGroupTask> fileGroups,
+      boolean fileGroupPlanRecorded) {
     if ((tableId == null || tableId.isBlank())
         && snapshotId <= 0L
         && (sourceNamespace == null || sourceNamespace.isBlank())
         && (sourceTable == null || sourceTable.isBlank())
-        && (fileGroups == null || fileGroups.isEmpty())) {
+        && (fileGroups == null || fileGroups.isEmpty())
+        && !fileGroupPlanRecorded) {
       return empty();
     }
-    return new ReconcileSnapshotTask(tableId, snapshotId, sourceNamespace, sourceTable, fileGroups);
+    return new ReconcileSnapshotTask(
+        tableId, snapshotId, sourceNamespace, sourceTable, fileGroups, fileGroupPlanRecorded);
   }
 
   public static ReconcileSnapshotTask empty() {
-    return new ReconcileSnapshotTask("", 0L, "", "", List.of());
+    return new ReconcileSnapshotTask("", 0L, "", "", List.of(), false);
   }
 
   @JsonIgnore
@@ -68,6 +81,7 @@ public record ReconcileSnapshotTask(
         && snapshotId == 0L
         && sourceNamespace.isBlank()
         && sourceTable.isBlank()
-        && fileGroups.isEmpty();
+        && fileGroups.isEmpty()
+        && !fileGroupPlanRecorded;
   }
 }

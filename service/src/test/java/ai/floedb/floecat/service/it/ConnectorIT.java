@@ -1729,12 +1729,22 @@ public class ConnectorIT {
     return scope.toBuilder().setCapturePolicy(policy.build()).build();
   }
 
-  private static long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
+  private long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
     return jobs.stream()
-        .filter(job -> job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT)
         .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
+        .filter(
+            job ->
+                job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                    || !supportsChildAggregation(job.jobKind)
+                    || childJobsFor(job).isEmpty())
         .mapToLong(job -> job.snapshotsProcessed)
         .sum();
+  }
+
+  private static boolean supportsChildAggregation(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
   private static long aggregateStatsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {

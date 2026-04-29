@@ -295,6 +295,8 @@ public class RemoteReconcileExecutorPoller {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
             0,
             0,
             0,
@@ -347,51 +349,16 @@ public class RemoteReconcileExecutorPoller {
         LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
         return;
       }
-      if (result.cancelled || cancellationRequested.get()) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.CANCELLED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      if (isObsoleteFailureKind(result.failureKind)) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.CANCELLED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      if (!result.ok()) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.FAILED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      completeIfPossible(
+      completeForOutcome(
           remoteLease,
-          RemoteLeasedJob.CompletionState.SUCCEEDED,
+          lease,
+          executor.id(),
+          started,
+          cancellationRequested.get()
+              ? ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE
+              : classify(result),
+          result.retryDisposition,
+          result.retryClass,
           result.tablesScanned,
           result.tablesChanged,
           result.viewsScanned,
@@ -400,21 +367,20 @@ public class RemoteReconcileExecutorPoller {
           result.snapshotsProcessed,
           result.statsProcessed,
           result.message);
-      LOG.infof(
-          "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
-          lease.accountId,
-          lease.connectorId,
-          executor.id(),
-          Math.max(0L, System.currentTimeMillis() - started));
     } catch (Exception e) {
       if (leaseValid.get() && !interrupted.get()) {
         long errorCount =
             cancellationRequested.get() ? progress.errors : Math.max(1L, progress.errors);
-        completeIfPossible(
+        completeForOutcome(
             remoteLease,
-            cancellationRequested.get() || isObsoleteFailureKind(failureKindOf(e))
-                ? RemoteLeasedJob.CompletionState.CANCELLED
-                : RemoteLeasedJob.CompletionState.FAILED,
+            lease,
+            executor.id(),
+            started,
+            cancellationRequested.get()
+                ? ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE
+                : outcomeOf(e),
+            retryDispositionOf(e),
+            retryClassOf(e),
             progress.tablesScanned,
             progress.tablesChanged,
             progress.viewsScanned,
@@ -424,7 +390,7 @@ public class RemoteReconcileExecutorPoller {
             progress.statsProcessed,
             describeFailure(e));
       }
-      if (isObsoleteFailureKind(failureKindOf(e))) {
+      if (outcomeOf(e) == ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE) {
         LOG.infof(
             "Remote reconcile job became obsolete for job %s executor=%s reason=%s",
             lease.jobId, executor.id(), describeFailure(e));
@@ -440,9 +406,80 @@ public class RemoteReconcileExecutorPoller {
     }
   }
 
+  private void completeForOutcome(
+      RemoteLeasedJob remoteLease,
+      ReconcileJobStore.LeasedJob lease,
+      String executorId,
+      long started,
+      ReconcileExecutor.ExecutionResult.JobOutcome outcome,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message) {
+    switch (outcome) {
+      case SUCCESS -> {
+        completeIfPossible(
+            remoteLease,
+            RemoteLeasedJob.CompletionState.SUCCEEDED,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            tablesScanned,
+            tablesChanged,
+            viewsScanned,
+            viewsChanged,
+            errors,
+            snapshotsProcessed,
+            statsProcessed,
+            message);
+        LOG.infof(
+            "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
+            lease.accountId,
+            lease.connectorId,
+            executorId,
+            Math.max(0L, System.currentTimeMillis() - started));
+      }
+      case OBSOLETE ->
+          completeIfPossible(
+              remoteLease,
+              RemoteLeasedJob.CompletionState.CANCELLED,
+              retryDisposition,
+              retryClass,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              message);
+      case RETRYABLE_FAILURE, TERMINAL_FAILURE ->
+          completeIfPossible(
+              remoteLease,
+              RemoteLeasedJob.CompletionState.FAILED,
+              retryDisposition,
+              retryClass,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              message);
+    }
+  }
+
   private void completeIfPossible(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -455,6 +492,8 @@ public class RemoteReconcileExecutorPoller {
         client.complete(
             lease,
             state,
+            retryDisposition,
+            retryClass,
             tablesScanned,
             tablesChanged,
             viewsScanned,
@@ -492,10 +531,54 @@ public class RemoteReconcileExecutorPoller {
     return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
   }
 
-  private static boolean isObsoleteFailureKind(
-      ReconcileExecutor.ExecutionResult.FailureKind failureKind) {
-    return failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
-        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING;
+  private static ReconcileExecutor.ExecutionResult.RetryDisposition retryDispositionOf(
+      Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.retryDisposition();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.RetryClass retryClassOf(Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.retryClass();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.JobOutcome classify(
+      ReconcileExecutor.ExecutionResult result) {
+    if (result == null) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE;
+    }
+    if (result.cancelled) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE;
+    }
+    return result.outcome;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.JobOutcome outcomeOf(Throwable error) {
+    ReconcileExecutor.ExecutionResult.FailureKind failureKind = failureKindOf(error);
+    if (failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.VIEW_MISSING) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE;
+    }
+    return retryDispositionOf(error) == ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL
+        ? ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE
+        : ReconcileExecutor.ExecutionResult.JobOutcome.RETRYABLE_FAILURE;
   }
 
   private static final class ProgressSnapshot {

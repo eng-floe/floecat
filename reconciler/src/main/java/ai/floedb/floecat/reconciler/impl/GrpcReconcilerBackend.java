@@ -616,6 +616,29 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public boolean hasZeroDataFileTableStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    try {
+      var response =
+          statistics(ctx)
+              .listTargetStats(
+                  buildStatsAlreadyCapturedRequest(tableId, snapshotId).toBuilder()
+                      .addTargetKinds(StatsTargetKind.STK_TABLE)
+                      .build());
+      if (response == null || response.getRecordsList().isEmpty()) {
+        return false;
+      }
+      var tableRecord = response.getRecords(0);
+      return tableRecord.hasTable() && tableRecord.getTable().getDataFileCount() <= 0L;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  @Override
   public boolean statsCapturedForColumnSelectors(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
     ColumnSelectorCoverage.SelectorCoverage required = ColumnSelectorCoverage.parse(selectors);

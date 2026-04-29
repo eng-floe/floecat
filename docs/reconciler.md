@@ -17,10 +17,15 @@ The current job model is split by responsibility:
   snapshot planning work for snapshots that need processing.
 - **`PLAN_VIEW`**: child view planning job. Creates or updates exactly one destination view.
 - **`PLAN_SNAPSHOT`**: child snapshot planning job. Freezes the immutable snapshot plan on the
-  parent job payload and enqueues `EXEC_FILE_GROUP` children.
+  parent job payload, records explicit file-group coverage metadata, and enqueues
+  `EXEC_FILE_GROUP` plus `FINALIZE_SNAPSHOT_CAPTURE` children.
 - **`EXEC_FILE_GROUP`**: child execution job. Reads the planned source parquet files through
-  `FloecatConnector`, captures file-target stats, generates parquet sidecar index artifacts, and
-  records per-file execution results.
+  `FloecatConnector`, captures file-target stats, generates parquet sidecar index artifacts,
+  persists per-file execution results, and does not commit snapshot-wide aggregate outputs.
+- **`FINALIZE_SNAPSHOT_CAPTURE`**: child finalization job. Validates the persisted snapshot
+  coverage, waits for all planned `EXEC_FILE_GROUP` children to finish with persisted success
+  results, verifies that the stats store contains exactly the expected file-target records for the
+  snapshot, and then writes snapshot-wide aggregate outputs such as table/column stats.
 
 ## Architecture & Responsibilities
 - **`ReconcileJobStore`**: interface abstracting job persistence and leasing. In service runtime,
@@ -52,6 +57,7 @@ The current job model is split by responsibility:
   - `RemoteDefaultReconcileExecutor` handles `PLAN_TABLE` and `PLAN_VIEW`.
   - `RemoteSnapshotPlanningReconcileExecutor` handles `PLAN_SNAPSHOT`.
   - `RemoteFileGroupReconcileExecutor` handles `EXEC_FILE_GROUP`.
+  - `SnapshotFinalizeReconcileExecutor` handles `FINALIZE_SNAPSHOT_CAPTURE`.
 - **`GrpcClients`**: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).
 - **`FloecatConnector`**: remains the only component allowed to touch upstream catalogs, table
@@ -77,16 +83,26 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
 - **Statistics ingestion**: stats persistence is centralized behind the stats control plane
-  (`StatsCaptureControlPlane` / orchestrator). `CAPTURE_ONLY` routes capture through registry
-  engines without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata reconciliation
-  and capture within the same planner/executor job tree.
+  and the reconcile executor control plane. `CAPTURE_ONLY` routes capture planning through the
+  same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata
+  reconciliation and capture within the same planner/executor job tree. Remote file-group workers
+  submit file-target stats and staged index artifacts back through
+  `SubmitLeasedFileGroupExecutionResult`, and the service persists those results before
+  `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide aggregate stats.
 - **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
-  `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. Child `EXEC_FILE_GROUP`
-  jobs reference the parent plan by `parentJobId`.
+  `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
+  explicit file-group coverage metadata required by `FINALIZE_SNAPSHOT_CAPTURE`. Child
+  `EXEC_FILE_GROUP` and `FINALIZE_SNAPSHOT_CAPTURE` jobs reference the parent plan by
+  `parentJobId`.
 - **File-group execution**:
   - `EXEC_FILE_GROUP` resolves the parent snapshot plan, captures file-target stats, and records
     per-file execution results on the child job payload.
+  - Snapshot-wide aggregate outputs are intentionally deferred to
+    `FINALIZE_SNAPSHOT_CAPTURE`, which acts as the barrier for complete snapshot capture.
   - Sidecar generation and artifact registration happen per source parquet file.
+  - Service-side result submission persists only file-target stats from file-group workers;
+    aggregate table/column outputs are rejected from file-group completion and recomputed once at
+    snapshot finalization time.
   - `SubmitLeasedFileGroupExecutionResult` requires `result_id`. The service records top-level
     idempotency for the whole submit payload and per-item idempotency for individual stats/artifact
     writes so worker retries can safely replay the same result.
@@ -146,17 +162,24 @@ Connector StartCapture / CaptureNow
           → ask FloecatConnector for planned parquet file membership
           → persist grouped file plan on parent job payload
           → enqueue EXEC_FILE_GROUP children
+          → enqueue FINALIZE_SNAPSHOT_CAPTURE child
       → if EXEC_FILE_GROUP:
           → resolve parent PLAN_SNAPSHOT payload
           → instantiate FloecatConnector
           → capture file-target stats for planned files
           → generate parquet sidecar index artifacts
           → persist per-file execution results and artifact registrations
+      → if FINALIZE_SNAPSHOT_CAPTURE:
+          → validate explicit planned coverage metadata
+          → wait for all planned EXEC_FILE_GROUP children to succeed with persisted results
+          → verify exact file-target coverage in the stats store
+          → roll up snapshot-wide aggregate outputs
       → markSucceeded or markFailed
 ```
 
 Jobs include `fullRescan`, `executionPolicy`, `jobKind`, and optional task payloads. Snapshot plan
-jobs and file-group jobs also surface file-group/file counters for current execution state.
+jobs, file-group jobs, and snapshot finalization jobs also surface file-group/file counters for
+current execution state.
 `RemoteReconcileExecutorPoller` uses `AtomicBoolean` and in-flight counters to avoid over-leasing
 within the same instance while continuing to repoll until worker slots are full.
 
@@ -178,6 +201,8 @@ within the same instance while continuing to repoll until worker slots are full.
   - `floecat.reconciler.executor.remote-planner.enabled`
   - `floecat.reconciler.executor.remote-snapshot-planner.enabled`
   - `floecat.reconciler.executor.remote-file-group.enabled`
+  - `FINALIZE_SNAPSHOT_CAPTURE` is handled by the service-local `SnapshotFinalizeReconcileExecutor`
+    and is not behind a separate feature toggle.
 - Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
   references must remain stable for `GetReconcileJob`).
 - Extend `FloecatConnector` to add richer snapshot planning or file execution behavior. Query scan

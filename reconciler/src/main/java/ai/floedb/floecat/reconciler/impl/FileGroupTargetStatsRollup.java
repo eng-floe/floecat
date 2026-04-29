@@ -44,8 +44,8 @@ import java.util.Set;
  * persistable outputs for the requested file group even when the underlying connector only emits
  * file-scoped primitives.
  */
-final class FileGroupTargetStatsRollup {
-  List<TargetStatsRecord> complete(
+public final class FileGroupTargetStatsRollup {
+  public List<TargetStatsRecord> complete(
       ResourceId tableId,
       long snapshotId,
       Set<FloecatConnector.StatsTargetKind> requestedKinds,
@@ -89,6 +89,15 @@ final class FileGroupTargetStatsRollup {
     }
 
     return List.copyOf(completed.values());
+  }
+
+  public static List<TargetStatsRecord> completeSnapshotFromFileRecords(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> requestedKinds,
+      List<TargetStatsRecord> fileRecords) {
+    return new FileGroupTargetStatsRollup()
+        .complete(tableId, snapshotId, requestedKinds, fileRecords);
   }
 
   private static TargetStatsRecord aggregateTable(

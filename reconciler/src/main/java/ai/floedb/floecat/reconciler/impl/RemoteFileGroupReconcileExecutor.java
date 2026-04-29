@@ -83,7 +83,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
   public ExecutionResult execute(ExecutionContext context) {
     var lease = context.lease();
     if (lease == null || lease.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
-      return ExecutionResult.failure(
+      return ExecutionResult.terminalFailure(
           0, 0, 0, 0, 1, 0, 0, "Unsupported reconcile job kind", new IllegalArgumentException());
     }
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -92,7 +92,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
     }
     StandaloneFileGroupExecutionPayload payload = workerClient.getExecution(remoteLease);
     if (payload.plannedFilePaths().isEmpty()) {
-      return ExecutionResult.failure(
+      return ExecutionResult.terminalFailure(
           0,
           0,
           0,

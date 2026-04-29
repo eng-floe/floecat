@@ -27,10 +27,12 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import java.util.EnumSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -162,7 +164,8 @@ class InMemoryReconcileJobStoreTest {
                     "snapshot-55-group-0",
                     "table-1",
                     55L,
-                    List.of("s3://bucket/data/file-1.parquet")))));
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true));
 
     var job = store.get("acct", jobId).orElseThrow();
     assertEquals(1, job.snapshotTask.fileGroups().size());
@@ -212,6 +215,172 @@ class InMemoryReconcileJobStoreTest {
     assertEquals(
         "s3://bucket/index/file-1.parquet.index",
         job.fileGroupTask.fileResults().getFirst().indexArtifact().artifactUri());
+  }
+
+  @Test
+  void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
+    var store = new InMemoryReconcileJobStore();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.enqueue(
+                    "acct",
+                    "conn",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "parent-1",
+                    ""));
+
+    assertTrue(error.getMessage().contains("FINALIZE_SNAPSHOT_CAPTURE"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsImplicitCoverageForPlanSnapshotJobs() {
+    var store = new InMemoryReconcileJobStore();
+    String jobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.persistSnapshotPlan(
+                    jobId,
+                    ReconcileSnapshotTask.of(
+                        "table-1",
+                        55L,
+                        "db",
+                        "events",
+                        List.of(
+                            ReconcileFileGroupTask.of(
+                                jobId,
+                                "snapshot-55-group-0",
+                                "table-1",
+                                55L,
+                                List.of("s3://bucket/data/file-1.parquet"))))));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsEmptyCoverageForPlanSnapshotJobs() {
+    var store = new InMemoryReconcileJobStore();
+    String jobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> store.persistSnapshotPlan(jobId, ReconcileSnapshotTask.empty()));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+  }
+
+  @Test
+  void leaseNextSerializesSnapshotFinalizersPerSnapshot() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true);
+
+    store.enqueueSnapshotFinalization(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-1",
+        "");
+    store.enqueueSnapshotFinalization(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-2",
+        "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+
+    assertEquals(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, firstLease.jobKind);
+    assertTrue(store.leaseNext().isEmpty());
+  }
+
+  @Test
+  void leaseNextAllowsConcurrentExecFileGroupsForDifferentGroups() {
+    var store = new InMemoryReconcileJobStore();
+
+    String firstJobId =
+        store.enqueueFileGroupExecution(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-1",
+            "");
+    String secondJobId =
+        store.enqueueFileGroupExecution(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-2", "table-1", 55L, List.of("s3://bucket/data/file-2.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-1",
+            "");
+
+    var firstLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    var secondLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+
+    assertTrue(
+        java.util.Set.of(firstLease.jobId, secondLease.jobId)
+            .containsAll(java.util.Set.of(firstJobId, secondJobId)));
   }
 
   @Test

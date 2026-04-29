@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -157,10 +158,18 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .build();
     String requiredResultId = requireResultId(resultId);
     List<TargetStatsRecord> effectiveStats = nonNullStatsRecords(statsRecords);
+    List<TargetStatsRecord> effectiveFileStats =
+        effectiveStats.stream()
+            .filter(
+                record ->
+                    record != null
+                        && record.hasTarget()
+                        && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE)
+            .toList();
     List<ReconcilerBackend.StagedIndexArtifact> effectiveArtifacts =
         stagedIndexArtifacts == null ? List.of() : stagedIndexArtifacts;
     byte[] requestBytes =
-        successPayload(requiredResultId, effectiveStats, effectiveArtifacts).toByteArray();
+        successPayload(requiredResultId, effectiveFileStats, effectiveArtifacts).toByteArray();
     return runIdempotentCreate(
             () ->
                 MutationOps.createProto(
@@ -171,7 +180,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     () -> {
                       long snapshotId = plannedTask.snapshotId();
                       persistTargetStats(
-                          principalContext, tableId, snapshotId, requiredResultId, effectiveStats);
+                          principalContext,
+                          tableId,
+                          snapshotId,
+                          requiredResultId,
+                          effectiveFileStats);
                       persistIndexArtifacts(
                           principalContext,
                           tableId,
@@ -182,7 +195,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                           lease.jobId,
                           plannedTask.withFileResults(
                               FileGroupExecutionSupport.fileResultsForSuccess(
-                                  plannedTask, effectiveStats, effectiveArtifacts)));
+                                  plannedTask, effectiveFileStats, effectiveArtifacts)));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)

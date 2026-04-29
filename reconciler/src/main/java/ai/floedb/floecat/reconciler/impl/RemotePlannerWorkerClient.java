@@ -26,23 +26,43 @@ interface RemotePlannerWorkerClient {
   boolean submitPlanConnectorSuccess(
       RemoteLeasedJob lease, List<PlannedTableJob> tableJobs, List<PlannedViewJob> viewJobs);
 
-  boolean submitPlanConnectorFailure(RemoteLeasedJob lease, String message);
+  boolean submitPlanConnectorFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message);
 
   StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease);
 
   boolean submitPlanTableSuccess(RemoteLeasedJob lease, List<PlannedSnapshotJob> snapshotJobs);
 
-  boolean submitPlanTableFailure(RemoteLeasedJob lease, String message);
+  boolean submitPlanTableFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message);
 
   StandalonePlanViewPayload getPlanViewInput(RemoteLeasedJob lease);
 
   PlanViewSubmitResult submitPlanViewSuccess(RemoteLeasedJob lease, PlannedViewMutation mutation);
 
-  boolean submitPlanViewFailure(RemoteLeasedJob lease, String message);
+  boolean submitPlanViewFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message);
 
   StandalonePlanSnapshotPayload getPlanSnapshotInput(RemoteLeasedJob lease);
 
   boolean submitPlanSnapshotSuccess(RemoteLeasedJob lease, List<PlannedFileGroupJob> fileGroupJobs);
 
-  boolean submitPlanSnapshotFailure(RemoteLeasedJob lease, String message);
+  boolean submitPlanSnapshotFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message);
 }

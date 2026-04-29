@@ -105,6 +105,8 @@ enum ExecutionClass {
 // - PLAN_TABLE plans one table-scoped unit of work.
 // - PLAN_VIEW plans one view-scoped unit of work.
 // - PLAN_SNAPSHOT freezes one snapshot-scoped plan.
+// - FINALIZE_SNAPSHOT_CAPTURE validates complete snapshot coverage and commits snapshot-wide
+//   aggregate capture outputs.
 // - EXEC_FILE_GROUP performs heavy file-group execution.
 enum ReconcileJobKind {
   RJK_UNSPECIFIED = 0;
@@ -113,6 +115,7 @@ enum ReconcileJobKind {
   RJK_PLAN_VIEW = 3;
   RJK_PLAN_SNAPSHOT = 4;
   RJK_EXEC_FILE_GROUP = 5;
+  RJK_FINALIZE_SNAPSHOT_CAPTURE = 6;
 }
 
 // One table-scoped unit of reconcile work emitted by a planner job.
@@ -159,6 +162,9 @@ message ReconcileSnapshotTask {
   string source_table = 4;
   // Immutable grouped file plan persisted on the PLAN_SNAPSHOT job after planning completes.
   repeated ReconcileFileGroupTask file_groups = 5;
+  // True when the snapshot planner explicitly persisted the file-group plan, including a
+  // legitimate zero-group plan.
+  bool file_group_plan_recorded = 6;
 }
 
 // One grouped file execution unit emitted by snapshot planning.
@@ -343,6 +349,27 @@ enum ReconcileCompletionState {
   RCS_CANCELLED = 3;
 }
 
+enum ReconcileFailureRetryDisposition {
+  RFRD_UNSPECIFIED = 0;
+  RFRD_RETRYABLE = 1;
+  RFRD_TERMINAL = 2;
+}
+
+enum ReconcileFailureKind {
+  RFK_UNSPECIFIED = 0;
+  RFK_CONNECTOR_MISSING = 1;
+  RFK_TABLE_MISSING = 2;
+  RFK_VIEW_MISSING = 3;
+  RFK_INTERNAL = 4;
+}
+
+enum ReconcileFailureRetryClass {
+  RFRC_UNSPECIFIED = 0;
+  RFRC_TRANSIENT_ERROR = 1;
+  RFRC_DEPENDENCY_NOT_READY = 2;
+  RFRC_STATE_UNCERTAIN = 3;
+}
+
 // Final result reported by an executor when it finishes leased work.
 message CompleteLeasedReconcileJobRequest {
   string job_id = 1;
@@ -357,6 +384,8 @@ message CompleteLeasedReconcileJobRequest {
   string message = 9;
   uint64 views_scanned = 10;
   uint64 views_changed = 11;
+  ReconcileFailureRetryDisposition failure_retry_disposition = 12;
+  ReconcileFailureRetryClass failure_retry_class = 13;
 }
 
 message CompleteLeasedReconcileJobResponse {
@@ -416,6 +445,9 @@ message SubmitLeasedPlanConnectorResultRequest {
 
   message Failure {
     string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
   }
 
   string job_id = 1;
@@ -463,6 +495,9 @@ message SubmitLeasedPlanTableResultRequest {
 
   message Failure {
     string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
   }
 
   string job_id = 1;
@@ -509,6 +544,9 @@ message SubmitLeasedPlanViewResultRequest {
 
   message Failure {
     string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
   }
 
   string job_id = 1;
@@ -557,6 +595,9 @@ message SubmitLeasedPlanSnapshotResultRequest {
 
   message Failure {
     string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
   }
 
   string job_id = 1;

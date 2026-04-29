@@ -21,6 +21,7 @@ public enum ReconcileJobKind {
   PLAN_TABLE,
   PLAN_VIEW,
   PLAN_SNAPSHOT,
+  FINALIZE_SNAPSHOT_CAPTURE,
   EXEC_FILE_GROUP;
 
   public static ReconcileJobKind fromString(String value) {

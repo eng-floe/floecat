@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -314,5 +315,47 @@ class StatsRepositoryTargetStorageTest {
                 .orElseThrow()
                 .getMetadata())
         .isEqualTo(metadata);
+  }
+
+  @Test
+  void identicalPutTargetStatsRetryIsIdempotent() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 8080L;
+
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+
+    repository.putTargetStats(tableRecord);
+    repository.putTargetStats(tableRecord);
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(tableRecord);
+  }
+
+  @Test
+  void conflictingPutTargetStatsForSameTargetIsRejected() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9090L;
+
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(11L).build(), null));
+
+    assertThatThrownBy(
+            () ->
+                repository.putTargetStats(
+                    TargetStatsRecords.tableRecord(
+                        TABLE_ID,
+                        snapshotId,
+                        TableValueStats.newBuilder().setRowCount(12L).build(),
+                        null)))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class)
+        .hasMessageContaining("pointer bound to different blob");
   }
 }

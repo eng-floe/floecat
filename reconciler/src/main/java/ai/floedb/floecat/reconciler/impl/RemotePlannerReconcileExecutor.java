@@ -92,7 +92,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   public ExecutionResult execute(ExecutionContext context) {
     var lease = context.lease();
     if (lease == null || lease.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
-      return ExecutionResult.failure(
+      return ExecutionResult.terminalFailure(
           0, 0, 0, 0, 1, 0, 0, "Unsupported reconcile job kind", new IllegalArgumentException());
     }
     if (context.shouldStop().getAsBoolean()) {
@@ -131,7 +131,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       if (scope.hasTableFilter()) {
         var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
         if (tableTasks.isEmpty()) {
-          return ExecutionResult.failure(
+          return ExecutionResult.terminalFailure(
               0,
               0,
               0,
@@ -172,7 +172,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
         List<ReconcileViewTask> plannedViews =
             reconcilerService.planViewTasks(principal, connectorId, scope, null);
         if (plannedViews.isEmpty()) {
-          return ExecutionResult.failure(
+          return ExecutionResult.terminalFailure(
               0,
               0,
               0,
@@ -273,10 +273,26 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.success(
           tablesPlanned, 0, viewsPlanned, 0, 0, 0, 0, "Planned " + planned + " reconcile jobs");
     } catch (Exception e) {
-      workerClient.submitPlanConnectorFailure(remoteLease, e.getMessage());
+      Exception classified =
+          e instanceof ReconcileFailureException failure ? failure : classifyPlannerFailure(e);
+      workerClient.submitPlanConnectorFailure(
+          remoteLease,
+          failureKindOf(classified),
+          retryDispositionOf(classified),
+          retryClassOf(classified),
+          classified.getMessage());
       String message = e.getMessage();
       if (message == null || message.isBlank()) {
         message = e.getClass().getSimpleName();
+      }
+      String failureMessage =
+          planned > 0
+              ? "Planning failed after preparing " + planned + " reconcile jobs: " + message
+              : "Planning failed: " + message;
+      if (classified instanceof ReconcileFailureException failure
+          && failure.retryDisposition() == ExecutionResult.RetryDisposition.TERMINAL) {
+        return ExecutionResult.terminalFailure(
+            tablesPlanned, 0, viewsPlanned, 0, 1, 0, 0, failureMessage, classified);
       }
       return ExecutionResult.failure(
           tablesPlanned,
@@ -286,11 +302,44 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
           1,
           0,
           0,
-          planned > 0
-              ? "Planning failed after preparing " + planned + " reconcile jobs: " + message
-              : "Planning failed: " + message,
-          e);
+          failureKindOf(classified),
+          retryDispositionOf(classified),
+          retryClassOf(classified),
+          failureMessage,
+          classified);
     }
+  }
+
+  private static Exception classifyPlannerFailure(Exception error) {
+    if (error instanceof ReconcileFailureException) {
+      return error;
+    }
+    if (error instanceof IllegalArgumentException || error instanceof IllegalStateException) {
+      return new ReconcileFailureException(
+          ExecutionResult.FailureKind.INTERNAL,
+          ExecutionResult.RetryDisposition.TERMINAL,
+          error.getMessage(),
+          error);
+    }
+    return error;
+  }
+
+  private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.failureKind()
+        : ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static ExecutionResult.RetryDisposition retryDispositionOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryDisposition()
+        : ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ExecutionResult.RetryClass retryClassOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryClass()
+        : ExecutionResult.RetryClass.TRANSIENT_ERROR;
   }
 
   private static boolean includesMetadata(ReconcilerService.CaptureMode captureMode) {

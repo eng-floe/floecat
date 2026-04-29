@@ -40,6 +40,8 @@ interface RemoteReconcileExecutorClient {
   CompletionResult complete(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,

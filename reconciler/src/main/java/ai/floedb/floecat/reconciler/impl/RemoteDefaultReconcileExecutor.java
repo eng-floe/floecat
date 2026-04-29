@@ -33,18 +33,21 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   private final ReconcilerService reconcilerService;
+  private final QueuedReconcileWorkerSupport queuedWorkerSupport;
   private final RemotePlannerWorkerClient workerClient;
   private final boolean enabled;
 
   @Inject
   public RemoteDefaultReconcileExecutor(
       ReconcilerService reconcilerService,
+      QueuedReconcileWorkerSupport queuedWorkerSupport,
       RemotePlannerWorkerClient workerClient,
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-default.enabled",
               defaultValue = "false")
           boolean enabled) {
     this.reconcilerService = reconcilerService;
+    this.queuedWorkerSupport = queuedWorkerSupport;
     this.workerClient = workerClient;
     this.enabled = enabled;
   }
@@ -75,7 +78,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   public ExecutionResult execute(ExecutionContext context) {
     var lease = context.lease();
     if (lease == null) {
-      return ExecutionResult.failure(
+      return ExecutionResult.terminalFailure(
           0, 0, 0, 0, 1, 0, 0, "Unsupported reconcile job kind", new IllegalArgumentException());
     }
     if (context.shouldStop().getAsBoolean()) {
@@ -88,6 +91,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
 
   private ExecutionResult executeTable(ExecutionContext context, RemoteLeasedJob remoteLease) {
     var lease = remoteLease.lease();
+    ReconcileExecutor.ProgressListener progressListener = context.progressListener();
     StandalonePlanTablePayload payload = workerClient.getPlanTableInput(remoteLease);
     ResourceId connectorId = payload.connectorId();
     PrincipalContext principal =
@@ -97,8 +101,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             .setCorrelationId("reconciler-job-" + lease.jobId)
             .build();
 
-    ReconcilerService.Result result =
-        reconcilerService.reconcilePlannedTableExecution(
+    QueuedReconcileWorkerSupport.TableExecutionResult tableExecution =
+        queuedWorkerSupport.executePlannedTable(
             principal,
             connectorId,
             payload.fullRescan(),
@@ -107,32 +111,20 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             payload.captureMode(),
             null,
             context.shouldStop(),
-            context.progressListener()::onProgress);
+            progressListener);
+    ExecutionResult result = tableExecution.result();
 
-    if (result.cancelled()) {
-      return ExecutionResult.cancelled(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          result.message());
+    if (result.cancelled) {
+      return result;
     }
-    if (!result.ok()) {
-      workerClient.submitPlanTableFailure(remoteLease, result.message());
-      return ExecutionResult.failure(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          failureKindOf(result.error),
-          result.message(),
-          result.error);
+    if (result.error != null) {
+      workerClient.submitPlanTableFailure(
+          remoteLease,
+          result.failureKind,
+          result.retryDisposition,
+          result.retryClass,
+          result.message);
+      return result;
     }
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
       if (!workerClient.submitPlanTableSuccess(remoteLease, List.of())) {
@@ -147,19 +139,11 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             "standalone planner result submission was rejected",
             new IllegalStateException("planner result submission rejected"));
       }
-      return ExecutionResult.success(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          result.message());
+      return result;
     }
 
     List<ReconcileSnapshotTask> snapshotTasks =
-        snapshotTasksForSuccessfulPlan(principal, connectorId, payload, result);
+        snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
     List<PlannedSnapshotJob> snapshotJobs =
         snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
     if (!workerClient.submitPlanTableSuccess(remoteLease, snapshotJobs)) {
@@ -174,18 +158,11 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           "standalone planner result submission was rejected",
           new IllegalStateException("planner result submission rejected"));
     }
-    return ExecutionResult.success(
-        result.tablesScanned,
-        result.tablesChanged,
-        result.viewsScanned,
-        result.viewsChanged,
-        result.errors,
-        result.snapshotsProcessed,
-        result.statsProcessed,
-        result.message());
+    return result;
   }
 
   private ExecutionResult executeView(ExecutionContext context, RemoteLeasedJob remoteLease) {
+    ReconcileExecutor.ProgressListener progressListener = context.progressListener();
     StandalonePlanViewPayload payload = workerClient.getPlanViewInput(remoteLease);
     ResourceId connectorId = payload.connectorId();
     PrincipalContext principal =
@@ -194,40 +171,27 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             .setSubject("reconciler.scheduler")
             .setCorrelationId("reconciler-job-" + remoteLease.lease().jobId)
             .build();
-    ReconcilerService.PlannedViewMutationResult planned =
-        reconcilerService.planPlannedViewExecution(
+    QueuedReconcileWorkerSupport.PlannedViewMutationResult planned =
+        queuedWorkerSupport.prepareViewMutation(
             principal,
             connectorId,
             payload.scope(),
             payload.viewTask(),
             null,
             context.shouldStop(),
-            context.progressListener()::onProgress);
-    ReconcilerService.Result result = planned.result();
-    if (result.cancelled()) {
-      return ExecutionResult.cancelled(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          result.message());
+            progressListener);
+    ExecutionResult result = planned.result();
+    if (result.cancelled) {
+      return result;
     }
-    if (!result.ok()) {
-      workerClient.submitPlanViewFailure(remoteLease, result.message());
-      return ExecutionResult.failure(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          failureKindOf(result.error),
-          result.message(),
-          result.error);
+    if (result.error != null) {
+      workerClient.submitPlanViewFailure(
+          remoteLease,
+          result.failureKind,
+          result.retryDisposition,
+          result.retryClass,
+          result.message);
+      return result;
     }
     var submit =
         workerClient.submitPlanViewSuccess(
@@ -251,21 +215,19 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("planner result submission rejected"));
     }
     long viewsChanged = submit.viewsChanged();
-    if (planned.mutation() != null) {
-      context
-          .progressListener()
-          .onProgress(
-              0,
-              0,
-              1,
-              viewsChanged,
-              0,
-              0,
-              0,
-              "Finished view "
-                  + payload.viewTask().sourceNamespace()
-                  + "."
-                  + payload.viewTask().sourceView());
+    if (planned.mutation() != null && progressListener != null) {
+      progressListener.onProgress(
+          0,
+          0,
+          1,
+          viewsChanged,
+          0,
+          0,
+          0,
+          "Finished view "
+              + payload.viewTask().sourceNamespace()
+              + "."
+              + payload.viewTask().sourceView());
     }
     return ExecutionResult.success(
         result.tablesScanned,
@@ -275,18 +237,19 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         result.errors,
         result.snapshotsProcessed,
         result.statsProcessed,
-        result.message());
+        result.message);
   }
 
   private List<ReconcileSnapshotTask> snapshotTasksForSuccessfulPlan(
       PrincipalContext principal,
       ResourceId connectorId,
       StandalonePlanTablePayload payload,
-      ReconcilerService.Result result) {
+      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution) {
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
       return List.of();
     }
-    ReconcileTableTask task = resolvedTableTaskForSnapshotPlanning(payload.tableTask(), result);
+    ReconcileTableTask task =
+        resolvedTableTaskForSnapshotPlanning(payload.tableTask(), tableExecution.matchedTableIds());
     if (task.isEmpty()
         || task.destinationTableId() == null
         || task.destinationTableId().isBlank()) {
@@ -298,7 +261,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(
-      ReconcileTableTask original, ReconcilerService.Result result) {
+      ReconcileTableTask original, List<String> matchedTableIds) {
     ReconcileTableTask task = original == null ? ReconcileTableTask.empty() : original;
     if (task.isEmpty()) {
       return task;
@@ -306,10 +269,10 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     if (task.destinationTableId() != null && !task.destinationTableId().isBlank()) {
       return task;
     }
-    if (result == null || result.matchedTableIds().isEmpty()) {
+    if (matchedTableIds == null || matchedTableIds.isEmpty()) {
       return task;
     }
-    String resolvedTableId = result.matchedTableIds().getFirst();
+    String resolvedTableId = matchedTableIds.getFirst();
     return task.discoveryMode()
         ? ReconcileTableTask.discovery(
             task.sourceNamespace(),
@@ -323,12 +286,5 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             task.destinationNamespaceId(),
             resolvedTableId,
             task.destinationTableDisplayName());
-  }
-
-  private static ExecutionResult.FailureKind failureKindOf(Exception error) {
-    if (error instanceof ReconcileFailureException failure) {
-      return failure.failureKind();
-    }
-    return ExecutionResult.FailureKind.INTERNAL;
   }
 }

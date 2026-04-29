@@ -17,7 +17,9 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -149,7 +151,7 @@ class LeasedPlannerWorkerServiceTest {
         .verify(jobs)
         .persistSnapshotPlan(
             eq("job-1"),
-            eq(ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(fullGroup))));
+            eq(ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(fullGroup), true)));
     inOrder
         .verify(jobs)
         .enqueueFileGroupExecution(
@@ -162,6 +164,146 @@ class LeasedPlannerWorkerServiceTest {
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             eq("remote-executor"));
+    inOrder
+        .verify(jobs)
+        .enqueueSnapshotFinalization(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(fullGroup), true)),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            eq("remote-executor"));
     verify(jobs).persistSnapshotPlan(eq("job-1"), any());
+  }
+
+  @Test
+  void persistPlanConnectorFailureMarksTerminalFailure() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.get("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+
+    boolean accepted =
+        service.persistPlanConnectorFailure(
+            principal,
+            "job-1",
+            "lease-1",
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .INTERNAL,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+                .TERMINAL,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            "boom");
+
+    assertTrue(accepted);
+    verify(jobs)
+        .markFailedTerminal(
+            eq("job-1"),
+            eq("lease-1"),
+            anyLong(),
+            eq("boom"),
+            eq(0L),
+            eq(0L),
+            eq(1L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
+  void persistPlanTableFailureMarksWaitingForDependency() {
+    when(jobs.renewLease("job-2", "lease-2")).thenReturn(true);
+    when(jobs.get("job-2"))
+        .thenReturn(java.util.Optional.of(job("job-2", ReconcileJobKind.PLAN_TABLE)));
+
+    boolean accepted =
+        service.persistPlanTableFailure(
+            principal,
+            "job-2",
+            "lease-2",
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .INTERNAL,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+                .RETRYABLE,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+                .DEPENDENCY_NOT_READY,
+            "waiting");
+
+    assertTrue(accepted);
+    verify(jobs)
+        .markWaiting(
+            eq("job-2"),
+            eq("lease-2"),
+            anyLong(),
+            eq("waiting"),
+            eq(0L),
+            eq(0L),
+            eq(1L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
+  void persistPlanSnapshotFailureMarksRetryableFailure() {
+    when(jobs.renewLease("job-3", "lease-3")).thenReturn(true);
+    when(jobs.get("job-3"))
+        .thenReturn(java.util.Optional.of(job("job-3", ReconcileJobKind.PLAN_SNAPSHOT)));
+
+    boolean accepted =
+        service.persistPlanSnapshotFailure(
+            principal,
+            "job-3",
+            "lease-3",
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .INTERNAL,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+                .RETRYABLE,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+                .TRANSIENT_ERROR,
+            "retry");
+
+    assertTrue(accepted);
+    verify(jobs)
+        .markFailed(
+            eq("job-3"),
+            eq("lease-3"),
+            anyLong(),
+            eq("retry"),
+            eq(0L),
+            eq(0L),
+            eq(1L),
+            eq(0L),
+            eq(0L));
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(String jobId, ReconcileJobKind jobKind) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "remote-executor",
+        "remote_snapshot_planner_worker",
+        jobKind,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-1");
   }
 }

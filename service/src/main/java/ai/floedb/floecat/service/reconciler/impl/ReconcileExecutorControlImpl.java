@@ -51,6 +51,9 @@ import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedReconcileJob;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControl;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureKind;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
@@ -233,19 +236,47 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getSnapshotsProcessed(),
                         request.getStatsProcessed());
                 case RCS_FAILED -> {
-                  jobs.markFailed(
-                      jobId,
-                      leaseEpoch,
-                      finishedAtMs,
-                      request.getMessage(),
-                      request.getTablesScanned(),
-                      request.getTablesChanged(),
-                      request.getViewsScanned(),
-                      request.getViewsChanged(),
-                      request.getErrors(),
-                      request.getSnapshotsProcessed(),
-                      request.getStatsProcessed());
-                  cancelChildJobs(jobId, request.getMessage());
+                  if (isDependencyNotReady(request)) {
+                    jobs.markWaiting(
+                        jobId,
+                        leaseEpoch,
+                        finishedAtMs,
+                        request.getMessage(),
+                        request.getTablesScanned(),
+                        request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
+                        request.getErrors(),
+                        request.getSnapshotsProcessed(),
+                        request.getStatsProcessed());
+                  } else if (isTerminalFailure(request)) {
+                    jobs.markFailedTerminal(
+                        jobId,
+                        leaseEpoch,
+                        finishedAtMs,
+                        request.getMessage(),
+                        request.getTablesScanned(),
+                        request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
+                        request.getErrors(),
+                        request.getSnapshotsProcessed(),
+                        request.getStatsProcessed());
+                    cancelChildJobs(jobId, request.getMessage());
+                  } else {
+                    jobs.markFailed(
+                        jobId,
+                        leaseEpoch,
+                        finishedAtMs,
+                        request.getMessage(),
+                        request.getTablesScanned(),
+                        request.getTablesChanged(),
+                        request.getViewsScanned(),
+                        request.getViewsChanged(),
+                        request.getErrors(),
+                        request.getSnapshotsProcessed(),
+                        request.getStatsProcessed());
+                  }
                 }
                 case RCS_CANCELLED -> {
                   jobs.markCancelled(
@@ -308,6 +339,66 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
         || "JS_CANCELLED".equals(state);
+  }
+
+  private static boolean isTerminalFailure(CompleteLeasedReconcileJobRequest request) {
+    return request != null
+        && request.getFailureRetryDisposition() == ReconcileFailureRetryDisposition.RFRD_TERMINAL;
+  }
+
+  private static boolean isDependencyNotReady(CompleteLeasedReconcileJobRequest request) {
+    return request != null
+        && request.getFailureRetryDisposition() == ReconcileFailureRetryDisposition.RFRD_RETRYABLE
+        && request.getFailureRetryClass() == ReconcileFailureRetryClass.RFRC_DEPENDENCY_NOT_READY;
+  }
+
+  private static ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+      fromProtoFailureKind(ReconcileFailureKind failureKind) {
+    return switch (failureKind) {
+      case RFK_CONNECTOR_MISSING ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+              .CONNECTOR_MISSING;
+      case RFK_TABLE_MISSING ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+              .TABLE_MISSING;
+      case RFK_VIEW_MISSING ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+              .VIEW_MISSING;
+      case RFK_INTERNAL ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
+      case RFK_UNSPECIFIED, UNRECOGNIZED ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind.NONE;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult
+          .RetryDisposition
+      fromProtoRetryDisposition(ReconcileFailureRetryDisposition retryDisposition) {
+    return switch (retryDisposition) {
+      case RFRD_TERMINAL ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+              .TERMINAL;
+      case RFRD_RETRYABLE, RFRD_UNSPECIFIED, UNRECOGNIZED ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+              .RETRYABLE;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+      fromProtoRetryClass(ReconcileFailureRetryClass retryClass) {
+    return switch (retryClass) {
+      case RFRC_TRANSIENT_ERROR ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+              .TRANSIENT_ERROR;
+      case RFRC_DEPENDENCY_NOT_READY ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+              .DEPENDENCY_NOT_READY;
+      case RFRC_STATE_UNCERTAIN ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+              .STATE_UNCERTAIN;
+      case RFRC_UNSPECIFIED, UNRECOGNIZED ->
+          ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass.NONE;
+    };
   }
 
   @Override
@@ -396,7 +487,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (request.hasFailure()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanConnectorFailure(
-                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        fromProtoFailureKind(request.getFailure().getFailureKind()),
+                        fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
+                        fromProtoRetryClass(request.getFailure().getRetryClass()),
+                        request.getFailure().getMessage());
                 return SubmitLeasedPlanConnectorResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -467,7 +564,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (request.hasFailure()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanTableFailure(
-                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        fromProtoFailureKind(request.getFailure().getFailureKind()),
+                        fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
+                        fromProtoRetryClass(request.getFailure().getRetryClass()),
+                        request.getFailure().getMessage());
                 return SubmitLeasedPlanTableResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -540,7 +643,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (request.hasFailure()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanViewFailure(
-                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        fromProtoFailureKind(request.getFailure().getFailureKind()),
+                        fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
+                        fromProtoRetryClass(request.getFailure().getRetryClass()),
+                        request.getFailure().getMessage());
                 return SubmitLeasedPlanViewResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -612,7 +721,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (request.hasFailure()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanSnapshotFailure(
-                        principalContext, jobId, leaseEpoch, request.getFailure().getMessage());
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        fromProtoFailureKind(request.getFailure().getFailureKind()),
+                        fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
+                        fromProtoRetryClass(request.getFailure().getRetryClass()),
+                        request.getFailure().getMessage());
                 return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -765,6 +880,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         case RJK_PLAN_TABLE -> jobKinds.add(ReconcileJobKind.PLAN_TABLE);
         case RJK_PLAN_VIEW -> jobKinds.add(ReconcileJobKind.PLAN_VIEW);
         case RJK_PLAN_SNAPSHOT -> jobKinds.add(ReconcileJobKind.PLAN_SNAPSHOT);
+        case RJK_FINALIZE_SNAPSHOT_CAPTURE ->
+            jobKinds.add(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE);
         case RJK_EXEC_FILE_GROUP -> jobKinds.add(ReconcileJobKind.EXEC_FILE_GROUP);
         case RJK_UNSPECIFIED, UNRECOGNIZED -> {}
       }
@@ -804,6 +921,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       case PLAN_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_TABLE;
       case PLAN_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_VIEW;
       case PLAN_SNAPSHOT -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_SNAPSHOT;
+      case FINALIZE_SNAPSHOT_CAPTURE ->
+          ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_FINALIZE_SNAPSHOT_CAPTURE;
       case EXEC_FILE_GROUP -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP;
     };
   }
@@ -843,6 +962,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setSnapshotId(effective.snapshotId())
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
+        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(ReconcileExecutorControlImpl::toProtoFileGroupTask)
@@ -1092,7 +1212,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         snapshotTask.getSourceTable(),
         snapshotTask.getFileGroupsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileGroupTask)
-            .toList());
+            .toList(),
+        snapshotTask.getFileGroupPlanRecorded());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

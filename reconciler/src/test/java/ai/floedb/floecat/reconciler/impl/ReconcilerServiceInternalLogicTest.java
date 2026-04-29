@@ -61,7 +61,8 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
-    Snapshot result = service.buildSnapshot(ctx, tableId, bundle, existing).orElseThrow();
+    Snapshot result =
+        queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, existing).orElseThrow();
 
     assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
@@ -85,8 +86,8 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
                 12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, Map.of()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        service.filterBundlesForMode(
-            bundles, false, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+        QueuedReconcileWorkerSupport.filterBundlesForMode(
+            bundles, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
@@ -103,26 +104,8 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
                 11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        service.filterBundlesForMode(
-            bundles, true, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 11L);
-  }
-
-  @Test
-  void filterBundlesForModeSkipsIncrementalPruningWhenSkipExistingSnapshotsEnabled() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, Map.of()),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        service.filterBundlesForMode(
-            bundles, false, false, true, Set.of(10L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+        QueuedReconcileWorkerSupport.filterBundlesForMode(
+            bundles, true, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
@@ -141,8 +124,8 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
                 12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, Map.of()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        service.filterBundlesForMode(
-            bundles, false, false, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+        QueuedReconcileWorkerSupport.filterBundlesForMode(
+            bundles, false, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)

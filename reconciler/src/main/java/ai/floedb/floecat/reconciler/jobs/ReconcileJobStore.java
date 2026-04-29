@@ -249,6 +249,38 @@ public interface ReconcileJobStore {
         pinnedExecutorId);
   }
 
+  default String enqueueSnapshotFinalization(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
+      String pinnedExecutorId) {
+    ReconcileSnapshotTask effectiveSnapshotTask =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (!effectiveSnapshotTask.fileGroupPlanRecorded()) {
+      throw new IllegalArgumentException(
+          "FINALIZE_SNAPSHOT_CAPTURE requires explicit snapshot coverage metadata");
+    }
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        effectiveSnapshotTask,
+        ReconcileFileGroupTask.empty(),
+        executionPolicy,
+        parentJobId,
+        pinnedExecutorId);
+  }
+
   Optional<ReconcileJob> get(String accountId, String jobId);
 
   default Optional<ReconcileJob> get(String jobId) {
@@ -369,6 +401,56 @@ public interface ReconcileJobStore {
       long snapshotsProcessed,
       long statsProcessed);
 
+  void markWaiting(
+      String jobId,
+      String leaseEpoch,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
+
+  void markFailedTerminal(
+      String jobId,
+      String leaseEpoch,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
+
+  default void markFailedTerminal(
+      String jobId,
+      String leaseEpoch,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    markFailedTerminal(
+        jobId,
+        leaseEpoch,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        0,
+        0,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
+  }
+
   default void markFailed(
       String jobId,
       String leaseEpoch,
@@ -380,6 +462,30 @@ public interface ReconcileJobStore {
       long snapshotsProcessed,
       long statsProcessed) {
     markFailed(
+        jobId,
+        leaseEpoch,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        0,
+        0,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
+  }
+
+  default void markWaiting(
+      String jobId,
+      String leaseEpoch,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    markWaiting(
         jobId,
         leaseEpoch,
         finishedAtMs,

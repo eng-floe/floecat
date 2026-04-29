@@ -118,6 +118,18 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind);
 
   /**
+   * Returns whether the snapshot has a persisted table-stats marker proving it contains zero data
+   * files.
+   *
+   * <p>This lets incremental capture treat legitimate empty snapshots as complete even though they
+   * cannot produce file- or column-scoped records.
+   */
+  default boolean hasZeroDataFileTableStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    return false;
+  }
+
+  /**
    * Returns whether all requested column selectors are covered by persisted column stats.
    *
    * <p>Selectors use the same syntax as {@code StatsCaptureRequest.columnSelectors} (for example

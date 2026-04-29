@@ -150,9 +150,17 @@ public class LeasedPlannerWorkerService {
   }
 
   public boolean persistPlanConnectorFailure(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, String message) {
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_CONNECTOR);
+    persistPlanFailure(jobId, leaseEpoch, retryDisposition, retryClass, message);
     return true;
   }
 
@@ -199,9 +207,17 @@ public class LeasedPlannerWorkerService {
   }
 
   public boolean persistPlanTableFailure(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, String message) {
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
+    persistPlanFailure(jobId, leaseEpoch, retryDisposition, retryClass, message);
     return true;
   }
 
@@ -251,9 +267,17 @@ public class LeasedPlannerWorkerService {
   }
 
   public boolean persistPlanViewFailure(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, String message) {
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_VIEW);
+    persistPlanFailure(jobId, leaseEpoch, retryDisposition, retryClass, message);
     return true;
   }
 
@@ -288,14 +312,15 @@ public class LeasedPlannerWorkerService {
             .toList();
     ReconcileSnapshotTask baseSnapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
-    jobs.persistSnapshotPlan(
-        lease.jobId,
+    ReconcileSnapshotTask finalizedSnapshotTask =
         ReconcileSnapshotTask.of(
             baseSnapshotTask.tableId(),
             baseSnapshotTask.snapshotId(),
             baseSnapshotTask.sourceNamespace(),
             baseSnapshotTask.sourceTable(),
-            plannedGroups));
+            plannedGroups,
+            true);
+    jobs.persistSnapshotPlan(lease.jobId, finalizedSnapshotTask);
     for (PlannedFileGroupJob fileGroupJob : nullToEmpty(fileGroupJobs)) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
@@ -311,13 +336,31 @@ public class LeasedPlannerWorkerService {
           lease.jobId,
           lease.pinnedExecutorId);
     }
+    jobs.enqueueSnapshotFinalization(
+        lease.accountId,
+        lease.connectorId,
+        lease.fullRescan,
+        lease.captureMode,
+        effectiveScope(lease),
+        finalizedSnapshotTask,
+        effectiveExecutionPolicy(lease),
+        lease.jobId,
+        lease.pinnedExecutorId);
     return true;
   }
 
   public boolean persistPlanSnapshotFailure(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, String message) {
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    persistPlanFailure(jobId, leaseEpoch, retryDisposition, retryClass, message);
     return true;
   }
 
@@ -368,6 +411,29 @@ public class LeasedPlannerWorkerService {
         job.snapshotTask,
         job.fileGroupTask,
         blankToEmpty(job.parentJobId));
+  }
+
+  private void persistPlanFailure(
+      String jobId,
+      String leaseEpoch,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
+    long finishedAtMs = System.currentTimeMillis();
+    if (retryDisposition
+        == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+            .TERMINAL) {
+      jobs.markFailedTerminal(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
+      return;
+    }
+    if (retryClass
+        == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+            .DEPENDENCY_NOT_READY) {
+      jobs.markWaiting(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
+      return;
+    }
+    jobs.markFailed(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
   }
 
   private static ResourceId connectorId(ReconcileJobStore.LeasedJob lease) {

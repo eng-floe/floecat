@@ -48,6 +48,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -219,13 +220,295 @@ class DurableReconcileJobStoreTest {
                     "snapshot-55-group-0",
                     "table-1",
                     55L,
-                    List.of("s3://bucket/data/file-1.parquet")))));
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true));
 
     var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
     assertEquals(1, job.snapshotTask.fileGroups().size());
     assertEquals(
         "s3://bucket/data/file-1.parquet",
         job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+  }
+
+  @Test
+  void getReturnsCanonicalSnapshotPlanWhenLookupPointerIsStale() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    Pointer oldLookup = store.pointerStore.get(lookupKey).orElseThrow();
+
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(
+                ReconcileFileGroupTask.of(
+                    jobId,
+                    "snapshot-55-group-0",
+                    "table-1",
+                    55L,
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true));
+
+    Pointer currentLookup = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lookupKey,
+            currentLookup.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lookupKey)
+                .setBlobUri(oldLookup.getBlobUri())
+                .setVersion(currentLookup.getVersion() + 1)
+                .build()));
+
+    var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+
+    assertEquals(1, job.snapshotTask.fileGroups().size());
+    assertEquals(
+        "s3://bucket/data/file-1.parquet",
+        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void childJobsReturnsCanonicalChildWhenParentPointerIsStale() {
+    store.init();
+
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+
+    String parentPointerKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, childJobId);
+    Pointer oldParentPointer = store.pointerStore.get(parentPointerKey).orElseThrow();
+    var parentLease = store.leaseNext().orElseThrow();
+    assertEquals(parentJobId, parentLease.jobId);
+    var childLease = store.leaseNext().orElseThrow();
+    assertEquals(childJobId, childLease.jobId);
+    store.markRunning(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+
+    Pointer currentParentPointer = store.pointerStore.get(parentPointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            parentPointerKey,
+            currentParentPointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(parentPointerKey)
+                .setBlobUri(oldParentPointer.getBlobUri())
+                .setVersion(currentParentPointer.getVersion() + 1)
+                .build()));
+
+    var children = store.childJobs(ACCOUNT_ID, parentJobId);
+
+    assertEquals(1, children.size());
+    assertEquals("JS_RUNNING", children.getFirst().state);
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(parentPointerKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void queueStatsUsesCanonicalJobWhenLookupPointerIsStale() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    Pointer oldLookup = store.pointerStore.get(lookupKey).orElseThrow();
+
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+
+    Pointer currentLookup = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lookupKey,
+            currentLookup.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lookupKey)
+                .setBlobUri(oldLookup.getBlobUri())
+                .setVersion(currentLookup.getVersion() + 1)
+                .build()));
+
+    var stats = store.queueStats();
+
+    assertEquals(0L, stats.queued);
+    assertEquals(1L, stats.running);
+    assertEquals(0L, stats.cancelling);
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void leaseNextSerializesSnapshotFinalizersPerSnapshot() {
+    store.init();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events", java.util.List.of(), true);
+
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-1",
+        "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-2",
+        "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+
+    assertEquals(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, firstLease.jobKind);
+    assertTrue(store.leaseNext().isEmpty());
+  }
+
+  @Test
+  void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
+    store.init();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.enqueue(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "parent-1",
+                    ""));
+
+    assertTrue(error.getMessage().contains("FINALIZE_SNAPSHOT_CAPTURE"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsImplicitCoverageForPlanSnapshotJobs() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.persistSnapshotPlan(
+                    jobId,
+                    ReconcileSnapshotTask.of(
+                        "table-1",
+                        55L,
+                        "db",
+                        "events",
+                        List.of(
+                            ReconcileFileGroupTask.of(
+                                jobId,
+                                "snapshot-55-group-0",
+                                "table-1",
+                                55L,
+                                List.of("s3://bucket/data/file-1.parquet"))))));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsEmptyCoverageForPlanSnapshotJobs() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> store.persistSnapshotPlan(jobId, ReconcileSnapshotTask.empty()));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
   }
 
   @Test
@@ -745,6 +1028,96 @@ class DurableReconcileJobStoreTest {
 
     var secondLease = store.leaseNext().orElseThrow();
     assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextAllowsConcurrentFileGroupJobsForSameTable() {
+    store.init();
+
+    String firstJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-1",
+                "snapshot-55-group-0",
+                "table-1",
+                55L,
+                List.of("s3://bucket/table-1/file-0.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+    String secondJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-1",
+                "snapshot-55-group-1",
+                "table-1",
+                55L,
+                List.of("s3://bucket/table-1/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    var secondLease = store.leaseNext().orElseThrow();
+
+    assertEquals(firstJob, firstLease.jobId);
+    assertEquals(secondJob, secondLease.jobId);
+    assertNotEquals(firstLease.jobId, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextAllowsConcurrentFileGroupJobsForSnapshotZero() {
+    store.init();
+
+    String firstJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-0",
+                "snapshot-0-group-0",
+                "table-1",
+                0L,
+                List.of("s3://bucket/table-1/file-0.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+    String secondJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-0",
+                "snapshot-0-group-1",
+                "table-1",
+                0L,
+                List.of("s3://bucket/table-1/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    var secondLease = store.leaseNext().orElseThrow();
+
+    assertEquals(firstJob, firstLease.jobId);
+    assertEquals(secondJob, secondLease.jobId);
+    assertNotEquals(firstLease.jobId, secondLease.jobId);
   }
 
   @Test
@@ -1299,6 +1672,23 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.leaseNext().isEmpty());
   }
 
+  @Test
+  void leaseNextAvoidsRedundantReadyCandidateBlobReloadBeforeLeaseMutation() {
+    CountingBlobStore blobStore = new CountingBlobStore();
+    store.blobStore = blobStore;
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+    blobStore.resetGetCount();
+
+    var lease = store.leaseNext().orElseThrow();
+
+    assertEquals(CONNECTOR_ID, lease.connectorId);
+    assertEquals(
+        1, blobStore.getCount(), "expected one ready-candidate read on the uncontended happy path");
+  }
+
   /** BlobStore that throws StorageNotFoundException on every get() call. */
   private static class ThrowingOnGetBlobStore implements BlobStore {
     @Override
@@ -1335,6 +1725,24 @@ class DurableReconcileJobStoreTest {
           return "";
         }
       };
+    }
+  }
+
+  private static final class CountingBlobStore extends InMemoryBlobStore {
+    private final AtomicInteger getCount = new AtomicInteger();
+
+    @Override
+    public byte[] get(String uri) {
+      getCount.incrementAndGet();
+      return super.get(uri);
+    }
+
+    int getCount() {
+      return getCount.get();
+    }
+
+    void resetGetCount() {
+      getCount.set(0);
     }
   }
 

@@ -41,6 +41,9 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureKind;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
@@ -176,6 +179,8 @@ class GrpcRemoteReconcileExecutorClient
   public CompletionResult complete(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -191,6 +196,8 @@ class GrpcRemoteReconcileExecutorClient
                     .setJobId(lease.lease().jobId)
                     .setLeaseEpoch(lease.lease().leaseEpoch)
                     .setState(toProtoCompletionState(state))
+                    .setFailureRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                    .setFailureRetryClass(toProtoRetryClass(retryClass))
                     .setTablesScanned(tablesScanned)
                     .setTablesChanged(tablesChanged)
                     .setViewsScanned(viewsScanned)
@@ -265,7 +272,12 @@ class GrpcRemoteReconcileExecutorClient
         .getAccepted();
   }
 
-  public boolean submitPlanConnectorFailure(RemoteLeasedJob lease, String message) {
+  public boolean submitPlanConnectorFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     return withHeaders(executorControl, correlationId(lease))
         .submitLeasedPlanConnectorResult(
             SubmitLeasedPlanConnectorResultRequest.newBuilder()
@@ -274,6 +286,9 @@ class GrpcRemoteReconcileExecutorClient
                 .setFailure(
                     SubmitLeasedPlanConnectorResultRequest.Failure.newBuilder()
                         .setMessage(message == null ? "" : message)
+                        .setFailureKind(toProtoFailureKind(failureKind))
+                        .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                        .setRetryClass(toProtoRetryClass(retryClass))
                         .build())
                 .build())
         .getAccepted();
@@ -324,7 +339,12 @@ class GrpcRemoteReconcileExecutorClient
         .getAccepted();
   }
 
-  public boolean submitPlanTableFailure(RemoteLeasedJob lease, String message) {
+  public boolean submitPlanTableFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     return withHeaders(executorControl, correlationId(lease))
         .submitLeasedPlanTableResult(
             SubmitLeasedPlanTableResultRequest.newBuilder()
@@ -333,6 +353,9 @@ class GrpcRemoteReconcileExecutorClient
                 .setFailure(
                     SubmitLeasedPlanTableResultRequest.Failure.newBuilder()
                         .setMessage(message == null ? "" : message)
+                        .setFailureKind(toProtoFailureKind(failureKind))
+                        .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                        .setRetryClass(toProtoRetryClass(retryClass))
                         .build())
                 .build())
         .getAccepted();
@@ -386,7 +409,12 @@ class GrpcRemoteReconcileExecutorClient
         response.getAccepted(), response.getViewsChanged());
   }
 
-  public boolean submitPlanViewFailure(RemoteLeasedJob lease, String message) {
+  public boolean submitPlanViewFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     return withHeaders(executorControl, correlationId(lease))
         .submitLeasedPlanViewResult(
             SubmitLeasedPlanViewResultRequest.newBuilder()
@@ -395,6 +423,9 @@ class GrpcRemoteReconcileExecutorClient
                 .setFailure(
                     SubmitLeasedPlanViewResultRequest.Failure.newBuilder()
                         .setMessage(message == null ? "" : message)
+                        .setFailureKind(toProtoFailureKind(failureKind))
+                        .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                        .setRetryClass(toProtoRetryClass(retryClass))
                         .build())
                 .build())
         .getAccepted();
@@ -445,7 +476,12 @@ class GrpcRemoteReconcileExecutorClient
         .getAccepted();
   }
 
-  public boolean submitPlanSnapshotFailure(RemoteLeasedJob lease, String message) {
+  public boolean submitPlanSnapshotFailure(
+      RemoteLeasedJob lease,
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      String message) {
     return withHeaders(executorControl, correlationId(lease))
         .submitLeasedPlanSnapshotResult(
             SubmitLeasedPlanSnapshotResultRequest.newBuilder()
@@ -454,6 +490,9 @@ class GrpcRemoteReconcileExecutorClient
                 .setFailure(
                     SubmitLeasedPlanSnapshotResultRequest.Failure.newBuilder()
                         .setMessage(message == null ? "" : message)
+                        .setFailureKind(toProtoFailureKind(failureKind))
+                        .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                        .setRetryClass(toProtoRetryClass(retryClass))
                         .build())
                 .build())
         .getAccepted();
@@ -760,6 +799,7 @@ class GrpcRemoteReconcileExecutorClient
         .setSnapshotId(effective.snapshotId())
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
+        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(GrpcRemoteReconcileExecutorClient::toProtoFileGroupTask)
@@ -826,6 +866,44 @@ class GrpcRemoteReconcileExecutorClient
     };
   }
 
+  private static ReconcileFailureRetryDisposition toProtoRetryDisposition(
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition) {
+    if (retryDisposition == null) {
+      return ReconcileFailureRetryDisposition.RFRD_UNSPECIFIED;
+    }
+    return switch (retryDisposition) {
+      case RETRYABLE -> ReconcileFailureRetryDisposition.RFRD_RETRYABLE;
+      case TERMINAL -> ReconcileFailureRetryDisposition.RFRD_TERMINAL;
+    };
+  }
+
+  private static ReconcileFailureRetryClass toProtoRetryClass(
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass) {
+    if (retryClass == null) {
+      return ReconcileFailureRetryClass.RFRC_UNSPECIFIED;
+    }
+    return switch (retryClass) {
+      case NONE -> ReconcileFailureRetryClass.RFRC_UNSPECIFIED;
+      case TRANSIENT_ERROR -> ReconcileFailureRetryClass.RFRC_TRANSIENT_ERROR;
+      case DEPENDENCY_NOT_READY -> ReconcileFailureRetryClass.RFRC_DEPENDENCY_NOT_READY;
+      case STATE_UNCERTAIN -> ReconcileFailureRetryClass.RFRC_STATE_UNCERTAIN;
+    };
+  }
+
+  private static ReconcileFailureKind toProtoFailureKind(
+      ReconcileExecutor.ExecutionResult.FailureKind failureKind) {
+    if (failureKind == null) {
+      return ReconcileFailureKind.RFK_UNSPECIFIED;
+    }
+    return switch (failureKind) {
+      case NONE -> ReconcileFailureKind.RFK_UNSPECIFIED;
+      case CONNECTOR_MISSING -> ReconcileFailureKind.RFK_CONNECTOR_MISSING;
+      case TABLE_MISSING -> ReconcileFailureKind.RFK_TABLE_MISSING;
+      case VIEW_MISSING -> ReconcileFailureKind.RFK_VIEW_MISSING;
+      case INTERNAL -> ReconcileFailureKind.RFK_INTERNAL;
+    };
+  }
+
   private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
       ReconcileJobKind jobKind) {
     return switch (jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind) {
@@ -833,6 +911,8 @@ class GrpcRemoteReconcileExecutorClient
       case PLAN_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_TABLE;
       case PLAN_VIEW -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_VIEW;
       case PLAN_SNAPSHOT -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_SNAPSHOT;
+      case FINALIZE_SNAPSHOT_CAPTURE ->
+          ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_FINALIZE_SNAPSHOT_CAPTURE;
       case EXEC_FILE_GROUP -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP;
     };
   }
@@ -844,6 +924,7 @@ class GrpcRemoteReconcileExecutorClient
       case RJK_PLAN_TABLE -> ReconcileJobKind.PLAN_TABLE;
       case RJK_PLAN_VIEW -> ReconcileJobKind.PLAN_VIEW;
       case RJK_PLAN_SNAPSHOT -> ReconcileJobKind.PLAN_SNAPSHOT;
+      case RJK_FINALIZE_SNAPSHOT_CAPTURE -> ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
       case RJK_EXEC_FILE_GROUP -> ReconcileJobKind.EXEC_FILE_GROUP;
       case RJK_UNSPECIFIED, UNRECOGNIZED -> ReconcileJobKind.PLAN_CONNECTOR;
     };
@@ -905,7 +986,8 @@ class GrpcRemoteReconcileExecutorClient
         snapshotTask.getSourceTable(),
         snapshotTask.getFileGroupsList().stream()
             .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupTask)
-            .toList());
+            .toList(),
+        snapshotTask.getFileGroupPlanRecorded());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

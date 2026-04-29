@@ -43,6 +43,8 @@ import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -218,18 +220,10 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void completeLeasedReconcileJobCancelsDescendantsOnFailure() {
+  void completeLeasedReconcileJobLeavesDescendantsIntactOnRetryableFailure() {
     when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(service.jobs.get(null, "job-1"))
         .thenReturn(Optional.of(job("job-1", "acct", ReconcileJobKind.PLAN_CONNECTOR, "")));
-    when(service.jobs.childJobs("acct", "job-1"))
-        .thenReturn(
-            java.util.List.of(job("child-1", "acct", ReconcileJobKind.PLAN_TABLE, "job-1")));
-    when(service.jobs.cancel("acct", "child-1", "boom"))
-        .thenReturn(
-            Optional.of(
-                job("child-1", "acct", ReconcileJobKind.PLAN_TABLE, "job-1", "JS_CANCELLING")));
-
     var response =
         service
             .completeLeasedReconcileJob(
@@ -237,6 +231,7 @@ class ReconcileExecutorControlImplTest {
                     .setJobId("job-1")
                     .setLeaseEpoch("lease-1")
                     .setState(ReconcileCompletionState.RCS_FAILED)
+                    .setFailureRetryDisposition(ReconcileFailureRetryDisposition.RFRD_RETRYABLE)
                     .setMessage("boom")
                     .build())
             .await()
@@ -256,8 +251,76 @@ class ReconcileExecutorControlImplTest {
             eq(0L),
             eq(0L),
             eq(0L));
-    verify(service.jobs).cancel("acct", "child-1", "boom");
-    verify(service.cancellations).requestCancel("child-1");
+  }
+
+  @Test
+  void completeLeasedReconcileJobRequeuesDependencyNotReadyWithoutPenalty() {
+    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+
+    var response =
+        service
+            .completeLeasedReconcileJob(
+                CompleteLeasedReconcileJobRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setState(ReconcileCompletionState.RCS_FAILED)
+                    .setFailureRetryDisposition(ReconcileFailureRetryDisposition.RFRD_RETRYABLE)
+                    .setFailureRetryClass(ReconcileFailureRetryClass.RFRC_DEPENDENCY_NOT_READY)
+                    .setMessage("waiting on file-group children")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs)
+        .markWaiting(
+            eq("job-1"),
+            eq("lease-1"),
+            anyLong(),
+            eq("waiting on file-group children"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
+  void completeLeasedReconcileJobMarksStructuredTerminalFailureTerminal() {
+    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.get(null, "job-1"))
+        .thenReturn(
+            Optional.of(job("job-1", "acct", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, "")));
+
+    var response =
+        service
+            .completeLeasedReconcileJob(
+                CompleteLeasedReconcileJobRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setState(ReconcileCompletionState.RCS_FAILED)
+                    .setFailureRetryDisposition(ReconcileFailureRetryDisposition.RFRD_TERMINAL)
+                    .setMessage("deterministic invariant failure")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs)
+        .markFailedTerminal(
+            eq("job-1"),
+            eq("lease-1"),
+            anyLong(),
+            eq("deterministic invariant failure"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
   }
 
   private static ReconcileJobStore.ReconcileJob job(
