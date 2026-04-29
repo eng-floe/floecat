@@ -22,6 +22,10 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexCoverage;
+import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
+import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
@@ -29,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
@@ -76,13 +81,14 @@ final class StatsCliSupport {
       List<String> args,
       PrintStream out,
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics,
+      TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
       TableServiceGrpc.TableServiceBlockingStub tables,
       NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       Function<String, ResourceId> resolveTableId) {
     switch (command) {
-      case "stats" -> stats(args, out, statistics, resolveTableId);
+      case "stats" -> stats(args, out, statistics, indexes, resolveTableId);
       case "analyze" ->
           analyze(args, out, snapshots, tables, namespaces, reconcileControl, resolveTableId);
       default -> out.println("Unknown stats command: " + command);
@@ -94,21 +100,32 @@ final class StatsCliSupport {
       List<String> args,
       PrintStream out,
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics,
+      TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes,
       TableServiceGrpc.TableServiceBlockingStub tables,
       NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       Function<String, ResourceId> resolveTableId) {
     handle(
-        command, args, out, statistics, null, tables, namespaces, reconcileControl, resolveTableId);
+        command,
+        args,
+        out,
+        statistics,
+        indexes,
+        null,
+        tables,
+        namespaces,
+        reconcileControl,
+        resolveTableId);
   }
 
   private static void stats(
       List<String> args,
       PrintStream out,
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics,
+      TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes,
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
-      out.println("usage: stats <table|columns|files> ...");
+      out.println("usage: stats <table|columns|files|index|indexes> ...");
       return;
     }
     String sub = args.get(0);
@@ -117,6 +134,7 @@ final class StatsCliSupport {
       case "table" -> statsTable(tail, out, statistics, resolveTableId);
       case "columns" -> statsColumns(tail, out, statistics, resolveTableId);
       case "files" -> statsFiles(tail, out, statistics, resolveTableId);
+      case "index", "indexes" -> statsIndexes(tail, out, indexes, resolveTableId);
       default -> out.println("unknown stats subcommand: " + sub);
     }
   }
@@ -246,6 +264,56 @@ final class StatsCliSupport {
       all = all.subList(0, limit);
     }
     printFileColumnStats(all, out);
+  }
+
+  private static void statsIndexes(
+      List<String> args,
+      PrintStream out,
+      TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes,
+      Function<String, ResourceId> resolveTableId) {
+    if (indexes == null) {
+      throw new IllegalStateException("index service unavailable");
+    }
+    if (args.isEmpty()) {
+      out.println(
+          "usage: stats index <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+              + " [--limit N] [--json]");
+      return;
+    }
+    boolean json = CliArgs.hasFlag(args, "--json");
+    String fq = args.get(0);
+    int limit = CliArgs.parseIntFlag(args, "--limit", 1000);
+    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
+
+    ResourceId tableId = resolveTableId.apply(fq);
+    ListIndexArtifactsRequest.Builder rb =
+        ListIndexArtifactsRequest.newBuilder()
+            .setTableId(tableId)
+            .setSnapshot(
+                CliUtils.snapshotFromTokenOrCurrent(
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")));
+
+    List<IndexArtifactRecord> all =
+        CliArgs.collectPages(
+            pageSize,
+            pr ->
+                indexes.listIndexArtifacts(
+                    rb.setPage(
+                            PageRequest.newBuilder()
+                                .setPageSize(pr.getPageSize())
+                                .setPageToken(pr.getPageToken())
+                                .build())
+                        .build()),
+            r -> r.getRecordsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    if (all.size() > limit) {
+      all = all.subList(0, limit);
+    }
+    if (json) {
+      CliUtils.printJson(ListIndexArtifactsResponse.newBuilder().addAllRecords(all).build(), out);
+      return;
+    }
+    printIndexArtifacts(all, out);
   }
 
   // analyze runs a synchronous table-scoped CaptureNow call that defaults to stats-only capture.
@@ -453,6 +521,31 @@ final class StatsCliSupport {
               ndv);
         }
       }
+    }
+  }
+
+  private static void printIndexArtifacts(List<IndexArtifactRecord> records, PrintStream out) {
+    if (records == null || records.isEmpty()) {
+      out.println("No index artifacts found.");
+      return;
+    }
+    out.printf(
+        "%-4s %-10s %-8s %-8s %-8s %-10s %-12s %s%n",
+        "IDX", "STATE", "FORMAT", "ROWS", "LIVE", "PAGES", "ROW_GROUPS", "PATH");
+    for (int i = 0; i < records.size(); i++) {
+      IndexArtifactRecord record = records.get(i);
+      IndexCoverage coverage = record.getCoverage();
+      out.printf(
+          "%-4d %-10s %-8s %-8s %-8s %-10s %-12s %s%n",
+          i,
+          record.getState().name().replaceFirst("^IAS_", ""),
+          CliUtils.trunc(record.getArtifactFormat(), 8),
+          coverage.hasRowsIndexed() ? Long.toString(coverage.getRowsIndexed()) : "-",
+          coverage.hasLiveRowsIndexed() ? Long.toString(coverage.getLiveRowsIndexed()) : "-",
+          coverage.hasPagesIndexed() ? Long.toString(coverage.getPagesIndexed()) : "-",
+          coverage.hasRowGroupsIndexed() ? Long.toString(coverage.getRowGroupsIndexed()) : "-",
+          record.getTarget().hasFile() ? record.getTarget().getFile().getFilePath() : "-");
+      out.printf("    uri=%s%n", record.getArtifactUri());
     }
   }
 }

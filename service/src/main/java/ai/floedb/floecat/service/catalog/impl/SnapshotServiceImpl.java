@@ -465,7 +465,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var spec = request.getSpec();
                   if (!spec.hasTableId()
                       || spec.getTableId().getId().isBlank()
-                      || spec.getSnapshotId() == 0L) {
+                      || spec.getSnapshotId() < 0L) {
                     throw GrpcErrors.invalidArgument(corr, SPEC_MISSING_IDS, Map.of());
                   }
 

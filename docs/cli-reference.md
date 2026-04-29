@@ -34,6 +34,7 @@ snapshot delete <table> <snapshot_id>
 stats table <catalog.ns[.ns...].table> [--snapshot <id|current>]
 stats columns <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
 stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+stats index <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
 constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json]
 constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
 constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]

@@ -33,7 +33,7 @@ class ReconcilerServiceInternalsTest {
 
     List<FloecatConnector.SnapshotBundle> filtered =
         ReconcilerService.filterBundlesForMode(
-            bundles, false, false, Set.of(10L, 12L), noopProgress());
+            bundles, false, false, false, Set.of(10L, 12L), noopProgress());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -47,7 +47,7 @@ class ReconcilerServiceInternalsTest {
 
     List<FloecatConnector.SnapshotBundle> filtered =
         ReconcilerService.filterBundlesForMode(
-            bundles, true, false, Set.of(10L, 12L), noopProgress());
+            bundles, true, false, false, Set.of(10L, 12L), noopProgress());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -60,7 +60,8 @@ class ReconcilerServiceInternalsTest {
         List.of(bundle(10L, 0L, 1L), bundle(11L, 10L, 2L));
 
     List<FloecatConnector.SnapshotBundle> filtered =
-        ReconcilerService.filterBundlesForMode(bundles, false, true, Set.of(10L), noopProgress());
+        ReconcilerService.filterBundlesForMode(
+            bundles, false, false, true, Set.of(10L), noopProgress());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -74,7 +75,7 @@ class ReconcilerServiceInternalsTest {
 
     List<FloecatConnector.SnapshotBundle> filtered =
         ReconcilerService.filterBundlesForMode(
-            bundles, false, false, Set.of(11L, 12L), noopProgress());
+            bundles, false, false, false, Set.of(11L, 12L), noopProgress());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)

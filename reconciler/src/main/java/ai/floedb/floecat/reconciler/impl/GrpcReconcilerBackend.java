@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
+import ai.floedb.floecat.catalog.rpc.LookupTableByRefRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -43,7 +44,6 @@ import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
@@ -226,17 +226,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   public ResourceId ensureTable(
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    try {
-      ResourceId tableId =
-          directory(ctx)
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(normalizedTable).build())
-              .getResourceId();
+    Optional<ResourceId> existingTableId = lookupTable(ctx, normalizedTable);
+    if (existingTableId.isPresent()) {
+      ResourceId tableId = existingTableId.get();
       maybeUpdateTable(ctx, tableId, namespaceId, descriptor);
       return tableId;
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
     }
     var namespaceResponse =
         namespace(ctx)
@@ -262,17 +256,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    try {
-      return Optional.of(
-          directory(ctx)
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(normalizedTable).build())
-              .getResourceId());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return Optional.empty();
-      }
-      throw e;
+    var response =
+        directory(ctx)
+            .lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(normalizedTable).build());
+    if (!response.hasResourceId() || response.getResourceId().getId().isBlank()) {
+      return Optional.empty();
     }
+    return Optional.of(response.getResourceId());
   }
 
   @Override
@@ -447,6 +437,19 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return;
     }
     var spec = buildSnapshotSpec(snapshot);
+    long snapshotId = snapshot.getSnapshotId();
+    Set<Long> knownSnapshotIds = existingSnapshotIds(ctx, tableId);
+    if (knownSnapshotIds.contains(snapshotId)) {
+      var mask = buildSnapshotUpdateMask(spec);
+      var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
+      Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
+      if (existing.isPresent()
+          && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
+        return;
+      }
+      snapshot(ctx).updateSnapshot(update);
+      return;
+    }
     try {
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
       return;
@@ -457,21 +460,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
     }
 
-    var mask =
-        FieldMask.newBuilder()
-            .addPaths("upstream_created_at")
-            .addPaths("ingested_at")
-            .addPaths("parent_snapshot_id")
-            .addPaths("schema_json")
-            .addPaths("partition_spec")
-            .addPaths("sequence_number")
-            .addPaths("manifest_list")
-            .addPaths("summary")
-            .addPaths("schema_id")
-            .addPaths("format_metadata")
-            .build();
+    var mask = buildSnapshotUpdateMask(spec);
     var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
-    Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshot.getSnapshotId());
+    Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
     if (existing.isPresent() && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
       return;
     }
@@ -1283,6 +1274,35 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       builder.putAllFormatMetadata(snapshot.getFormatMetadataMap());
     }
     return builder.build();
+  }
+
+  private FieldMask buildSnapshotUpdateMask(SnapshotSpec spec) {
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("upstream_created_at");
+    if (spec.hasParentSnapshotId()) {
+      mask.addPaths("parent_snapshot_id");
+    }
+    if (spec.hasSchemaJson()) {
+      mask.addPaths("schema_json");
+    }
+    if (spec.hasPartitionSpec()) {
+      mask.addPaths("partition_spec");
+    }
+    if (spec.hasSequenceNumber()) {
+      mask.addPaths("sequence_number");
+    }
+    if (spec.hasManifestList()) {
+      mask.addPaths("manifest_list");
+    }
+    if (!spec.getSummaryMap().isEmpty()) {
+      mask.addPaths("summary");
+    }
+    if (spec.hasSchemaId()) {
+      mask.addPaths("schema_id");
+    }
+    if (!spec.getFormatMetadataMap().isEmpty()) {
+      mask.addPaths("format_metadata");
+    }
+    return mask.build();
   }
 
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {

@@ -36,6 +36,7 @@ import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -237,6 +238,7 @@ class CliCommandExecutorTest {
               .addService(queryService)
               .addService(new NullSnapshotService())
               .addService(new NullDirectoryService())
+              .addService(new NullIndexService())
               .addService(new NullConstraintsService())
               .addService(new NullReconcileControlService())
               .addService(new NullQueryScanService())
@@ -264,6 +266,7 @@ class CliCommandExecutorTest {
           .reconcileControl(ReconcileControlGrpc.newBlockingStub(channel))
           .snapshots(SnapshotServiceGrpc.newBlockingStub(channel))
           .statistics(TableStatisticsServiceGrpc.newBlockingStub(channel))
+          .indexes(TableIndexServiceGrpc.newBlockingStub(channel))
           .constraintsService(TableConstraintsServiceGrpc.newBlockingStub(channel))
           .queries(QueryServiceGrpc.newBlockingStub(channel))
           .queryScan(QueryScanServiceGrpc.newBlockingStub(channel))
@@ -373,6 +376,9 @@ class CliCommandExecutorTest {
 
   private static final class NullDirectoryService
       extends DirectoryServiceGrpc.DirectoryServiceImplBase {}
+
+  private static final class NullIndexService
+      extends TableIndexServiceGrpc.TableIndexServiceImplBase {}
 
   private static final class NullConstraintsService
       extends TableConstraintsServiceGrpc.TableConstraintsServiceImplBase {}

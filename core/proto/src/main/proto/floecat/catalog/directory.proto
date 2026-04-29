@@ -82,6 +82,12 @@ message LookupTableRequest {
 message LookupTableResponse {
   ai.floedb.floecat.common.NameRef name = 1;
 }
+message LookupTableByRefRequest {
+  ai.floedb.floecat.common.NameRef ref = 1;
+}
+message LookupTableByRefResponse {
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+}
 
 message ResolveViewRequest {
   ai.floedb.floecat.common.NameRef ref = 1;
@@ -127,6 +133,7 @@ service DirectoryService {
   rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
   rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
   rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
+  rpc LookupTableByRef(LookupTableByRefRequest) returns (LookupTableByRefResponse);
 
   rpc ResolveView(ResolveViewRequest) returns (ResolveViewResponse);
   rpc ResolveFQViews(ResolveFQViewsRequest) returns (ResolveFQViewsResponse);

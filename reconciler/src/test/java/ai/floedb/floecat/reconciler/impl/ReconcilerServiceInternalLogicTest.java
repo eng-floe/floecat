@@ -86,7 +86,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         service.filterBundlesForMode(
-            bundles, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
@@ -104,7 +104,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         service.filterBundlesForMode(
-            bundles, true, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, true, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
@@ -122,7 +122,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         service.filterBundlesForMode(
-            bundles, false, true, Set.of(10L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, false, true, Set.of(10L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
@@ -142,7 +142,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         service.filterBundlesForMode(
-            bundles, false, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, false, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)

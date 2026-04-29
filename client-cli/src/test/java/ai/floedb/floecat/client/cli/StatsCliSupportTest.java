@@ -27,6 +27,13 @@ import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexCoverage;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
+import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -35,6 +42,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
@@ -86,6 +94,7 @@ class StatsCliSupportTest {
           List.of("table", "catalog.ns.tbl"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -106,6 +115,7 @@ class StatsCliSupportTest {
           List.of("table", "catalog.ns.tbl"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -127,6 +137,7 @@ class StatsCliSupportTest {
           List.of("table", "catalog.ns.tbl", "--snapshot", "42"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -145,6 +156,7 @@ class StatsCliSupportTest {
           List.of("table"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -164,6 +176,7 @@ class StatsCliSupportTest {
           List.of("columns", "catalog.ns.tbl"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -186,6 +199,7 @@ class StatsCliSupportTest {
           List.of("columns"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -205,6 +219,7 @@ class StatsCliSupportTest {
           List.of("files", "catalog.ns.tbl"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -227,11 +242,95 @@ class StatsCliSupportTest {
           List.of("files"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
           ignored -> tableId());
       assertTrue(buf.toString().contains("usage:"));
+    }
+  }
+
+  @Test
+  void statsIndexPrintsArtifactsAndUsesCurrentSnapshot() throws Exception {
+    try (Harness h = new Harness()) {
+      h.indexService.recordsToReturn =
+          List.of(
+              IndexArtifactRecord.newBuilder()
+                  .setTableId(tableId())
+                  .setSnapshotId(7L)
+                  .setTarget(
+                      IndexTarget.newBuilder()
+                          .setFile(
+                              IndexFileTarget.newBuilder()
+                                  .setFilePath("s3://bucket/orders/data-000.parquet")
+                                  .build())
+                          .build())
+                  .setArtifactUri("s3://bucket/orders/data-000.parquet.floe-index.parquet")
+                  .setArtifactFormat("parquet")
+                  .setState(IndexArtifactState.IAS_READY)
+                  .setCoverage(
+                      IndexCoverage.newBuilder()
+                          .setRowsIndexed(100L)
+                          .setLiveRowsIndexed(95L)
+                          .setPagesIndexed(12L)
+                          .setRowGroupsIndexed(2L)
+                          .build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("index", "catalog.ns.tbl"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      String out = buf.toString();
+      assertTrue(out.contains("STATE"), "expected index header");
+      assertTrue(out.contains("s3://bucket/orders/data-000.parquet"), "expected file path");
+      assertEquals(1, h.indexService.listIndexArtifactsCalls.get());
+      assertEquals(
+          SpecialSnapshot.SS_CURRENT,
+          h.indexService.lastListIndexArtifactsRequest.getSnapshot().getSpecial());
+    }
+  }
+
+  @Test
+  void statsIndexesAliasSupportsExplicitSnapshotAndJson() throws Exception {
+    try (Harness h = new Harness()) {
+      h.indexService.recordsToReturn =
+          List.of(
+              IndexArtifactRecord.newBuilder()
+                  .setTableId(tableId())
+                  .setSnapshotId(99L)
+                  .setTarget(
+                      IndexTarget.newBuilder()
+                          .setFile(IndexFileTarget.newBuilder().setFilePath("file.parquet").build())
+                          .build())
+                  .setArtifactUri("file.parquet.floe-index.parquet")
+                  .setArtifactFormat("parquet")
+                  .setState(IndexArtifactState.IAS_PENDING)
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("indexes", "catalog.ns.tbl", "--snapshot", "99", "--json"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertTrue(buf.toString().contains("\"artifactUri\""));
+      assertEquals(99L, h.indexService.lastListIndexArtifactsRequest.getSnapshot().getSnapshotId());
     }
   }
 
@@ -246,6 +345,7 @@ class StatsCliSupportTest {
           List.of("frobnicate"),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -263,6 +363,7 @@ class StatsCliSupportTest {
           List.of(),
           new PrintStream(buf),
           h.statisticsStub,
+          h.indexesStub,
           h.tablesStub,
           h.namespacesStub,
           h.reconcileControlStub,
@@ -300,6 +401,7 @@ class StatsCliSupportTest {
               "c1,#7"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
+          h.indexesStub,
           h.snapshotStub,
           h.tablesStub,
           h.namespacesStub,
@@ -335,6 +437,7 @@ class StatsCliSupportTest {
           List.of("catalog.ns.tbl"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
+          h.indexesStub,
           h.snapshotStub,
           h.tablesStub,
           h.namespacesStub,
@@ -373,6 +476,7 @@ class StatsCliSupportTest {
               "catalog.ns.tbl", "--mode", "capture-only", "--capture", "index", "--columns", "c1"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
+          h.indexesStub,
           h.snapshotStub,
           h.tablesStub,
           h.namespacesStub,
@@ -420,6 +524,7 @@ class StatsCliSupportTest {
               "c1,#7"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
+          h.indexesStub,
           h.snapshotStub,
           h.tablesStub,
           h.namespacesStub,
@@ -453,6 +558,7 @@ class StatsCliSupportTest {
               "catalog.ns.tbl", "--mode", "capture-only", "--capture", "stats", "--snapshot", "99"),
           new PrintStream(new ByteArrayOutputStream()),
           h.statisticsStub,
+          h.indexesStub,
           h.snapshotStub,
           h.tablesStub,
           h.namespacesStub,
@@ -473,11 +579,13 @@ class StatsCliSupportTest {
     final Server server;
     final ManagedChannel channel;
     final CapturingStatisticsService statisticsService;
+    final CapturingIndexService indexService;
     final CapturingTableService tableService;
     final CapturingNamespaceService namespaceService;
     final CapturingSnapshotService snapshotService;
     final CapturingReconcileControlService reconcileControlService;
     final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statisticsStub;
+    final TableIndexServiceGrpc.TableIndexServiceBlockingStub indexesStub;
     final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
     final TableServiceGrpc.TableServiceBlockingStub tablesStub;
     final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespacesStub;
@@ -486,6 +594,7 @@ class StatsCliSupportTest {
     Harness() throws Exception {
       String serverName = InProcessServerBuilder.generateName();
       this.statisticsService = new CapturingStatisticsService();
+      this.indexService = new CapturingIndexService();
       this.tableService = new CapturingTableService();
       this.namespaceService = new CapturingNamespaceService();
       this.snapshotService = new CapturingSnapshotService();
@@ -494,6 +603,7 @@ class StatsCliSupportTest {
           InProcessServerBuilder.forName(serverName)
               .directExecutor()
               .addService(statisticsService)
+              .addService(indexService)
               .addService(tableService)
               .addService(namespaceService)
               .addService(snapshotService)
@@ -502,6 +612,7 @@ class StatsCliSupportTest {
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
       this.statisticsStub = TableStatisticsServiceGrpc.newBlockingStub(channel);
+      this.indexesStub = TableIndexServiceGrpc.newBlockingStub(channel);
       this.snapshotStub = SnapshotServiceGrpc.newBlockingStub(channel);
       this.tablesStub = TableServiceGrpc.newBlockingStub(channel);
       this.namespacesStub = NamespaceServiceGrpc.newBlockingStub(channel);
@@ -540,6 +651,24 @@ class StatsCliSupportTest {
       listTargetStatsCalls.incrementAndGet();
       lastListTargetStatsRequest = request;
       responseObserver.onNext(ListTargetStatsResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class CapturingIndexService
+      extends TableIndexServiceGrpc.TableIndexServiceImplBase {
+    final AtomicInteger listIndexArtifactsCalls = new AtomicInteger();
+    ListIndexArtifactsRequest lastListIndexArtifactsRequest;
+    List<IndexArtifactRecord> recordsToReturn = List.of();
+
+    @Override
+    public void listIndexArtifacts(
+        ListIndexArtifactsRequest request,
+        StreamObserver<ListIndexArtifactsResponse> responseObserver) {
+      listIndexArtifactsCalls.incrementAndGet();
+      lastListIndexArtifactsRequest = request;
+      responseObserver.onNext(
+          ListIndexArtifactsResponse.newBuilder().addAllRecords(recordsToReturn).build());
       responseObserver.onCompleted();
     }
   }

@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -153,6 +154,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
+
+  @Inject
+  @GrpcClient("floecat")
   TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
 
   @Inject
@@ -225,6 +230,7 @@ public class Shell implements Runnable {
               .reconcileControl(reconcileControl)
               .snapshots(snapshots)
               .statistics(statistics)
+              .indexes(indexes)
               .constraintsService(constraintsService)
               .queries(queries)
               .queryScan(queryScan)
@@ -501,6 +507,7 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats index <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json] (defaults to current snapshot)
          constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
          constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]      (replace bundle)
@@ -624,6 +631,7 @@ public class Shell implements Runnable {
     tables = TableServiceGrpc.newBlockingStub(overrideChannel);
     directory = DirectoryServiceGrpc.newBlockingStub(overrideChannel);
     statistics = TableStatisticsServiceGrpc.newBlockingStub(overrideChannel);
+    indexes = TableIndexServiceGrpc.newBlockingStub(overrideChannel);
     constraintsService = TableConstraintsServiceGrpc.newBlockingStub(overrideChannel);
     snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
     viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
@@ -726,6 +734,7 @@ public class Shell implements Runnable {
     tables = tables.withInterceptors(authInterceptor);
     directory = directory.withInterceptors(authInterceptor);
     statistics = statistics.withInterceptors(authInterceptor);
+    indexes = indexes.withInterceptors(authInterceptor);
     constraintsService = constraintsService.withInterceptors(authInterceptor);
     snapshots = snapshots.withInterceptors(authInterceptor);
     viewService = viewService.withInterceptors(authInterceptor);

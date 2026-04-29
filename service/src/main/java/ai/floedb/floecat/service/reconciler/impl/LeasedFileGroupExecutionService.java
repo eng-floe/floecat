@@ -28,7 +28,14 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
@@ -61,7 +68,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject ReconcileJobStore jobs;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
-  @Inject DirectReconcilerBackend directBackend;
+  @Inject CredentialResolver credentialResolver;
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
@@ -106,8 +113,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                 () ->
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
-    Connector resolvedConnector =
-        connector.toBuilder().setAuth(directBackend.resolvedAuth(connector)).build();
+    Connector resolvedConnector = connector.toBuilder().setAuth(resolvedAuth(connector)).build();
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -337,6 +343,35 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .map(head -> head.getEtag())
             .orElse(record.getContentEtag());
     indexArtifactRepo.putIndexArtifact(record.toBuilder().setContentEtag(etag).build());
+  }
+
+  private AuthConfig resolvedAuth(Connector connector) {
+    ConnectorConfig.Auth resolved = resolveCredentials(connector).auth();
+    return AuthConfig.newBuilder()
+        .setScheme(resolved.scheme() == null ? "" : resolved.scheme())
+        .putAllProperties(resolved.props())
+        .putAllHeaderHints(resolved.headerHints())
+        .build();
+  }
+
+  private ConnectorConfig resolveCredentials(Connector connector) {
+    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+    AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (connector == null
+        || !connector.hasResourceId()
+        || auth.getScheme().isBlank()
+        || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
   }
 
   private static PutIndexArtifactItem toPutIndexArtifactItem(

@@ -26,6 +26,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -51,6 +52,13 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 
 public final class ParquetPageIndexReader {
+  private static final EnumSet<PrimitiveType.PrimitiveTypeName> SUPPORTED_PRIMITIVE_TYPES =
+      EnumSet.of(
+          PrimitiveType.PrimitiveTypeName.BOOLEAN,
+          PrimitiveType.PrimitiveTypeName.INT32,
+          PrimitiveType.PrimitiveTypeName.INT64,
+          PrimitiveType.PrimitiveTypeName.FLOAT,
+          PrimitiveType.PrimitiveTypeName.DOUBLE);
   private final Function<String, org.apache.parquet.io.InputFile> parquetLookup;
 
   public ParquetPageIndexReader(Function<String, org.apache.parquet.io.InputFile> parquetLookup) {
@@ -94,6 +102,9 @@ public final class ParquetPageIndexReader {
           for (var column : block.getColumns()) {
             String[] path = column.getPath().toArray();
             ColumnDescriptor descriptor = schema.getColumnDescription(path);
+            if (!supportsPageIndexDecoding(descriptor, column.getPrimitiveType())) {
+              continue;
+            }
             String columnName = String.join(".", path);
             var decimal =
                 decimalMetadata(column.getPrimitiveType().getLogicalTypeAnnotation(), column);
@@ -426,6 +437,25 @@ public final class ParquetPageIndexReader {
       Long dictionaryPageHeaderOffset,
       Integer dictionaryPageTotalCompressedSize) {}
 
+  private static boolean supportsPageIndexDecoding(
+      ColumnDescriptor descriptor, PrimitiveType primitiveType) {
+    if (descriptor == null || primitiveType == null || descriptor.getMaxRepetitionLevel() != 0) {
+      return false;
+    }
+    LogicalTypeAnnotation logicalType = primitiveType.getLogicalTypeAnnotation();
+    PrimitiveType.PrimitiveTypeName primitiveTypeName = primitiveType.getPrimitiveTypeName();
+    if (logicalType instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
+      return primitiveTypeName == PrimitiveType.PrimitiveTypeName.BINARY;
+    }
+    if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
+      return primitiveTypeName == PrimitiveType.PrimitiveTypeName.INT32
+          || primitiveTypeName == PrimitiveType.PrimitiveTypeName.INT64
+          || primitiveTypeName == PrimitiveType.PrimitiveTypeName.BINARY
+          || primitiveTypeName == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY;
+    }
+    return SUPPORTED_PRIMITIVE_TYPES.contains(primitiveTypeName);
+  }
+
   private static TypedStats decodeTypedStats(
       ColumnDescriptor descriptor,
       PrimitiveType primitiveType,
@@ -435,11 +465,6 @@ public final class ParquetPageIndexReader {
       int expectedRows,
       VersionParser.ParsedVersion parsedVersion)
       throws IOException {
-    if (descriptor.getMaxRepetitionLevel() != 0) {
-      throw new IOException(
-          "Repeated columns are not supported for page-index decoding: "
-              + String.join(".", descriptor.getPath()));
-    }
     var pageReader = new SinglePageReader(dictionaryPage, dataPage);
     ColumnReader columnReader =
         new ColumnReaderImpl(descriptor, pageReader, new PrimitiveConverter() {}, parsedVersion);

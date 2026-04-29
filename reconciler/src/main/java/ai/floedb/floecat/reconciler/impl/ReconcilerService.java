@@ -139,7 +139,7 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn) {
     return reconcileWithDefaults(
-        principal, connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_CAPTURE, null);
+        principal, connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_CAPTURE, null, false);
   }
 
   public Result reconcile(
@@ -148,7 +148,8 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn,
       CaptureMode captureMode) {
-    return reconcileWithDefaults(principal, connectorId, fullRescan, scopeIn, captureMode, null);
+    return reconcileWithDefaults(
+        principal, connectorId, fullRescan, scopeIn, captureMode, null, false);
   }
 
   public Result reconcile(
@@ -159,7 +160,18 @@ public class ReconcilerService {
       CaptureMode captureMode,
       String bearerToken) {
     return reconcileWithDefaults(
-        principal, connectorId, fullRescan, scopeIn, captureMode, bearerToken);
+        principal, connectorId, fullRescan, scopeIn, captureMode, bearerToken, false);
+  }
+
+  public Result reconcileInlineCapture(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode,
+      String bearerToken) {
+    return reconcileWithDefaults(
+        principal, connectorId, fullRescan, scopeIn, captureMode, bearerToken, true);
   }
 
   private Result reconcileWithDefaults(
@@ -168,7 +180,8 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn,
       CaptureMode captureMode,
-      String bearerToken) {
+      String bearerToken,
+      boolean inlineCapture) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     Optional<String> invalidScope = validateScopeCombinations(scope, captureMode, false);
     if (invalidScope.isPresent()) {
@@ -235,7 +248,7 @@ public class ReconcilerService {
           bearerToken,
           NO_CANCEL,
           NO_PROGRESS,
-          false);
+          inlineCapture);
     }
     List<ReconcileTableTask> tableTasks;
     try {
@@ -254,7 +267,7 @@ public class ReconcilerService {
             bearerToken,
             NO_CANCEL,
             NO_PROGRESS,
-            false);
+            inlineCapture);
     if (tableResult.cancelled()) {
       return tableResult;
     }
@@ -2282,6 +2295,7 @@ public class ReconcilerService {
   static List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
+      boolean includeCoreMetadata,
       boolean includeStats,
       Set<Long> existingSnapshotIds,
       ProgressListener progress) {
@@ -2290,7 +2304,7 @@ public class ReconcilerService {
     }
 
     List<FloecatConnector.SnapshotBundle> scoped = bundles;
-    if (includeStats) {
+    if (includeCoreMetadata || includeStats) {
       return scoped;
     }
     if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
@@ -2426,6 +2440,7 @@ public class ReconcilerService {
       ResourceId tableId,
       FloecatConnector connector,
       List<FloecatConnector.SnapshotBundle> bundles,
+      Set<Long> knownSnapshotIds,
       boolean includeCoreMetadata,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
@@ -2453,7 +2468,10 @@ public class ReconcilerService {
         continue;
       }
       if (includeCoreMetadata) {
-        Snapshot existingSnapshot = backend.fetchSnapshot(ctx, tableId, snapshotId).orElse(null);
+        Snapshot existingSnapshot =
+            knownSnapshotIds.contains(snapshotId)
+                ? backend.fetchSnapshot(ctx, tableId, snapshotId).orElse(null)
+                : null;
         progress.onProgress(
             scanned,
             changed,
@@ -2511,6 +2529,7 @@ public class ReconcilerService {
         filterBundlesForMode(
             filterBundlesForSnapshotScope(upstreamBundles, targetSnapshotIds, progress),
             fullRescan,
+            includeCoreMetadata,
             includeInlineCapture,
             knownSnapshotIds,
             progress);
@@ -2520,6 +2539,7 @@ public class ReconcilerService {
             tableId,
             connector,
             bundles,
+            knownSnapshotIds,
             includeCoreMetadata,
             cancelRequested,
             progress,

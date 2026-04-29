@@ -141,6 +141,43 @@ class DirectoryIT {
   }
 
   @Test
+  void lookupTableByRefReturnsResourceIdWhenPresent() {
+    var cat =
+        TestSupport.createCatalog(catalog, "lookupTableByRefReturnsResourceIdWhenPresent", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
+    var created =
+        TestSupport.createTable(
+            table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+
+    var nameRef =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("core")
+            .setName("orders")
+            .build();
+
+    var lookup =
+        directory.lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(nameRef).build());
+
+    assertEquals(created.getResourceId(), lookup.getResourceId());
+  }
+
+  @Test
+  void lookupTableByRefReturnsEmptyWhenMissing() {
+    var missing =
+        NameRef.newBuilder()
+            .setCatalog("examples")
+            .addPath("iceberg")
+            .setName("does_not_exist")
+            .build();
+
+    var lookup =
+        directory.lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(missing).build());
+
+    assertFalse(lookup.hasResourceId());
+  }
+
+  @Test
   void resolveFullyQualifiedTables() {
     var cat =
         TestSupport.createCatalog(
