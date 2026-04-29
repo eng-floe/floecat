@@ -1780,10 +1780,15 @@ file-scoped execution work do not block public gRPC threads. The service submits
   snapshot planning work for snapshots that need processing.</li>
 <li><strong><code>PLAN_VIEW</code></strong>: child view planning job. Creates or updates exactly one destination view.</li>
 <li><strong><code>PLAN_SNAPSHOT</code></strong>: child snapshot planning job. Freezes the immutable snapshot plan on the
-  parent job payload and enqueues <code>EXEC_FILE_GROUP</code> children.</li>
+  parent job payload, records explicit file-group coverage metadata, and enqueues
+  <code>EXEC_FILE_GROUP</code> plus <code>FINALIZE_SNAPSHOT_CAPTURE</code> children.</li>
 <li><strong><code>EXEC_FILE_GROUP</code></strong>: child execution job. Reads the planned source parquet files through
-  <code>FloecatConnector</code>, captures file-target stats, generates parquet sidecar index artifacts, and
-  records per-file execution results.</li>
+  <code>FloecatConnector</code>, captures file-target stats, generates parquet sidecar index artifacts,
+  persists per-file execution results, and does not commit snapshot-wide aggregate outputs.</li>
+<li><strong><code>FINALIZE_SNAPSHOT_CAPTURE</code></strong>: child finalization job. Validates the persisted snapshot
+  coverage, waits for all planned <code>EXEC_FILE_GROUP</code> children to finish with persisted success
+  results, verifies that the stats store contains exactly the expected file-target records for the
+  snapshot, and then writes snapshot-wide aggregate outputs such as table/column stats.</li>
 </ul>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
@@ -1818,6 +1823,7 @@ file-scoped execution work do not block public gRPC threads. The service submits
 <li><code>RemoteDefaultReconcileExecutor</code> handles <code>PLAN_TABLE</code> and <code>PLAN_VIEW</code>.</li>
 <li><code>RemoteSnapshotPlanningReconcileExecutor</code> handles <code>PLAN_SNAPSHOT</code>.</li>
 <li><code>RemoteFileGroupReconcileExecutor</code> handles <code>EXEC_FILE_GROUP</code>.</li>
+<li><code>SnapshotFinalizeReconcileExecutor</code> handles <code>FINALIZE_SNAPSHOT_CAPTURE</code>.</li>
 <li><strong><code>GrpcClients</code></strong>: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).</li>
 <li><strong><code>FloecatConnector</code></strong>: remains the only component allowed to touch upstream catalogs, table
@@ -1843,16 +1849,26 @@ reconcile control RPCs:</p>
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   <code>ConnectorState</code> update or raises conflicts.</li>
 <li><strong>Statistics ingestion</strong>: stats persistence is centralized behind the stats control plane
-  (<code>StatsCaptureControlPlane</code> / orchestrator). <code>CAPTURE_ONLY</code> routes capture through registry
-  engines without metadata reconciliation. <code>METADATA_AND_CAPTURE</code> performs metadata reconciliation
-  and capture within the same planner/executor job tree.</li>
+  and the reconcile executor control plane. <code>CAPTURE_ONLY</code> routes capture planning through the
+  same reconcile job tree without metadata reconciliation. <code>METADATA_AND_CAPTURE</code> performs metadata
+  reconciliation and capture within the same planner/executor job tree. Remote file-group workers
+  submit file-target stats and staged index artifacts back through
+  <code>SubmitLeasedFileGroupExecutionResult</code>, and the service persists those results before
+  <code>FINALIZE_SNAPSHOT_CAPTURE</code> writes any snapshot-wide aggregate stats.</li>
 <li><strong>Snapshot planning persistence</strong>: the immutable snapshot plan is stored on the parent
-  <code>PLAN_SNAPSHOT</code> job payload rather than in a separate plan repository. Child <code>EXEC_FILE_GROUP</code>
-  jobs reference the parent plan by <code>parentJobId</code>.</li>
+  <code>PLAN_SNAPSHOT</code> job payload rather than in a separate plan repository. That payload includes the
+  explicit file-group coverage metadata required by <code>FINALIZE_SNAPSHOT_CAPTURE</code>. Child
+  <code>EXEC_FILE_GROUP</code> and <code>FINALIZE_SNAPSHOT_CAPTURE</code> jobs reference the parent plan by
+  <code>parentJobId</code>.</li>
 <li><strong>File-group execution</strong>:</li>
 <li><code>EXEC_FILE_GROUP</code> resolves the parent snapshot plan, captures file-target stats, and records
     per-file execution results on the child job payload.</li>
+<li>Snapshot-wide aggregate outputs are intentionally deferred to
+    <code>FINALIZE_SNAPSHOT_CAPTURE</code>, which acts as the barrier for complete snapshot capture.</li>
 <li>Sidecar generation and artifact registration happen per source parquet file.</li>
+<li>Service-side result submission persists only file-target stats from file-group workers;
+    aggregate table/column outputs are rejected from file-group completion and recomputed once at
+    snapshot finalization time.</li>
 <li><code>SubmitLeasedFileGroupExecutionResult</code> requires <code>result_id</code>. The service records top-level
     idempotency for the whole submit payload and per-item idempotency for individual stats/artifact
     writes so worker retries can safely replay the same result.</li>
@@ -1912,16 +1928,23 @@ reconcile control RPCs:</p>
           → ask FloecatConnector for planned parquet file membership
           → persist grouped file plan on parent job payload
           → enqueue EXEC_FILE_GROUP children
+          → enqueue FINALIZE_SNAPSHOT_CAPTURE child
       → if EXEC_FILE_GROUP:
           → resolve parent PLAN_SNAPSHOT payload
           → instantiate FloecatConnector
           → capture file-target stats for planned files
           → generate parquet sidecar index artifacts
           → persist per-file execution results and artifact registrations
+      → if FINALIZE_SNAPSHOT_CAPTURE:
+          → validate explicit planned coverage metadata
+          → wait for all planned EXEC_FILE_GROUP children to succeed with persisted results
+          → verify exact file-target coverage in the stats store
+          → roll up snapshot-wide aggregate outputs
       → markSucceeded or markFailed
 </code></pre></div>
 <p>Jobs include <code>fullRescan</code>, <code>executionPolicy</code>, <code>jobKind</code>, and optional task payloads. Snapshot plan
-jobs and file-group jobs also surface file-group/file counters for current execution state.
+jobs, file-group jobs, and snapshot finalization jobs also surface file-group/file counters for
+current execution state.
 <code>RemoteReconcileExecutorPoller</code> uses <code>AtomicBoolean</code> and in-flight counters to avoid over-leasing
 within the same instance while continuing to repoll until worker slots are full.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
@@ -1943,6 +1966,8 @@ within the same instance while continuing to repoll until worker slots are full.
 <li><code>floecat.reconciler.executor.remote-planner.enabled</code></li>
 <li><code>floecat.reconciler.executor.remote-snapshot-planner.enabled</code></li>
 <li><code>floecat.reconciler.executor.remote-file-group.enabled</code></li>
+<li><code>FINALIZE_SNAPSHOT_CAPTURE</code> is handled by the service-local <code>SnapshotFinalizeReconcileExecutor</code>
+    and is not behind a separate feature toggle.</li>
 <li>Swap out <code>ReconcileJobStore</code> for additional backends by providing a CDI alternative (job ID
   references must remain stable for <code>GetReconcileJob</code>).</li>
 <li>Extend <code>FloecatConnector</code> to add richer snapshot planning or file execution behavior. Query scan
