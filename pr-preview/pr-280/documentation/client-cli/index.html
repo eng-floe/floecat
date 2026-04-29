@@ -1787,8 +1787,9 @@ fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argume
 <li><code>namespaces</code> / <code>namespace &lt;subcommand&gt;</code> – Inspect namespace hierarchies, create nested paths.</li>
 <li><code>tables</code> / <code>table &lt;subcommand&gt;</code> – Manage table definitions, specify schema JSON, upstream
   connectors, and properties.</li>
-<li><code>snapshots</code> / <code>stats</code> – Query snapshot lineage and table/column/file statistics (<code>stats files</code>
-  lists per-file row/byte counts and per-column metrics).</li>
+<li><code>snapshots</code> / <code>stats</code> – Query snapshot lineage, table/column/file statistics, and index artifacts
+  (<code>stats files</code> lists per-file row/byte counts and per-column metrics; <code>stats index</code> lists stored
+  sidecar index artifacts for a snapshot).</li>
 <li><code>constraints</code> – Manage snapshot-scoped table constraints (<code>get</code>, <code>list</code>, <code>put</code>/<code>update</code>/<code>add</code>,
   <code>delete</code>) using either table FQNs or table IDs.</li>
 <li><code>resolve</code> / <code>describe</code> – Exercise DirectoryService for name→ID lookups.</li>

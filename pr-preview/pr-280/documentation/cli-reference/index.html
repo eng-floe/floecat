@@ -1583,6 +1583,7 @@ snapshot delete &lt;table&gt; &lt;snapshot_id&gt;
 stats table &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;]
 stats columns &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N]
 stats files &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N]
+stats index &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N] [--json]
 constraints get &lt;id|catalog.ns[.ns...].table&gt; [--snapshot &lt;id&gt;] [--json]
 constraints list &lt;id|catalog.ns[.ns...].table&gt; [--limit N] [--json]
 constraints put &lt;id|catalog.ns[.ns...].table&gt; [--snapshot &lt;id&gt;] --file &lt;snapshot_constraints_json&gt; [--idempotency &lt;key&gt;] [--json]
