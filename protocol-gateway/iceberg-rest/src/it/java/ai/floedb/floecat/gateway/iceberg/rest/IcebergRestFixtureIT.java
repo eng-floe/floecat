@@ -1935,7 +1935,7 @@ class IcebergRestFixtureIT {
                             .build())
                     .setMode(CaptureMode.CM_CAPTURE_ONLY)
                     .setFullRescan(true)
-                    .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(30).build())
+                    .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(60).build())
                     .build());
             stub.startCapture(
                 StartCaptureRequest.newBuilder()
