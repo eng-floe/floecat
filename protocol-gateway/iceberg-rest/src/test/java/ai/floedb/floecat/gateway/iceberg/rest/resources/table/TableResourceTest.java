@@ -619,6 +619,9 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"orders",
+              "properties":{
+                "metadata-location":"s3://warehouse/db/orders/metadata/00001.metadata.json"
+              },
               "schema":{
                 "schema-id":1,
                 "last-column-id":1,
@@ -943,6 +946,9 @@ class TableResourceTest extends AbstractRestResourceTest {
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", "orders");
     payload.put("schema", schema);
+    payload.put(
+        "properties",
+        Map.of("metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json"));
 
     given()
         .body(payload)

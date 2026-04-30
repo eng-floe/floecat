@@ -26,8 +26,6 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
-import ai.floedb.floecat.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
@@ -83,9 +81,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.eclipse.microprofile.context.ManagedExecutor;
@@ -100,15 +96,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
   private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
   private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
-  private static final Set<String> FILE_IO_PROPERTY_PREFIXES =
-      Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
-
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ConnectorRepository connectorRepo;
   @Inject ReconcileJobStore reconcileJobs;
-  @Inject ConnectorIntegrationConfig connectorBootstrapConfig;
   @Inject NameResolver nameResolver;
   @Inject Authorizer authz;
   @Inject PrincipalProvider principalProvider;
@@ -751,30 +743,22 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (!table.hasNamespaceId() || table.getNamespaceId().getId().isBlank()) {
       throw new IllegalArgumentException("table payload missing namespace_id");
     }
-    String prefix = provisioning.getPrefix().trim();
-    if (prefix.isBlank()) {
-      throw new IllegalArgumentException("connector provisioning missing prefix");
-    }
-    if (connectorBootstrapConfig == null || !connectorBootstrapConfig.enabled()) {
-      throw new IllegalArgumentException("connector provisioning is disabled");
-    }
     ResourceId tableId = table.getResourceId();
     ResourceId connectorId = deterministicConnectorId(accountId, txId, tableId);
-    List<String> namespacePath =
-        table.hasUpstream() ? List.copyOf(table.getUpstream().getNamespacePathList()) : List.of();
+    String connectorUri = provisioning.getConnectorUri().trim();
+    if (connectorUri.isBlank()) {
+      throw new IllegalArgumentException("connector provisioning missing connector_uri");
+    }
+    List<String> namespacePath = List.copyOf(provisioning.getSourceNamespacePathList());
+    String sourceTableName = provisioning.getSourceTableName().trim();
+    if (sourceTableName.isBlank()) {
+      throw new IllegalArgumentException("connector provisioning missing source_table_name");
+    }
+    String displayName = provisioning.getDisplayName().trim();
+    if (displayName.isBlank()) {
+      throw new IllegalArgumentException("connector provisioning missing display_name");
+    }
     String tableName = deriveBootstrapTableName(table);
-    String namespaceFq = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
-    ConnectorIntegrationConfig.RegisterConnectorTemplate template =
-        connectorTemplateFor(prefix).orElse(null);
-    String connectorUri = connectorUriFor(prefix, template);
-    String displayName =
-        template != null && template.displayName().filter(v -> !v.isBlank()).isPresent()
-            ? template.displayName().orElseThrow()
-            : "register:"
-                + prefix
-                + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
-                + "."
-                + tableName;
     Connector.Builder connector =
         Connector.newBuilder()
             .setResourceId(connectorId)
@@ -783,7 +767,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             .setSource(
                 SourceSelector.newBuilder()
                     .setNamespace(NamespacePath.newBuilder().addAllSegments(namespacePath).build())
-                    .setTable(tableName)
+                    .setTable(sourceTableName)
                     .build())
             .setDestination(
                 DestinationTarget.newBuilder()
@@ -797,17 +781,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             .setCreatedAt(connectorTimestamp == null ? nowTs() : connectorTimestamp)
             .setUpdatedAt(connectorTimestamp == null ? nowTs() : connectorTimestamp)
             .setState(ConnectorState.CS_PAUSED);
-    if (template != null && template.description().filter(v -> !v.isBlank()).isPresent()) {
-      connector.setDescription(template.description().orElseThrow());
+    if (!provisioning.getDescription().isBlank()) {
+      connector.setDescription(provisioning.getDescription().trim());
     }
-    buildConnectorProperties(template, table)
-        .forEach((key, value) -> connector.putProperties(key, value));
-    if (!connector.containsProperties(CAPTURE_STATISTICS_PROPERTY)) {
-      connector.putProperties(
-          CAPTURE_STATISTICS_PROPERTY,
-          Boolean.toString(template == null || template.captureStatistics()));
-    }
-    connector.putProperties(CONNECTOR_MODE_PROPERTY, CONNECTOR_MODE_CAPTURE_ONLY);
+    provisioning.getPropertiesMap().forEach(connector::putProperties);
     return connector.build();
   }
 
@@ -855,35 +832,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         .build();
   }
 
-  private Optional<ConnectorIntegrationConfig.RegisterConnectorTemplate> connectorTemplateFor(
-      String prefix) {
-    if (connectorBootstrapConfig == null || prefix == null || prefix.isBlank()) {
-      return Optional.empty();
-    }
-    var templates = connectorBootstrapConfig.registerConnectors();
-    if (templates == null || templates.isEmpty()) {
-      return Optional.empty();
-    }
-    return Optional.ofNullable(templates.get(prefix));
-  }
-
-  private String connectorUriFor(
-      String prefix, ConnectorIntegrationConfig.RegisterConnectorTemplate template) {
-    String configured = template == null ? null : template.uri();
-    if (configured != null && !configured.trim().isBlank()) {
-      return configured.trim();
-    }
-    String selfUri =
-        connectorBootstrapConfig == null
-            ? null
-            : connectorBootstrapConfig.selfUri().filter(v -> !v.isBlank()).orElse(null);
-    if (selfUri != null && !selfUri.isBlank()) {
-      return selfUri.trim();
-    }
-    throw new IllegalArgumentException(
-        "connector provisioning cannot resolve uri for prefix " + nullToEmpty(prefix));
-  }
-
   private String deriveBootstrapTableName(Table table) {
     if (table == null) {
       throw new IllegalArgumentException("table payload is required");
@@ -895,57 +843,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       return table.getDisplayName();
     }
     throw new IllegalArgumentException("table payload missing display_name");
-  }
-
-  private Map<String, String> buildConnectorProperties(
-      ConnectorIntegrationConfig.RegisterConnectorTemplate template, Table table) {
-    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
-    if (template != null && template.properties() != null && !template.properties().isEmpty()) {
-      properties.putAll(template.properties());
-    }
-    ConnectorIntegrationProperties.defaultFileIoProperties(
-            connectorBootstrapConfig, this::isFileIoProperty)
-        .forEach(properties::put);
-    tableFileIoProperties(table).forEach(properties::put);
-    return properties.isEmpty() ? Map.of() : Map.copyOf(properties);
-  }
-
-  private Map<String, String> tableFileIoProperties(Table table) {
-    if (table == null || table.getPropertiesMap().isEmpty()) {
-      return Map.of();
-    }
-    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
-    table
-        .getPropertiesMap()
-        .forEach(
-            (k, v) -> {
-              if (isUsableFileIoValue(k, v)) {
-                properties.put(k, v.trim());
-              }
-            });
-    return properties.isEmpty() ? Map.of() : Map.copyOf(properties);
-  }
-
-  private boolean isUsableFileIoValue(String key, String value) {
-    if (!isFileIoProperty(key) || value == null || value.isBlank()) {
-      return false;
-    }
-    return true;
-  }
-
-  private boolean isFileIoProperty(String key) {
-    if (key == null || key.isBlank()) {
-      return false;
-    }
-    if ("io-impl".equals(key)) {
-      return true;
-    }
-    for (String prefix : FILE_IO_PROPERTY_PREFIXES) {
-      if (key.startsWith(prefix)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private void schedulePostCommitCaptureBootstrap(

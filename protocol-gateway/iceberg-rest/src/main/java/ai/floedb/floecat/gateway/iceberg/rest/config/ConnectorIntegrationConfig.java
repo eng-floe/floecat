@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.config;
+package ai.floedb.floecat.gateway.iceberg.rest.config;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
@@ -25,8 +25,6 @@ import java.util.Optional;
 public interface ConnectorIntegrationConfig {
   @WithDefault("true")
   boolean enabled();
-
-  Optional<String> selfUri();
 
   Optional<String> metadataFileIo();
 
@@ -45,8 +43,6 @@ public interface ConnectorIntegrationConfig {
   }
 
   interface RegisterConnectorTemplate {
-    String uri();
-
     Optional<String> displayName();
 
     Optional<String> description();

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableListResponseDto;
@@ -25,6 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TaskRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;

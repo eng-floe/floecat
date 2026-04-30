@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.config;
+package ai.floedb.floecat.gateway.iceberg.rest.config;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

@@ -18,8 +18,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
 
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

@@ -20,16 +20,24 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.Response;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ConnectorProvisioningService {
   private static final Logger LOG = Logger.getLogger(ConnectorProvisioningService.class);
+  private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
+  private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
+  private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
 
   public record ProvisionResult(
       ai.floedb.floecat.catalog.rpc.Table table,
@@ -40,8 +48,6 @@ public class ConnectorProvisioningService {
       String prefix,
       TableGatewaySupport tableSupport,
       List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
       String tableName,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table) {
@@ -70,9 +76,27 @@ public class ConnectorProvisioningService {
     if (!tableSupport.connectorIntegrationEnabled()) {
       return new ProvisionResult(table, List.of(), null);
     }
+    if (tableLocation == null || tableLocation.isBlank()) {
+      LOG.warnf("Table %s is missing location during connector provisioning", tableId);
+      return new ProvisionResult(
+          table,
+          List.of(),
+          IcebergErrorResponses.failure(
+              "connector provisioning requires table location",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE));
+    }
+    ConnectorIntegrationConfig.RegisterConnectorTemplate template =
+        tableSupport.connectorTemplateFor(prefix);
     var provisioning =
         ai.floedb.floecat.transaction.rpc.ConnectorProvisioning.newBuilder()
-            .setPrefix(prefix == null ? "" : prefix);
+            .setConnectorUri(tableLocation)
+            .addAllSourceNamespacePath(namespacePath == null ? List.of() : namespacePath)
+            .setSourceTableName(tableName)
+            .setDisplayName(displayName(prefix, namespacePath, tableName, template))
+            .setDescription(
+                template == null ? "" : template.description().filter(v -> !v.isBlank()).orElse(""))
+            .putAllProperties(connectorProperties(tableSupport, table, template));
     List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges =
         List.of(
             ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
@@ -142,5 +166,53 @@ public class ConnectorProvisioningService {
       }
     }
     return null;
+  }
+
+  private String displayName(
+      String prefix,
+      List<String> namespacePath,
+      String tableName,
+      ConnectorIntegrationConfig.RegisterConnectorTemplate template) {
+    if (template != null && template.displayName().filter(v -> !v.isBlank()).isPresent()) {
+      return template.displayName().orElseThrow();
+    }
+    String namespaceFq =
+        namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
+    return "register:"
+        + (prefix == null ? "" : prefix)
+        + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
+        + "."
+        + tableName;
+  }
+
+  private Map<String, String> connectorProperties(
+      TableGatewaySupport tableSupport,
+      ai.floedb.floecat.catalog.rpc.Table table,
+      ConnectorIntegrationConfig.RegisterConnectorTemplate template) {
+    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
+    if (template != null && template.properties() != null && !template.properties().isEmpty()) {
+      properties.putAll(template.properties());
+    }
+    if (tableSupport != null) {
+      properties.putAll(tableSupport.defaultFileIoProperties());
+    }
+    if (table != null && !table.getPropertiesMap().isEmpty()) {
+      table
+          .getPropertiesMap()
+          .forEach(
+              (key, value) -> {
+                if (tableSupport != null
+                    && FileIoFactory.isFileIoProperty(key)
+                    && ConnectorIntegrationProperties.isUsableValue(value)) {
+                  properties.put(key, value.trim());
+                }
+              });
+    }
+    properties.put("iceberg.source", "filesystem");
+    properties.put(
+        CAPTURE_STATISTICS_PROPERTY,
+        Boolean.toString(template == null || template.captureStatistics()));
+    properties.put(CONNECTOR_MODE_PROPERTY, CONNECTOR_MODE_CAPTURE_ONLY);
+    return Map.copyOf(properties);
   }
 }

@@ -81,7 +81,12 @@ message TxChange {
 }
 
 message ConnectorProvisioning {
-  string prefix = 1;
+  string connector_uri = 1;
+  repeated string source_namespace_path = 2;
+  string source_table_name = 3;
+  string display_name = 4;
+  string description = 5;
+  map<string,string> properties = 6;
 }
 
 message PrepareTransactionRequest {

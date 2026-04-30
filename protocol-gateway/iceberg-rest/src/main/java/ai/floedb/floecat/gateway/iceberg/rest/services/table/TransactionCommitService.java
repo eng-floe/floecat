@@ -343,8 +343,6 @@ public class TransactionCommitService {
               prefix,
               tableSupport,
               plan.namespacePath(),
-              plan.namespaceId(),
-              catalogId,
               plan.tableName(),
               scopedTableId,
               tableForTx);
@@ -639,10 +637,10 @@ public class TransactionCommitService {
             new TableRequests.Commit(List.of(), updates == null ? List.of() : List.copyOf(updates)),
             tableSupport,
             metadata);
-    if (commitView == null || commitView.metadata() == null) {
+    TableMetadataView commitMetadata = commitView == null ? null : commitView.metadata();
+    if (commitMetadata == null) {
       return new PreMaterializedTable(plannedTable, null);
     }
-    var commitMetadata = commitView.metadata();
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {

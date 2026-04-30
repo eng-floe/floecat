@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;

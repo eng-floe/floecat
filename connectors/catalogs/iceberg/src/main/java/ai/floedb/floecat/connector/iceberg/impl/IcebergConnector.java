@@ -90,6 +90,8 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.view.SQLViewRepresentation;
@@ -726,10 +728,9 @@ public abstract class IcebergConnector implements FloecatConnector {
     return loadTableFromSource(namespaceFq, tableName);
   }
 
-  static LoadedExternalTable loadExternalTable(
-      String metadataLocation, Map<String, String> options) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      throw new IllegalArgumentException("metadataLocation is required");
+  static LoadedExternalTable loadExternalTable(String location, Map<String, String> options) {
+    if (location == null || location.isBlank()) {
+      throw new IllegalArgumentException("location is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
     Map<String, String> ioProps = new HashMap<>();
@@ -761,26 +762,32 @@ public abstract class IcebergConnector implements FloecatConnector {
             sanitized.put(k, v);
           }
         });
-    LOG.infof(
-        "Iceberg external table load metadataLocation=%s ioProps=%s", metadataLocation, sanitized);
+    LOG.infof("Iceberg external table load metadataLocation=%s ioProps=%s", location, sanitized);
     String ioImpl = ioProps.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
     FileIO fileIO = instantiateFileIO(ioImpl);
     ioProps.remove("io-impl");
     fileIO.initialize(ioProps);
-    String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
+    String resolvedMetadataLocation = resolveMetadataLocation(location, fileIO);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);
-    return new LoadedExternalTable(new BaseTable(ops, deriveTableName(metadataLocation)), fileIO);
+    return new LoadedExternalTable(new BaseTable(ops, deriveTableName(location)), fileIO);
   }
 
   static record LoadedExternalTable(Table table, FileIO fileIO) {}
 
-  static String deriveTableName(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
+  static String deriveTableName(String location) {
+    if (location == null || location.isBlank()) {
       return "table";
     }
-    String path = metadataLocation;
+    String path = location;
     if (path.endsWith("/")) {
       path = path.substring(0, path.length() - 1);
+    }
+    if (!path.endsWith(".json")) {
+      int slash = path.lastIndexOf('/');
+      if (slash >= 0 && slash + 1 < path.length()) {
+        path = path.substring(slash + 1);
+      }
+      return path.isBlank() ? "table" : path;
     }
     int slash = path.lastIndexOf('/');
     if (slash >= 0 && slash + 1 < path.length()) {
@@ -805,13 +812,58 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
   }
 
-  private static String resolveMetadataLocation(String input) {
+  private static String resolveMetadataLocation(String input, FileIO fileIO) {
     String trimmed = input.trim();
     if (trimmed.endsWith(".json")) {
       return trimmed;
     }
     String base = trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
-    return base + "/metadata/metadata.json";
+    if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
+      throw new IllegalArgumentException(
+          "filesystem iceberg connector requires prefix-listing support to infer metadata-location");
+    }
+    String metadataDir = base + "/metadata";
+    String latest = latestMetadataLocation(prefixOps, metadataDir);
+    if (latest == null || latest.isBlank()) {
+      throw new IllegalArgumentException(
+          "No Iceberg metadata files found under " + metadataDir + " for location " + base);
+    }
+    return latest;
+  }
+
+  private static String latestMetadataLocation(
+      SupportsPrefixOperations prefixOps, String metadataDir) {
+    long maxVersion = -1L;
+    String latest = null;
+    for (FileInfo info : prefixOps.listPrefix(metadataDir)) {
+      String location = info.location();
+      if (location == null || !location.endsWith(".metadata.json")) {
+        continue;
+      }
+      long version = parseMetadataVersion(location);
+      if (version > maxVersion) {
+        maxVersion = version;
+        latest = location;
+      }
+    }
+    return latest;
+  }
+
+  private static long parseMetadataVersion(String file) {
+    if (file == null || file.isBlank()) {
+      return -1L;
+    }
+    int slash = file.lastIndexOf('/');
+    String name = slash >= 0 ? file.substring(slash + 1) : file;
+    int dash = name.indexOf('-');
+    if (dash <= 0) {
+      return -1L;
+    }
+    try {
+      return Long.parseLong(name.substring(0, dash));
+    } catch (NumberFormatException e) {
+      return -1L;
+    }
   }
 
   private String partitionJson(Table table, ContentFile<?> file) {

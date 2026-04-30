@@ -17,8 +17,8 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import jakarta.enterprise.context.ApplicationScoped;

@@ -25,8 +25,6 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.config.ConnectorIntegrationConfig;
-import ai.floedb.floecat.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
@@ -37,6 +35,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -171,10 +171,6 @@ public class TableGatewaySupport {
 
   public boolean connectorIntegrationEnabled() {
     return connectorConfig.enabled();
-  }
-
-  public Optional<String> selfUri() {
-    return connectorConfig.selfUri().filter(uri -> uri != null && !uri.isBlank()).map(String::trim);
   }
 
   public void deleteConnector(ResourceId connectorId) {
