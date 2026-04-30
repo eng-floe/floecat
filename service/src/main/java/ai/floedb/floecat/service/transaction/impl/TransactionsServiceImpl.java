@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
@@ -81,6 +82,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
+  @Inject UserGraph metadataGraph;
 
   @Override
   public Uni<BeginTransactionResponse> beginTransaction(BeginTransactionRequest request) {
@@ -547,6 +549,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               TransactionState.TS_APPLIED,
               now,
               "cannot transition to applied");
+      invalidateTouchedGraphEntries(intents);
       cleanupIntentsBestEffort(intents);
       return applied;
     }
@@ -561,6 +564,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 TransactionState.TS_APPLIED,
                 now,
                 "cannot finalize already-applied transaction");
+        invalidateTouchedGraphEntries(intents);
         cleanupIntentsBestEffort(intents);
         return applied;
       }
@@ -1075,6 +1079,27 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private void cleanupIntents(String accountId, String txId) {
     List<TransactionIntent> intents = intentRepo.listByTx(accountId, txId);
     cleanupIntentsBestEffort(intents);
+  }
+
+  private void invalidateTouchedGraphEntries(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty() || metadataGraph == null) {
+      return;
+    }
+    for (var intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
+      if (tableId == null || tableId.isBlank()) {
+        continue;
+      }
+      metadataGraph.invalidate(
+          ResourceId.newBuilder()
+              .setAccountId(intent.getAccountId())
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build());
+    }
   }
 
   private void cleanupIntentsBestEffort(List<TransactionIntent> intents) {
