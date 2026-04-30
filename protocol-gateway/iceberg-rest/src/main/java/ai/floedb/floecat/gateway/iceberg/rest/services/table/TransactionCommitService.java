@@ -28,6 +28,10 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.rpc.ConnectorSpec;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
@@ -54,6 +58,7 @@ import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -118,7 +123,8 @@ public class TransactionCommitService {
         tableCreateTransactionMapper.buildCreateRequest(
             namespacePath, tableName, catalogId, namespaceId, request, tableSupport),
         tableSupport,
-        false);
+        false,
+        true);
   }
 
   public Response commit(
@@ -126,7 +132,7 @@ public class TransactionCommitService {
       String idempotencyKey,
       TransactionCommitRequest request,
       TableGatewaySupport tableSupport) {
-    return commitInternal(prefix, idempotencyKey, request, tableSupport, true);
+    return commitInternal(prefix, idempotencyKey, request, tableSupport, true, false);
   }
 
   private Response commitInternal(
@@ -134,7 +140,8 @@ public class TransactionCommitService {
       String idempotencyKey,
       TransactionCommitRequest request,
       TableGatewaySupport tableSupport,
-      boolean preMaterializeAssertCreate) {
+      boolean preMaterializeAssertCreate,
+      boolean allowGeneratedBeginIdempotency) {
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
       return IcebergErrorResponses.validation("account context is required");
@@ -155,7 +162,9 @@ public class TransactionCommitService {
 
     String requestHash = requestHash(changes);
     String beginIdempotency =
-        firstNonBlank(idempotencyKey, "req:" + catalogName + ":" + requestHash);
+        firstNonBlank(
+            idempotencyKey,
+            allowGeneratedBeginIdempotency ? "req:" + catalogName + ":" + requestHash : null);
     ai.floedb.floecat.transaction.rpc.BeginTransactionResponse begin;
     try {
       begin =
@@ -209,14 +218,6 @@ public class TransactionCommitService {
     }
 
     String idempotencyBase = firstNonBlank(idempotencyKey, txId);
-    long txCreatedAtMs =
-        currentTxn != null
-                && currentTxn.hasTransaction()
-                && currentTxn.getTransaction().hasCreatedAt()
-            ? Timestamps.toMillis(currentTxn.getTransaction().getCreatedAt())
-            : begin.getTransaction().hasCreatedAt()
-                ? Timestamps.toMillis(begin.getTransaction().getCreatedAt())
-                : clockMillis();
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
     List<PostCommitCaptureRequest> postCommitCaptures = new ArrayList<>();
 
@@ -373,7 +374,8 @@ public class TransactionCommitService {
                 plan.tableId(),
                 plan.namespacePath(),
                 plan.tableName(),
-                connectorId));
+                connectorId,
+                connectorResolution.activateAfterCommit()));
       }
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
@@ -501,7 +503,8 @@ public class TransactionCommitService {
       ResourceId tableId,
       List<String> namespacePath,
       String tableName,
-      ResourceId connectorId) {}
+      ResourceId connectorId,
+      boolean activateAfterCommit) {}
 
   private record PlannedChange(
       List<String> namespacePath,
@@ -605,6 +608,9 @@ public class TransactionCommitService {
           || request.tableId().getId().isBlank()) {
         continue;
       }
+      if (request.activateAfterCommit() && !activateConnectorAfterCommit(request.connectorId())) {
+        continue;
+      }
       try {
         grpcClient.startCapture(
             StartCaptureRequest.newBuilder()
@@ -627,6 +633,35 @@ public class TransactionCommitService {
             request.namespaceId() == null ? "" : request.namespaceId().getId(),
             request.connectorId().getId());
       }
+    }
+  }
+
+  private boolean activateConnectorAfterCommit(ResourceId connectorId) {
+    if (connectorId == null || connectorId.getId() == null || connectorId.getId().isBlank()) {
+      return false;
+    }
+    try {
+      var response =
+          grpcClient.getConnector(
+              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      if (response == null || !response.hasConnector()) {
+        LOG.warnf(
+            "Connector not found for post-commit activation connector=%s", connectorId.getId());
+        return false;
+      }
+      if (response.getConnector().getState() == ConnectorState.CS_ACTIVE) {
+        return true;
+      }
+      grpcClient.updateConnector(
+          UpdateConnectorRequest.newBuilder()
+              .setConnectorId(connectorId)
+              .setSpec(ConnectorSpec.newBuilder().setState(ConnectorState.CS_ACTIVE).build())
+              .setUpdateMask(FieldMask.newBuilder().addPaths("state").build())
+              .build());
+      return true;
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Failed to activate post-commit connector=%s", connectorId.getId());
+      return false;
     }
   }
 
@@ -1180,21 +1215,6 @@ public class TransactionCommitService {
     }
   }
 
-  private String sha256Hex(byte[] bytes) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      byte[] hash = digest.digest(bytes == null ? new byte[0] : bytes);
-      StringBuilder out = new StringBuilder(hash.length * 2);
-      for (byte b : hash) {
-        out.append(Character.forDigit((b >>> 4) & 0xF, 16));
-        out.append(Character.forDigit(b & 0xF, 16));
-      }
-      return out.toString();
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 not available", e);
-    }
-  }
-
   private String canonicalize(Object value) {
     if (value == null) {
       return "null";
@@ -1640,13 +1660,5 @@ public class TransactionCommitService {
     }
     Long snapshotId = TableMappingUtil.asLong(refs.get(refName).get("snapshot-id"));
     return snapshotId != null && snapshotId >= 0L;
-  }
-
-  private String tableMetadataLocation(ai.floedb.floecat.catalog.rpc.Table table) {
-    return table == null ? null : table.getPropertiesMap().get("metadata-location");
-  }
-
-  private String tableUuid(ai.floedb.floecat.catalog.rpc.Table table) {
-    return table == null ? null : table.getPropertiesMap().get("table-uuid");
   }
 }

@@ -54,6 +54,7 @@ public class ConnectorProvisioningService {
       ai.floedb.floecat.catalog.rpc.Table table,
       ResourceId connectorId,
       List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges,
+      boolean activateAfterCommit,
       Response error) {}
 
   public ProvisionResult resolveOrCreateForCommit(
@@ -68,7 +69,7 @@ public class ConnectorProvisioningService {
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table) {
     if (table == null || tableId == null || tableName == null || tableName.isBlank()) {
-      return new ProvisionResult(table, resolveConnectorId(table), List.of(), null);
+      return new ProvisionResult(table, resolveConnectorId(table), List.of(), false, null);
     }
     String tableLocation = tableLocation(tableSupport, table);
     Timestamp nowTs = Timestamps.fromMillis(System.currentTimeMillis());
@@ -82,6 +83,7 @@ public class ConnectorProvisioningService {
             table,
             null,
             List.of(),
+            false,
             IcebergErrorResponses.failure(
                 "connector provisioning failed",
                 "CommitStateUnknownException",
@@ -89,10 +91,10 @@ public class ConnectorProvisioningService {
       }
       ai.floedb.floecat.catalog.rpc.Table enriched =
           enrichTableUpstream(table, namespacePath, tableName, existing, tableLocation);
-      return new ProvisionResult(enriched, existing, List.of(), null);
+      return new ProvisionResult(enriched, existing, List.of(), false, null);
     }
     if (!tableSupport.connectorIntegrationEnabled()) {
-      return new ProvisionResult(table, null, List.of(), null);
+      return new ProvisionResult(table, null, List.of(), false, null);
     }
     var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
 
@@ -111,14 +113,15 @@ public class ConnectorProvisioningService {
             connectorTemplate,
             nowTs);
     if (connectorRecord == null || !connectorRecord.hasResourceId()) {
-      return new ProvisionResult(table, null, List.of(), null);
+      return new ProvisionResult(table, null, List.of(), false, null);
     }
     List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges =
         connectorUpsertChanges(accountId, connectorRecord);
     ai.floedb.floecat.catalog.rpc.Table enriched =
         enrichTableUpstream(
             table, namespacePath, tableName, connectorRecord.getResourceId(), tableLocation);
-    return new ProvisionResult(enriched, connectorRecord.getResourceId(), connectorTxChanges, null);
+    return new ProvisionResult(
+        enriched, connectorRecord.getResourceId(), connectorTxChanges, true, null);
   }
 
   public ResourceId resolveConnectorId(ai.floedb.floecat.catalog.rpc.Table tableRecord) {
@@ -210,7 +213,7 @@ public class ConnectorProvisioningService {
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setCreatedAt(nowTs)
             .setUpdatedAt(nowTs)
-            .setState(ConnectorState.CS_ACTIVE);
+            .setState(ConnectorState.CS_PAUSED);
     if (connectorUri == null || connectorUri.isBlank()) {
       return null;
     }

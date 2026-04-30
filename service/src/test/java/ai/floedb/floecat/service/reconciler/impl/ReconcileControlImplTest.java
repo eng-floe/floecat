@@ -32,6 +32,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
@@ -84,7 +85,7 @@ class ReconcileControlImplTest {
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
     when(service.connectorRepo.getById(any()))
-        .thenReturn(Optional.of(Connector.newBuilder().setResourceId(connectorId).build()));
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
     when(service.jobs.childJobs(anyString(), anyString())).thenReturn(java.util.List.of());
   }
 
@@ -212,6 +213,49 @@ class ReconcileControlImplTest {
             .indefinitely();
 
     assertEquals("job-1", response.getJobId());
+  }
+
+  @Test
+  void startCaptureRejectsPausedConnector() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_PAUSED)));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowRejectsPausedConnector() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_PAUSED)));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
@@ -822,6 +866,14 @@ class ReconcileControlImplTest {
 
   private static ResourceId connectorId() {
     return ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
+  }
+
+  private static ResourceId accountScopedConnectorId() {
+    return connectorId().toBuilder().setAccountId("acct").build();
+  }
+
+  private static Connector connector(ResourceId connectorId, ConnectorState state) {
+    return Connector.newBuilder().setResourceId(connectorId).setState(state).build();
   }
 
   private static CaptureScope captureScope() {

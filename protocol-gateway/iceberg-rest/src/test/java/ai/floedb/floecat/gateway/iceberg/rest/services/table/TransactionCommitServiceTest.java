@@ -38,6 +38,10 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
+import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
@@ -74,16 +78,16 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import jakarta.ws.rs.core.Response;
 import java.lang.reflect.Method;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 class TransactionCommitServiceTest {
@@ -168,6 +172,24 @@ class TransactionCommitServiceTest {
             });
     when(grpcClient.startCapture(any()))
         .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
+    when(grpcClient.getConnector(any()))
+        .thenAnswer(
+            invocation -> {
+              GetConnectorRequest request = invocation.getArgument(0, GetConnectorRequest.class);
+              ResourceId connectorId = request.getConnectorId();
+              return GetConnectorResponse.newBuilder()
+                  .setConnector(
+                      Connector.newBuilder()
+                          .setResourceId(connectorId)
+                          .setDisplayName("existing-" + connectorId.getId())
+                          .setKind(ConnectorKind.CK_ICEBERG)
+                          .setUri("s3://existing")
+                          .setState(ConnectorState.CS_PAUSED)
+                          .build())
+                  .build();
+            });
+    when(grpcClient.updateConnector(any()))
+        .thenReturn(UpdateConnectorResponse.newBuilder().build());
   }
 
   private CommitTableResponseDto defaultCommitResponse() {
@@ -977,6 +999,67 @@ class TransactionCommitServiceTest {
     assertEquals("conn-1", request.getScope().getConnectorId().getId());
     assertEquals("tbl-id", request.getScope().getDestinationTableId());
     assertEquals(0, request.getScope().getDestinationNamespaceIdsCount());
+  }
+
+  @Test
+  void commitWithProvisionedConnectorActivatesPausedConnectorBeforeCapture() throws Exception {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    ArgumentCaptor<ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest> prepareCaptor =
+        ArgumentCaptor.forClass(ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.class);
+    when(grpcClient.prepareTransaction(prepareCaptor.capture()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+
+    boolean sawPausedConnector = false;
+    for (var change : prepareCaptor.getValue().getChangesList()) {
+      if (!change.hasPayload()) {
+        continue;
+      }
+      try {
+        Connector connector = Connector.parseFrom(change.getPayload());
+        if (connector.getKind() == ConnectorKind.CK_ICEBERG
+            && connector.getState() == ConnectorState.CS_PAUSED) {
+          sawPausedConnector = true;
+          break;
+        }
+      } catch (InvalidProtocolBufferException ignored) {
+        // Non-connector payload.
+      }
+    }
+    org.junit.jupiter.api.Assertions.assertTrue(sawPausedConnector);
+
+    ArgumentCaptor<UpdateConnectorRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateConnectorRequest.class);
+    verify(grpcClient).updateConnector(updateCaptor.capture());
+    assertEquals(ConnectorState.CS_ACTIVE, updateCaptor.getValue().getSpec().getState());
+    assertEquals(List.of("state"), updateCaptor.getValue().getUpdateMask().getPathsList());
+
+    var inOrder = Mockito.inOrder(grpcClient);
+    inOrder.verify(grpcClient).updateConnector(any(UpdateConnectorRequest.class));
+    inOrder.verify(grpcClient).startCapture(any(StartCaptureRequest.class));
   }
 
   @Test
@@ -2253,7 +2336,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void beginUsesRequestHashAsIdempotencyFallback() {
+  void beginOmitsGeneratedIdempotencyFallbackForOrdinaryCommits() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2275,7 +2358,163 @@ class TransactionCommitServiceTest {
                 req ->
                     req != null
                         && req.hasIdempotency()
+                        && req.getIdempotency().getKey().isBlank()));
+  }
+
+  @Test
+  void commitCreateRetainsRequestHashIdempotencyFallback() {
+    TableRequests.Create createRequest =
+        new TableRequests.Create("orders", null, null, Map.of(), null, null, false);
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableCreateTransactionMapper.buildCreateRequest(
+            eq(List.of("db")),
+            eq("orders"),
+            any(ResourceId.class),
+            any(ResourceId.class),
+            eq(createRequest),
+            eq(tableSupport)))
+        .thenReturn(requestWithAssertCreate());
+
+    Response response =
+        service.commitCreate(
+            "pref",
+            null,
+            List.of("db"),
+            "orders",
+            ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build(),
+            ResourceId.newBuilder().setAccountId("acct-1").setId("ns-id").build(),
+            createRequest,
+            tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient)
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
                         && req.getIdempotency().getKey().startsWith("req:cat:")));
+  }
+
+  @Test
+  void retryWithoutExplicitIdempotencyStartsFreshTransactionAfterConflict() {
+    AtomicInteger freshTxCounter = new AtomicInteger();
+    when(grpcClient.beginTransaction(any()))
+        .thenAnswer(
+            invocation -> {
+              var req =
+                  invocation.getArgument(
+                      0, ai.floedb.floecat.transaction.rpc.BeginTransactionRequest.class);
+              String key = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+              String txId =
+                  key == null || key.isBlank()
+                      ? "tx-" + freshTxCounter.incrementAndGet()
+                      : "sticky-tx";
+              return BeginTransactionResponse.newBuilder()
+                  .setTransaction(Transaction.newBuilder().setTxId(txId))
+                  .build();
+            });
+    when(grpcClient.getTransaction(any()))
+        .thenAnswer(
+            invocation -> {
+              String txId =
+                  invocation
+                      .getArgument(0, ai.floedb.floecat.transaction.rpc.GetTransactionRequest.class)
+                      .getTxId();
+              TransactionState state =
+                  "tx-2".equals(txId)
+                      ? TransactionState.TS_OPEN
+                      : TransactionState.TS_APPLY_FAILED_CONFLICT;
+              return GetTransactionResponse.newBuilder()
+                  .setTransaction(Transaction.newBuilder().setTxId(txId).setState(state))
+                  .build();
+            });
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-2").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-2").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response first = service.commit("pref", null, request(), tableSupport);
+    Response second = service.commit("pref", null, request(), tableSupport);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), first.getStatus());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), second.getStatus());
+    verify(grpcClient, Mockito.times(2))
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
+                        && req.getIdempotency().getKey().isBlank()));
+  }
+
+  @Test
+  void explicitIdempotencyReusesTransactionAndRejectsMismatchedPayloadOnRetry() throws Exception {
+    TransactionCommitRequest initialRequest = requestWithAddSnapshot(123L);
+    TransactionCommitRequest mismatchedRequest = requestWithAddSnapshot(456L);
+    String initialHash = requestHash(initialRequest);
+
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("sticky-tx"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_OPEN)
+                        .putProperties("iceberg.commit.request-hash", initialHash))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response first = service.commit("pref", "idem", initialRequest, tableSupport);
+    Response second = service.commit("pref", "idem", mismatchedRequest, tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), first.getStatus());
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), second.getStatus());
+    verify(grpcClient, Mockito.times(2))
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
+                        && "idem".equals(req.getIdempotency().getKey())));
   }
 
   @Test
@@ -2961,19 +3200,14 @@ class TransactionCommitServiceTest {
     }
   }
 
-  private String sha256Hex(byte[] bytes) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      byte[] hash = digest.digest(bytes == null ? new byte[0] : bytes);
-      StringBuilder out = new StringBuilder(hash.length * 2);
-      for (byte b : hash) {
-        out.append(Character.forDigit((b >>> 4) & 0xF, 16));
-        out.append(Character.forDigit(b & 0xF, 16));
-      }
-      return out.toString();
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 not available", e);
-    }
+  private String requestHash(TransactionCommitRequest request) throws Exception {
+    Method requestHash =
+        TransactionCommitService.class.getDeclaredMethod("requestHash", List.class);
+    requestHash.setAccessible(true);
+    return (String)
+        requestHash.invoke(
+            service,
+            request == null || request.tableChanges() == null ? List.of() : request.tableChanges());
   }
 
   private TransactionCommitRequest requestWithPostCommitUpdate() {

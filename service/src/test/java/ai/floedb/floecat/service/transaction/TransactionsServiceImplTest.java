@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -470,6 +471,80 @@ class TransactionsServiceImplTest {
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
     verify(intentRepo).deleteBothIndicesBestEffort(intent);
+  }
+
+  @Test
+  void commitAppliedInvalidatesTouchedTableGraphEntry() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var metadataGraph = Mockito.mock(UserGraph.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+    inject(service, "metadataGraph", metadataGraph);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableId = "table-1";
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_PREPARED)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+    when(intentRepo.listByTx(accountId, txId)).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget(accountId, intent.getTargetPointerKey()))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(11L).build(),
+            MutationMeta.newBuilder().setPointerVersion(12L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
+            anyLong()))
+        .thenReturn(true);
+    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            accountId,
+            CommitTransactionRequest.newBuilder().setTxId(txId).build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    verify(metadataGraph)
+        .invalidate(
+            argThat(
+                id ->
+                    id != null
+                        && accountId.equals(id.getAccountId())
+                        && tableId.equals(id.getId())
+                        && id.getKind() == ResourceKind.RK_TABLE));
   }
 
   @Test

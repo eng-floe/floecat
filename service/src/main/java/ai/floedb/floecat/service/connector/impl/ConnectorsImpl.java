@@ -114,7 +114,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.enabled",
           "policy.max_parallel",
           "policy.not_before",
-          "policy.mode");
+          "policy.mode",
+          "state");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
   private static final String REDACTED = "****";
@@ -1202,6 +1203,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       b.setPolicy(pb.build());
     }
 
+    if (maskTargets(mask, "state")) {
+      if (spec.getState() == ConnectorState.CS_UNSPECIFIED) {
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.FIELD, Map.of("field", "state"));
+      }
+      b.setState(spec.getState());
+    }
+
     var out = b.build();
 
     boolean touchedDest = maskTargets(mask, "destination") || maskTargetsUnder(mask, "destination");
@@ -1305,6 +1314,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
                 .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
 
+    c.scalar("state", s.getState().name());
     c.map("properties", s.getPropertiesMap());
     return c.bytes();
   }
@@ -1328,6 +1338,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     if (connector.hasPolicy()) {
       b.setPolicy(connector.getPolicy());
+    }
+    if (connector.getState() != ConnectorState.CS_UNSPECIFIED) {
+      b.setState(connector.getState());
     }
     return b.build();
   }

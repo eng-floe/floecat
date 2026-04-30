@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
@@ -115,8 +117,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     authz.require(pc, "connector.manage");
                     var corr = pc.getCorrelationId();
 
-                    var connectorId =
-                        validatedConnectorId(pc.getAccountId(), request.getScope(), corr);
+                    var connector =
+                        validatedActiveConnector(pc.getAccountId(), request.getScope(), corr);
+                    var connectorId = connector.getResourceId();
                     var mode = mapCaptureMode(request.getMode());
                     requireExplicitCapturePolicy(mode, request.getScope(), corr);
                     var scope = scopeFromCaptureScope(request.getScope());
@@ -181,19 +184,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     authz.require(
                         principalContext, List.of("connector.manage", "connector.create"));
 
+                    var connector =
+                        validatedActiveConnector(
+                            principalContext.getAccountId(), request.getScope(), correlationId);
                     var connectorId =
                         scopedConnectorId(
                             principalContext.getAccountId(),
                             connectorIdFromScope(request.getScope()),
                             correlationId);
-                    connectorRepo
-                        .getById(connectorId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId,
-                                    GeneratedErrorMessages.MessageKey.CONNECTOR,
-                                    Map.of("id", connectorId.getId())));
                     var mode = mapCaptureMode(request.getMode());
                     requireExplicitCapturePolicy(mode, request.getScope(), correlationId);
                     var scope = scopeFromRequest(request);
@@ -674,17 +672,22 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return connectorId.toBuilder().setAccountId(accountId).build();
   }
 
-  private ResourceId validatedConnectorId(String accountId, CaptureScope scope, String corr) {
+  private Connector validatedActiveConnector(String accountId, CaptureScope scope, String corr) {
     var connectorId = scopedConnectorId(accountId, connectorIdFromScope(scope), corr);
-    connectorRepo
-        .getById(connectorId)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    corr,
-                    GeneratedErrorMessages.MessageKey.CONNECTOR,
-                    Map.of("id", connectorId.getId())));
-    return connectorId;
+    var connector =
+        connectorRepo
+            .getById(connectorId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        corr,
+                        GeneratedErrorMessages.MessageKey.CONNECTOR,
+                        Map.of("id", connectorId.getId())));
+    if (connector.getState() != ConnectorState.CS_ACTIVE) {
+      throw GrpcErrors.preconditionFailed(
+          corr, null, Map.of("field", "connector.state", "state", connector.getState().name()));
+    }
+    return connector;
   }
 
   private String enqueueCapture(
