@@ -99,6 +99,7 @@
       <!-- Core -->
       <module>core/proto</module>
       <module>core/types</module>
+      <module>core/config</module>
       <module>core/engine-utils</module>
       <module>core/stats</module>
       <module>core/catalog</module>

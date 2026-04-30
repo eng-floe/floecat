@@ -214,8 +214,8 @@ within the same instance while continuing to repoll until worker slots are full.
   full `PLAN_CONNECTOR` job, the worker poller leases it, and the reconciler walks connector
   discovery and metadata planning across the full upstream history.
 - **Incremental capture run**: operator triggers
-  `connector trigger demo-glue --capture stats`. The reconcile path uses the default
-  `metadata-and-capture` mode and captures table/file/column stats for matching table work.
+  `connector trigger demo-glue --mode metadata-and-capture --capture stats`. The reconcile path
+  captures table/file/column stats for matching table work while still allowing metadata mutation.
 - **Incremental run**: without `--full`, `ReconcilerService` restricts its work to the connector's
   configured `source.table` (if set) and only processes newly discovered snapshots.
 

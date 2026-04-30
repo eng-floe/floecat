@@ -45,6 +45,7 @@ services:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     environment:
       QUARKUS_PROFILE: ${QUARKUS_PROFILE_EXECUTOR:-reconciler-executor}
+      FLOECAT_SEED_ENABLED: "false"
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_RECONCILER_SCHEDULER_ENABLED: "false"
@@ -79,7 +80,7 @@ services:
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_UPSTREAM_TARGET: "service:9100"
-      FLOECAT_GATEWAY_SELF_URI: "http://iceberg-rest:9200"
+      FLOECAT_CONNECTOR_INTEGRATION_SELF_URI: "http://iceberg-rest:9200"
       ICEBERG_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       ICEBERG_STORAGE_SCOPE: ${ICEBERG_STORAGE_SCOPE:-*}
       ICEBERG_STORAGE_TYPE: ${ICEBERG_STORAGE_TYPE:-s3}

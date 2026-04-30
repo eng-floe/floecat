@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.transaction.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -82,6 +83,10 @@ public class TransactionIntentApplierSupport {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
   }
 
+  public boolean isConnectorByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/connectors/by-id/");
+  }
+
   public Table readTable(String blobUri) {
     try {
       byte[] bytes = blobStore.get(blobUri);
@@ -92,6 +97,20 @@ public class TransactionIntentApplierSupport {
       return Table.parseFrom(bytes);
     } catch (Exception e) {
       LOG.debugf("table blob parse failed: %s", blobUri, e);
+      return null;
+    }
+  }
+
+  public Connector readConnector(String blobUri) {
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        LOG.debugf("connector blob missing: %s", blobUri);
+        return null;
+      }
+      return Connector.parseFrom(bytes);
+    } catch (Exception e) {
+      LOG.debugf("connector blob parse failed: %s", blobUri, e);
       return null;
     }
   }
@@ -263,6 +282,9 @@ public class TransactionIntentApplierSupport {
     String pointerKey = intent.getTargetPointerKey();
     if (isTableByIdPointer(pointerKey)) {
       return planTableIntentOps(intent, ops, touchedKeys);
+    }
+    if (isConnectorByIdPointer(pointerKey)) {
+      return planConnectorIntentOps(intent, ops, touchedKeys);
     }
 
     var current = pointerStore.get(pointerKey).orElse(null);
@@ -436,6 +458,109 @@ public class TransactionIntentApplierSupport {
     return buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
   }
 
+  private ApplyOutcome planConnectorIntentOps(
+      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+    String pointerKey = intent.getTargetPointerKey();
+    var current = pointerStore.get(pointerKey).orElse(null);
+    long actualVersion = current == null ? 0L : current.getVersion();
+    if (intent.hasExpectedVersion() && actualVersion != intent.getExpectedVersion()) {
+      return ApplyOutcome.conflict(
+          "EXPECTED_VERSION_MISMATCH",
+          "pointer version does not match intent expected_version",
+          intent.getExpectedVersion(),
+          actualVersion,
+          null);
+    }
+
+    if (isDeleteSentinel(intent)) {
+      if (current == null) {
+        return ApplyOutcome.applied();
+      }
+      Connector currentConnector = readConnector(current.getBlobUri());
+      if (currentConnector == null || !currentConnector.hasResourceId()) {
+        return ApplyOutcome.retryable(
+            "NAME_POINTER_READ_FAILED", "current connector pointer missing");
+      }
+      ApplyOutcome targetValidation =
+          validateConnectorIntentTarget(intent.getTargetPointerKey(), currentConnector);
+      if (targetValidation.status != ApplyStatus.APPLIED) {
+        return targetValidation;
+      }
+      long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+      ApplyOutcome deletePrimary =
+          addOp(
+              new PointerStore.CasDelete(intent.getTargetPointerKey(), expected),
+              intent.getTargetPointerKey(),
+              touchedKeys,
+              ops);
+      if (deletePrimary.status != ApplyStatus.APPLIED) {
+        return deletePrimary;
+      }
+      String nameKey =
+          Keys.connectorPointerByName(
+              currentConnector.getResourceId().getAccountId(), currentConnector.getDisplayName());
+      return buildOwnedConnectorNameDeleteOp(
+          nameKey, currentConnector.getResourceId().getId(), touchedKeys, ops);
+    }
+
+    Connector nextConnector = readConnector(intent.getBlobUri());
+    if (nextConnector == null) {
+      return ApplyOutcome.retryable("CONNECTOR_BLOB_MISSING", "connector blob missing");
+    }
+    ApplyOutcome targetValidation = validateConnectorIntentTarget(pointerKey, nextConnector);
+    if (targetValidation.status != ApplyStatus.APPLIED) {
+      return targetValidation;
+    }
+
+    String nextConnectorId = nextConnector.getResourceId().getId();
+    String newNameKey =
+        Keys.connectorPointerByName(
+            nextConnector.getResourceId().getAccountId(), nextConnector.getDisplayName());
+
+    long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+    if (current == null || !Objects.equals(current.getBlobUri(), intent.getBlobUri())) {
+      Pointer next =
+          Pointer.newBuilder()
+              .setKey(pointerKey)
+              .setBlobUri(intent.getBlobUri())
+              .setVersion(expected + 1L)
+              .build();
+      ApplyOutcome outcome =
+          addOp(
+              new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
+      if (outcome.status != ApplyStatus.APPLIED) {
+        return outcome;
+      }
+    }
+
+    ApplyOutcome newNameOutcome =
+        buildConnectorNameUpsertOp(
+            newNameKey, nextConnectorId, intent.getBlobUri(), touchedKeys, ops);
+    if (newNameOutcome.status != ApplyStatus.APPLIED) {
+      return newNameOutcome;
+    }
+
+    if (current != null) {
+      Connector oldConnector = readConnector(current.getBlobUri());
+      if (oldConnector == null || !oldConnector.hasResourceId()) {
+        return ApplyOutcome.retryable(
+            "NAME_POINTER_READ_FAILED", "old name pointer connector missing");
+      }
+      String oldNameKey =
+          Keys.connectorPointerByName(
+              oldConnector.getResourceId().getAccountId(), oldConnector.getDisplayName());
+      if (!oldNameKey.equals(newNameKey)) {
+        ApplyOutcome oldNameOutcome =
+            buildOwnedConnectorNameDeleteOp(
+                oldNameKey, oldConnector.getResourceId().getId(), touchedKeys, ops);
+        if (oldNameOutcome.status != ApplyStatus.APPLIED) {
+          return oldNameOutcome;
+        }
+      }
+    }
+    return ApplyOutcome.applied();
+  }
+
   private ApplyOutcome validateTableIntentTarget(String pointerKey, Table nextTable) {
     if (nextTable == null || !nextTable.hasResourceId()) {
       return ApplyOutcome.conflict(
@@ -458,6 +583,39 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.conflict(
           "TABLE_INTENT_TARGET_MISMATCH",
           "table payload resource_id does not match target pointer",
+          null,
+          null,
+          null);
+    }
+    return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome validateConnectorIntentTarget(String pointerKey, Connector nextConnector) {
+    if (nextConnector == null || !nextConnector.hasResourceId()) {
+      return ApplyOutcome.conflict(
+          "CONNECTOR_INTENT_INVALID_PAYLOAD",
+          "connector payload is missing resource_id",
+          null,
+          null,
+          null);
+    }
+    String expectedKey;
+    try {
+      expectedKey =
+          Keys.connectorPointerById(
+              nextConnector.getResourceId().getAccountId(), nextConnector.getResourceId().getId());
+    } catch (IllegalArgumentException e) {
+      return ApplyOutcome.conflict(
+          "CONNECTOR_INTENT_INVALID_PAYLOAD",
+          "connector payload has invalid resource_id fields",
+          null,
+          null,
+          null);
+    }
+    if (!Objects.equals(expectedKey, pointerKey)) {
+      return ApplyOutcome.conflict(
+          "CONNECTOR_INTENT_TARGET_MISMATCH",
+          "connector payload resource_id does not match target pointer",
           null,
           null,
           null);
@@ -513,6 +671,60 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
     }
     if (Objects.equals(existing.getResourceId().getId(), ownerTableId)) {
+      return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
+    }
+    return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome buildConnectorNameUpsertOp(
+      String key,
+      String nextConnectorId,
+      String nextBlobUri,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      Pointer created =
+          Pointer.newBuilder().setKey(key).setBlobUri(nextBlobUri).setVersion(1L).build();
+      return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
+    }
+    if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
+      return ApplyOutcome.applied();
+    }
+    Connector existing = readConnector(ptr.getBlobUri());
+    if (existing == null || !existing.hasResourceId()) {
+      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "name pointer connector missing");
+    }
+    String existingId = existing.getResourceId().getId();
+    if (!Objects.equals(existingId, nextConnectorId)) {
+      return ApplyOutcome.conflict(
+          "NAME_POINTER_CONFLICT",
+          "name pointer is owned by a different connector",
+          null,
+          null,
+          existingId);
+    }
+    Pointer next =
+        Pointer.newBuilder()
+            .setKey(key)
+            .setBlobUri(nextBlobUri)
+            .setVersion(ptr.getVersion() + 1L)
+            .build();
+    return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  private ApplyOutcome buildOwnedConnectorNameDeleteOp(
+      String key, String ownerConnectorId, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      return ApplyOutcome.applied();
+    }
+    Connector existing = readConnector(ptr.getBlobUri());
+    if (existing == null || !existing.hasResourceId()) {
+      return ApplyOutcome.retryable(
+          "NAME_POINTER_READ_FAILED", "old name pointer connector missing");
+    }
+    if (Objects.equals(existing.getResourceId().getId(), ownerConnectorId)) {
       return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
     }
     return ApplyOutcome.applied();

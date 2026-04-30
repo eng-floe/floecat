@@ -688,7 +688,7 @@ quit")
 
     local trigger_rest_out
     trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-iceberg --full --capture stats
+connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats
 quit")
     local rest_job_id
     rest_job_id=$(extract_cli_job_id "$trigger_rest_out")
@@ -776,7 +776,7 @@ quit")
 
     local trigger_unity_out
     trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-delta-unity --full --capture stats
+connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats
 quit")
     local unity_job_id
     unity_job_id=$(extract_cli_job_id "$trigger_unity_out")

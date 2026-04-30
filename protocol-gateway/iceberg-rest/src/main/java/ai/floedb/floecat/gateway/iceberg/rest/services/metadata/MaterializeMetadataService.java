@@ -18,7 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
 
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -45,7 +45,7 @@ public class MaterializeMetadataService {
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
   @Inject ObjectMapper mapper;
-  @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig config;
   @Inject TableGatewaySupport tableGatewaySupport;
 
   public record MaterializeResult(String metadataLocation, TableMetadataView metadata) {}

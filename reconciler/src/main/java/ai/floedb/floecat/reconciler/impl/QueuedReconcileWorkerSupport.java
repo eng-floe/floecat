@@ -645,12 +645,16 @@ class QueuedReconcileWorkerSupport {
 
     try (FloecatConnector connector =
         reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+      boolean includeCoreMetadata =
+          ReconcilerService.includesMetadata(captureMode)
+              && !ReconcilerService.isCaptureOnlyConnector(active.connector());
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
               connectorId,
               connector,
               fullRescan,
+              includeCoreMetadata,
               captureMode,
               scope,
               new ResolvedTable(
@@ -661,7 +665,8 @@ class QueuedReconcileWorkerSupport {
                   ignoredDisplay -> Optional.of(destinationTableId),
                   (upstream, ignoredDisplay, ignoredCandidate) -> {
                     boolean tableMetadataChanged = false;
-                    if (ReconcilerService.includesMetadata(captureMode)) {
+                    if (ReconcilerService.allowsTableMetadataMutation(
+                        active.connector(), captureMode)) {
                       FloecatConnector.TableDescriptor effective =
                           overrideDisplay(upstream, destNsFq, destTableDisplay);
                       tableMetadataChanged =
@@ -823,12 +828,16 @@ class QueuedReconcileWorkerSupport {
       ResourceId destCatalogId = active.destination().getCatalogId();
       Set<String> defaultColumnSelectors =
           ReconcilerService.normalizeSelectors(active.source().getColumnsList());
+      boolean includeCoreMetadata =
+          ReconcilerService.includesMetadata(captureMode)
+              && !ReconcilerService.isCaptureOnlyConnector(active.connector());
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
               connectorId,
               connector,
               fullRescan,
+              includeCoreMetadata,
               captureMode,
               scope,
               new ResolvedTable(
@@ -848,7 +857,8 @@ class QueuedReconcileWorkerSupport {
                   (upstream, destTableDisplay, existingTableId) -> {
                     FloecatConnector.TableDescriptor effective =
                         overrideDisplay(upstream, destNsFq, destTableDisplay);
-                    if (!ReconcilerService.includesMetadata(captureMode)) {
+                    if (!ReconcilerService.allowsTableMetadataMutation(
+                        active.connector(), captureMode)) {
                       return DestinationTableResolution.of(existingTableId, false);
                     }
                     if (existingTableId.isPresent()) {
@@ -924,6 +934,7 @@ class QueuedReconcileWorkerSupport {
       ResourceId connectorId,
       FloecatConnector connector,
       boolean fullRescan,
+      boolean includeCoreMetadata,
       CaptureMode captureMode,
       ReconcileScope scope,
       ResolvedTable table,
@@ -1005,7 +1016,7 @@ class QueuedReconcileWorkerSupport {
             + table.sourceNamespace()
             + "."
             + table.sourceTable()
-            + (ReconcilerService.includesMetadata(captureMode) ? " (metadata)" : " (capture)"));
+            + (includeCoreMetadata ? " (metadata)" : " (capture)"));
 
     Set<Long> targetSnapshotIds =
         !tableScopedCaptureRequestsBySnapshot.isEmpty()
@@ -1030,7 +1041,7 @@ class QueuedReconcileWorkerSupport {
             table.sourceNamespace(),
             table.sourceTable(),
             fullRescan,
-            ReconcilerService.includesMetadata(captureMode),
+            includeCoreMetadata,
             knownSnapshotIds,
             enumerationKnownSnapshotIds,
             targetSnapshotIds,

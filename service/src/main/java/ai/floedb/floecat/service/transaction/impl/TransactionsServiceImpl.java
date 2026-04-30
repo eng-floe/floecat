@@ -16,18 +16,37 @@
 
 package ai.floedb.floecat.service.transaction.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.config.ConnectorIntegrationProperties;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -56,14 +75,20 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -72,10 +97,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
+  private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
+  private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
+  private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
+  private static final Set<String> FILE_IO_PROPERTY_PREFIXES =
+      Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
 
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject ConnectorRepository connectorRepo;
+  @Inject ReconcileJobStore reconcileJobs;
+  @Inject ConnectorIntegrationConfig connectorBootstrapConfig;
   @Inject NameResolver nameResolver;
   @Inject Authorizer authz;
   @Inject PrincipalProvider principalProvider;
@@ -83,6 +116,16 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
   @Inject UserGraph metadataGraph;
+  private volatile java.util.concurrent.Executor postCommitExecutor =
+      java.util.concurrent.ForkJoinPool.commonPool();
+
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors == null) {
+      return;
+    }
+    managedExecutors.stream().findFirst().ifPresent(executor -> postCommitExecutor = executor);
+  }
 
   @Override
   public Uni<BeginTransactionResponse> beginTransaction(BeginTransactionRequest request) {
@@ -147,6 +190,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.write");
+                  rejectDirectConnectorPayloads(request);
                   String accountId = requireAccountId(principalContext.getAccountId());
                   String idempotencyKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -191,6 +235,22 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private void rejectDirectConnectorPayloads(PrepareTransactionRequest request) {
+    if (request == null || request.getChangesCount() == 0) {
+      return;
+    }
+    for (TxChange change : request.getChangesList()) {
+      if (change == null) {
+        continue;
+      }
+      if (change.getChangePayloadCase()
+          == ai.floedb.floecat.transaction.rpc.TxChange.ChangePayloadCase.CONNECTOR) {
+        throw new IllegalArgumentException(
+            "connector payload is not accepted in prepare_transaction");
+      }
+    }
   }
 
   @Override
@@ -382,6 +442,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private Transaction prepareTransaction(
       String accountId, PrepareTransactionRequest request, Timestamp now) {
+    // Public prepare_transaction rejects direct CONNECTOR payloads. CONNECTOR changes processed
+    // here must come only from service-side materialization of connector_provisioning hints.
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
     if (isExpired(txn, now)) {
       abortExpired(txn, now);
@@ -395,18 +457,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       throw new IllegalArgumentException("transaction not open: " + txn.getState().name());
     }
 
+    List<TxChange> effectiveChanges =
+        materializeConnectorProvisioningChanges(
+            accountId, txn.getTxId(), txn.getCreatedAt(), request.getChangesList());
     List<TransactionIntent> intents = new ArrayList<>();
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
     List<PendingBlob> pendingBlobs = new ArrayList<>();
     int estimatedOps = 0;
 
-    for (var change : request.getChangesList()) {
+    for (var change : effectiveChanges) {
       PlannedIntent planned = planIntent(accountId, txn.getTxId(), change);
       String pointerKey = planned.targetPointerKey();
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps += isTableByIdPointer(pointerKey) ? 3 : 1;
+      estimatedOps += isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey) ? 3 : 1;
       if (estimatedOps > MAX_POINTER_TXN_OPS) {
         throw new IllegalArgumentException(
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -549,6 +614,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               TransactionState.TS_APPLIED,
               now,
               "cannot transition to applied");
+      schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
       invalidateTouchedGraphEntries(intents);
       cleanupIntentsBestEffort(intents);
       return applied;
@@ -564,6 +630,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 TransactionState.TS_APPLIED,
                 now,
                 "cannot finalize already-applied transaction");
+        schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
         invalidateTouchedGraphEntries(intents);
         cleanupIntentsBestEffort(intents);
         return applied;
@@ -592,6 +659,491 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             "cannot transition to apply_failed_retryable");
     logCommitFailure(accountId, failed, outcome, intents);
     return failed;
+  }
+
+  private List<TxChange> materializeConnectorProvisioningChanges(
+      String accountId, String txId, Timestamp connectorTimestamp, List<TxChange> changes) {
+    if (changes == null || changes.isEmpty()) {
+      return List.of();
+    }
+    LinkedHashMap<String, ai.floedb.floecat.transaction.rpc.ConnectorProvisioning>
+        bootstrapByTable = new LinkedHashMap<>();
+    boolean hasProvisioning = false;
+    for (TxChange change : changes) {
+      if (change == null
+          || change.getChangePayloadCase()
+              != ai.floedb.floecat.transaction.rpc.TxChange.ChangePayloadCase
+                  .CONNECTOR_PROVISIONING) {
+        continue;
+      }
+      hasProvisioning = true;
+      ResourceId tableId = resolveTableId(accountId, change);
+      String tableKey = tableId.getId();
+      if (bootstrapByTable.containsKey(tableKey)) {
+        throw new IllegalArgumentException(
+            "duplicate connector provisioning intent for table " + tableKey);
+      }
+      bootstrapByTable.put(tableKey, change.getConnectorProvisioning());
+    }
+    if (!hasProvisioning) {
+      return List.copyOf(changes);
+    }
+
+    List<TxChange> effective = new ArrayList<>(changes.size());
+    Set<String> tablesWithMaterializedTablePayload = new java.util.HashSet<>();
+    for (TxChange change : changes) {
+      if (change == null) {
+        continue;
+      }
+      if (change.getChangePayloadCase()
+          == ai.floedb.floecat.transaction.rpc.TxChange.ChangePayloadCase.CONNECTOR_PROVISIONING) {
+        continue;
+      }
+      if (change.getChangePayloadCase()
+          == ai.floedb.floecat.transaction.rpc.TxChange.ChangePayloadCase.TABLE) {
+        ResourceId tableId = resolveTableId(accountId, change);
+        var bootstrap = bootstrapByTable.get(tableId.getId());
+        if (bootstrap != null) {
+          Connector connector =
+              buildProvisionedConnector(
+                  accountId, txId, change.getTable(), bootstrap, connectorTimestamp);
+          effective.add(
+              TxChange.newBuilder()
+                  .setTargetPointerKey(
+                      Keys.connectorPointerById(accountId, connector.getResourceId().getId()))
+                  .setConnector(connector)
+                  .build());
+          effective.add(
+              change.toBuilder()
+                  .setTable(enrichProvisionedTable(change.getTable(), connector))
+                  .build());
+          tablesWithMaterializedTablePayload.add(tableId.getId());
+          continue;
+        }
+      }
+      effective.add(change);
+    }
+
+    for (String tableId : bootstrapByTable.keySet()) {
+      if (!tablesWithMaterializedTablePayload.contains(tableId)) {
+        throw new IllegalArgumentException(
+            "connector provisioning requires a table payload for table " + tableId);
+      }
+    }
+    return List.copyOf(effective);
+  }
+
+  private Connector buildProvisionedConnector(
+      String accountId,
+      String txId,
+      Table table,
+      ai.floedb.floecat.transaction.rpc.ConnectorProvisioning provisioning,
+      Timestamp connectorTimestamp) {
+    if (provisioning == null) {
+      throw new IllegalArgumentException("connector provisioning payload is required");
+    }
+    if (table == null || !table.hasResourceId()) {
+      throw new IllegalArgumentException("connector provisioning requires table payload");
+    }
+    if (!table.hasCatalogId() || table.getCatalogId().getId().isBlank()) {
+      throw new IllegalArgumentException("table payload missing catalog_id");
+    }
+    if (!table.hasNamespaceId() || table.getNamespaceId().getId().isBlank()) {
+      throw new IllegalArgumentException("table payload missing namespace_id");
+    }
+    String prefix = provisioning.getPrefix().trim();
+    if (prefix.isBlank()) {
+      throw new IllegalArgumentException("connector provisioning missing prefix");
+    }
+    if (connectorBootstrapConfig == null || !connectorBootstrapConfig.enabled()) {
+      throw new IllegalArgumentException("connector provisioning is disabled");
+    }
+    ResourceId tableId = table.getResourceId();
+    ResourceId connectorId = deterministicConnectorId(accountId, txId, tableId);
+    List<String> namespacePath =
+        table.hasUpstream() ? List.copyOf(table.getUpstream().getNamespacePathList()) : List.of();
+    String tableName = deriveBootstrapTableName(table);
+    String namespaceFq = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
+    ConnectorIntegrationConfig.RegisterConnectorTemplate template =
+        connectorTemplateFor(prefix).orElse(null);
+    String connectorUri = connectorUriFor(prefix, template);
+    String displayName =
+        template != null && template.displayName().filter(v -> !v.isBlank()).isPresent()
+            ? template.displayName().orElseThrow()
+            : "register:"
+                + prefix
+                + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
+                + "."
+                + tableName;
+    Connector.Builder connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName(displayName)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addAllSegments(namespacePath).build())
+                    .setTable(tableName)
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(table.getCatalogId())
+                    .setNamespaceId(table.getNamespaceId())
+                    .setTableDisplayName(tableName)
+                    .setTableId(tableId)
+                    .build())
+            .setUri(connectorUri)
+            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+            .setCreatedAt(connectorTimestamp == null ? nowTs() : connectorTimestamp)
+            .setUpdatedAt(connectorTimestamp == null ? nowTs() : connectorTimestamp)
+            .setState(ConnectorState.CS_PAUSED);
+    if (template != null && template.description().filter(v -> !v.isBlank()).isPresent()) {
+      connector.setDescription(template.description().orElseThrow());
+    }
+    buildConnectorProperties(template, table)
+        .forEach((key, value) -> connector.putProperties(key, value));
+    if (!connector.containsProperties(CAPTURE_STATISTICS_PROPERTY)) {
+      connector.putProperties(
+          CAPTURE_STATISTICS_PROPERTY,
+          Boolean.toString(template == null || template.captureStatistics()));
+    }
+    connector.putProperties(CONNECTOR_MODE_PROPERTY, CONNECTOR_MODE_CAPTURE_ONLY);
+    return connector.build();
+  }
+
+  private Table enrichProvisionedTable(Table table, Connector connector) {
+    if (table == null || !table.hasResourceId()) {
+      throw new IllegalArgumentException("table payload missing resource_id");
+    }
+    if (connector == null || !connector.hasResourceId()) {
+      return table;
+    }
+    if (table.hasUpstream()
+        && table.getUpstream().hasConnectorId()
+        && !Objects.equals(
+            table.getUpstream().getConnectorId().getId(), connector.getResourceId().getId())) {
+      throw new IllegalArgumentException("table payload connector_id does not match provisioning");
+    }
+    UpstreamRef.Builder upstream =
+        table.hasUpstream()
+            ? table.getUpstream().toBuilder()
+            : UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID);
+    upstream.setConnectorId(connector.getResourceId());
+    if (connector.hasSource() && connector.getSource().hasNamespace()) {
+      upstream
+          .clearNamespacePath()
+          .addAllNamespacePath(connector.getSource().getNamespace().getSegmentsList());
+    }
+    if (connector.hasDestination() && !connector.getDestination().getTableDisplayName().isBlank()) {
+      upstream.setTableDisplayName(connector.getDestination().getTableDisplayName());
+    }
+    if (table.hasUpstream() && !table.getUpstream().getUri().isBlank()) {
+      upstream.setUri(table.getUpstream().getUri());
+    }
+    return table.toBuilder().setUpstream(upstream).build();
+  }
+
+  private ResourceId deterministicConnectorId(String accountId, String txId, ResourceId tableId) {
+    String seed = (txId == null ? "" : txId) + "|" + (tableId == null ? "" : tableId.getId());
+    UUID deterministicId = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8));
+    return ResourceId.newBuilder()
+        .setAccountId(accountId == null ? "" : accountId)
+        .setId(deterministicId.toString())
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
+  }
+
+  private Optional<ConnectorIntegrationConfig.RegisterConnectorTemplate> connectorTemplateFor(
+      String prefix) {
+    if (connectorBootstrapConfig == null || prefix == null || prefix.isBlank()) {
+      return Optional.empty();
+    }
+    var templates = connectorBootstrapConfig.registerConnectors();
+    if (templates == null || templates.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(templates.get(prefix));
+  }
+
+  private String connectorUriFor(
+      String prefix, ConnectorIntegrationConfig.RegisterConnectorTemplate template) {
+    String configured = template == null ? null : template.uri();
+    if (configured != null && !configured.trim().isBlank()) {
+      return configured.trim();
+    }
+    String selfUri =
+        connectorBootstrapConfig == null
+            ? null
+            : connectorBootstrapConfig.selfUri().filter(v -> !v.isBlank()).orElse(null);
+    if (selfUri != null && !selfUri.isBlank()) {
+      return selfUri.trim();
+    }
+    throw new IllegalArgumentException(
+        "connector provisioning cannot resolve uri for prefix " + nullToEmpty(prefix));
+  }
+
+  private String deriveBootstrapTableName(Table table) {
+    if (table == null) {
+      throw new IllegalArgumentException("table payload is required");
+    }
+    if (table.hasUpstream() && !table.getUpstream().getTableDisplayName().isBlank()) {
+      return table.getUpstream().getTableDisplayName();
+    }
+    if (!table.getDisplayName().isBlank()) {
+      return table.getDisplayName();
+    }
+    throw new IllegalArgumentException("table payload missing display_name");
+  }
+
+  private Map<String, String> buildConnectorProperties(
+      ConnectorIntegrationConfig.RegisterConnectorTemplate template, Table table) {
+    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
+    if (template != null && template.properties() != null && !template.properties().isEmpty()) {
+      properties.putAll(template.properties());
+    }
+    ConnectorIntegrationProperties.defaultFileIoProperties(
+            connectorBootstrapConfig, this::isFileIoProperty)
+        .forEach(properties::put);
+    tableFileIoProperties(table).forEach(properties::put);
+    return properties.isEmpty() ? Map.of() : Map.copyOf(properties);
+  }
+
+  private Map<String, String> tableFileIoProperties(Table table) {
+    if (table == null || table.getPropertiesMap().isEmpty()) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
+    table
+        .getPropertiesMap()
+        .forEach(
+            (k, v) -> {
+              if (isUsableFileIoValue(k, v)) {
+                properties.put(k, v.trim());
+              }
+            });
+    return properties.isEmpty() ? Map.of() : Map.copyOf(properties);
+  }
+
+  private boolean isUsableFileIoValue(String key, String value) {
+    if (!isFileIoProperty(key) || value == null || value.isBlank()) {
+      return false;
+    }
+    return true;
+  }
+
+  private boolean isFileIoProperty(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    if ("io-impl".equals(key)) {
+      return true;
+    }
+    for (String prefix : FILE_IO_PROPERTY_PREFIXES) {
+      if (key.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private void schedulePostCommitCaptureBootstrap(
+      String accountId, String txId, List<TransactionIntent> intents) {
+    if (accountId == null || accountId.isBlank() || txId == null || txId.isBlank()) {
+      return;
+    }
+    if (intents == null || intents.isEmpty()) {
+      return;
+    }
+    java.util.concurrent.Executor executor = postCommitExecutor;
+    try {
+      executor.execute(() -> runPostCommitCaptureBootstrap(accountId, txId, intents));
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Failed to schedule post-commit capture bootstrap tx=%s", txId);
+    }
+  }
+
+  private void runPostCommitCaptureBootstrap(
+      String accountId, String txId, List<TransactionIntent> intents) {
+    for (PostCommitCaptureCandidate candidate : postCommitCaptureCandidates(intents)) {
+      try {
+        Connector connector = connectorForPostCommitCapture(candidate.connectorId());
+        if (connector == null) {
+          continue;
+        }
+        Connector activeConnector =
+            ensureConnectorActiveForPostCommitCapture(
+                connector, candidate.connectorCreatedInThisTransaction());
+        if (activeConnector == null || activeConnector.getState() != ConnectorState.CS_ACTIVE) {
+          continue;
+        }
+        enqueuePostCommitCapture(accountId, txId, activeConnector, candidate.tableId());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Post-commit capture bootstrap failed tx=%s connector=%s table=%s",
+            txId,
+            candidate.connectorId().getId(),
+            candidate.tableId());
+      }
+    }
+  }
+
+  private List<PostCommitCaptureCandidate> postCommitCaptureCandidates(
+      List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return List.of();
+    }
+    LinkedHashMap<String, PostCommitCaptureCandidate> candidates = new LinkedHashMap<>();
+    for (TransactionIntent intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      if (isConnectorByIdPointer(intent.getTargetPointerKey())) {
+        Connector connector = readConnector(intent.getBlobUri());
+        if (connector == null
+            || !connector.hasResourceId()
+            || !isGatewayManagedCaptureOnlyIcebergConnector(connector)
+            || !connector.hasDestination()
+            || !connector.getDestination().hasTableId()
+            || connector.getDestination().getTableId().getId().isBlank()) {
+          continue;
+        }
+        candidates.putIfAbsent(
+            connector.getResourceId().getId()
+                + "|"
+                + connector.getDestination().getTableId().getId(),
+            new PostCommitCaptureCandidate(
+                connector.getResourceId(), connector.getDestination().getTableId().getId(), true));
+        continue;
+      }
+      if (!isTableByIdPointer(intent.getTargetPointerKey())) {
+        continue;
+      }
+      Table table = readTable(intent.getBlobUri());
+      if (table == null
+          || !table.hasResourceId()
+          || !table.hasUpstream()
+          || !table.getUpstream().hasConnectorId()) {
+        continue;
+      }
+      ResourceId connectorId = table.getUpstream().getConnectorId();
+      if (connectorId == null
+          || connectorId.getId().isBlank()
+          || table.getResourceId().getId().isBlank()) {
+        continue;
+      }
+      candidates.putIfAbsent(
+          connectorId.getId() + "|" + table.getResourceId().getId(),
+          new PostCommitCaptureCandidate(connectorId, table.getResourceId().getId(), false));
+    }
+    return List.copyOf(candidates.values());
+  }
+
+  private Connector connectorForPostCommitCapture(ResourceId connectorId) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return null;
+    }
+    Connector connector = connectorRepo.getById(connectorId).orElse(null);
+    if (!isGatewayManagedCaptureOnlyIcebergConnector(connector)) {
+      return null;
+    }
+    return connector;
+  }
+
+  private Connector ensureConnectorActiveForPostCommitCapture(
+      Connector connector, boolean connectorCreatedInThisTransaction) {
+    if (connector == null || !connector.hasResourceId()) {
+      return null;
+    }
+    if (connector.getState() == ConnectorState.CS_ACTIVE) {
+      return connector;
+    }
+    if (!connectorCreatedInThisTransaction) {
+      return null;
+    }
+    if (connector.getState() != ConnectorState.CS_PAUSED) {
+      LOG.warnf(
+          "Skipping post-commit capture for connector=%s unsupported state=%s",
+          connector.getResourceId().getId(), connector.getState().name());
+      return null;
+    }
+    for (int attempt = 0; attempt < 3; attempt++) {
+      MutationMeta meta = connectorRepo.metaForSafe(connector.getResourceId());
+      if (meta == null) {
+        return null;
+      }
+      Connector current = connectorRepo.getById(connector.getResourceId()).orElse(null);
+      if (current == null) {
+        return null;
+      }
+      if (!isGatewayManagedCaptureOnlyIcebergConnector(current)) {
+        return null;
+      }
+      if (current.getState() == ConnectorState.CS_ACTIVE) {
+        return current;
+      }
+      if (current.getState() != ConnectorState.CS_PAUSED) {
+        return null;
+      }
+      Connector activated =
+          current.toBuilder().setState(ConnectorState.CS_ACTIVE).setUpdatedAt(nowTs()).build();
+      if (connectorRepo.update(activated, meta.getPointerVersion())) {
+        return activated;
+      }
+    }
+    LOG.warnf(
+        "Failed to activate post-commit connector after retries connector=%s",
+        connector.getResourceId().getId());
+    return null;
+  }
+
+  private void enqueuePostCommitCapture(
+      String accountId, String txId, Connector connector, String tableId) {
+    if (accountId == null
+        || accountId.isBlank()
+        || connector == null
+        || !connector.hasResourceId()
+        || tableId == null
+        || tableId.isBlank()) {
+      return;
+    }
+    reconcileJobs.enqueuePlan(
+        accountId,
+        connector.getResourceId().getId(),
+        false,
+        ReconcilerService.CaptureMode.CAPTURE_ONLY,
+        ReconcileScope.of(
+            List.of(),
+            tableId,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(
+                    ReconcileCapturePolicy.Output.TABLE_STATS,
+                    ReconcileCapturePolicy.Output.FILE_STATS,
+                    ReconcileCapturePolicy.Output.COLUMN_STATS))),
+        ReconcileExecutionPolicy.defaults(),
+        "");
+    LOG.infof(
+        "Enqueued post-commit capture tx=%s connector=%s table=%s",
+        txId, connector.getResourceId().getId(), tableId);
+  }
+
+  private boolean isGatewayManagedCaptureOnlyIcebergConnector(Connector connector) {
+    if (connector == null || !connector.hasResourceId()) {
+      return false;
+    }
+    if (connector.getKind() != ConnectorKind.CK_ICEBERG) {
+      return false;
+    }
+    if (!CONNECTOR_MODE_CAPTURE_ONLY.equalsIgnoreCase(
+        connector.getPropertiesMap().get(CONNECTOR_MODE_PROPERTY))) {
+      return false;
+    }
+    String captureStatistics = connector.getPropertiesMap().get(CAPTURE_STATISTICS_PROPERTY);
+    return captureStatistics == null || Boolean.parseBoolean(captureStatistics);
   }
 
   private boolean intentsAlreadyApplied(List<TransactionIntent> intents) {
@@ -631,7 +1183,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (request == null) {
       throw new IllegalArgumentException("prepare request is required");
     }
-    List<TxChange> changes = request.getChangesList();
+    Transaction txn = getTransactionOrThrow(accountId, txId);
+    List<TxChange> changes =
+        materializeConnectorProvisioningChanges(
+            accountId, txId, txn.getCreatedAt(), request.getChangesList());
     List<IntentFingerprint> expected = new ArrayList<>(changes.size());
     for (var change : changes) {
       PlannedIntent planned = planIntentForReplayMatch(accountId, txId, change);
@@ -736,6 +1291,27 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         inlineBytes = tablePayload.toByteArray();
         inlineContentType = "application/x-protobuf";
       }
+      case CONNECTOR -> {
+        var connectorPayload = change.getConnector();
+        if (!connectorPayload.hasResourceId()) {
+          throw new IllegalArgumentException("connector payload missing resource_id");
+        }
+        if (!connectorPayload.getResourceId().getAccountId().equals(accountId)) {
+          throw new IllegalArgumentException("connector payload account mismatch for target");
+        }
+        String expectedPointerKey =
+            Keys.connectorPointerById(
+                connectorPayload.getResourceId().getAccountId(),
+                connectorPayload.getResourceId().getId());
+        if (!expectedPointerKey.equals(pointerKey)) {
+          throw new IllegalArgumentException(
+              "connector payload resource_id does not match target pointer");
+        }
+        String sha = Hashing.sha256Hex(connectorPayload.toByteArray());
+        blobUri = Keys.connectorBlobUri(accountId, connectorPayload.getResourceId().getId(), sha);
+        inlineBytes = connectorPayload.toByteArray();
+        inlineContentType = "application/x-protobuf";
+      }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
         String sha = Hashing.sha256Hex(payload);
@@ -805,6 +1381,25 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         String sha = Hashing.sha256Hex(tablePayload.toByteArray());
         blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
       }
+      case CONNECTOR -> {
+        var connectorPayload = change.getConnector();
+        if (!connectorPayload.hasResourceId()) {
+          throw new IllegalArgumentException("connector payload missing resource_id");
+        }
+        if (!connectorPayload.getResourceId().getAccountId().equals(accountId)) {
+          throw new IllegalArgumentException("connector payload account mismatch for target");
+        }
+        String expectedPointerKey =
+            Keys.connectorPointerById(
+                connectorPayload.getResourceId().getAccountId(),
+                connectorPayload.getResourceId().getId());
+        if (!expectedPointerKey.equals(pointerKey)) {
+          throw new IllegalArgumentException(
+              "connector payload resource_id does not match target pointer");
+        }
+        String sha = Hashing.sha256Hex(connectorPayload.toByteArray());
+        blobUri = Keys.connectorBlobUri(accountId, connectorPayload.getResourceId().getId(), sha);
+      }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
         String sha = Hashing.sha256Hex(payload);
@@ -848,6 +1443,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
   }
+
+  private boolean isConnectorByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/connectors/by-id/");
+  }
+
+  private record PostCommitCaptureCandidate(
+      ResourceId connectorId, String tableId, boolean connectorCreatedInThisTransaction) {}
 
   private boolean tableDeleteAlreadyApplied(TransactionIntent intent) {
     if (intent == null || !isTableByIdPointer(intent.getTargetPointerKey())) {
@@ -968,6 +1570,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     try {
       byte[] bytes = blobStore.get(blobUri);
       return bytes == null ? null : Table.parseFrom(bytes);
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  private Connector readConnector(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      return bytes == null ? null : Connector.parseFrom(bytes);
     } catch (Exception e) {
       return null;
     }

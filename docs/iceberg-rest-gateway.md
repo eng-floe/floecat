@@ -240,11 +240,13 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
   `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
   Request-supplied FileIO properties are merged over gateway defaults from
-  `floecat.gateway.storage-credential.properties.*`.
+  `floecat.connector.integration.storage-credential.properties.*`.
 - **Registered Iceberg connectors:** tables registered or committed through the gateway are now
-  wired back to Floecat as ordinary `iceberg.source=rest` connectors. Steady-state discovery comes
-  from Floecat’s own REST catalog, while the table record’s `location` and `metadata-location`
-  remain the source of truth for Iceberg clients.
+  wired back to Floecat as gateway-managed REST connectors tagged with
+  `floecat.connector.mode=capture-only`. The upstream source may still be modeled with
+  `iceberg.source=rest`, but capture-only enforcement comes from the explicit mode property rather
+  than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
+  table record’s `location` and `metadata-location` remain the source of truth for Iceberg clients.
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
   delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
   and `aws.profile_path` when clients expect AWS SDK profile-based access.

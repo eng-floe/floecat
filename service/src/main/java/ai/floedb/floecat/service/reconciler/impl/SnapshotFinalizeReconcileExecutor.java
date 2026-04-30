@@ -101,6 +101,19 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.terminalFailure(
           0, 0, 0, 0, 1, 0, 0, coverage.message(), new IllegalStateException(coverage.message()));
     }
+    if (parentJobId.isBlank()) {
+      return ExecutionResult.terminalFailure(
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          "snapshot finalization requires parent snapshot plan job",
+          new IllegalStateException("parent snapshot plan job is required"));
+    }
+    boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
     if (coverage.state() == PlannedCoverageState.EXPLICIT_EMPTY) {
       List<String> unexpectedChildren =
@@ -119,7 +132,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             new IllegalStateException("snapshot file-group child jobs unexpected for empty plan"));
       }
       long statsProcessed =
-          persistEmptySnapshotCompletionMarker(lease, snapshotTask, aggregateKinds);
+          requestsStatsOutputs ? persistEmptySnapshotCompletionMarker(lease, snapshotTask) : 0L;
       return ExecutionResult.success(
           0,
           0,
@@ -132,7 +145,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + snapshotTask.snapshotId()
               + " (no planned file groups)");
     }
-    if (!parentJobId.isBlank() && coverage.expectedFiles().isEmpty()) {
+    if (coverage.expectedFiles().isEmpty()) {
       LOG.warnf(
           "Snapshot finalizer proceeding with zero expected files accountId=%s parentJobId=%s"
               + " tableId=%s snapshotId=%d",
@@ -225,6 +238,17 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + childState.missingGroups(),
           new IllegalStateException("snapshot file-group child jobs missing"));
     }
+    if (!requestsStatsOutputs) {
+      return ExecutionResult.success(
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no stats outputs)");
+    }
 
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -280,19 +304,13 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   private long persistEmptySnapshotCompletionMarker(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileSnapshotTask snapshotTask,
-      Set<FloecatConnector.StatsTargetKind> aggregateKinds) {
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
     if (lease == null
         || snapshotTask == null
         || lease.accountId == null
         || lease.accountId.isBlank()
         || snapshotTask.tableId().isBlank()
         || snapshotTask.snapshotId() < 0L) {
-      return 0L;
-    }
-    if (aggregateKinds == null
-        || !aggregateKinds.contains(FloecatConnector.StatsTargetKind.TABLE)) {
       return 0L;
     }
     ResourceId tableId =
@@ -512,6 +530,22 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     return out;
+  }
+
+  private static boolean requestsStatsOutputs(ReconcileJobStore.LeasedJob lease) {
+    ReconcileCapturePolicy policy =
+        lease == null || lease.scope == null
+            ? ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    for (ReconcileCapturePolicy.Output output : policy.outputs()) {
+      switch (output) {
+        case TABLE_STATS, FILE_STATS, COLUMN_STATS -> {
+          return true;
+        }
+        default -> {}
+      }
+    }
+    return false;
   }
 
   private static boolean hasPersistedSuccessResults(

@@ -305,7 +305,7 @@ class ConnectorCliSupportTest {
               () ->
                   ConnectorCliSupport.handle(
                       "connector",
-                      List.of("trigger", CONNECTOR_UUID),
+                      List.of("trigger", CONNECTOR_UUID, "--mode", "capture-only"),
                       new PrintStream(new ByteArrayOutputStream()),
                       h.connectorsStub,
                       h.reconcileControlStub,
@@ -369,7 +369,13 @@ class ConnectorCliSupportTest {
 
       ConnectorCliSupport.handle(
           "connector",
-          List.of("trigger", CONNECTOR_UUID, "--capture", "stats,index"),
+          List.of(
+              "trigger",
+              CONNECTOR_UUID,
+              "--mode",
+              "metadata-and-capture",
+              "--capture",
+              "stats,index"),
           new PrintStream(new ByteArrayOutputStream()),
           h.connectorsStub,
           h.reconcileControlStub,
@@ -559,6 +565,8 @@ class ConnectorCliSupportTest {
           List.of(
               "trigger",
               CONNECTOR_UUID,
+              "--mode",
+              "metadata-and-capture",
               "--capture",
               "stats",
               "--dest-ns",

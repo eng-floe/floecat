@@ -1497,10 +1497,10 @@ class IcebergRestFixtureIT {
 
   private static boolean parseConnectorIntegration() {
     return ConfigProvider.getConfig()
-        .getOptionalValue("floecat.gateway.connector-integration-enabled", Boolean.class)
+        .getOptionalValue("floecat.connector.integration.enabled", Boolean.class)
         .orElseGet(
             () -> {
-              String raw = System.getProperty("floecat.gateway.connector-integration-enabled");
+              String raw = System.getProperty("floecat.connector.integration.enabled");
               if (raw == null || raw.isBlank()) {
                 raw = System.getenv("FLOECAT_GATEWAY_CONNECTOR_INTEGRATION_ENABLED");
               }

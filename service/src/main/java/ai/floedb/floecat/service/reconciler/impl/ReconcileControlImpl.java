@@ -120,6 +120,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var connector =
                         validatedActiveConnector(pc.getAccountId(), request.getScope(), corr);
                     var connectorId = connector.getResourceId();
+                    requireSpecifiedCaptureMode(request.getMode(), corr);
                     var mode = mapCaptureMode(request.getMode());
                     requireExplicitCapturePolicy(mode, request.getScope(), corr);
                     var scope = scopeFromCaptureScope(request.getScope());
@@ -632,9 +633,18 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return switch (mode) {
       case CM_METADATA_ONLY -> CaptureMode.METADATA_ONLY;
       case CM_CAPTURE_ONLY -> CaptureMode.CAPTURE_ONLY;
-      case CM_METADATA_AND_CAPTURE, CM_UNSPECIFIED, UNRECOGNIZED ->
-          CaptureMode.METADATA_AND_CAPTURE;
+      case CM_METADATA_AND_CAPTURE -> CaptureMode.METADATA_AND_CAPTURE;
+      case CM_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("capture mode must be specified");
     };
+  }
+
+  private static void requireSpecifiedCaptureMode(
+      ai.floedb.floecat.reconciler.rpc.CaptureMode mode, String correlationId) {
+    if (mode == ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_UNSPECIFIED
+        || mode == ai.floedb.floecat.reconciler.rpc.CaptureMode.UNRECOGNIZED) {
+      throw GrpcErrors.invalidArgument(correlationId, null, Map.of("field", "mode"));
+    }
   }
 
   private static void requireExplicitCapturePolicy(

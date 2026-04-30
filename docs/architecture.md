@@ -72,5 +72,5 @@ The following modules compose the system (see linked docs for deep dives):
 
 - **Core table state (single-table commit):** synchronous request path updates table/snapshot state
   before returning success.
-- **Post-core side effects (connector/snapshot sync actions):** best-effort after commit apply and not part of atomic commit state.
+- **Post-core side effects (connector/snapshot sync actions):** best-effort after commit apply and not part of atomic commit state. This includes gateway-triggered service-side `CAPTURE_ONLY` stats bootstrap for managed REST connectors tagged with `floecat.connector.mode=capture-only`.
 - **Multi-table transaction endpoint:** request-level atomic apply through backend transactions, with idempotent replay and optimistic preconditions.

@@ -574,6 +574,356 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void executeSucceedsForIndexOnlyCaptureWithoutFileStats() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(group), true);
+    ReconcileScope scope = captureScope(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String childJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+    store.persistFileGroupResult(
+        childJobId,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
+    ReconcileJobStore.LeasedJob childLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    assertTrue(result.ok());
+    assertTrue(result.message.contains("no stats outputs"));
+    assertTrue(
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .isEmpty());
+  }
+
+  @Test
+  void executeSucceedsForFileStatsOnlyAfterCoverageValidation() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(group), true);
+    ReconcileScope scope = captureScope(ReconcileCapturePolicy.Output.FILE_STATS);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String childJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+    store.persistFileGroupResult(
+        childJobId,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
+    ReconcileJobStore.LeasedJob childLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    statsStore.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            tableId,
+            SNAPSHOT_ID,
+            FileTargetStats.newBuilder()
+                .setFilePath("s3://bucket/data/file-1.parquet")
+                .setRowCount(10L)
+                .setSizeBytes(128L)
+                .build(),
+            null));
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertTrue(result.ok());
+    assertTrue(result.message.contains("no aggregate outputs"));
+    assertTrue(
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .isEmpty());
+  }
+
+  @Test
+  void executePersistsEmptySnapshotSentinelForFileStatsOnly() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            captureScope(ReconcileCapturePolicy.Output.FILE_STATS),
+            ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-plan-1",
+            "");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true);
+
+    ExecutionResult result =
+        executor.execute(
+            context(
+                new ReconcileJobStore.LeasedJob(
+                    "finalizer-1",
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    captureScope(ReconcileCapturePolicy.Output.FILE_STATS),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    parentJobId)));
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    assertTrue(result.ok());
+    assertEquals(
+        0L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .orElseThrow()
+            .getTable()
+            .getDataFileCount());
+  }
+
+  @Test
+  void executePersistsEmptySnapshotSentinelForColumnStatsOnly() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            captureScope(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-plan-1",
+            "");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true);
+
+    ExecutionResult result =
+        executor.execute(
+            context(
+                new ReconcileJobStore.LeasedJob(
+                    "finalizer-1",
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    captureScope(ReconcileCapturePolicy.Output.COLUMN_STATS),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    parentJobId)));
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    assertTrue(result.ok());
+    assertEquals(
+        0L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .orElseThrow()
+            .getTable()
+            .getRowCount());
+  }
+
+  @Test
+  void executeDoesNotPersistEmptySnapshotSentinelForIndexOnly() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            captureScope(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-plan-1",
+            "");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true);
+
+    ExecutionResult result =
+        executor.execute(
+            context(
+                new ReconcileJobStore.LeasedJob(
+                    "finalizer-1",
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    captureScope(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    parentJobId)));
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    assertTrue(result.ok());
+    assertTrue(result.message.contains("no planned file groups"));
+    assertTrue(
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .isEmpty());
+  }
+
+  @Test
   void executeFailsWhenSnapshotCoverageMetadataIsMissing() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -620,6 +970,55 @@ class SnapshotFinalizeReconcileExecutorTest {
     assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
     assertEquals(ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
     assertTrue(result.message.contains("requires explicit snapshot coverage metadata"));
+  }
+
+  @Test
+  void executeFailsWhenParentSnapshotPlanJobIsMissing() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(
+                ReconcileFileGroupTask.of(
+                    "plan-1",
+                    "group-1",
+                    TABLE_ID,
+                    SNAPSHOT_ID,
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true);
+
+    ExecutionResult result =
+        executor.execute(
+            context(
+                new ReconcileJobStore.LeasedJob(
+                    "finalizer-1",
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    captureScope(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+
+    assertFalse(result.success());
+    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertTrue(result.message.contains("requires parent snapshot plan job"));
   }
 
   @Test
@@ -1160,16 +1559,18 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   private static ReconcileScope captureScope() {
+    return captureScope(
+        ReconcileCapturePolicy.Output.TABLE_STATS,
+        ReconcileCapturePolicy.Output.COLUMN_STATS,
+        ReconcileCapturePolicy.Output.FILE_STATS);
+  }
+
+  private static ReconcileScope captureScope(ReconcileCapturePolicy.Output... outputs) {
     return ReconcileScope.of(
         List.of(),
         TABLE_ID,
         List.of(),
-        ReconcileCapturePolicy.of(
-            List.of(),
-            EnumSet.of(
-                ReconcileCapturePolicy.Output.TABLE_STATS,
-                ReconcileCapturePolicy.Output.COLUMN_STATS,
-                ReconcileCapturePolicy.Output.FILE_STATS)));
+        ReconcileCapturePolicy.of(List.of(), EnumSet.copyOf(List.of(outputs))));
   }
 
   private static final class DuplicateFileStatsStore implements StatsStore {

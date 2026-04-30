@@ -428,7 +428,9 @@ class RemoteReconcileExecutorPollerTest {
             eq("local-poller")))
         .thenAnswer(
             invocation -> {
-              return java.util.Optional.of(fileGroupLease);
+              return completed.getCount() > 0
+                  ? java.util.Optional.of(fileGroupLease)
+                  : java.util.Optional.empty();
             });
     when(client.renew(any()))
         .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));

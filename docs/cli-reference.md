@@ -89,7 +89,7 @@ connector validate <kind> <uri>
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
-    [--mode metadata-only|metadata-and-capture|capture-only]
+    --mode metadata-only|metadata-and-capture|capture-only
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
     [--snapshot <id>|--current] [--columns c1,#id2,...]
@@ -124,7 +124,7 @@ Auth properties (generic options):
 - `--auth cache_path=<path>` – optional CLI cache path.
 
 Trigger notes:
-- `connector trigger` defaults to `metadata-and-capture`.
+- `--mode` is required on `connector trigger`.
 - `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
 - Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 

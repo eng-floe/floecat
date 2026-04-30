@@ -143,7 +143,7 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
 
   ```
   connector trigger glue-iceberg --mode metadata-only
-  connector trigger glue-iceberg --full --capture stats
+  connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
   ```
 
 - **Managing snapshot constraints**

@@ -61,6 +61,9 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class ReconcilerService {
+  public static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
+  public static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
+
   public enum CaptureMode {
     METADATA_ONLY,
     METADATA_AND_CAPTURE,
@@ -405,6 +408,18 @@ public class ReconcilerService {
 
   static boolean includesMetadata(CaptureMode captureMode) {
     return captureMode != CaptureMode.CAPTURE_ONLY;
+  }
+
+  static boolean isCaptureOnlyConnector(Connector connector) {
+    if (connector == null) {
+      return false;
+    }
+    String mode = connector.getPropertiesMap().get(CONNECTOR_MODE_PROPERTY);
+    return CONNECTOR_MODE_CAPTURE_ONLY.equalsIgnoreCase(mode);
+  }
+
+  static boolean allowsTableMetadataMutation(Connector connector, CaptureMode captureMode) {
+    return includesMetadata(captureMode) && !isCaptureOnlyConnector(connector);
   }
 
   Set<Long> enumerationKnownSnapshotIds(

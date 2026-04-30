@@ -554,7 +554,7 @@ public class Shell implements Runnable {
          connector trigger <display_name|id> [--full]
              [--mode metadata-only|metadata-and-capture|capture-only]
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # --capture is required for capture modes.
+             # --mode is required. --capture is required for capture modes.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--snapshot <id>|--current] [--columns c1,#id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]

@@ -17,7 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -35,7 +35,7 @@ import org.jboss.logging.Logger;
 public class TableDropCleanupService {
   private static final Logger LOG = Logger.getLogger(TableDropCleanupService.class);
 
-  @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig config;
   @Inject TableGatewaySupport tableGatewaySupport;
 
   public void purgeTableData(String catalogName, String namespace, String tableName, Table table) {

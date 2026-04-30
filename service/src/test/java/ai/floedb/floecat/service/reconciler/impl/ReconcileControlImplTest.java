@@ -102,7 +102,11 @@ class ReconcileControlImplTest {
 
     var response =
         service
-            .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+            .captureNow(
+                CaptureNowRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                    .setScope(captureScope())
+                    .build())
             .await()
             .indefinitely();
 
@@ -126,7 +130,13 @@ class ReconcileControlImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScope())
+                            .build())
                     .await()
                     .indefinitely());
 
@@ -150,6 +160,9 @@ class ReconcileControlImplTest {
                 service
                     .captureNow(
                         CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
                             .setScope(captureScope())
                             .setMaxWait(
                                 Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
@@ -172,7 +185,11 @@ class ReconcileControlImplTest {
         .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
     service
-        .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+        .captureNow(
+            CaptureNowRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(captureScope())
+                .build())
         .await()
         .indefinitely();
 
@@ -189,7 +206,11 @@ class ReconcileControlImplTest {
         .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
     service
-        .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+        .captureNow(
+            CaptureNowRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(captureScope())
+                .build())
         .await()
         .indefinitely();
 
@@ -207,6 +228,7 @@ class ReconcileControlImplTest {
         service
             .startCapture(
                 ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
                     .setScope(captureScope())
                     .build())
             .await()
@@ -228,6 +250,9 @@ class ReconcileControlImplTest {
                 service
                     .startCapture(
                         ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
                             .setScope(captureScope())
                             .build())
                     .await()
@@ -249,7 +274,13 @@ class ReconcileControlImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .captureNow(CaptureNowRequest.newBuilder().setScope(captureScope()).build())
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScope())
+                            .build())
                     .await()
                     .indefinitely());
 
@@ -441,6 +472,8 @@ class ReconcileControlImplTest {
             service
                 .captureNow(
                     CaptureNowRequest.newBuilder()
+                        .setMode(
+                            ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
                         .setScope(captureScope())
                         .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                         .build())
@@ -481,6 +514,8 @@ class ReconcileControlImplTest {
             service
                 .captureNow(
                     CaptureNowRequest.newBuilder()
+                        .setMode(
+                            ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
                         .setScope(captureScope())
                         .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                         .build())

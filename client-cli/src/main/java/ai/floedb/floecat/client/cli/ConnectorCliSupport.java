@@ -496,12 +496,15 @@ final class ConnectorCliSupport {
                   + " [--capture stats|table-stats|file-stats|column-stats|index,...]"
                   + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]"
                   + " [--snapshot <id>|--current] [--columns c1,#id2,...]"
-                  + "  (--capture required for capture modes)");
+                  + "  (--mode required; --capture required for capture modes)");
           return;
         }
         boolean full = args.contains("--full");
-        CaptureMode mode =
-            CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
+        String modeToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", ""));
+        if (modeToken.isBlank()) {
+          throw new IllegalArgumentException("--mode is required");
+        }
+        CaptureMode mode = CliUtils.parseCaptureMode(modeToken);
         String destNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
         String destView = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-view", ""));

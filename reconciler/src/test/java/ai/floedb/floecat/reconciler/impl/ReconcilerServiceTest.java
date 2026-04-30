@@ -2033,6 +2033,460 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void restCaptureOnlyConnectorDoesNotMutateTableMetadataDuringReconcile() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-rest-capture-only")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      int updateTableCalls = 0;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        Connector base = activeConnector();
+        return base.toBuilder()
+            .setSource(base.getSource().toBuilder().setTable("tbl"))
+            .setDestination(base.getDestination().toBuilder().setTableId(tableId))
+            .putProperties(
+                ReconcilerService.CONNECTOR_MODE_PROPERTY,
+                ReconcilerService.CONNECTOR_MODE_CAPTURE_ONLY)
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public boolean updateTableById(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          ResourceId ignoredNamespaceId,
+          NameRef ignoredTable,
+          ReconcilerBackend.TableSpecDescriptor descriptor) {
+        updateTableCalls++;
+        return true;
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public void ingestSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+
+      @Override
+      public boolean statsCapturedForColumnSelectors(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        return false;
+      }
+
+      @Override
+      public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {}
+    }
+
+    Backend backend = new Backend();
+    service.backend = backend;
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    namespaceFq,
+                    tableName,
+                    "s3://bucket/path",
+                    "{\"type\":\"struct\",\"fields\":[]}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    Map.of());
+              }
+
+              @Override
+              public List<SnapshotBundle> enumerateSnapshots(
+                  String namespaceFq,
+                  String tableName,
+                  ResourceId destinationTableId,
+                  SnapshotEnumerationOptions options) {
+                return List.of(
+                    new SnapshotBundle(
+                        301L,
+                        0L,
+                        Instant.now().toEpochMilli(),
+                        "",
+                        null,
+                        0L,
+                        null,
+                        Map.of(),
+                        0,
+                        Map.of()));
+              }
+            };
+
+    var result =
+        reconcileTableTask(
+            tableId,
+            false,
+            defaultCaptureScope(),
+            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(backend.updateTableCalls).isZero();
+  }
+
+  @Test
+  void activeCaptureOnlyConnectorReconcileSkipsTableMutationAndSnapshotIngestion() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-active-capture-only")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      int ensureTableCalls = 0;
+      int updateTableCalls = 0;
+      int ingestSnapshotCalls = 0;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        Connector base = activeConnector();
+        return base.toBuilder()
+            .setSource(base.getSource().toBuilder().setTable("tbl"))
+            .setDestination(base.getDestination().toBuilder().setTableId(tableId))
+            .putProperties(
+                ReconcilerService.CONNECTOR_MODE_PROPERTY,
+                ReconcilerService.CONNECTOR_MODE_CAPTURE_ONLY)
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Optional.of(
+            new DestinationTableMetadata(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .setId("cat-1")
+                    .build(),
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_NAMESPACE)
+                    .setId("ns-1")
+                    .build(),
+                "tbl",
+                "src_cat.src_ns",
+                "tbl",
+                connectorId));
+      }
+
+      @Override
+      public ResourceId ensureTable(
+          ReconcileContext ctx,
+          ResourceId namespaceId,
+          NameRef table,
+          TableSpecDescriptor descriptor) {
+        ensureTableCalls++;
+        return tableId;
+      }
+
+      @Override
+      public boolean updateTableById(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          ResourceId ignoredNamespaceId,
+          NameRef ignoredTable,
+          ReconcilerBackend.TableSpecDescriptor descriptor) {
+        updateTableCalls++;
+        return true;
+      }
+
+      @Override
+      public Optional<Snapshot> fetchSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return Optional.empty();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public void ingestSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {
+        ingestSnapshotCalls++;
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+
+      @Override
+      public boolean statsCapturedForColumnSelectors(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        return false;
+      }
+
+      @Override
+      public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {}
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    Backend backend = new Backend();
+    service.backend = backend;
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    namespaceFq,
+                    tableName,
+                    "s3://bucket/path",
+                    "{\"type\":\"struct\",\"fields\":[]}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    Map.of());
+              }
+
+              @Override
+              public List<SnapshotBundle> enumerateSnapshots(
+                  String namespaceFq,
+                  String tableName,
+                  ResourceId destinationTableId,
+                  SnapshotEnumerationOptions options) {
+                return List.of(
+                    new SnapshotBundle(
+                        401L,
+                        0L,
+                        Instant.now().toEpochMilli(),
+                        "",
+                        null,
+                        0L,
+                        null,
+                        Map.of(),
+                        0,
+                        Map.of()));
+              }
+            };
+
+    var result =
+        reconcileTableTask(
+            tableId,
+            false,
+            defaultCaptureScope(),
+            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(backend.ensureTableCalls).isZero();
+    assertThat(backend.updateTableCalls).isZero();
+    assertThat(backend.ingestSnapshotCalls).isZero();
+    assertThat(result.snapshotsProcessed).isZero();
+  }
+
+  @Test
+  void captureOnlyConnectorDoesNotWriteSnapshotConstraints() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-capture-only-constraints")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    long createdAtMs = Instant.parse("2026-04-22T12:00:00Z").toEpochMilli();
+
+    class Backend extends DefaultBackend {
+      int putConstraintsCalls = 0;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        Connector base = activeConnector();
+        return base.toBuilder()
+            .setSource(base.getSource().toBuilder().setTable("tbl"))
+            .setDestination(base.getDestination().toBuilder().setTableId(tableId))
+            .putProperties(
+                ReconcilerService.CONNECTOR_MODE_PROPERTY,
+                ReconcilerService.CONNECTOR_MODE_CAPTURE_ONLY)
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Optional.of(
+            new DestinationTableMetadata(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .setId("cat-1")
+                    .build(),
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_NAMESPACE)
+                    .setId("ns-1")
+                    .build(),
+                "tbl",
+                "src_cat.src_ns",
+                "tbl",
+                connectorId));
+      }
+
+      @Override
+      public Optional<Snapshot> fetchSnapshot(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return Optional.of(
+            Snapshot.newBuilder()
+                .setTableId(tableId)
+                .setSnapshotId(snapshotId)
+                .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+                .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+                .build());
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(501L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+
+      @Override
+      public boolean putSnapshotConstraints(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          SnapshotConstraints constraints) {
+        putConstraintsCalls++;
+        return true;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class ConstraintsConnector extends FakeConnector {
+      ConstraintsConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("tbl");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            namespaceFq,
+            tableName,
+            "s3://bucket/path",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(501L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of()));
+      }
+
+      @Override
+      public Optional<SnapshotConstraints> snapshotConstraints(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotBundle snapshotBundle) {
+        return Optional.of(
+            SnapshotConstraints.newBuilder()
+                .addConstraints(
+                    ConstraintDefinition.newBuilder()
+                        .setName("pk_capture_only")
+                        .setType(ConstraintType.CT_PRIMARY_KEY)
+                        .build())
+                .build());
+      }
+    }
+
+    Backend backend = new Backend();
+    service.backend = backend;
+    service.connectorOpener = cfg -> new ConstraintsConnector();
+
+    var result =
+        reconcileTableTask(
+            tableId,
+            false,
+            defaultCaptureScope(),
+            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(backend.putConstraintsCalls).isZero();
+    assertThat(result.snapshotsProcessed).isZero();
+  }
+
+  @Test
   void reconcileDoesNotFetchSnapshotWhenSnapshotIdIsNotYetKnown() {
     ResourceId tableId =
         ResourceId.newBuilder()

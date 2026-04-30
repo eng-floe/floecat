@@ -28,10 +28,6 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.connector.rpc.ConnectorSpec;
-import ai.floedb.floecat.connector.rpc.ConnectorState;
-import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
-import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
@@ -49,16 +45,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
-import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -132,7 +122,7 @@ public class TransactionCommitService {
       String idempotencyKey,
       TransactionCommitRequest request,
       TableGatewaySupport tableSupport) {
-    return commitInternal(prefix, idempotencyKey, request, tableSupport, true, false);
+    return commitInternal(prefix, idempotencyKey, request, tableSupport, true, true);
   }
 
   private Response commitInternal(
@@ -219,7 +209,6 @@ public class TransactionCommitService {
 
     String idempotencyBase = firstNonBlank(idempotencyKey, txId);
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
-    List<PostCommitCaptureRequest> postCommitCaptures = new ArrayList<>();
 
     if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return IcebergErrorResponses.failure(
@@ -228,115 +217,121 @@ public class TransactionCommitService {
     if (currentState == TransactionState.TS_APPLIED) {
       return Response.noContent().build();
     }
+    boolean reusePreparedTransaction =
+        currentState == TransactionState.TS_PREPARED
+            || currentState == TransactionState.TS_APPLYING
+            || currentState == TransactionState.TS_APPLY_FAILED_RETRYABLE;
     List<PlannedChange> planned = new ArrayList<>();
-    for (TransactionCommitRequest.TableChange change : changes) {
-      try {
-        var identifier = change.identifier();
-        if (identifier == null || identifier.name() == null || identifier.name().isBlank()) {
-          maybeAbortOpenTransaction(currentState, txId, "table identifier is missing");
-          return IcebergErrorResponses.validation("table identifier is required");
-        }
-        if (change.requirements() == null) {
-          maybeAbortOpenTransaction(currentState, txId, "requirements are missing");
-          return IcebergErrorResponses.validation("requirements are required");
-        }
-        if (change.updates() == null) {
-          maybeAbortOpenTransaction(currentState, txId, "updates are missing");
-          return IcebergErrorResponses.validation("updates are required");
-        }
-        boolean assertCreateRequested =
-            hasRequirementType(
-                change.requirements(), CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE);
-        Response requirementTypeError = validateKnownRequirementTypes(change.requirements());
-        if (requirementTypeError != null) {
-          maybeAbortOpenTransaction(currentState, txId, "requirements include unknown type");
-          return requirementTypeError;
-        }
-        Response updateTypeError = validateKnownUpdateActions(change.updates());
-        if (updateTypeError != null) {
-          maybeAbortOpenTransaction(currentState, txId, "updates include unknown action");
-          return updateTypeError;
-        }
-        List<String> namespacePath =
-            identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace());
-        String namespace = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
-        ResourceId namespaceId =
-            tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
-        TableRequests.Commit commitReq =
-            new TableRequests.Commit(change.requirements(), change.updates());
-        var command =
-            new TableCommitService.CommitCommand(
-                prefix,
-                namespace,
-                namespacePath,
-                identifier.name(),
-                catalogName,
-                catalogId,
-                namespaceId,
-                idempotencyBase,
-                null,
-                null,
-                commitReq,
-                tableSupport);
-        ResourceId tableId;
-        ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse;
+    if (!reusePreparedTransaction) {
+      for (TransactionCommitRequest.TableChange change : changes) {
         try {
-          tableId =
-              tableLifecycleService.resolveTableId(catalogName, namespacePath, identifier.name());
-          tableResponse = tableLifecycleService.getTableResponse(tableId);
-        } catch (StatusRuntimeException e) {
-          if (e.getStatus().getCode() != Status.Code.NOT_FOUND || !assertCreateRequested) {
-            throw e;
+          var identifier = change.identifier();
+          if (identifier == null || identifier.name() == null || identifier.name().isBlank()) {
+            maybeAbortOpenTransaction(currentState, txId, "table identifier is missing");
+            return IcebergErrorResponses.validation("table identifier is required");
           }
-          tableId =
-              atomicCreateTableId(
-                  accountId, txId, catalogId, namespaceId, namespacePath, identifier.name());
-          tableResponse = null;
+          if (change.requirements() == null) {
+            maybeAbortOpenTransaction(currentState, txId, "requirements are missing");
+            return IcebergErrorResponses.validation("requirements are required");
+          }
+          if (change.updates() == null) {
+            maybeAbortOpenTransaction(currentState, txId, "updates are missing");
+            return IcebergErrorResponses.validation("updates are required");
+          }
+          boolean assertCreateRequested =
+              hasRequirementType(
+                  change.requirements(), CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE);
+          Response requirementTypeError = validateKnownRequirementTypes(change.requirements());
+          if (requirementTypeError != null) {
+            maybeAbortOpenTransaction(currentState, txId, "requirements include unknown type");
+            return requirementTypeError;
+          }
+          Response updateTypeError = validateKnownUpdateActions(change.updates());
+          if (updateTypeError != null) {
+            maybeAbortOpenTransaction(currentState, txId, "updates include unknown action");
+            return updateTypeError;
+          }
+          List<String> namespacePath =
+              identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace());
+          String namespace = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
+          ResourceId namespaceId =
+              tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
+          TableRequests.Commit commitReq =
+              new TableRequests.Commit(change.requirements(), change.updates());
+          var command =
+              new TableCommitService.CommitCommand(
+                  prefix,
+                  namespace,
+                  namespacePath,
+                  identifier.name(),
+                  catalogName,
+                  catalogId,
+                  namespaceId,
+                  idempotencyBase,
+                  null,
+                  null,
+                  commitReq,
+                  tableSupport);
+          ResourceId tableId;
+          ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse;
+          try {
+            tableId =
+                tableLifecycleService.resolveTableId(catalogName, namespacePath, identifier.name());
+            tableResponse = tableLifecycleService.getTableResponse(tableId);
+          } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() != Status.Code.NOT_FOUND || !assertCreateRequested) {
+              throw e;
+            }
+            tableId =
+                atomicCreateTableId(
+                    accountId, txId, catalogId, namespaceId, namespacePath, identifier.name());
+            tableResponse = null;
+          }
+          Response assertCreateError =
+              validateAssertCreateRequirement(change.requirements(), tableResponse);
+          if (assertCreateError != null) {
+            maybeAbortOpenTransaction(currentState, txId, "assert-create requirement failed");
+            return assertCreateError;
+          }
+          PlannedExistingTableChange plannedChangeResult =
+              planExistingTableChange(
+                  currentState,
+                  txId,
+                  command,
+                  tableId,
+                  catalogId,
+                  namespaceId,
+                  namespace,
+                  identifier.name(),
+                  tableResponse,
+                  change.requirements(),
+                  change.updates(),
+                  tableSupport,
+                  preMaterializeAssertCreate);
+          if (plannedChangeResult.error() != null) {
+            return plannedChangeResult.error();
+          }
+          planned.add(
+              new PlannedChange(
+                  namespacePath,
+                  namespaceId,
+                  identifier.name(),
+                  tableId,
+                  plannedChangeResult.table(),
+                  change.updates() == null ? List.of() : List.copyOf(change.updates()),
+                  plannedChangeResult.pointerVersion()));
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+            maybeAbortOpenTransaction(currentState, txId, "table not found during planning");
+            return IcebergErrorResponses.noSuchTable(
+                "Table not found while planning transaction change");
+          }
+          maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+          throw e;
+        } catch (RuntimeException e) {
+          maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+          throw e;
         }
-        Response assertCreateError =
-            validateAssertCreateRequirement(change.requirements(), tableResponse);
-        if (assertCreateError != null) {
-          maybeAbortOpenTransaction(currentState, txId, "assert-create requirement failed");
-          return assertCreateError;
-        }
-        PlannedExistingTableChange plannedChangeResult =
-            planExistingTableChange(
-                currentState,
-                txId,
-                command,
-                tableId,
-                catalogId,
-                namespaceId,
-                namespace,
-                identifier.name(),
-                tableResponse,
-                change.requirements(),
-                change.updates(),
-                tableSupport,
-                preMaterializeAssertCreate);
-        if (plannedChangeResult.error() != null) {
-          return plannedChangeResult.error();
-        }
-        planned.add(
-            new PlannedChange(
-                namespacePath,
-                namespaceId,
-                identifier.name(),
-                tableId,
-                plannedChangeResult.table(),
-                change.updates() == null ? List.of() : List.copyOf(change.updates()),
-                plannedChangeResult.pointerVersion()));
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-          maybeAbortOpenTransaction(currentState, txId, "table not found during planning");
-          return IcebergErrorResponses.noSuchTable(
-              "Table not found while planning transaction change");
-        }
-        maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
-        throw e;
-      } catch (RuntimeException e) {
-        maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
-        throw e;
       }
     }
 
@@ -345,8 +340,6 @@ public class TransactionCommitService {
       ResourceId scopedTableId = scopeTableIdWithAccount(plan.tableId(), accountId);
       ConnectorProvisioningService.ProvisionResult connectorResolution =
           connectorProvisioningService.resolveOrCreateForCommit(
-              accountId,
-              txId,
               prefix,
               tableSupport,
               plan.namespacePath(),
@@ -360,23 +353,12 @@ public class TransactionCommitService {
         return connectorResolution.error();
       }
       tableForTx = normalizeTableIdentity(connectorResolution.table(), plan.tableId());
-      ResourceId connectorId = connectorResolution.connectorId();
       if (!connectorResolution.connectorTxChanges().isEmpty()) {
         txChanges.addAll(connectorResolution.connectorTxChanges());
       }
       CommitUpdateInspector.Parsed parsedUpdates =
           CommitUpdateInspector.inspectUpdates(plan.updates());
       List<Long> removedSnapshotIds = parsedUpdates.removedSnapshotIds();
-      if (connectorId != null && connectorId.getId() != null && !connectorId.getId().isBlank()) {
-        postCommitCaptures.add(
-            new PostCommitCaptureRequest(
-                plan.namespaceId(),
-                plan.tableId(),
-                plan.namespacePath(),
-                plan.tableName(),
-                connectorId,
-                connectorResolution.activateAfterCommit()));
-      }
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
               .setTableId(plan.tableId())
@@ -485,8 +467,6 @@ public class TransactionCommitService {
           "CommitStateUnknownException",
           Response.Status.SERVICE_UNAVAILABLE);
     }
-
-    enqueuePostCommitCaptures(postCommitCaptures);
     return Response.noContent().build();
   }
 
@@ -497,14 +477,6 @@ public class TransactionCommitService {
 
   private record PlannedExistingTableChange(
       ai.floedb.floecat.catalog.rpc.Table table, long pointerVersion, Response error) {}
-
-  private record PostCommitCaptureRequest(
-      ResourceId namespaceId,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      ResourceId connectorId,
-      boolean activateAfterCommit) {}
 
   private record PlannedChange(
       List<String> namespacePath,
@@ -592,77 +564,6 @@ public class TransactionCommitService {
             "table changed during commit planning",
             "CommitFailedException",
             Response.Status.CONFLICT));
-  }
-
-  private void enqueuePostCommitCaptures(List<PostCommitCaptureRequest> requests) {
-    if (requests == null || requests.isEmpty() || grpcClient == null) {
-      return;
-    }
-    for (PostCommitCaptureRequest request : requests) {
-      if (request == null
-          || request.connectorId() == null
-          || request.connectorId().getId() == null
-          || request.connectorId().getId().isBlank()
-          || request.tableId() == null
-          || request.tableId().getId() == null
-          || request.tableId().getId().isBlank()) {
-        continue;
-      }
-      if (request.activateAfterCommit() && !activateConnectorAfterCommit(request.connectorId())) {
-        continue;
-      }
-      try {
-        grpcClient.startCapture(
-            StartCaptureRequest.newBuilder()
-                .setMode(CaptureMode.CM_CAPTURE_ONLY)
-                .setScope(
-                    CaptureScope.newBuilder()
-                        .setConnectorId(request.connectorId())
-                        .setDestinationTableId(request.tableId().getId())
-                        .setCapturePolicy(
-                            CapturePolicy.newBuilder()
-                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
-                                .addOutputs(CaptureOutput.CO_FILE_STATS)
-                                .addOutputs(CaptureOutput.CO_COLUMN_STATS)))
-                .build());
-      } catch (RuntimeException e) {
-        LOG.warnf(
-            e,
-            "Failed to enqueue post-commit reconcile for tableId=%s namespaceId=%s connector=%s",
-            request.tableId().getId(),
-            request.namespaceId() == null ? "" : request.namespaceId().getId(),
-            request.connectorId().getId());
-      }
-    }
-  }
-
-  private boolean activateConnectorAfterCommit(ResourceId connectorId) {
-    if (connectorId == null || connectorId.getId() == null || connectorId.getId().isBlank()) {
-      return false;
-    }
-    try {
-      var response =
-          grpcClient.getConnector(
-              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
-      if (response == null || !response.hasConnector()) {
-        LOG.warnf(
-            "Connector not found for post-commit activation connector=%s", connectorId.getId());
-        return false;
-      }
-      if (response.getConnector().getState() == ConnectorState.CS_ACTIVE) {
-        return true;
-      }
-      grpcClient.updateConnector(
-          UpdateConnectorRequest.newBuilder()
-              .setConnectorId(connectorId)
-              .setSpec(ConnectorSpec.newBuilder().setState(ConnectorState.CS_ACTIVE).build())
-              .setUpdateMask(FieldMask.newBuilder().addPaths("state").build())
-              .build());
-      return true;
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "Failed to activate post-commit connector=%s", connectorId.getId());
-      return false;
-    }
   }
 
   private static String firstNonBlank(String... values) {
