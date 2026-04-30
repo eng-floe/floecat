@@ -1878,7 +1878,7 @@ namespace create demo.sales --desc &quot;Sales sandbox&quot; --props owner=analy
 <li><strong>Triggering a connector to read an upstream table</strong></li>
 </ul>
 <div class="highlight"><pre><span></span><code>connector trigger glue-iceberg --mode metadata-only
-connector trigger glue-iceberg --full --capture stats
+connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
 </code></pre></div>
 <ul>
 <li><strong>Managing snapshot constraints</strong></li>

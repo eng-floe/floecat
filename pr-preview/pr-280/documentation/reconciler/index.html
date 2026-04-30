@@ -1980,8 +1980,8 @@ within the same instance while continuing to repoll until worker slots are full.
   full <code>PLAN_CONNECTOR</code> job, the worker poller leases it, and the reconciler walks connector
   discovery and metadata planning across the full upstream history.</li>
 <li><strong>Incremental capture run</strong>: operator triggers
-  <code>connector trigger demo-glue --capture stats</code>. The reconcile path uses the default
-  <code>metadata-and-capture</code> mode and captures table/file/column stats for matching table work.</li>
+  <code>connector trigger demo-glue --mode metadata-and-capture --capture stats</code>. The reconcile path
+  captures table/file/column stats for matching table work while still allowing metadata mutation.</li>
 <li><strong>Incremental run</strong>: without <code>--full</code>, <code>ReconcilerService</code> restricts its work to the connector's
   configured <code>source.table</code> (if set) and only processes newly discovered snapshots.</li>
 </ul>

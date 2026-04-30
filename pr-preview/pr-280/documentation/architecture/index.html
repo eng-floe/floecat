@@ -1777,7 +1777,7 @@ serving execution-ready scan bundles.</p>
 <ul>
 <li><strong>Core table state (single-table commit):</strong> synchronous request path updates table/snapshot state
   before returning success.</li>
-<li><strong>Post-core side effects (connector/snapshot sync actions):</strong> best-effort after commit apply and not part of atomic commit state.</li>
+<li><strong>Post-core side effects (connector/snapshot sync actions):</strong> best-effort after commit apply and not part of atomic commit state. This includes gateway-triggered service-side <code>CAPTURE_ONLY</code> stats bootstrap for managed REST connectors tagged with <code>floecat.connector.mode=capture-only</code>.</li>
 <li><strong>Multi-table transaction endpoint:</strong> request-level atomic apply through backend transactions, with idempotent replay and optimistic preconditions.</li>
 </ul>
 
