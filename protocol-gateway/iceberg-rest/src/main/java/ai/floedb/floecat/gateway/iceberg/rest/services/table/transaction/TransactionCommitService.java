@@ -80,6 +80,14 @@ public class TransactionCommitService {
     return commitInternal(prefix, idempotencyKey, request, tableSupport, true, true);
   }
 
+  public Response commitRegister(
+      String prefix,
+      String idempotencyKey,
+      TransactionCommitRequest request,
+      TableGatewaySupport tableSupport) {
+    return commitInternal(prefix, idempotencyKey, request, tableSupport, false, true);
+  }
+
   private Response commitInternal(
       String prefix,
       String idempotencyKey,

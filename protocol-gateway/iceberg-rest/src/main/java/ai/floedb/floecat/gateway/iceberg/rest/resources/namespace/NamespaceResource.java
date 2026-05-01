@@ -21,7 +21,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespaceRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.CatalogRef;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.ResourceResolver;
-import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceLookupSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceMutationSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespacePropertyUpdateSupport;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -41,7 +43,9 @@ import jakarta.ws.rs.core.Response;
 @Produces(MediaType.APPLICATION_JSON)
 public class NamespaceResource {
   @Inject ResourceResolver resourceResolver;
-  @Inject NamespaceService namespaceService;
+  @Inject NamespaceLookupSupport namespaceLookupSupport;
+  @Inject NamespaceMutationSupport namespaceMutationSupport;
+  @Inject NamespacePropertyUpdateSupport namespacePropertyUpdateSupport;
 
   @GET
   public Response list(
@@ -54,7 +58,7 @@ public class NamespaceResource {
     if (parent != null && !parent.isBlank()) {
       parentNamespaceContext = resourceResolver.namespace(prefix, parent);
     }
-    return namespaceService.list(catalogContext, parentNamespaceContext, pageToken, pageSize);
+    return namespaceLookupSupport.list(catalogContext, parentNamespaceContext, pageToken, pageSize);
   }
 
   @Path("/{namespace}")
@@ -62,7 +66,7 @@ public class NamespaceResource {
   public Response get(
       @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
-    return namespaceService.get(namespaceContext);
+    return namespaceLookupSupport.get(namespaceContext);
   }
 
   @Path("/{namespace}")
@@ -70,7 +74,7 @@ public class NamespaceResource {
   public Response exists(
       @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
-    return namespaceService.exists(namespaceContext);
+    return namespaceLookupSupport.exists(namespaceContext);
   }
 
   @POST
@@ -79,17 +83,15 @@ public class NamespaceResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       NamespaceRequests.Create req) {
     CatalogRef catalogContext = resourceResolver.catalog(prefix);
-    return namespaceService.create(catalogContext, idempotencyKey, req);
+    return namespaceMutationSupport.create(catalogContext, idempotencyKey, req);
   }
 
   @Path("/{namespace}")
   @DELETE
   public Response delete(
-      @PathParam("prefix") String prefix,
-      @PathParam("namespace") String namespace,
-      @HeaderParam("Idempotency-Key") String idempotencyKey) {
+      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
-    return namespaceService.delete(namespaceContext, idempotencyKey);
+    return namespaceMutationSupport.delete(namespaceContext);
   }
 
   @Path("/{namespace}/properties")
@@ -97,9 +99,8 @@ public class NamespaceResource {
   public Response updateProperties(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       NamespacePropertiesRequest req) {
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
-    return namespaceService.updateProperties(namespaceContext, idempotencyKey, req);
+    return namespacePropertyUpdateSupport.updateProperties(namespaceContext, req);
   }
 }

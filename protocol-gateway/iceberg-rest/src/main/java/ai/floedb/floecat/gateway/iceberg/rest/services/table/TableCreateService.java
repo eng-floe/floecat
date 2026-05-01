@@ -19,8 +19,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.load.TableLoadService;
@@ -40,7 +40,7 @@ public class TableCreateService {
   @Inject TableCreateSupport tableCreateSupport;
 
   public Response create(
-      NamespaceRequestContext namespaceContext,
+      NamespaceRef namespaceContext,
       String accessDelegationMode,
       String idempotencyKey,
       String transactionId,

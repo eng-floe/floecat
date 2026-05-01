@@ -419,22 +419,8 @@ public abstract class IcebergConnector implements FloecatConnector {
 
     long snapshotId = snapshot.snapshotId();
     long createdMs = snapshot.timestampMillis();
-    Integer snapshotSchemaId = snapshot.schemaId();
-    int schemaId =
-        snapshotSchemaId != null && snapshotSchemaId > 0
-            ? snapshotSchemaId
-            : table.schema().schemaId();
-    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
-
-    final Set<Integer> includeIds;
-    if (includeColumns == null || includeColumns.isEmpty()) {
-      includeIds =
-          table.schema().columns().stream()
-              .map(Types.NestedField::fieldId)
-              .collect(Collectors.toCollection(LinkedHashSet::new));
-    } else {
-      includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
-    }
+    Schema schema = schemaForSnapshot(table, snapshot);
+    final Set<Integer> includeIds = resolveIncludedFieldIds(schema, includeColumns);
 
     EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
     var columnNames = engineOutput.columnNames();
@@ -1227,6 +1213,30 @@ public abstract class IcebergConnector implements FloecatConnector {
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }
+  }
+
+  static Schema schemaForSnapshot(Table table, Snapshot snapshot) {
+    if (table == null) {
+      throw new IllegalArgumentException("table is required");
+    }
+    Integer snapshotSchemaId = snapshot == null ? null : snapshot.schemaId();
+    int schemaId =
+        snapshotSchemaId != null && snapshotSchemaId > 0
+            ? snapshotSchemaId
+            : table.schema().schemaId();
+    return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+  }
+
+  static Set<Integer> resolveIncludedFieldIds(Schema schema, Set<String> includeColumns) {
+    if (schema == null) {
+      return Set.of();
+    }
+    if (includeColumns == null || includeColumns.isEmpty()) {
+      return schema.columns().stream()
+          .map(Types.NestedField::fieldId)
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+    return resolveFieldIdsNested(schema, includeColumns);
   }
 
   private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {

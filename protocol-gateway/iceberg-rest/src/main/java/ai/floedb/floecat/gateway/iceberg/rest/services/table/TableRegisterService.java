@@ -19,8 +19,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -46,7 +46,7 @@ public class TableRegisterService {
   @Inject TableRegisterRequestBuilder tableRegisterRequestBuilder;
 
   public Response register(
-      NamespaceRequestContext namespaceContext,
+      NamespaceRef namespaceContext,
       String idempotencyKey,
       TableRequests.Register req,
       TableGatewaySupport tableSupport) {
@@ -114,7 +114,7 @@ public class TableRegisterService {
   }
 
   private Response createRegisteredTable(
-      NamespaceRequestContext namespaceContext,
+      NamespaceRef namespaceContext,
       String tableName,
       String metadataLocation,
       String idempotencyKey,
@@ -122,7 +122,7 @@ public class TableRegisterService {
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
     Response response =
-        transactionCommitService.commit(
+        transactionCommitService.commitRegister(
             namespaceContext.prefix(),
             idempotencyKey,
             tableRegisterRequestBuilder.buildRegisterTransactionRequest(
@@ -143,7 +143,7 @@ public class TableRegisterService {
   }
 
   private Response overwriteRegisteredTable(
-      NamespaceRequestContext namespaceContext,
+      NamespaceRef namespaceContext,
       String tableName,
       String metadataLocation,
       String idempotencyKey,
@@ -172,7 +172,7 @@ public class TableRegisterService {
         tableRegisterRequestBuilder.mergeImportedProperties(
             existing.getPropertiesMap(), importedMetadata, metadataLocation, ioProperties);
     Response response =
-        transactionCommitService.commit(
+        transactionCommitService.commitRegister(
             namespaceContext.prefix(),
             idempotencyKey,
             tableRegisterRequestBuilder.buildRegisterTransactionRequest(

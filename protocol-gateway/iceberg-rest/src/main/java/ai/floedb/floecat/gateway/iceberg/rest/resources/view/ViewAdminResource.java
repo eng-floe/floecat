@@ -32,7 +32,6 @@ import io.grpc.StatusRuntimeException;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -50,9 +49,7 @@ public class ViewAdminResource {
   @Path("/rename")
   @POST
   public Response rename(
-      @PathParam("prefix") String prefix,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
-      @NotNull @Valid RenameRequest request) {
+      @PathParam("prefix") String prefix, @NotNull @Valid RenameRequest request) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId;
     try {

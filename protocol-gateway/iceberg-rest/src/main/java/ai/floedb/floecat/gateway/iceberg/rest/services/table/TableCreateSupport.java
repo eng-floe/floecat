@@ -26,10 +26,10 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -61,7 +61,7 @@ public class TableCreateSupport {
   @Inject ObjectMapper mapper;
 
   TableRequests.Create applyDefaultLocationIfMissing(
-      NamespaceRequestContext namespaceContext, String tableName, TableRequests.Create request) {
+      NamespaceRef namespaceContext, String tableName, TableRequests.Create request) {
     if (request == null) {
       return null;
     }
@@ -83,7 +83,7 @@ public class TableCreateSupport {
   }
 
   Response handleStageCreate(
-      NamespaceRequestContext namespaceContext,
+      NamespaceRef namespaceContext,
       String tableName,
       TableRequests.Create request,
       String transactionId,
@@ -181,8 +181,7 @@ public class TableCreateSupport {
     return UUID.randomUUID().toString();
   }
 
-  private String resolveDefaultLocation(
-      NamespaceRequestContext namespaceContext, String tableName) {
+  private String resolveDefaultLocation(NamespaceRef namespaceContext, String tableName) {
     if (namespaceContext == null || tableName == null || tableName.isBlank()) {
       return null;
     }
@@ -197,7 +196,7 @@ public class TableCreateSupport {
     return joinLocation(warehouse, joinNamespaceParts(namespaceContext.namespacePath(), tableName));
   }
 
-  private String resolveNamespaceLocation(NamespaceRequestContext namespaceContext) {
+  private String resolveNamespaceLocation(NamespaceRef namespaceContext) {
     if (namespaceContext == null || namespaceContext.namespaceId() == null) {
       return null;
     }

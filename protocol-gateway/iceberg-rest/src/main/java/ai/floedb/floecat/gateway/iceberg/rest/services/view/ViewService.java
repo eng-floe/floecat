@@ -22,7 +22,6 @@ import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
-import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.PageResponse;
@@ -33,33 +32,22 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.ViewRef;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.PageRequestHelper;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
-import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.io.InputFile;
 
 @ApplicationScoped
 public class ViewService {
   @Inject GrpcServiceFacade viewClient;
   @Inject ViewMetadataService viewMetadataService;
-  @Inject TableGatewaySupport tableGatewaySupport;
-  @Inject ObjectMapper mapper;
-  @Inject ConnectorIntegrationConfig config;
+  @Inject ViewSpecSupport viewSpecSupport;
+  @Inject ViewMetadataFileSupport viewMetadataFileSupport;
 
   public Response list(NamespaceRef namespaceContext, String pageToken, Integer pageSize) {
     ListViewsRequest.Builder req =
@@ -92,34 +80,25 @@ public class ViewService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    ViewSpec.Builder spec =
-        ViewSpec.newBuilder()
-            .setCatalogId(namespaceContext.catalogId())
-            .setNamespaceId(namespaceContext.namespaceId())
-            .setDisplayName(viewName);
     try {
-      spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
-      viewMetadataService.extractSqlDefinitions(metadataContext).forEach(spec::addSqlDefinitions);
-      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(metadataContext));
-      spec.addAllOutputColumns(viewMetadataService.extractOutputColumns(metadataContext));
+      var spec = viewSpecSupport.createSpec(namespaceContext, viewName, metadataContext);
+      CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
+      if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+        request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
+      }
+      var created = viewClient.createView(request.build());
+      MetadataContext responseContext =
+          viewMetadataService.fromView(namespacePath, viewName, created.getView());
+      return Response.ok(
+              ViewResponseMapper.toLoadResult(
+                  namespaceContext.namespace(),
+                  viewName,
+                  created.getView(),
+                  responseContext.metadata()))
+          .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-
-    CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
-    }
-    var created = viewClient.createView(request.build());
-    MetadataContext responseContext =
-        viewMetadataService.fromView(namespacePath, viewName, created.getView());
-    return Response.ok(
-            ViewResponseMapper.toLoadResult(
-                namespaceContext.namespace(),
-                viewName,
-                created.getView(),
-                responseContext.metadata()))
-        .build();
   }
 
   public Response get(ViewRef viewContext) {
@@ -161,40 +140,28 @@ public class ViewService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    ViewSpec.Builder spec = ViewSpec.newBuilder();
-    FieldMask.Builder mask =
-        FieldMask.newBuilder().addPaths("sql_definitions").addPaths("properties");
     try {
-      viewMetadataService.extractSqlDefinitions(updated).forEach(spec::addSqlDefinitions);
-      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(updated));
-      var outputColumns = viewMetadataService.extractOutputColumns(updated);
-      if (!outputColumns.isEmpty()) {
-        spec.addAllOutputColumns(outputColumns);
-        mask.addPaths("output_columns");
-      }
-      spec.putAllProperties(viewMetadataService.buildPropertyMap(updated));
-      mask.addPaths("creation_search_path");
+      ViewSpecSupport.UpdateSpec updateSpec = viewSpecSupport.updateSpec(updated);
+      var resp =
+          viewClient.updateView(
+              UpdateViewRequest.newBuilder()
+                  .setViewId(viewContext.viewId())
+                  .setSpec(updateSpec.spec())
+                  .setUpdateMask(updateSpec.updateMask())
+                  .build());
+      MetadataContext responseContext =
+          viewMetadataService.fromView(
+              viewContext.namespacePath(), viewContext.view(), resp.getView());
+      return Response.ok(
+              ViewResponseMapper.toLoadResult(
+                  viewContext.namespaceName(),
+                  viewContext.view(),
+                  resp.getView(),
+                  responseContext.metadata()))
+          .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-
-    var resp =
-        viewClient.updateView(
-            UpdateViewRequest.newBuilder()
-                .setViewId(viewContext.viewId())
-                .setSpec(spec)
-                .setUpdateMask(mask)
-                .build());
-    MetadataContext responseContext =
-        viewMetadataService.fromView(
-            viewContext.namespacePath(), viewContext.view(), resp.getView());
-    return Response.ok(
-            ViewResponseMapper.toLoadResult(
-                viewContext.namespaceName(),
-                viewContext.view(),
-                resp.getView(),
-                responseContext.metadata()))
-        .build();
   }
 
   public Response register(
@@ -210,7 +177,7 @@ public class ViewService {
 
     ViewMetadataView metadata;
     try {
-      metadata = loadMetadata(metadataLocation);
+      metadata = viewMetadataFileSupport.loadMetadata(metadataLocation);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -234,68 +201,30 @@ public class ViewService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    ViewSpec.Builder spec =
-        ViewSpec.newBuilder()
-            .setCatalogId(namespaceContext.catalogId())
-            .setNamespaceId(namespaceContext.namespaceId())
-            .setDisplayName(viewName);
     try {
-      viewMetadataService.extractSqlDefinitions(metadataContext).forEach(spec::addSqlDefinitions);
-      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(metadataContext));
-      spec.addAllOutputColumns(viewMetadataService.extractOutputColumns(metadataContext));
-      spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
+      var spec = viewSpecSupport.createSpec(namespaceContext, viewName, metadataContext);
+      CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
+      if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+        request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
+      }
+      var created = viewClient.createView(request.build());
+      MetadataContext responseContext =
+          viewMetadataService.fromView(
+              namespaceContext.namespacePath(), viewName, created.getView());
+      return Response.ok(
+              ViewResponseMapper.toLoadResult(
+                  namespaceContext.namespace(),
+                  viewName,
+                  created.getView(),
+                  responseContext.metadata()))
+          .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-
-    CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
-    }
-    var created = viewClient.createView(request.build());
-    MetadataContext responseContext =
-        viewMetadataService.fromView(namespaceContext.namespacePath(), viewName, created.getView());
-    return Response.ok(
-            ViewResponseMapper.toLoadResult(
-                namespaceContext.namespace(),
-                viewName,
-                created.getView(),
-                responseContext.metadata()))
-        .build();
   }
 
   private String flattenPageToken(PageResponse page) {
     String token = page.getNextPageToken();
     return token == null || token.isBlank() ? null : token;
-  }
-
-  private ViewMetadataView loadMetadata(String metadataLocation) {
-    FileIO fileIO = null;
-    try {
-      Map<String, String> ioProps = tableGatewaySupport.defaultFileIoProperties();
-      fileIO = FileIoFactory.createFileIo(ioProps, config, true);
-      InputFile input = fileIO.newInputFile(metadataLocation);
-      try (InputStream stream = input.newStream()) {
-        String payload = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
-        return mapper.readValue(payload, ViewMetadataView.class);
-      }
-    } catch (IllegalArgumentException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new IllegalArgumentException(
-          "Unable to read view metadata from " + metadataLocation, e);
-    } finally {
-      closeQuietly(fileIO);
-    }
-  }
-
-  private void closeQuietly(FileIO fileIO) {
-    if (fileIO instanceof AutoCloseable closable) {
-      try {
-        closable.close();
-      } catch (Exception ignored) {
-        // ignore close failure
-      }
-    }
   }
 }

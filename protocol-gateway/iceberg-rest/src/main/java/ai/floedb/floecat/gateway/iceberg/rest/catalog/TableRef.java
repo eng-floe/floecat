@@ -14,15 +14,13 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.resources.common;
+package ai.floedb.floecat.gateway.iceberg.rest.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.List;
 
-public record ViewRequestContext(
-    NamespaceRequestContext namespace, String view, ResourceId viewId) {
-
-  public CatalogRequestContext catalog() {
+public record TableRef(NamespaceRef namespace, String table, ResourceId tableId) {
+  public CatalogRef catalog() {
     return namespace.catalog();
   }
 

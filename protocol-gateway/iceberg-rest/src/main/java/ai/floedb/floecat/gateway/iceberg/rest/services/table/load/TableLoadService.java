@@ -18,9 +18,9 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table.load;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -36,7 +36,7 @@ public class TableLoadService {
   @Inject TableLoadSupport loadSupport;
 
   public Response load(
-      TableRequestContext tableContext,
+      TableRef tableContext,
       String tableName,
       String snapshots,
       String accessDelegationMode,

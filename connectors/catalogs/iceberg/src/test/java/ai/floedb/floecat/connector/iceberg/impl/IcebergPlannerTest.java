@@ -18,13 +18,62 @@ package ai.floedb.floecat.connector.iceberg.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Map;
+import java.util.Set;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
 class IcebergPlannerTest {
+
+  @Test
+  void plannerIndexesNestedSnapshotFieldIds() {
+    Schema schema =
+        new Schema(
+            10,
+            Types.NestedField.optional(
+                1,
+                "user",
+                Types.StructType.of(
+                    Types.NestedField.optional(2, "name", Types.StringType.get()),
+                    Types.NestedField.optional(3, "age", Types.IntegerType.get()))));
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> 10;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshot" -> snapshot;
+                      case "schema" -> schema;
+                      case "schemas" -> Map.of(10, schema);
+                      case "specs" -> Map.of();
+                      case "spec" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    try (IcebergPlanner planner =
+        new IcebergPlanner(table, 1L, Set.of(2, 3), Set.of(), null, false)) {
+      assertThat(planner.columnNamesByKey()).containsEntry(2, "name").containsEntry(3, "age");
+      assertThat(planner.logicalTypesByKey()).containsKeys(2, 3);
+    }
+  }
 
   @Test
   void canonicalizeDecodedBoundConvertsTimeMicrosToLocalTime() {

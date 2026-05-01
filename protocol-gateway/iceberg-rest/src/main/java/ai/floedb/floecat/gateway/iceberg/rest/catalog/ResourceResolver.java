@@ -66,6 +66,28 @@ public class ResourceResolver {
     return view(namespace(prefix, namespace), view);
   }
 
+  public TableRef table(String prefix, String namespace, String table) {
+    return table(namespace(prefix, namespace), table);
+  }
+
+  public TableRef table(NamespaceRef namespace, String table) {
+    ResourceId tableId;
+    try {
+      tableId =
+          tableLifecycleService.resolveTableId(
+              namespace.catalogName(), namespace.namespacePath(), table);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespaceName = String.join(".", namespace.namespacePath());
+        throw new WebApplicationException(
+            IcebergErrorResponses.noSuchTable(
+                "Table " + namespaceName + "." + table + " not found"));
+      }
+      throw e;
+    }
+    return new TableRef(namespace, table, tableId);
+  }
+
   public ViewRef view(NamespaceRef namespace, String view) {
     ResourceId viewId;
     try {

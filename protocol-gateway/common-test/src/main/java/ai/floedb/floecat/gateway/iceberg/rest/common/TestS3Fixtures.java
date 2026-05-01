@@ -207,6 +207,18 @@ public final class TestS3Fixtures {
       } catch (UncheckedIOException e) {
         throw e.getCause();
       }
+      try (var stream = Files.walk(targetRoot)) {
+        boolean extras =
+            stream
+                .filter(Files::isRegularFile)
+                .map(targetRoot::relativize)
+                .anyMatch(relative -> !Files.isRegularFile(set.sourceRoot.resolve(relative)));
+        if (extras) {
+          return true;
+        }
+      } catch (UncheckedIOException e) {
+        throw e.getCause();
+      }
     }
     return false;
   }

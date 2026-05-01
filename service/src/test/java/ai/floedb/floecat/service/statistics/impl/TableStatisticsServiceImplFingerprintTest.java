@@ -65,7 +65,7 @@ class TableStatisticsServiceImplFingerprintTest {
   }
 
   @Test
-  void scalarFingerprintIgnoresDisplayName() {
+  void scalarFingerprintDistinguishesDisplayName() {
     ScalarStats first =
         ScalarStats.newBuilder()
             .setDisplayName("col_a")
@@ -75,6 +75,6 @@ class TableStatisticsServiceImplFingerprintTest {
     ScalarStats second = first.toBuilder().setDisplayName("alias_name").build();
 
     assertThat(StatsCanonicalizer.canonicalFingerprint(first))
-        .isEqualTo(StatsCanonicalizer.canonicalFingerprint(second));
+        .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(second));
   }
 }

@@ -295,6 +295,70 @@ quit")
   return 1
 }
 
+assert_table_indexes_available() {
+  local compose_cmd="$1"
+  local label="$2"
+  local table_fqn="$3"
+  local retries="$4"
+  local sleep_seconds="$5"
+  local attempt
+  local out
+  local snapshot_out
+  local snapshot_id
+  local snapshot_ids
+  local last_out=""
+
+  echo "==> [SMOKE] waiting for index artifacts for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
+  for attempt in $(seq 1 "$retries"); do
+    out=$(run_cli_script "$compose_cmd" "account t-0001
+stats index $table_fqn --snapshot current --limit 5
+quit")
+    last_out="$out"
+    if echo "$out" | grep -q "IDX" \
+      && echo "$out" | grep -q "PATH" \
+      && ! echo "$out" | grep -q "No index artifacts found."; then
+      assert_contains "$label index header" "$out" "IDX"
+      assert_contains "$label index path header" "$out" "PATH"
+      assert_contains "$label index artifact uri" "$out" "uri="
+      echo "[PASS] $label index artifacts available for $table_fqn"
+      return 0
+    fi
+
+    # Current snapshot can briefly lag artifact registration; probe a few explicit snapshots as fallback.
+    snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
+snapshots $table_fqn
+quit")
+    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
+
+    for snapshot_id in $snapshot_ids; do
+      out=$(run_cli_script "$compose_cmd" "account t-0001
+stats index $table_fqn --snapshot $snapshot_id --limit 5
+quit")
+      last_out="$out"
+      if echo "$out" | grep -q "IDX" \
+        && echo "$out" | grep -q "PATH" \
+        && ! echo "$out" | grep -q "No index artifacts found."; then
+        assert_contains "$label index header" "$out" "IDX"
+        assert_contains "$label index path header" "$out" "PATH"
+        assert_contains "$label index artifact uri" "$out" "uri="
+        echo "[PASS] $label index artifacts available for $table_fqn (snapshot=$snapshot_id)"
+        return 0
+      fi
+    done
+
+    if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+      echo "==> [SMOKE] index artifacts not ready for $table_fqn yet (attempt $attempt/$retries)"
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  echo "[FAIL] $label index artifacts missing for $table_fqn"
+  echo "---- output begin ----"
+  echo "$last_out"
+  echo "---- output end ----"
+  return 1
+}
+
 cleanup_mode() {
   local compose_cmd="$1"
   eval "$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true
@@ -688,7 +752,7 @@ quit")
 
     local trigger_rest_out
     trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats
+connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats,index
 quit")
     local rest_job_id
     rest_job_id=$(extract_cli_job_id "$trigger_rest_out")
@@ -705,6 +769,12 @@ quit")
     assert_table_stats_available \
       "$compose_cmd" \
       "$label upstream iceberg file stats" \
+      "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE" \
+      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+    assert_table_indexes_available \
+      "$compose_cmd" \
+      "$label upstream iceberg page indexes" \
       "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE" \
       "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
       "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
@@ -776,7 +846,7 @@ quit")
 
     local trigger_unity_out
     trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats
+connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats,index
 quit")
     local unity_job_id
     unity_job_id=$(extract_cli_job_id "$trigger_unity_out")
@@ -793,6 +863,12 @@ quit")
     assert_table_stats_available \
       "$compose_cmd" \
       "$label upstream delta unity file stats" \
+      "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
+      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+    assert_table_indexes_available \
+      "$compose_cmd" \
+      "$label upstream delta unity page indexes" \
       "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
       "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
       "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
@@ -1218,7 +1294,11 @@ PY
     if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] trino iceberg format-version matrix (v1,v2)"
       local trino_fmt_out
-      if ! trino_fmt_out=$(docker run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$(should_run_client duckdb && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1
+      local check_duckdb_format_tables=false
+      if should_run_client duckdb; then
+        check_duckdb_format_tables=true
+      fi
+      if ! trino_fmt_out=$(docker run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$check_duckdb_format_tables" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
 import os
 import urllib.request

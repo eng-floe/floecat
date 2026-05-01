@@ -87,8 +87,7 @@ public class ViewResource {
   public Response delete(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @PathParam("view") String view,
-      @HeaderParam("Idempotency-Key") String idempotencyKey) {
+      @PathParam("view") String view) {
     ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
     return viewService.delete(viewContext);
   }
@@ -99,7 +98,6 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Commit req) {
     ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
     return viewService.commit(viewContext, req);

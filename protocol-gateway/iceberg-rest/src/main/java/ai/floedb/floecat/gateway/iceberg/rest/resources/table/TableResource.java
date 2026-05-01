@@ -16,22 +16,18 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableListResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.MetricsRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TaskRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.ResourceResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.planning.TablePlanOrchestrationService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCreateService;
@@ -40,9 +36,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDeleteService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableMetricsService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRegisterService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.load.TableLoadService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.smallrye.common.annotation.Blocking;
-import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -61,10 +55,6 @@ import jakarta.ws.rs.core.Response;
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class TableResource {
-  @Inject GrpcWithHeaders grpc;
-  @Inject IcebergGatewayConfig config;
-  @Inject ConnectorIntegrationConfig connectorConfig;
-  @Inject ObjectMapper mapper;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitService tableCommitService;
   @Inject TableRegisterService tableRegisterService;
@@ -73,17 +63,10 @@ public class TableResource {
   @Inject TableLoadService tableLoadService;
   @Inject TableCredentialService tableCredentialService;
   @Inject TableMetricsService tableMetricsService;
-  @Inject RequestContextFactory requestContextFactory;
+  @Inject ResourceResolver resourceResolver;
   @Inject TableCreateService tableCreateService;
   @Inject CommitTrafficLogger commitTrafficLogger;
-  @Inject GrpcServiceFacade grpcClient;
-
-  private TableGatewaySupport tableSupport;
-
-  @PostConstruct
-  void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
-  }
+  @Inject TableGatewaySupport tableSupport;
 
   @GET
   @Path("/tables")
@@ -92,7 +75,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     TableLifecycleService.ListTablesResult result =
         tableLifecycleService.listTables(
             namespaceContext.catalogName(), namespaceContext.namespace(), pageSize, pageToken);
@@ -110,7 +93,7 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Create req) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     return tableCreateService.create(
         namespaceContext, accessDelegationMode, idempotencyKey, transactionId, req, tableSupport);
   }
@@ -128,7 +111,7 @@ public class TableResource {
     if (snapshots != null && !snapshots.isBlank()) {
       path = path + "?snapshots=" + snapshots;
     }
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     Response response =
         tableLoadService.load(
             tableContext, table, snapshots, accessDelegationMode, ifNoneMatch, tableSupport);
@@ -142,7 +125,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
-    requestContextFactory.table(prefix, namespace, table);
+    resourceResolver.table(prefix, namespace, table);
     return Response.noContent().build();
   }
 
@@ -152,9 +135,8 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       @QueryParam("purgeRequested") Boolean purgeRequested) {
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     return tableDeleteService.delete(tableContext, table, purgeRequested, tableSupport);
   }
 
@@ -170,7 +152,7 @@ public class TableResource {
       TableRequests.Commit req) {
     String path = String.format("/v1/%s/namespaces/%s/tables/%s", prefix, namespace, table);
     commitTrafficLogger.logRequest("POST", path, req);
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     Response response =
         tableCommitService.commit(
             new TableCommitService.CommitCommand(
@@ -196,9 +178,8 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       PlanRequests.Plan rawRequest) {
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     return tablePlanOrchestrationService.plan(tableContext, rawRequest, tableSupport);
   }
 
@@ -209,7 +190,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
-    requestContextFactory.table(prefix, namespace, table);
+    resourceResolver.table(prefix, namespace, table);
     return tablePlanOrchestrationService.fetchPlan(planId);
   }
 
@@ -219,9 +200,8 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       @PathParam("plan-id") String planId) {
-    requestContextFactory.table(prefix, namespace, table);
+    resourceResolver.table(prefix, namespace, table);
     return tablePlanOrchestrationService.cancelPlan(planId);
   }
 
@@ -231,12 +211,11 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       TaskRequests.Fetch request) {
     if (request == null || request.planTask() == null || request.planTask().isBlank()) {
       return IcebergErrorResponses.validation("plan-task is required");
     }
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     return tablePlanOrchestrationService.consumeTask(tableContext, request.planTask().trim());
   }
 
@@ -247,7 +226,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @QueryParam("planId") String planId) {
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     return tableCredentialService.load(tableContext, planId, tableSupport);
   }
 
@@ -257,9 +236,8 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       MetricsRequests.Report request) {
-    TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
     return tableMetricsService.publish(tableContext, request);
   }
 
@@ -271,7 +249,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       TableRequests.Register req) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     return tableRegisterService.register(namespaceContext, idempotencyKey, req, tableSupport);
   }
 }

@@ -45,6 +45,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,9 +64,7 @@ public class TableGatewaySupport {
   private final ObjectMapper mapper;
   private final GrpcServiceFacade grpcClient;
 
-  private volatile Map<String, String> tableConfigCache;
-  private volatile List<StorageCredentialDto> storageCredentialCache;
-
+  @Inject
   public TableGatewaySupport(
       GrpcWithHeaders grpc,
       IcebergGatewayConfig gatewayConfig,
@@ -186,16 +185,9 @@ public class TableGatewaySupport {
   }
 
   public Map<String, String> defaultTableConfig() {
-    Map<String, String> cached = tableConfigCache;
-    if (cached != null) {
-      return cached;
-    }
     // Expose non-secret S3 endpoint/path-style settings so clients (e.g. DuckDB) can
     // consistently resolve object storage during both read and write paths.
-    Map<String, String> normalized =
-        ConnectorIntegrationProperties.defaultTableConfig(connectorConfig);
-    tableConfigCache = normalized;
-    return normalized;
+    return ConnectorIntegrationProperties.defaultTableConfig(connectorConfig);
   }
 
   public Map<String, String> resolveRegisterFileIoProperties(
@@ -218,24 +210,16 @@ public class TableGatewaySupport {
   }
 
   public List<StorageCredentialDto> defaultCredentials() {
-    List<StorageCredentialDto> cached = storageCredentialCache;
-    if (cached != null) {
-      return cached;
-    }
     Map<String, String> props =
         ConnectorIntegrationProperties.credentialProperties(connectorConfig);
     if (props.isEmpty()) {
-      storageCredentialCache = STATIC_STORAGE_CREDENTIALS;
       return STATIC_STORAGE_CREDENTIALS;
     }
     String scope =
         ConnectorIntegrationProperties.credentialScope(connectorConfig)
             .filter(s -> s != null && !s.isBlank())
             .orElse("*");
-    List<StorageCredentialDto> computed =
-        List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
-    storageCredentialCache = computed;
-    return computed;
+    return List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
   }
 
   public List<StorageCredentialDto> credentialsForAccessDelegation(String accessDelegationMode) {

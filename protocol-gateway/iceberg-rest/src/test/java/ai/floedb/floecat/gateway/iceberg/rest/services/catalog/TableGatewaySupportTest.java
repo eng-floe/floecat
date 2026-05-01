@@ -126,7 +126,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void defaultTableConfigFiltersSecretsAndCachesResult() {
+  void defaultTableConfigFiltersSecretsWithoutLeakingSecrets() {
     ConnectorIntegrationConfig.StorageCredentialConfig storage =
         mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
     when(storage.properties())
@@ -142,9 +142,7 @@ class TableGatewaySupportTest {
     when(connectorConfig.defaultRegion()).thenReturn(Optional.of("us-east-1"));
 
     Map<String, String> configMap = support.defaultTableConfig();
-    Map<String, String> cached = support.defaultTableConfig();
 
-    assertSame(configMap, cached);
     assertEquals("io.impl.Custom", configMap.get("io-impl"));
     assertEquals("/warehouse/root", configMap.get("fs.floecat.test-root"));
     assertEquals("http://localhost:4566", configMap.get("s3.endpoint"));

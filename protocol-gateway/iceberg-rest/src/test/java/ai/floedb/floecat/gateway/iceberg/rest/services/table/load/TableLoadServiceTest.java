@@ -32,9 +32,9 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.CatalogRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -103,11 +103,10 @@ class TableLoadServiceTest {
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
 
-    TableRequestContext context =
-        new TableRequestContext(
-            new NamespaceRequestContext(
-                new CatalogRequestContext(
-                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+    TableRef context =
+        new TableRef(
+            new NamespaceRef(
+                new CatalogRef("pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
                 "db",
                 List.of("db"),
                 ResourceId.newBuilder().setId("cat:db").build()),
@@ -143,11 +142,10 @@ class TableLoadServiceTest {
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.REFS))
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
 
-    TableRequestContext context =
-        new TableRequestContext(
-            new NamespaceRequestContext(
-                new CatalogRequestContext(
-                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+    TableRef context =
+        new TableRef(
+            new NamespaceRef(
+                new CatalogRef("pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
                 "db",
                 List.of("db"),
                 ResourceId.newBuilder().setId("cat:db").build()),
@@ -192,11 +190,10 @@ class TableLoadServiceTest {
                 null,
                 List.of()));
 
-    TableRequestContext context =
-        new TableRequestContext(
-            new NamespaceRequestContext(
-                new CatalogRequestContext(
-                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+    TableRef context =
+        new TableRef(
+            new NamespaceRef(
+                new CatalogRef("pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
                 "db",
                 List.of("db"),
                 ResourceId.newBuilder().setId("cat:db").build()),
@@ -245,11 +242,10 @@ class TableLoadServiceTest {
                 null,
                 List.of()));
 
-    TableRequestContext context =
-        new TableRequestContext(
-            new NamespaceRequestContext(
-                new CatalogRequestContext(
-                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+    TableRef context =
+        new TableRef(
+            new NamespaceRef(
+                new CatalogRef("pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
                 "db",
                 List.of("db"),
                 ResourceId.newBuilder().setId("cat:db").build()),

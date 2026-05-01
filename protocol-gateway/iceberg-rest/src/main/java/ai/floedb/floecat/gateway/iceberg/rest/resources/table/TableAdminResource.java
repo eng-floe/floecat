@@ -16,19 +16,13 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction.TransactionCommitService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.smallrye.common.annotation.Blocking;
-import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -43,27 +37,15 @@ import jakarta.ws.rs.core.Response;
 @Path("/v1/{prefix}")
 @Produces(MediaType.APPLICATION_JSON)
 public class TableAdminResource {
-  @Inject GrpcWithHeaders grpc;
-  @Inject IcebergGatewayConfig config;
-  @Inject ConnectorIntegrationConfig connectorConfig;
-  @Inject ObjectMapper mapper;
   @Inject TableRenameService tableRenameService;
   @Inject TransactionCommitService transactionCommitService;
   @Inject CommitTrafficLogger commitTrafficLogger;
-  @Inject GrpcServiceFacade grpcClient;
-  private TableGatewaySupport tableSupport;
-
-  @PostConstruct
-  void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
-  }
+  @Inject TableGatewaySupport tableSupport;
 
   @Path("/tables/rename")
   @POST
   public Response rename(
-      @PathParam("prefix") String prefix,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
-      @NotNull @Valid RenameRequest request) {
+      @PathParam("prefix") String prefix, @NotNull @Valid RenameRequest request) {
     return tableRenameService.rename(prefix, request);
   }
 

@@ -43,13 +43,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class NamespacePropertyServiceTest {
-  private final NamespaceService service = new NamespaceService();
+  private final NamespacePropertyUpdateSupport service = new NamespacePropertyUpdateSupport();
   private final GrpcServiceFacade namespaceClient = mock(GrpcServiceFacade.class);
   private final ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
 
   @BeforeEach
   void setUp() {
     service.namespaceClient = namespaceClient;
+    service.namespaceLookupSupport = new NamespaceLookupSupport();
+    service.namespaceLookupSupport.namespaceClient = namespaceClient;
   }
 
   @Test
@@ -57,7 +59,6 @@ class NamespacePropertyServiceTest {
     Response response =
         service.updateProperties(
             namespaceContext(),
-            null,
             new NamespacePropertiesRequest(List.of(), Map.of("polaris.internal", "x")));
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
@@ -72,7 +73,6 @@ class NamespacePropertyServiceTest {
     Response response =
         service.updateProperties(
             namespaceContext(),
-            null,
             new NamespacePropertiesRequest(List.of("polaris.internal"), Map.of()));
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
@@ -85,7 +85,6 @@ class NamespacePropertyServiceTest {
     Response response =
         service.updateProperties(
             namespaceContext(),
-            null,
             new NamespacePropertiesRequest(List.of("owner"), Map.of("owner", "team-a")));
 
     assertEquals(422, response.getStatus());
@@ -118,7 +117,7 @@ class NamespacePropertyServiceTest {
     NamespacePropertiesRequest request =
         new NamespacePropertiesRequest(List.of("region", "missing", "missing"), updates);
 
-    Response response = service.updateProperties(namespaceContext(), null, request);
+    Response response = service.updateProperties(namespaceContext(), request);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();
@@ -152,7 +151,7 @@ class NamespacePropertyServiceTest {
     when(namespaceClient.updateNamespace(any()))
         .thenReturn(UpdateNamespaceResponse.newBuilder().setNamespace(existing).build());
 
-    Response response = service.updateProperties(namespaceContext(), null, null);
+    Response response = service.updateProperties(namespaceContext(), null);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();
