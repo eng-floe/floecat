@@ -25,7 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TransactionCommitService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction.TransactionCommitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.smallrye.common.annotation.Blocking;
 import jakarta.annotation.PostConstruct;

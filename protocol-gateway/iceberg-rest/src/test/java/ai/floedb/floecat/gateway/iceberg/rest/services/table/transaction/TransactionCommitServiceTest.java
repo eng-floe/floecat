@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.table;
+package ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -47,14 +47,21 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.CatalogRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.ResourceResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitResponseBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.ConnectorProvisioningService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitPlanner;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCreateTransactionMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -90,8 +97,13 @@ class TransactionCommitServiceTest {
   private final ConnectorProvisioningService connectorProvisioningService =
       new ConnectorProvisioningService();
   private final AccountContext accountContext = Mockito.mock(AccountContext.class);
-  private final RequestContextFactory requestContextFactory =
-      Mockito.mock(RequestContextFactory.class);
+  private final ResourceResolver resourceResolver = Mockito.mock(ResourceResolver.class);
+  private final TransactionCommitExecutionSupport transactionCommitExecutionSupport =
+      new TransactionCommitExecutionSupport();
+  private final TransactionCommitTablePlanningSupport tablePlanningSupport =
+      new TransactionCommitTablePlanningSupport();
+  private final TransactionCommitSnapshotSupport snapshotSupport =
+      new TransactionCommitSnapshotSupport();
   private final TableLifecycleService tableLifecycleService =
       Mockito.mock(TableLifecycleService.class);
   private final TableCommitPlanner tableCommitPlanner = Mockito.mock(TableCommitPlanner.class);
@@ -108,21 +120,28 @@ class TransactionCommitServiceTest {
   @BeforeEach
   void setUp() {
     service.accountContext = accountContext;
-    service.requestContextFactory = requestContextFactory;
+    service.resourceResolver = resourceResolver;
+    service.transactionCommitExecutionSupport = transactionCommitExecutionSupport;
+    service.tablePlanningSupport = tablePlanningSupport;
+    service.snapshotSupport = snapshotSupport;
     service.tableLifecycleService = tableLifecycleService;
-    service.tableCommitPlanner = tableCommitPlanner;
     service.tableCreateTransactionMapper = tableCreateTransactionMapper;
-    service.materializationService = materializationService;
-    service.responseBuilder = responseBuilder;
-    service.metadataMutator = metadataMutator;
-    service.grpcClient = grpcClient;
-    service.tablePropertyService = tablePropertyService;
     service.connectorProvisioningService = connectorProvisioningService;
+    transactionCommitExecutionSupport.grpcClient = grpcClient;
+    tablePlanningSupport.transactionCommitExecutionSupport = transactionCommitExecutionSupport;
+    tablePlanningSupport.tableLifecycleService = tableLifecycleService;
+    tablePlanningSupport.tableCommitPlanner = tableCommitPlanner;
+    tablePlanningSupport.responseBuilder = responseBuilder;
+    tablePlanningSupport.tablePropertyService = tablePropertyService;
+    tablePlanningSupport.materializationService = materializationService;
+    snapshotSupport.transactionCommitExecutionSupport = transactionCommitExecutionSupport;
+    snapshotSupport.tablePropertyService = tablePropertyService;
+    snapshotSupport.grpcClient = grpcClient;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
-    when(requestContextFactory.catalog(any()))
+    when(resourceResolver.catalog(any()))
         .thenReturn(
-            new CatalogRequestContext(
+            new CatalogRef(
                 "pref",
                 "cat",
                 ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build()));
@@ -777,7 +796,7 @@ class TransactionCommitServiceTest {
     when(tableSupport.loadCurrentMetadata(any(Table.class)))
         .thenReturn(IcebergMetadata.getDefaultInstance());
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
@@ -836,7 +855,7 @@ class TransactionCommitServiceTest {
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
     when(tableSupport.loadCurrentMetadata(any(Table.class)))
         .thenReturn(IcebergMetadata.getDefaultInstance());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
@@ -902,7 +921,7 @@ class TransactionCommitServiceTest {
             IcebergMetadata.newBuilder()
                 .setMetadataLocation("s3://meta/old/00001.metadata.json")
                 .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
@@ -931,7 +950,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any());
     verify(grpcClient)
         .prepareTransaction(
             argThat(
@@ -1084,8 +1103,7 @@ class TransactionCommitServiceTest {
             tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService, never())
-        .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(materializationService, never()).materializeMetadata(any(), any(), any(), any(), any());
     verify(grpcClient)
         .prepareTransaction(
             argThat(
@@ -1138,8 +1156,7 @@ class TransactionCommitServiceTest {
             tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    verify(materializationService, never())
-        .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(materializationService, never()).materializeMetadata(any(), any(), any(), any(), any());
     verify(grpcClient, never()).prepareTransaction(any());
   }
 
@@ -1157,7 +1174,7 @@ class TransactionCommitServiceTest {
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
     when(tableSupport.loadCurrentMetadata(any(Table.class)))
         .thenThrow(new RuntimeException("missing pointer"));
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
@@ -1186,7 +1203,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any());
     verify(grpcClient)
         .prepareTransaction(
             argThat(

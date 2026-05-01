@@ -19,24 +19,17 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.io.FileInfo;
-import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -45,8 +38,11 @@ public class MaterializeMetadataService {
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
   @Inject ObjectMapper mapper;
-  @Inject ConnectorIntegrationConfig config;
-  @Inject TableGatewaySupport tableGatewaySupport;
+  @Inject MetadataFileIoSupport metadataFileIoSupport = new MetadataFileIoSupport();
+
+  @Inject
+  MetadataVersionedLocationSupport metadataVersionedLocationSupport =
+      new MetadataVersionedLocationSupport();
 
   public record MaterializeResult(String metadataLocation, TableMetadataView metadata) {}
 
@@ -68,22 +64,21 @@ public class MaterializeMetadataService {
           namespaceFq, tableName, requestedLocation);
       return new MaterializeResult(requestedLocation, metadata);
     }
+
     String resolvedLocation = null;
     FileIO fileIO = null;
     try {
-      Map<String, String> props = new LinkedHashMap<>();
-      if (tableGatewaySupport != null) {
-        props.putAll(tableGatewaySupport.defaultFileIoProperties());
-      }
-      props.putAll(sanitizeProperties(metadata.properties()));
-      fileIO = newFileIo(props);
-      resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
+      fileIO = newFileIo(metadata.properties());
+      resolvedLocation =
+          metadataVersionedLocationSupport.resolveVersionedLocation(
+              fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
             "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
             namespaceFq, tableName);
         return new MaterializeResult(requestedLocation, metadata);
       }
+
       TableMetadataView resolvedMetadata = metadata.withMetadataLocation(resolvedLocation);
       TableMetadata parsed = parseMetadata(resolvedMetadata, resolvedLocation);
       writeMetadata(fileIO, resolvedLocation, parsed);
@@ -103,12 +98,12 @@ public class MaterializeMetadataService {
       throw new MaterializeMetadataException(
           "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
     } finally {
-      closeQuietly(fileIO);
+      metadataFileIoSupport.closeQuietly(fileIO);
     }
   }
 
   protected FileIO newFileIo(Map<String, String> props) {
-    return FileIoFactory.createFileIo(props, config, true);
+    return metadataFileIoSupport.newMaterializationFileIo(props);
   }
 
   private boolean shouldMaterialize(String metadataLocation) {
@@ -144,215 +139,5 @@ public class MaterializeMetadataService {
     TableMetadataParser.write(metadata, fileIO.newOutputFile(location));
     LOG.infof(
         "Successfully wrote Iceberg metadata file %s", location == null ? "<null>" : location);
-  }
-
-  private void closeQuietly(FileIO fileIO) {
-    if (fileIO instanceof AutoCloseable closable) {
-      try {
-        closable.close();
-      } catch (Exception e) {
-        LOG.debugf(e, "Failed to close FileIO %s", fileIO.getClass().getName());
-      }
-    }
-  }
-
-  // TableMappingUtil provides firstNonBlank.
-
-  private Map<String, String> sanitizeProperties(Map<String, String> props) {
-    Map<String, String> sanitized = new LinkedHashMap<>();
-    if (props != null && !props.isEmpty()) {
-      props.forEach(
-          (key, value) -> {
-            if (key != null && value != null) {
-              sanitized.put(key, value);
-            }
-          });
-    }
-    return sanitized;
-  }
-
-  private String resolveVersionedLocation(
-      FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
-    String directory = null;
-    if (metadataLocation != null) {
-      if (metadataLocation.endsWith("/")) {
-        directory = metadataLocation;
-      } else {
-        directory = directoryOf(metadataLocation);
-      }
-    }
-    if (directory == null) {
-      directory = metadataDirectory(metadata);
-    }
-    directory = normalizeMetadataDirectory(directory);
-    if (directory == null || directory.isBlank()) {
-      return null;
-    }
-    if (!directory.endsWith("/")) {
-      directory = directory + "/";
-    }
-    return directory + nextMetadataFileName(fileIO, directory, metadata);
-  }
-
-  private String directoryOf(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    String trimmed = metadataLocation;
-    while (trimmed.endsWith("/") && trimmed.length() > 1) {
-      trimmed = trimmed.substring(0, trimmed.length() - 1);
-    }
-    int slash = trimmed.lastIndexOf('/');
-    if (slash < 0) {
-      return null;
-    }
-    return trimmed.substring(0, slash + 1);
-  }
-
-  private String metadataDirectory(TableMetadataView metadata) {
-    if (metadata == null) {
-      return null;
-    }
-    String location = firstNonBlank(metadata.metadataLocation(), metadata.location());
-    String directory = metadataDirectoryFromLocation(location);
-    if (directory != null) {
-      return directory;
-    }
-
-    Map<String, String> props = metadata.properties();
-    if (props != null && !props.isEmpty()) {
-      String candidate = firstNonBlank(props.get("metadata-location"), props.get("location"));
-      directory = metadataDirectoryFromLocation(candidate);
-      if (directory != null) {
-        return directory;
-      }
-    }
-
-    directory = directoryFromMetadataLog(metadata);
-    if (directory != null) {
-      return directory;
-    }
-
-    location = firstNonBlank(location, props == null ? null : props.get("location"));
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
-    return base + "/metadata/";
-  }
-
-  private String metadataDirectoryFromLocation(String location) {
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    if (looksLikeMetadataPath(location)) {
-      return directoryOf(location);
-    }
-    return null;
-  }
-
-  private boolean looksLikeMetadataPath(String location) {
-    if (location == null || location.isBlank()) {
-      return false;
-    }
-    if (location.contains("/metadata/")) {
-      return true;
-    }
-    return location.endsWith(".metadata.json");
-  }
-
-  private String directoryFromMetadataLog(TableMetadataView metadata) {
-    if (metadata == null || metadata.metadataLog() == null) {
-      return null;
-    }
-    for (Map<String, Object> entry : metadata.metadataLog()) {
-      Object value = entry == null ? null : entry.get("metadata-file");
-      if (value instanceof String file && !file.isBlank()) {
-        String directory = directoryOf(file);
-        if (directory != null) {
-          return directory;
-        }
-      }
-    }
-    return null;
-  }
-
-  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadataView metadata) {
-    long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
-    return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
-  }
-
-  private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadataView metadata) {
-    long max = parseExistingFiles(fileIO, directory);
-    if (metadata != null && metadata.metadataLog() != null) {
-      List<Map<String, Object>> entries = metadata.metadataLog();
-      for (Map<String, Object> entry : entries) {
-        Object value = entry.get("metadata-file");
-        if (value instanceof String file) {
-          long parsed = parseVersion(file);
-          if (parsed > max) {
-            max = parsed;
-          }
-        }
-      }
-    }
-    return max < 0 ? 0 : max + 1;
-  }
-
-  private long parseExistingFiles(FileIO fileIO, String directory) {
-    if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
-      return -1;
-    }
-    long max = -1;
-    try {
-      for (FileInfo info : prefixOps.listPrefix(directory)) {
-        String location = info.location();
-        if (location != null && location.endsWith(".metadata.json")) {
-          long parsed = parseVersion(location);
-          if (parsed > max) {
-            max = parsed;
-          }
-        }
-      }
-    } catch (UnsupportedOperationException e) {
-      return -1;
-    }
-    return max;
-  }
-
-  private long parseVersion(String file) {
-    if (file == null || file.isBlank()) {
-      return -1;
-    }
-    int slash = file.lastIndexOf('/');
-    String name = slash >= 0 ? file.substring(slash + 1) : file;
-    int dash = name.indexOf('-');
-    if (dash <= 0) {
-      return -1;
-    }
-    try {
-      return Long.parseLong(name.substring(0, dash));
-    } catch (NumberFormatException e) {
-      return -1;
-    }
-  }
-
-  private String normalizeMetadataDirectory(String directory) {
-    if (directory == null || directory.isBlank()) {
-      return null;
-    }
-    String normalized = directory;
-    while (normalized.endsWith("/") && normalized.length() > 1) {
-      normalized = normalized.substring(0, normalized.length() - 1);
-    }
-    if (normalized.endsWith(".metadata.json")) {
-      int slash = normalized.lastIndexOf('/');
-      if (slash >= 0) {
-        normalized = normalized.substring(0, slash);
-      } else {
-        return null;
-      }
-    }
-    return normalized.endsWith("/") ? normalized : normalized + "/";
   }
 }

@@ -29,6 +29,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -43,10 +44,6 @@ public class CommitResponseBuilder {
 
   @Inject GrpcServiceFacade snapshotClient;
   @Inject TableCommitMetadataMutator metadataMutator;
-
-  void setSnapshotClient(GrpcServiceFacade snapshotClient) {
-    this.snapshotClient = snapshotClient;
-  }
 
   public String resolveRequestedMetadataLocation(TableRequests.Commit req) {
     return CommitUpdateInspector.inspect(req).requestedMetadataLocation();
@@ -85,7 +82,6 @@ public class CommitResponseBuilder {
             ? initialResponse
             : preferStageMetadata(initialResponse, stageMaterialization);
     CommitTableResponseDto mutatedResponse = applyRequestMetadataMutations(stageAwareResponse, req);
-    mutatedResponse = normalizeMetadataLocation(mutatedResponse);
     return preferRequestedMetadata(mutatedResponse, parsed.requestedMetadataLocation());
   }
 
@@ -117,7 +113,6 @@ public class CommitResponseBuilder {
       finalResponse = preferStageMetadata(finalResponse, stageMaterialization);
     }
     finalResponse = applyRequestMetadataMutations(finalResponse, req);
-    finalResponse = normalizeMetadataLocation(finalResponse);
     return preferRequestedMetadata(finalResponse, parsed.requestedMetadataLocation());
   }
 
@@ -181,10 +176,6 @@ public class CommitResponseBuilder {
       }
     }
     return commitResponse(metadata);
-  }
-
-  public CommitTableResponseDto normalizeMetadataLocation(CommitTableResponseDto response) {
-    return response;
   }
 
   public CommitTableResponseDto commitResponse(TableMetadataView metadata) {

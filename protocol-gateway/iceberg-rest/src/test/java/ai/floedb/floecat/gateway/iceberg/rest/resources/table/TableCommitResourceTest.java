@@ -37,7 +37,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
@@ -83,12 +83,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenAnswer(
             invocation ->
                 MaterializeMetadataResult.success(
-                    invocation.getArgument(4, TableMetadataView.class),
-                    invocation.getArgument(5, String.class)));
+                    invocation.getArgument(3, TableMetadataView.class),
+                    invocation.getArgument(4, String.class)));
   }
 
   @Test

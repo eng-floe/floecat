@@ -45,7 +45,8 @@ Non-goals for the current release:
 protocol-gateway/iceberg-rest/
 ├── src/main/java/ai/floedb/floecat/gateway/iceberg/rest
 │   ├── api/              # Request/response DTOs & serializers
-│   ├── common/           # Cross-cutting helpers (context factory, filters, error mappers, metadata utils)
+│   ├── catalog/          # Catalog/resource resolver records and lookup helpers
+│   ├── common/           # Cross-cutting helpers (filters, error mappers, metadata utils)
 │   ├── resources/        # JAX-RS controllers (config, namespace, table, view, system)
 │   └── services/         # Adapters and workflows (accounts, catalog, table, metadata, planning, staging, clients)
 └── src/test/java/...     # RestAssured tests, unit tests mirroring the same package structure
@@ -54,11 +55,12 @@ protocol-gateway/iceberg-rest/
 Key packages under `services`:
 
 - `services.catalog` – low-level helpers (table lifecycle, connector wiring, requirement enforcement, metadata sync).
-- `services.table` / `services.view` / `services.namespace` – high-level use cases (create, commit, register, delete, property updates, rename).
+- `services.table` – top-level table workflows plus subpackages for `load`, `materialization`, `metadata`, and `transaction`.
+- `services.view` / `services.namespace` – high-level view and namespace use cases.
 - `services.metadata` – metadata import/materialization (Iceberg metadata files, snapshot transforms).
 - `services.planning` – scan planning orchestration plus `PlanTaskManager`.
 - `services.staging` – staged payload repository and TTL management.
-- `services.client` – typed gRPC clients (TableClient, NamespaceClient, ViewClient, SnapshotClient, QueryClient, ConnectorClient, etc.).
+- `services.client` – shared gRPC facade/wrappers used by the higher-level services.
 
 Tests mirror this layout so package-private collaborators (e.g., staged table repositories, planners) are still accessible without widening visibility.
 
@@ -67,9 +69,9 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 ## Runtime Architecture Overview
 
 1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
-2. **Context resolution:** `RequestContextFactory` resolves catalog prefixes, namespace paths, and table IDs by calling Floecat’s `DirectoryService` and `TableLifecycleService`. Context records travel with each request.
-3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
-4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
+2. **Context resolution:** `RequestContextFactory` still builds request-scoped namespace/table context records, while `ResourceResolver` owns the newer catalog/resource lookup model used by the refactored table transaction path.
+3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. Table orchestration is further split by concern into `load`, `materialization`, `metadata`, and `transaction`.
+4. **gRPC translation:** service orchestration flows use `GrpcServiceFacade` so backend calls inherit Floecat’s auth context and telemetry consistently.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
 6. **Connectors & credentials:** registered Iceberg tables provision a Floecat-backed connector during commit, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.

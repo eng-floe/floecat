@@ -17,9 +17,9 @@
 package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewRegisterService;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.ResourceResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.HeaderParam;
@@ -34,8 +34,8 @@ import jakarta.ws.rs.core.Response;
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class ViewRegisterResource {
-  @Inject RequestContextFactory requestContextFactory;
-  @Inject ViewRegisterService viewRegisterService;
+  @Inject ResourceResolver resourceResolver;
+  @Inject ViewService viewService;
 
   @Path("/register-view")
   @POST
@@ -44,7 +44,7 @@ public class ViewRegisterResource {
       @PathParam("namespace") String namespace,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Register req) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return viewRegisterService.register(namespaceContext, idempotencyKey, req);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
+    return viewService.register(namespaceContext, idempotencyKey, req);
   }
 }

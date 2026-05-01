@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.table;
+package ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

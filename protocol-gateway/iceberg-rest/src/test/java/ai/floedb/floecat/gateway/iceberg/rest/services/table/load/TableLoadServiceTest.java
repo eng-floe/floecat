@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.table;
+package ai.floedb.floecat.gateway.iceberg.rest.services.table.load;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -65,15 +65,18 @@ class TableLoadServiceTest {
   private final TableMetadataImportService tableMetadataImportService =
       mock(TableMetadataImportService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+  private final TableLoadSupport loadSupport = new TableLoadSupport();
 
   @BeforeEach
   void setUp() {
-    service.config = config;
     service.tableLifecycleService = tableLifecycleService;
-    service.snapshotClient = snapshotClient;
-    service.tableFormatSupport = tableFormatSupport;
-    service.deltaMetadataService = deltaMetadataService;
-    service.tableMetadataImportService = tableMetadataImportService;
+    service.loadSupport = loadSupport;
+
+    loadSupport.config = config;
+    loadSupport.snapshotClient = snapshotClient;
+    loadSupport.tableFormatSupport = tableFormatSupport;
+    loadSupport.deltaMetadataService = deltaMetadataService;
+    loadSupport.tableMetadataImportService = tableMetadataImportService;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompat));
     when(deltaCompat.enabled()).thenReturn(true);

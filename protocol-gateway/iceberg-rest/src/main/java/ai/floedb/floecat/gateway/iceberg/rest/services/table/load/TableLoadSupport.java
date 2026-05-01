@@ -14,20 +14,15 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.table;
+package ai.floedb.floecat.gateway.iceberg.rest.services.table.load;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
@@ -36,42 +31,28 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.core.HttpHeaders;
-import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class TableLoadService {
-  private static final Logger LOG = Logger.getLogger(TableLoadService.class);
+public class TableLoadSupport {
+  private static final Logger LOG = Logger.getLogger(TableLoadSupport.class);
+
   @Inject IcebergGatewayConfig config;
-  @Inject TableLifecycleService tableLifecycleService;
   @Inject GrpcServiceFacade snapshotClient;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject DeltaIcebergMetadataService deltaMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
 
-  public Response load(
-      TableRequestContext tableContext,
-      String tableName,
-      String snapshots,
-      String accessDelegationMode,
-      String ifNoneMatch,
-      TableGatewaySupport tableSupport) {
-    Table tableRecord = tableLifecycleService.getTable(tableContext.tableId());
-    SnapshotLister.Mode snapshotMode;
-    try {
-      snapshotMode = parseSnapshotMode(snapshots);
-    } catch (IllegalArgumentException e) {
-      return IcebergErrorResponses.validation(e.getMessage());
-    }
+  LoadData loadData(
+      Table tableRecord, SnapshotLister.Mode snapshotMode, TableGatewaySupport tableSupport) {
     IcebergMetadata metadata;
     List<Snapshot> snapshotList;
     if (deltaCompatEnabled(tableRecord)) {
       DeltaIcebergMetadataService.DeltaLoadResult delta =
-          deltaMetadataService.load(tableContext.tableId(), tableRecord, snapshotMode);
+          deltaMetadataService.load(tableRecord.getResourceId(), tableRecord, snapshotMode);
       metadata = delta.metadata();
       snapshotList = delta.snapshots();
     } else {
@@ -79,40 +60,12 @@ public class TableLoadService {
       metadata = hydrateMetadataIfNeeded(tableRecord, tableSupport, metadata);
       snapshotList =
           SnapshotLister.fetchSnapshots(
-              snapshotClient, tableContext.tableId(), snapshotMode, metadata);
+              snapshotClient, tableRecord.getResourceId(), snapshotMode, metadata);
     }
-    String etagValue = etagSource(metadata, snapshotMode);
-    if (etagValue != null) {
-      etagValue = IcebergHttpUtil.etagForMetadataLocation(etagValue);
-    }
-    if (ifNoneMatch != null && ifNoneMatch.trim().equals("*")) {
-      return IcebergErrorResponses.validation("If-None-Match may not take the value of '*'");
-    }
-    if (etagMatches(etagValue, ifNoneMatch)) {
-      return Response.notModified().build();
-    }
-    List<StorageCredentialDto> credentials;
-    try {
-      credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
-    } catch (IllegalArgumentException e) {
-      return IcebergErrorResponses.validation(e.getMessage());
-    }
-    Response.ResponseBuilder builder =
-        Response.ok(
-            TableResponseMapper.toLoadResult(
-                tableName,
-                tableRecord,
-                metadata,
-                snapshotList,
-                tableSupport.defaultTableConfig(),
-                credentials));
-    if (etagValue != null) {
-      builder.header(HttpHeaders.ETAG, etagValue);
-    }
-    return builder.build();
+    return new LoadData(metadata, snapshotList);
   }
 
-  private SnapshotLister.Mode parseSnapshotMode(String raw) {
+  SnapshotLister.Mode parseSnapshotMode(String raw) {
     if (raw == null || raw.isBlank() || raw.equalsIgnoreCase("all")) {
       return SnapshotLister.Mode.ALL;
     }
@@ -122,7 +75,16 @@ public class TableLoadService {
     throw new IllegalArgumentException("snapshots must be one of [all, refs]");
   }
 
-  private boolean etagMatches(String etagValue, String ifNoneMatch) {
+  String etagValue(IcebergMetadata metadata, SnapshotLister.Mode snapshotMode) {
+    String source = etagSource(metadata, snapshotMode);
+    return source == null ? null : IcebergHttpUtil.etagForMetadataLocation(source);
+  }
+
+  boolean hasWildcardIfNoneMatch(String ifNoneMatch) {
+    return ifNoneMatch != null && ifNoneMatch.trim().equals("*");
+  }
+
+  boolean etagMatches(String etagValue, String ifNoneMatch) {
     if (etagValue == null || ifNoneMatch == null) {
       return false;
     }
@@ -171,12 +133,10 @@ public class TableLoadService {
     if (metadataLocation == null) {
       return null;
     }
-    String mode;
-    if (snapshotMode == null) {
-      mode = SnapshotLister.Mode.ALL.name().toLowerCase();
-    } else {
-      mode = snapshotMode.name().toLowerCase();
-    }
+    String mode =
+        snapshotMode == null
+            ? SnapshotLister.Mode.ALL.name().toLowerCase()
+            : snapshotMode.name().toLowerCase();
     return metadataLocation + "|snapshots=" + mode;
   }
 
@@ -229,4 +189,6 @@ public class TableLoadService {
       return metadata;
     }
   }
+
+  record LoadData(IcebergMetadata metadata, List<Snapshot> snapshots) {}
 }

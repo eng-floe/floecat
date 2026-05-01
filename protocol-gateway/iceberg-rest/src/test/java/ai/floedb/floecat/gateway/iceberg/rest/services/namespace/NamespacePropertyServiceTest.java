@@ -32,7 +32,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.NamespacePropertiesResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -43,7 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class NamespacePropertyServiceTest {
-  private final NamespacePropertyService service = new NamespacePropertyService();
+  private final NamespaceService service = new NamespaceService();
   private final GrpcServiceFacade namespaceClient = mock(GrpcServiceFacade.class);
   private final ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
 
@@ -55,7 +55,7 @@ class NamespacePropertyServiceTest {
   @Test
   void updateRejectsReservedPropertyPrefixInUpdates() {
     Response response =
-        service.update(
+        service.updateProperties(
             namespaceContext(),
             null,
             new NamespacePropertiesRequest(List.of(), Map.of("polaris.internal", "x")));
@@ -70,7 +70,7 @@ class NamespacePropertyServiceTest {
   @Test
   void updateRejectsReservedPropertyPrefixInRemovals() {
     Response response =
-        service.update(
+        service.updateProperties(
             namespaceContext(),
             null,
             new NamespacePropertiesRequest(List.of("polaris.internal"), Map.of()));
@@ -83,7 +83,7 @@ class NamespacePropertyServiceTest {
   @Test
   void updateRejectsConflictingRemovalAndUpdateKeys() {
     Response response =
-        service.update(
+        service.updateProperties(
             namespaceContext(),
             null,
             new NamespacePropertiesRequest(List.of("owner"), Map.of("owner", "team-a")));
@@ -118,7 +118,7 @@ class NamespacePropertyServiceTest {
     NamespacePropertiesRequest request =
         new NamespacePropertiesRequest(List.of("region", "missing", "missing"), updates);
 
-    Response response = service.update(namespaceContext(), null, request);
+    Response response = service.updateProperties(namespaceContext(), null, request);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();
@@ -152,7 +152,7 @@ class NamespacePropertyServiceTest {
     when(namespaceClient.updateNamespace(any()))
         .thenReturn(UpdateNamespaceResponse.newBuilder().setNamespace(existing).build());
 
-    Response response = service.update(namespaceContext(), null, null);
+    Response response = service.updateProperties(namespaceContext(), null, null);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();
@@ -162,7 +162,7 @@ class NamespacePropertyServiceTest {
     verify(namespaceClient).updateNamespace(any());
   }
 
-  private NamespaceRequestContext namespaceContext() {
-    return new NamespaceRequestContext(null, "db", List.of("db"), namespaceId);
+  private NamespaceRef namespaceContext() {
+    return new NamespaceRef(null, "db", List.of("db"), namespaceId);
   }
 }

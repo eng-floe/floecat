@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.table;
+package ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -23,8 +23,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -40,7 +38,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,15 +52,18 @@ class TableCommitMaterializationServiceTest {
   private final TableCommitMaterializationService service = new TableCommitMaterializationService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
-  private final TableMetadataImportService tableMetadataImportService =
-      mock(TableMetadataImportService.class);
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
+  private final TableCommitMaterializationLocationSupport locationSupport =
+      new TableCommitMaterializationLocationSupport();
+  private final TableCommitMaterializationMetadataSupport metadataSupport =
+      new TableCommitMaterializationMetadataSupport();
 
   @BeforeEach
   void setUp() {
     service.materializeMetadataService = materializeMetadataService;
-    service.tableMetadataImportService = tableMetadataImportService;
-    service.config = config;
+    service.locationResolver = locationSupport;
+    service.metadataNormalizer = metadataSupport;
+    locationSupport.config = config;
     when(config.defaultWarehousePath()).thenReturn(Optional.empty());
   }
 
@@ -101,7 +101,6 @@ class TableCommitMaterializationServiceTest {
     MaterializeMetadataResult result =
         service.materializeMetadata(
             "cat.db",
-            tableId,
             "orders",
             table,
             metadata,
@@ -148,7 +147,7 @@ class TableCommitMaterializationServiceTest {
         .thenReturn(new MaterializeResult(null, noLocation));
 
     MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", null, "orders", null, noLocation, null);
+        service.materializeMetadata("cat.db", "orders", null, noLocation, null);
 
     assertNull(result.error());
     assertSame(noLocation, result.metadata());
@@ -205,7 +204,7 @@ class TableCommitMaterializationServiceTest {
                 "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
 
     MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", tableId, "orders", table, noMetadataLocation, null);
+        service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
     assertEquals(
@@ -265,7 +264,7 @@ class TableCommitMaterializationServiceTest {
                 "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
 
     MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", tableId, "orders", table, noMetadataLocation, null);
+        service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
     assertEquals(
@@ -316,7 +315,7 @@ class TableCommitMaterializationServiceTest {
                     "s3://warehouse/iceberg/orders/metadata/00001-new.metadata.json")));
 
     MaterializeMetadataResult result =
-        service.materializeMetadata("iceberg", null, "orders", null, noLocation, null);
+        service.materializeMetadata("iceberg", "orders", null, noLocation, null);
 
     assertNull(result.error());
     assertEquals(
@@ -370,12 +369,7 @@ class TableCommitMaterializationServiceTest {
 
     MaterializeMetadataResult result =
         service.materializeMetadata(
-            "cat.db",
-            null,
-            "orders",
-            null,
-            missingRequiredIds,
-            "s3://warehouse/tables/orders/metadata/");
+            "cat.db", "orders", null, missingRequiredIds, "s3://warehouse/tables/orders/metadata/");
 
     assertNull(result.error());
     assertEquals(
@@ -466,7 +460,6 @@ class TableCommitMaterializationServiceTest {
     MaterializeMetadataResult result =
         service.materializeMetadata(
             "cat.db",
-            null,
             "orders",
             null,
             negativeRequiredIds,
@@ -489,137 +482,6 @@ class TableCommitMaterializationServiceTest {
     } catch (NumberFormatException e) {
       return null;
     }
-  }
-
-  @Test
-  void materializeMetadataUsesExistingSchemaWhenRequestMetadataOmitsIt() throws Exception {
-    TableMetadataView existing =
-        metadata("s3://warehouse/tables/orders/metadata/00000-existing.metadata.json");
-    Table table =
-        FIXTURE.table().toBuilder()
-            .putProperties("metadata-location", existing.metadataLocation())
-            .build();
-    TableMetadataView snapshotOnlyMetadata =
-        new TableMetadataView(
-            2,
-            existing.tableUuid(),
-            existing.location(),
-            null,
-            existing.lastUpdatedMs(),
-            existing.properties(),
-            existing.lastColumnId(),
-            existing.currentSchemaId(),
-            existing.defaultSpecId(),
-            existing.lastPartitionId(),
-            existing.defaultSortOrderId(),
-            existing.currentSnapshotId(),
-            1L,
-            List.of(),
-            List.of(),
-            List.of(),
-            existing.refs(),
-            existing.snapshotLog(),
-            existing.metadataLog(),
-            existing.statistics(),
-            existing.partitionStatistics(),
-            existing.snapshots());
-    when(tableMetadataImportService.importMetadata(eq(existing.metadataLocation()), any()))
-        .thenReturn(
-            new TableMetadataImportService.ImportedMetadata(
-                table.getSchemaJson(),
-                Map.of(),
-                existing.location(),
-                FIXTURE.metadata(),
-                null,
-                List.of()));
-    when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            argThat(
-                md ->
-                    md != null
-                        && md.schemas() != null
-                        && !md.schemas().isEmpty()
-                        && md.schemas().getFirst().get("fields") instanceof List<?> fields
-                        && !fields.isEmpty()),
-            any()))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
-                snapshotOnlyMetadata.withMetadataLocation(
-                    "s3://warehouse/tables/orders/metadata/00001-new.metadata.json")));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", null, "orders", table, snapshotOnlyMetadata, null);
-
-    assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
-  }
-
-  @Test
-  void materializeMetadataKeepsClientProvidedSchemaWhenPresent() throws Exception {
-    TableMetadataView existing =
-        metadata("s3://warehouse/tables/orders/metadata/00000-existing.metadata.json");
-    Table table =
-        FIXTURE.table().toBuilder()
-            .putProperties("metadata-location", existing.metadataLocation())
-            .build();
-    Map<String, Object> schemaChange =
-        Map.of(
-            "type",
-            "struct",
-            "schema-id",
-            7,
-            "fields",
-            List.of(Map.of("id", 10, "name", "new_id", "required", false, "type", "long")));
-    TableMetadataView schemaChangeMetadata =
-        new TableMetadataView(
-            2,
-            existing.tableUuid(),
-            existing.location(),
-            null,
-            existing.lastUpdatedMs(),
-            existing.properties(),
-            10,
-            7,
-            existing.defaultSpecId(),
-            existing.lastPartitionId(),
-            existing.defaultSortOrderId(),
-            existing.currentSnapshotId(),
-            1L,
-            List.of(schemaChange),
-            existing.partitionSpecs(),
-            existing.sortOrders(),
-            existing.refs(),
-            existing.snapshotLog(),
-            existing.metadataLog(),
-            existing.statistics(),
-            existing.partitionStatistics(),
-            existing.snapshots());
-    when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            argThat(
-                md ->
-                    md != null
-                        && md.schemas() != null
-                        && !md.schemas().isEmpty()
-                        && md.schemas().getFirst().get("schema-id").equals(7)),
-            any()))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
-                schemaChangeMetadata.withMetadataLocation(
-                    "s3://warehouse/tables/orders/metadata/00001-new.metadata.json")));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", null, "orders", table, schemaChangeMetadata, null);
-
-    assertNull(result.error());
-    verify(tableMetadataImportService, never()).importMetadata(any(), any());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
   }
 
   private TableMetadataView metadata(String metadataLocation) {
