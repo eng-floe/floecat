@@ -130,6 +130,7 @@ wait_for_connector_job() {
   local sleep_seconds="${5:-2}"
   local attempt
   local out
+  local cleaned_out
   local state
   local message
 
@@ -142,16 +143,17 @@ wait_for_connector_job() {
     out=$(run_cli_script "$compose_cmd" "account t-0001
 connector job $job_id
 quit")
+    cleaned_out=$(printf "%s\n" "$out" | tr -d '\r' | sed -E 's/^floecat>[[:space:]]*//')
     state=$(
-      printf "%s\n" "$out" \
+      printf "%s\n" "$cleaned_out" \
         | sed -n \
-            -e 's/.*state=\([A-Za-z_]*\).*/\1/p' \
+            -e '/job_id=/s/.* state=\([A-Za-z_]*\).*/\1/p' \
             -e 's/^[[:space:]]*state:[[:space:]]*//p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
     )
     message=$(
-      printf "%s\n" "$out" \
+      printf "%s\n" "$cleaned_out" \
         | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
@@ -171,6 +173,15 @@ quit")
   echo "$out"
   echo "[FAIL] $label job timed out waiting for terminal success ($job_id)"
   return 1
+}
+
+extract_cli_job_id() {
+  local cli_output="$1"
+  printf "%s\n" "$cli_output" \
+    | tr -d '\r' \
+    | sed -E 's/^floecat>[[:space:]]*//' \
+    | sed -n '/^[0-9a-fA-F-]\{36\}[[:space:]]*$/p' \
+    | tail -n1
 }
 
 assert_contains() {
@@ -212,6 +223,20 @@ assert_contains_any() {
   echo "$output"
   echo "---- output end ----"
   return 1
+}
+
+assert_remote_file_group_worker_activity() {
+  local compose_cmd="$1"
+  local label="$2"
+  local out
+
+  out=$(eval "$compose_cmd logs executor 2>&1" || true)
+  assert_contains_any \
+    "$label standalone worker activity" \
+    "$out" \
+    "remote_file_group_worker" \
+    "Executed file group" \
+    "submitLeasedFileGroupExecutionResult"
 }
 
 assert_table_stats_available() {
@@ -385,11 +410,14 @@ run_mode() {
   local pre_services="$4"
   local kc_host="${5:-}"
   local kc_port="${6:-}"
+  local compose_profiles_override="${7:-}"
+  local mode_env_extra="${8:-}"
+  local executor_scale="${9:-}"
 
   local compose_project="floecat-smoke-$label"
-  local compose_profiles="$profile"
+  local compose_profiles="${compose_profiles_override:-$profile}"
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
-    compose_profiles="${profile},polaris"
+    compose_profiles="${compose_profiles},polaris"
   fi
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     compose_profiles="${compose_profiles},unity"
@@ -404,6 +432,9 @@ run_mode() {
   fi
   if [ -n "$kc_port" ]; then
     mode_env="$mode_env KC_HOSTNAME_PORT=$kc_port"
+  fi
+  if [ -n "$mode_env_extra" ]; then
+    mode_env="$mode_env $mode_env_extra"
   fi
 
   local compose_cmd="$mode_env $DOCKER_COMPOSE_MAIN"
@@ -491,7 +522,12 @@ run_mode() {
     wait_for_url "http://localhost:${unity_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" 180 "Unity Catalog health"
   fi
 
-  if ! eval "$compose_cmd up -d"; then
+  local compose_up_cmd="$compose_cmd up -d"
+  if [ -n "$executor_scale" ]; then
+    compose_up_cmd="$compose_up_cmd --scale executor=$executor_scale"
+  fi
+
+  if ! eval "$compose_up_cmd"; then
     return 1
   fi
 
@@ -537,25 +573,33 @@ run_mode() {
   done
 
   local out_iceberg
-  out_iceberg=$(printf "account t-0001\nresolve table examples.iceberg.trino_types\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.iceberg.trino_types
+quit")
   echo "$out_iceberg"
   assert_contains "$label cli resolve iceberg account" "$out_iceberg" "account set:"
   assert_contains "$label cli resolve iceberg table" "$out_iceberg" "table id:"
 
   local out_delta
-  out_delta=$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.call_center
+quit")
   echo "$out_delta"
   assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
   assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
 
   local out_delta_local
-  out_delta_local=$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta_local=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.my_local_delta_table
+quit")
   echo "$out_delta_local"
   assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
   assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
 
   local out_delta_dv
-  out_delta_dv=$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$compose_cmd run --rm -T cli")
+  out_delta_dv=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.delta.dv_demo_delta
+quit")
   echo "$out_delta_dv"
   assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
   assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
@@ -637,22 +681,17 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
     local rest_setup_out
     rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 catalog create $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --desc compose-smoke-upstream-iceberg
-connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --auth token=$polaris_token --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1 --props s3.access-key-id=test --props s3.secret-access-key=test
+connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --cred-type client --cred endpoint=http://polaris:8181/api/catalog/v1/oauth/tokens --cred client_id=root --cred client_secret=s3cr3t --cred scope=PRINCIPAL_ROLE:ALL --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1 --props s3.access-key-id=test --props s3.secret-access-key=test
 quit")
     echo "$rest_setup_out"
     assert_contains "$label upstream iceberg connector setup" "$rest_setup_out" "smoke-upstream-iceberg"
 
     local trigger_rest_out
     trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-iceberg --full
+connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats
 quit")
     local rest_job_id
-    rest_job_id=$(
-      printf "%s\n" "$trigger_rest_out" \
-        | tr -d '\r' \
-        | sed -E 's/^floecat>[[:space:]]*//' \
-        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
-    )
+    rest_job_id=$(extract_cli_job_id "$trigger_rest_out")
     wait_for_connector_job "$compose_cmd" "$label upstream iceberg connector" "$rest_job_id" 120 2
 
     local out_upstream_iceberg
@@ -737,15 +776,10 @@ quit")
 
     local trigger_unity_out
     trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
-connector trigger smoke-upstream-delta-unity --full
+connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats
 quit")
     local unity_job_id
-    unity_job_id=$(
-      printf "%s\n" "$trigger_unity_out" \
-        | tr -d '\r' \
-        | sed -E 's/^floecat>[[:space:]]*//' \
-        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
-    )
+    unity_job_id=$(extract_cli_job_id "$trigger_unity_out")
     wait_for_connector_job "$compose_cmd" "$label upstream delta unity connector" "$unity_job_id" 120 2
 
     local out_upstream_delta_unity
@@ -875,12 +909,13 @@ EOF
       "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
 
     local alter_out
-    if alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
-      duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
-      echo "$alter_out"
+    local alter_status=0
+    alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
+      duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1) || alter_status=$?
+    echo "$alter_out"
+    if [ "$alter_status" -eq 0 ]; then
       assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
     else
-      echo "$alter_out"
       assert_contains_any "$label duckdb mutation alter unsupported" "$alter_out" \
         "Not implemented Error: Alter Schema Entry" \
         "Not implemented Error: Alter table type not supported:"
@@ -1294,6 +1329,10 @@ PY
     fi
   fi
 
+  if [ "$label" = "localstack-remote" ]; then
+    assert_remote_file_group_worker_activity "$compose_cmd" "$label"
+  fi
+
   trap - ERR
   echo "==> [SMOKE][PASS] mode=$label"
 }
@@ -1310,6 +1349,18 @@ for raw_mode in "${mode_list[@]}"; do
       ;;
     localstack)
       run_mode ./env.localstack localstack localstack "localstack"
+      ;;
+    localstack-remote)
+      run_mode \
+        ./env.localstack \
+        localstack \
+        localstack-remote \
+        "localstack" \
+        "" \
+        "" \
+        "localstack,reconciler-executor" \
+        "QUARKUS_PROFILE_SERVICE=reconciler-control" \
+        "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
       ;;
     localstack-oidc)
       run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"

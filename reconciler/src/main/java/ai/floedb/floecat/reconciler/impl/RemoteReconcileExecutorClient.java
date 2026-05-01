@@ -16,11 +16,11 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import java.util.Optional;
 
 interface RemoteReconcileExecutorClient {
-  Optional<RemoteLeasedJob> lease(ReconcileExecutor executor);
+  Optional<RemoteLeasedJob> lease(ReconcileJobStore.LeaseRequest request, String leaseClientId);
 
   void start(RemoteLeasedJob lease, String executorId);
 
@@ -40,6 +40,8 @@ interface RemoteReconcileExecutorClient {
   CompletionResult complete(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,

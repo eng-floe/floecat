@@ -123,7 +123,8 @@ The Iceberg REST gateway uses this gRPC flow as follows:
 2. Reads current transaction state:
    - `TS_APPLIED` => returns HTTP 204 immediately.
    - `TS_APPLY_FAILED_CONFLICT` => returns HTTP 409 immediately.
-3. For open/retryable paths, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.
+3. For `TS_OPEN` transactions, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.
+   - For `TS_PREPARED`, `TS_APPLYING`, and `TS_APPLY_FAILED_RETRYABLE`, the gateway verifies the persisted request hash matches and then skips fresh planning/materialization, driving commit/confirmation from the already-persisted intents.
 4. During prepare, each table change now includes `precondition.expected_version` sourced from table `MutationMeta.pointer_version` fetched at planning time.
 5. REST returns 204 only when backend is `TS_APPLIED`; deterministic failures map to 409.
    Unknown commit state maps are:
@@ -135,6 +136,7 @@ The Iceberg REST gateway uses this gRPC flow as follows:
    - 401 for unauthenticated
    - 403 for permission denied
 6. There are no gateway-managed post-commit side effects in this path; once the backend apply succeeds, later reconciliation is handled independently by the service scheduler.
+   - Gateway-managed REST connectors may trigger a service-side post-commit `CAPTURE_ONLY` stats bootstrap, but that enqueue is explicitly best-effort and not part of the atomic transaction outcome.
 7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
 8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
 9. Ambiguous commit outcomes use a short bounded confirmation poll before returning unknown-state:

@@ -619,6 +619,9 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"orders",
+              "properties":{
+                "metadata-location":"s3://warehouse/db/orders/metadata/00001.metadata.json"
+              },
               "schema":{
                 "schema-id":1,
                 "last-column-id":1,
@@ -943,6 +946,9 @@ class TableResourceTest extends AbstractRestResourceTest {
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", "orders");
     payload.put("schema", schema);
+    payload.put(
+        "properties",
+        Map.of("metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json"));
 
     given()
         .body(payload)
@@ -1386,11 +1392,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
     String expectedAccessKey =
         System.getProperty(
-            "floecat.gateway.storage-credential.properties.s3.access-key-id",
+            "floecat.connector.integration.storage-credential.properties.s3.access-key-id",
             System.getProperty("floecat.fixture.aws.s3.access-key-id", "test-key"));
     String expectedSecretKey =
         System.getProperty(
-            "floecat.gateway.storage-credential.properties.s3.secret-access-key",
+            "floecat.connector.integration.storage-credential.properties.s3.secret-access-key",
             System.getProperty("floecat.fixture.aws.s3.secret-access-key", "test-secret"));
 
     given()

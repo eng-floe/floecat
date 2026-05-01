@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -30,7 +30,7 @@ public final class FileIoFactory {
   private FileIoFactory() {}
 
   public static FileIO createFileIo(
-      Map<String, String> props, IcebergGatewayConfig config, boolean allowConfigOverrides) {
+      Map<String, String> props, ConnectorIntegrationConfig config, boolean allowConfigOverrides) {
     Map<String, String> normalized =
         props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
     if (allowConfigOverrides && config != null) {

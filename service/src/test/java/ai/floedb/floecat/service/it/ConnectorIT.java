@@ -23,8 +23,12 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.GetIndexArtifactRequest;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ErrorCode;
@@ -40,10 +44,11 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
-import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
@@ -54,6 +59,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.FieldMask;
 import com.sun.net.httpserver.HttpServer;
 import io.grpc.Status;
@@ -62,21 +68,44 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.parquet.column.page.PageReadStore;
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.io.ColumnIOFactory;
+import org.apache.parquet.io.InputFile;
+import org.apache.parquet.io.MessageColumnIO;
+import org.apache.parquet.io.RecordReader;
+import org.apache.parquet.io.SeekableInputStream;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
 
 @QuarkusTest
 public class ConnectorIT {
+  private static final String YB_TPCDS_TABLE_DIR = "call_center-78092955d9dc452fbe14ab11d90a85ce";
+  private static final String YB_TPCDS_METADATA_LOCATION =
+      "s3://yb-iceberg-tpcds/"
+          + YB_TPCDS_TABLE_DIR
+          + "/metadata/00002-de3da00d-3ebd-4f5c-a101-ad64a8d489d0.metadata.json";
+  private static final String YB_TPCDS_RUST_SIDECAR_RESOURCE =
+      "/iceberg-fixtures/yb-iceberg-tpcds/"
+          + YB_TPCDS_TABLE_DIR
+          + "/20250821_110458_00081_wm2db-1c0c595a-f1e3-4d2b-ab20-5041cb4042b8_parquet__d53f2b42c191ac5a7f935bb7.parquet";
+
   @GrpcClient("floecat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
@@ -92,8 +121,10 @@ public class ConnectorIT {
   @GrpcClient("floecat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsService;
 
+  @GrpcClient("floecat")
+  TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
+
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerScheduler scheduler;
   @Inject AccountRepository accountRepository;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
@@ -102,6 +133,7 @@ public class ConnectorIT {
   @Inject SnapshotRepository snaps;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject BlobStore blobs;
 
   private ResourceId seedAccountId;
 
@@ -339,6 +371,225 @@ public class ConnectorIT {
   }
 
   @Test
+  void icebergFixtureSnapshotPlanningProducesRealParquetFileGroups() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-plan-files", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-plan-files")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-plan-files")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(metadataLocation)
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var planJob = runReconcile(conn.getResourceId(), true, null, true);
+    assertNotNull(planJob);
+    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+    awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+
+    var tablePlanJobs =
+        awaitJobsTerminal(
+            jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+                .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
+                .toList(),
+            System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    var snapshotPlanJobs =
+        awaitJobsTerminal(
+            tablePlanJobs.stream()
+                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+                .toList(),
+            System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    var fileGroupJobs =
+        awaitJobsTerminal(
+            snapshotPlanJobs.stream()
+                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+                .toList(),
+            System.nanoTime() + Duration.ofSeconds(300).toNanos());
+
+    assertFalse(fileGroupJobs.isEmpty(), "expected EXEC_FILE_GROUP jobs for fixture snapshots");
+    assertTrue(
+        fileGroupJobs.stream()
+            .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.fileGroupTask != null),
+        "expected file-group jobs to succeed with payloads");
+    assertTrue(
+        fileGroupJobs.stream().mapToLong(job -> job.statsProcessed).sum() > 0,
+        "expected file-group jobs to persist file-target stats");
+    assertTrue(
+        fileGroupJobs.stream()
+            .allMatch(
+                job ->
+                    !job.fileGroupTask.fileResults().isEmpty()
+                        && job.fileGroupTask.fileResults().stream()
+                            .allMatch(
+                                file ->
+                                    file.state()
+                                        == ai.floedb.floecat.reconciler.jobs.ReconcileFileResult
+                                            .State.SUCCEEDED)),
+        "expected file-group jobs to persist per-file success results");
+
+    var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
+    var selectedSnapshotFileGroups =
+        fileGroupJobs.stream()
+            .filter(job -> selectedSnapshotPlan.jobId.equals(job.parentJobId))
+            .toList();
+    var snapshotJobResponse =
+        reconcileControl.getReconcileJob(
+            GetReconcileJobRequest.newBuilder().setJobId(selectedSnapshotPlan.jobId).build());
+    assertEquals(
+        selectedSnapshotPlan.snapshotTask.fileGroups().size(),
+        snapshotJobResponse.getFileGroupsTotal(),
+        "expected snapshot response to expose planned file-group count");
+    assertEquals(
+        selectedSnapshotPlan.snapshotTask.fileGroups().stream()
+            .mapToLong(group -> group.filePaths().size())
+            .sum(),
+        snapshotJobResponse.getFilesTotal(),
+        "expected snapshot response to expose planned file count");
+    assertEquals(
+        selectedSnapshotFileGroups.size(),
+        snapshotJobResponse.getFileGroupsCompleted(),
+        "expected snapshot response to expose completed file-group count");
+
+    var filePaths =
+        snapshotPlanJobs.stream()
+            .flatMap(job -> job.snapshotTask.fileGroups().stream())
+            .flatMap(group -> group.filePaths().stream())
+            .collect(Collectors.toCollection(ArrayList::new));
+    assertFalse(filePaths.isEmpty(), "expected planned parquet file paths");
+    assertTrue(
+        filePaths.stream().noneMatch(path -> path.startsWith("snapshot://")),
+        "expected connector-native planning instead of synthetic snapshot handles");
+    assertTrue(
+        filePaths.stream().allMatch(path -> path.endsWith(".parquet")),
+        "expected parquet file paths in file-group tasks");
+    assertTrue(
+        filePaths.stream().anyMatch(path -> path.contains("/data/")),
+        "expected iceberg fixture data file paths");
+  }
+
+  @Test
+  void icebergRustSidecarFixtureMatchesJavaIndexerOutput() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-rust-sidecar", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-rust-sidecar")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("call_center")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put("external.namespace", "fixtures.yb_iceberg_tpcds");
+    props.put("external.table-name", "call_center");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-rust-sidecar")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(YB_TPCDS_METADATA_LOCATION)
+                .setSource(source(List.of("fixtures", "yb_iceberg_tpcds")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var job =
+        runReconcile(
+            conn.getResourceId(),
+            true,
+            scopeWithCaptureOutputs(
+                CaptureScope.newBuilder().setConnectorId(conn.getResourceId()).build(),
+                CaptureOutput.CO_TABLE_STATS,
+                CaptureOutput.CO_FILE_STATS,
+                CaptureOutput.CO_COLUMN_STATS,
+                CaptureOutput.CO_PARQUET_PAGE_INDEX),
+            false);
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-rust-sidecar")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "call_center")
+            .orElseThrow();
+
+    var fileStats = awaitCurrentFileStats(table.getResourceId(), 20, Duration.ofSeconds(30));
+    assertEquals(1, fileStats.size(), "expected one current data file in yb fixture");
+    String filePath = fileStats.getFirst().getFilePath();
+
+    var artifact =
+        awaitCurrentIndexArtifact(table.getResourceId(), filePath, Duration.ofSeconds(30));
+
+    byte[] javaSidecarBytes = blobs.get(artifact.getRecord().getArtifactUri());
+    byte[] rustSidecarBytes = readFixtureResourceBytes(YB_TPCDS_RUST_SIDECAR_RESOURCE);
+
+    SidecarContents javaSidecar = readSidecar(javaSidecarBytes);
+    SidecarContents rustSidecar = readSidecar(rustSidecarBytes);
+    Set<String> rustColumns =
+        rustSidecar.rows().stream()
+            .map(row -> row.get("column_name"))
+            .filter(name -> name != null && !name.isBlank())
+            .collect(Collectors.toSet());
+    List<Map<String, String>> filteredJavaRows =
+        javaSidecar.rows().stream()
+            .filter(row -> rustColumns.contains(row.get("column_name")))
+            .toList();
+
+    assertEquals("parquet", artifact.getRecord().getArtifactFormat());
+    assertEquals(filePath, javaSidecar.metadata().get("sidecar.data_file_path"));
+    assertEquals(
+        rustSidecar.metadata().get("sidecar.data_file_path"),
+        javaSidecar.metadata().get("sidecar.data_file_path"));
+    assertEquals(rustSidecar.schema(), javaSidecar.schema(), "expected matching sidecar schema");
+    assertEquals(rustSidecar.rows(), filteredJavaRows, "expected Java sidecar to match Rust");
+  }
+
+  @Test
   void metadataAndStatsReturnsBeforeFollowUpStatsAreVisible() throws Exception {
     TestS3Fixtures.seedFixturesOnce();
 
@@ -380,10 +631,9 @@ public class ConnectorIT {
     var metadataJob = runReconcile(conn.getResourceId(), true);
     assertNotNull(metadataJob);
     assertEquals("JS_SUCCEEDED", metadataJob.state, () -> "job failed: " + metadataJob.message);
-    assertEquals(
-        0L,
-        metadataJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        metadataJob.statsProcessed > 0L,
+        "metadata+stats reconcile should include capture work in the same job flow");
 
     var catId =
         catalogs
@@ -398,12 +648,9 @@ public class ConnectorIT {
             .orElseThrow();
 
     var immediate = listCurrentFileStats(table.getResourceId(), 200);
-    assertTrue(
+    assertFalse(
         immediate.isEmpty(),
-        "metadata+stats should complete before follow-up STATS_ONLY capture makes stats visible");
-
-    var eventual = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
-    assertFalse(eventual.isEmpty(), "expected follow-up STATS_ONLY job to materialize file stats");
+        "metadata+stats should materialize file stats through the unified capture flow");
   }
 
   @Test
@@ -450,10 +697,9 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
-    assertEquals(
-        0L,
-        fullJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        fullJob.statsProcessed > 0L,
+        "metadata+stats reconcile should include file-group capture work in the same job flow");
 
     var catId =
         catalogs
@@ -476,7 +722,8 @@ public class ConnectorIT {
         "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
     assertFalse(incrementalJob.fullRescan);
     assertEquals(0L, incrementalJob.snapshotsProcessed, "incremental should find no new snapshots");
-    assertEquals(0L, incrementalJob.statsProcessed, "incremental should process no new stats");
+    assertEquals(
+        0L, incrementalJob.statsProcessed, "incremental should process no new capture work");
     assertEquals(snapshotCountAfterFull, snaps.count(table.getResourceId()));
   }
 
@@ -556,10 +803,9 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one new snapshot");
-    assertEquals(
-        0L,
-        incrementalJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        incrementalJob.statsProcessed > 0L,
+        "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
         2,
         snaps.count(table.getResourceId()),
@@ -646,10 +892,9 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one delete snapshot");
-    assertEquals(
-        0L,
-        incrementalJob.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        incrementalJob.statsProcessed > 0L,
+        "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
         3,
         snaps.count(table.getResourceId()),
@@ -708,10 +953,9 @@ public class ConnectorIT {
         job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
     assertTrue(
         job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
-    assertEquals(
-        0L,
-        job.statsProcessed,
-        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+    assertTrue(
+        job.statsProcessed > 0L,
+        "metadata+stats reconcile should include file-group capture work in the same job flow");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
@@ -877,12 +1121,12 @@ public class ConnectorIT {
     assertEquals(3, childJobs.size(), "expected child jobs for 2 tables plus 1 view");
     assertEquals(
         2L,
-        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.EXEC_TABLE).count(),
-        "expected one child EXEC_TABLE job per planned table");
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).count(),
+        "expected one child PLAN_TABLE job per planned table");
     assertEquals(
         1L,
-        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.EXEC_VIEW).count(),
-        "expected one child EXEC_VIEW job for planned views");
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_VIEW).count(),
+        "expected one child PLAN_VIEW job for planned views");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-plan-views").orElseThrow().getResourceId();
@@ -895,6 +1139,87 @@ public class ConnectorIT {
             .getByName(
                 accountId.getId(), catId.getId(), ns.getResourceId().getId(), "events_summary")
             .isPresent());
+  }
+
+  @Test
+  void secondReconcilePlansSnapshotJobsForExistingTables() throws Exception {
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-plan-snapshots", "");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-plan-snapshots")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(source(List.of("db")))
+                .setDestination(
+                    DestinationTarget.newBuilder()
+                        .setCatalogDisplayName("cat-plan-snapshots")
+                        .setNamespace(NamespacePath.newBuilder().addSegments("analytics").build())
+                        .build())
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .build());
+
+    var initialJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(initialJob);
+    assertEquals(
+        "JS_SUCCEEDED",
+        initialJob.state,
+        () -> "initial aggregate job failed: " + initialJob.message);
+
+    var planJob = runReconcile(conn.getResourceId(), true, null, true);
+    assertNotNull(planJob);
+    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+
+    var aggregatedJob =
+        awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    assertEquals(
+        "JS_SUCCEEDED",
+        aggregatedJob.state,
+        () -> "aggregate job failed: " + aggregatedJob.message);
+    assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
+    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    assertEquals(2, childJobs.size(), "expected only table planning jobs under PLAN_CONNECTOR");
+    assertEquals(
+        2L,
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).count(),
+        "expected one child PLAN_TABLE job per planned table");
+    assertEquals(
+        0L,
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT).count(),
+        "expected snapshot planning to be owned by PLAN_TABLE jobs");
+
+    var tablePlanJobs =
+        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).toList();
+    var snapshotPlanJobs =
+        tablePlanJobs.stream()
+            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+            .toList();
+    var completedSnapshotPlanJobs =
+        awaitJobsTerminal(snapshotPlanJobs, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    assertEquals(
+        2, completedSnapshotPlanJobs.size(), "expected one PLAN_SNAPSHOT grandchild per table");
+    assertTrue(
+        completedSnapshotPlanJobs.stream()
+            .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.snapshotTask != null),
+        "expected each snapshot plan job to succeed with a snapshot task payload");
+
+    var fileGroupJobs =
+        completedSnapshotPlanJobs.stream()
+            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+            .toList();
+    var completedFileGroupJobs =
+        awaitJobsTerminal(fileGroupJobs, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+    assertEquals(
+        2, completedFileGroupJobs.size(), "expected one EXEC_FILE_GROUP child per snapshot plan");
+    assertTrue(
+        completedFileGroupJobs.stream()
+            .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.fileGroupTask != null),
+        "expected each file-group execution job to succeed with a file group payload");
   }
 
   @Test
@@ -960,6 +1285,126 @@ public class ConnectorIT {
               10,
               Duration.ofSeconds(30));
       assertFalse(fileStats.isEmpty(), "expected file stats at current snapshot");
+    }
+  }
+
+  @Test
+  void deltaSnapshotPlanningProducesRealParquetFileGroups() throws Exception {
+    Assumptions.assumeTrue(
+        TestDeltaFixtures.useAwsFixtures(), "Delta fixtures require S3/localstack");
+
+    TestDeltaFixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-delta-plan-files", "");
+
+    try (UcStubServer uc = UcStubServer.start(TestDeltaFixtures.tableUri())) {
+      var conn =
+          TestSupport.createConnector(
+              connectors,
+              ConnectorSpec.newBuilder()
+                  .setDisplayName("delta-plan-files")
+                  .setKind(ConnectorKind.CK_DELTA)
+                  .setUri(uc.baseUri())
+                  .setSource(
+                      SourceSelector.newBuilder()
+                          .setNamespace(
+                              NamespacePath.newBuilder()
+                                  .addSegments("main")
+                                  .addSegments("tpcds")
+                                  .build())
+                          .setTable("call_center"))
+                  .setDestination(dest("cat-delta-plan-files"))
+                  .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                  .putAllProperties(TestDeltaFixtures.s3Options())
+                  .build());
+
+      var planJob = runReconcile(conn.getResourceId(), true, null, true);
+      assertNotNull(planJob);
+      assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+      awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
+
+      var tablePlanJobs =
+          awaitJobsTerminal(
+              jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+                  .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
+                  .toList(),
+              System.nanoTime() + Duration.ofSeconds(300).toNanos());
+      var snapshotPlanJobs =
+          awaitJobsTerminal(
+              tablePlanJobs.stream()
+                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+                  .toList(),
+              System.nanoTime() + Duration.ofSeconds(300).toNanos());
+      var fileGroupJobs =
+          awaitJobsTerminal(
+              snapshotPlanJobs.stream()
+                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+                  .toList(),
+              System.nanoTime() + Duration.ofSeconds(300).toNanos());
+
+      assertFalse(fileGroupJobs.isEmpty(), "expected EXEC_FILE_GROUP jobs for delta snapshot");
+      assertTrue(
+          fileGroupJobs.stream()
+              .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.fileGroupTask != null),
+          "expected file-group jobs to succeed with payloads");
+      assertTrue(
+          fileGroupJobs.stream().mapToLong(job -> job.statsProcessed).sum() > 0,
+          "expected file-group jobs to persist file-target stats");
+      assertTrue(
+          fileGroupJobs.stream()
+              .allMatch(
+                  job ->
+                      !job.fileGroupTask.fileResults().isEmpty()
+                          && job.fileGroupTask.fileResults().stream()
+                              .allMatch(
+                                  file ->
+                                      file.state()
+                                          == ai.floedb.floecat.reconciler.jobs.ReconcileFileResult
+                                              .State.SUCCEEDED)),
+          "expected file-group jobs to persist per-file success results");
+
+      var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
+      var selectedSnapshotFileGroups =
+          fileGroupJobs.stream()
+              .filter(job -> selectedSnapshotPlan.jobId.equals(job.parentJobId))
+              .toList();
+      var snapshotJobResponse =
+          reconcileControl.getReconcileJob(
+              GetReconcileJobRequest.newBuilder().setJobId(selectedSnapshotPlan.jobId).build());
+      assertEquals(
+          selectedSnapshotPlan.snapshotTask.fileGroups().size(),
+          snapshotJobResponse.getFileGroupsTotal(),
+          "expected snapshot response to expose planned file-group count");
+      assertEquals(
+          selectedSnapshotPlan.snapshotTask.fileGroups().stream()
+              .mapToLong(group -> group.filePaths().size())
+              .sum(),
+          snapshotJobResponse.getFilesTotal(),
+          "expected snapshot response to expose planned file count");
+      assertEquals(
+          selectedSnapshotFileGroups.size(),
+          snapshotJobResponse.getFileGroupsCompleted(),
+          "expected snapshot response to expose completed file-group count");
+
+      var filePaths =
+          snapshotPlanJobs.stream()
+              .flatMap(job -> job.snapshotTask.fileGroups().stream())
+              .flatMap(group -> group.filePaths().stream())
+              .collect(Collectors.toCollection(ArrayList::new));
+      assertFalse(filePaths.isEmpty(), "expected planned parquet file paths");
+      assertTrue(
+          filePaths.stream().noneMatch(path -> path.startsWith("snapshot://")),
+          "expected connector-native planning instead of synthetic snapshot handles");
+      assertTrue(
+          filePaths.stream().allMatch(path -> path.startsWith("s3://floecat-delta/call_center/")),
+          "expected delta fixture data files rooted at the seeded fixture table");
+      assertTrue(
+          filePaths.stream()
+              .allMatch(path -> !path.contains("/_delta_log/") && !path.endsWith(".json")),
+          "expected data-file paths in file-group tasks instead of delta-log entries");
     }
   }
 
@@ -1050,13 +1495,15 @@ public class ConnectorIT {
       ResourceId rid, boolean fullRescan, CaptureScope scope, boolean returnPlanJob)
       throws Exception {
     assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
+    CaptureScope effectiveScope =
+        scopeWithDefaultCapturePolicy(
+            scope == null ? CaptureScope.newBuilder().setConnectorId(rid).build() : scope);
 
     var trig =
         reconcileControl.startCapture(
             StartCaptureRequest.newBuilder()
-                .setScope(
-                    scope == null ? CaptureScope.newBuilder().setConnectorId(rid).build() : scope)
-                .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                .setScope(effectiveScope)
+                .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                 .setFullRescan(fullRescan)
                 .build());
 
@@ -1090,10 +1537,11 @@ public class ConnectorIT {
 
   private ReconcileJobStore.ReconcileJob awaitAggregatePlanJob(
       ReconcileJobStore.ReconcileJob planJob, long deadlineNanos) throws Exception {
-    List<ReconcileJobStore.ReconcileJob> childJobs = List.of();
+    List<ReconcileJobStore.ReconcileJob> descendantJobs = List.of();
     for (; ; ) {
-      childJobs = childJobsFor(planJob);
-      if (!childJobs.isEmpty() && childJobs.stream().allMatch(job -> isTerminal(job.state))) {
+      descendantJobs = descendantJobsFor(planJob);
+      if (!descendantJobs.isEmpty()
+          && descendantJobs.stream().allMatch(job -> isTerminal(job.state))) {
         break;
       }
       if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
@@ -1105,13 +1553,13 @@ public class ConnectorIT {
       Thread.sleep(250);
     }
 
-    if (childJobs.isEmpty()) {
+    if (descendantJobs.isEmpty()) {
       return planJob;
     }
 
     if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
       long startedAtMs =
-          childJobs.stream()
+          descendantJobs.stream()
               .mapToLong(job -> job.startedAtMs)
               .filter(v -> v > 0L)
               .min()
@@ -1119,14 +1567,14 @@ public class ConnectorIT {
       long finishedAtMs =
           Math.max(
               planJob.finishedAtMs,
-              childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(0L));
-      long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
-      long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
-      long viewsScanned = childJobs.stream().mapToLong(job -> job.viewsScanned).sum();
-      long viewsChanged = childJobs.stream().mapToLong(job -> job.viewsChanged).sum();
-      long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
-      long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
-      long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+              descendantJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(0L));
+      long tablesScanned = descendantJobs.stream().mapToLong(job -> job.tablesScanned).sum();
+      long tablesChanged = descendantJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+      long viewsScanned = descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum();
+      long viewsChanged = descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum();
+      long errors = descendantJobs.stream().mapToLong(job -> job.errors).sum();
+      long snapshotsProcessed = aggregateSnapshotsProcessed(descendantJobs);
+      long statsProcessed = aggregateStatsProcessed(descendantJobs);
 
       return new ReconcileJobStore.ReconcileJob(
           planJob.jobId,
@@ -1153,11 +1601,11 @@ public class ConnectorIT {
           planJob.parentJobId);
     }
 
-    boolean failed = childJobs.stream().anyMatch(job -> "JS_FAILED".equals(job.state));
-    boolean cancelled = childJobs.stream().anyMatch(job -> "JS_CANCELLED".equals(job.state));
+    boolean failed = descendantJobs.stream().anyMatch(job -> "JS_FAILED".equals(job.state));
+    boolean cancelled = descendantJobs.stream().anyMatch(job -> "JS_CANCELLED".equals(job.state));
     String state = failed ? "JS_FAILED" : (cancelled ? "JS_CANCELLED" : "JS_SUCCEEDED");
     String message =
-        childJobs.stream()
+        descendantJobs.stream()
             .filter(job -> job.message != null && !job.message.isBlank())
             .filter(job -> !"JS_SUCCEEDED".equals(job.state))
             .map(job -> job.jobId + ": " + job.message)
@@ -1165,20 +1613,23 @@ public class ConnectorIT {
             .orElse(planJob.message);
 
     long startedAtMs =
-        childJobs.stream()
+        descendantJobs.stream()
             .mapToLong(job -> job.startedAtMs)
             .filter(v -> v > 0L)
             .min()
             .orElse(planJob.startedAtMs);
     long finishedAtMs =
-        childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(planJob.finishedAtMs);
-    long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
-    long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
-    long viewsScanned = childJobs.stream().mapToLong(job -> job.viewsScanned).sum();
-    long viewsChanged = childJobs.stream().mapToLong(job -> job.viewsChanged).sum();
-    long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
-    long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
-    long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+        descendantJobs.stream()
+            .mapToLong(job -> job.finishedAtMs)
+            .max()
+            .orElse(planJob.finishedAtMs);
+    long tablesScanned = descendantJobs.stream().mapToLong(job -> job.tablesScanned).sum();
+    long tablesChanged = descendantJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+    long viewsScanned = descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum();
+    long viewsChanged = descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum();
+    long errors = descendantJobs.stream().mapToLong(job -> job.errors).sum();
+    long snapshotsProcessed = aggregateSnapshotsProcessed(descendantJobs);
+    long statsProcessed = aggregateStatsProcessed(descendantJobs);
 
     return new ReconcileJobStore.ReconcileJob(
         planJob.jobId,
@@ -1221,10 +1672,262 @@ public class ConnectorIT {
     return out;
   }
 
+  private List<ReconcileJobStore.ReconcileJob> descendantJobsFor(
+      ReconcileJobStore.ReconcileJob rootJob) {
+    List<ReconcileJobStore.ReconcileJob> descendants = new ArrayList<>();
+    List<ReconcileJobStore.ReconcileJob> frontier = childJobsFor(rootJob);
+    while (!frontier.isEmpty()) {
+      descendants.addAll(frontier);
+      frontier =
+          frontier.stream()
+              .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
+              .flatMap(job -> childJobsFor(job).stream())
+              .toList();
+    }
+    return descendants;
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> awaitJobsTerminal(
+      List<ReconcileJobStore.ReconcileJob> jobsToAwait, long deadlineNanos) throws Exception {
+    List<ReconcileJobStore.ReconcileJob> current = jobsToAwait;
+    for (; ; ) {
+      current = current.stream().map(job -> jobs.get(job.jobId).orElse(job)).toList();
+      if (current.stream().allMatch(job -> isTerminal(job.state))) {
+        return current;
+      }
+      if (System.nanoTime() > deadlineNanos) {
+        return current;
+      }
+      Thread.sleep(250);
+    }
+  }
+
+  private static CaptureScope scopeWithDefaultCapturePolicy(CaptureScope scope) {
+    if (scope == null || scope.hasCapturePolicy()) {
+      return scope;
+    }
+    return scopeWithCaptureOutputs(
+        scope,
+        CaptureOutput.CO_TABLE_STATS,
+        CaptureOutput.CO_FILE_STATS,
+        CaptureOutput.CO_COLUMN_STATS);
+  }
+
+  private static CaptureScope scopeWithCaptureOutputs(
+      CaptureScope scope, CaptureOutput... outputs) {
+    if (scope == null || scope.hasCapturePolicy()) {
+      return scope;
+    }
+    CapturePolicy.Builder policy = CapturePolicy.newBuilder();
+    if (outputs != null) {
+      for (CaptureOutput output : outputs) {
+        if (output != null) {
+          policy.addOutputs(output);
+        }
+      }
+    }
+    return scope.toBuilder().setCapturePolicy(policy.build()).build();
+  }
+
+  private long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
+    return jobs.stream()
+        .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
+        .filter(
+            job ->
+                job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                    || !supportsChildAggregation(job.jobKind)
+                    || childJobsFor(job).isEmpty())
+        .mapToLong(job -> job.snapshotsProcessed)
+        .sum();
+  }
+
+  private static boolean supportsChildAggregation(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+  }
+
+  private static long aggregateStatsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
+    return jobs.stream().mapToLong(job -> job.statsProcessed).sum();
+  }
+
   private static boolean isTerminal(String state) {
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
         || "JS_CANCELLED".equals(state);
+  }
+
+  private static byte[] readFixtureResourceBytes(String resourcePath) throws Exception {
+    try (InputStream in = ConnectorIT.class.getResourceAsStream(resourcePath)) {
+      assertNotNull(in, () -> "fixture resource not found: " + resourcePath);
+      return in.readAllBytes();
+    }
+  }
+
+  private ai.floedb.floecat.catalog.rpc.GetIndexArtifactResponse awaitCurrentIndexArtifact(
+      ResourceId tableId, String filePath, Duration timeout) throws Exception {
+    long deadlineNanos = System.nanoTime() + timeout.toNanos();
+    StatusRuntimeException last = null;
+    while (System.nanoTime() <= deadlineNanos) {
+      try {
+        return indexes.getIndexArtifact(
+            GetIndexArtifactRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setTarget(
+                    IndexTarget.newBuilder()
+                        .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
+                        .build())
+                .build());
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
+        }
+        last = e;
+      }
+      Thread.sleep(250);
+    }
+    if (last != null) {
+      throw last;
+    }
+    throw new AssertionError("timed out waiting for current index artifact for " + filePath);
+  }
+
+  private static SidecarContents readSidecar(byte[] bytes) throws Exception {
+    InputFile inputFile = new ByteArrayInputFile(bytes);
+    try (ParquetFileReader reader = ParquetFileReader.open(inputFile)) {
+      String schema = reader.getFooter().getFileMetaData().getSchema().toString();
+      Map<String, String> metadata =
+          new LinkedHashMap<>(reader.getFooter().getFileMetaData().getKeyValueMetaData());
+      List<Map<String, String>> rows = new ArrayList<>();
+      MessageColumnIO columnIO =
+          new ColumnIOFactory().getColumnIO(reader.getFooter().getFileMetaData().getSchema());
+      PageReadStore pages;
+      while ((pages = reader.readNextRowGroup()) != null) {
+        RecordReader<Group> recordReader =
+            columnIO.getRecordReader(
+                pages, new GroupRecordConverter(reader.getFooter().getFileMetaData().getSchema()));
+        long rowCount = pages.getRowCount();
+        for (long i = 0; i < rowCount; i++) {
+          rows.add(toComparableRow(recordReader.read()));
+        }
+      }
+      return new SidecarContents(schema, metadata, rows);
+    }
+  }
+
+  private static Map<String, String> toComparableRow(Group row) {
+    var schema = row.getType();
+    Map<String, String> out = new LinkedHashMap<>();
+    for (int i = 0; i < schema.getFieldCount(); i++) {
+      String fieldName = schema.getFieldName(i);
+      out.put(fieldName, row.getFieldRepetitionCount(i) == 0 ? null : row.getValueToString(i, 0));
+    }
+    return out;
+  }
+
+  private record SidecarContents(
+      String schema, Map<String, String> metadata, List<Map<String, String>> rows) {}
+
+  private static final class ByteArrayInputFile implements InputFile {
+    private final byte[] bytes;
+
+    private ByteArrayInputFile(byte[] bytes) {
+      this.bytes = bytes;
+    }
+
+    @Override
+    public long getLength() {
+      return bytes.length;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new ByteArraySeekableInputStream(bytes);
+    }
+  }
+
+  private static final class ByteArraySeekableInputStream extends SeekableInputStream {
+    private final byte[] bytes;
+    private int position = 0;
+
+    private ByteArraySeekableInputStream(byte[] bytes) {
+      this.bytes = bytes;
+    }
+
+    @Override
+    public long getPos() {
+      return position;
+    }
+
+    @Override
+    public void seek(long newPos) {
+      if (newPos < 0 || newPos > bytes.length) {
+        throw new IllegalArgumentException("invalid seek position: " + newPos);
+      }
+      position = (int) newPos;
+    }
+
+    @Override
+    public int read() {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      return bytes[position++] & 0xFF;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      int toRead = Math.min(len, bytes.length - position);
+      System.arraycopy(bytes, position, b, off, toRead);
+      position += toRead;
+      return toRead;
+    }
+
+    @Override
+    public int read(ByteBuffer dst) {
+      if (position >= bytes.length) {
+        return -1;
+      }
+      int toRead = Math.min(dst.remaining(), bytes.length - position);
+      dst.put(bytes, position, toRead);
+      position += toRead;
+      return toRead;
+    }
+
+    @Override
+    public void readFully(byte[] bytes) throws IOException {
+      readFully(bytes, 0, bytes.length);
+    }
+
+    @Override
+    public void readFully(byte[] bytes, int start, int len) throws IOException {
+      int total = 0;
+      while (total < len) {
+        int n = read(bytes, start + total, len - total);
+        if (n < 0) {
+          throw new IOException("Unexpected EOF");
+        }
+        total += n;
+      }
+    }
+
+    @Override
+    public void readFully(ByteBuffer dst) throws IOException {
+      while (dst.hasRemaining()) {
+        int n = read(dst);
+        if (n < 0) {
+          throw new IOException("Unexpected EOF");
+        }
+      }
+    }
+
+    @Override
+    public void close() {}
   }
 
   private static final class UcStubServer implements AutoCloseable {
@@ -1717,8 +2420,10 @@ public class ConnectorIT {
             () ->
                 reconcileControl.startCapture(
                     StartCaptureRequest.newBuilder()
-                        .setScope(CaptureScope.newBuilder().setConnectorId(rid).build())
-                        .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                        .setScope(
+                            scopeWithDefaultCapturePolicy(
+                                CaptureScope.newBuilder().setConnectorId(rid).build()))
+                        .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                         .build()));
 
     TestSupport.assertGrpcAndMc(

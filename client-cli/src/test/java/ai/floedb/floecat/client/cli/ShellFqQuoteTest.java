@@ -400,7 +400,7 @@ class ShellFqQuoteTest {
   void analyzeWithoutArgsPrintsUsage() {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     StatsCliSupport.handle(
-        "analyze", List.of(), new PrintStream(baos), null, null, null, null, null);
+        "analyze", List.of(), new PrintStream(baos), null, null, null, null, null, null);
     assertTrue(
         baos.toString()
             .contains(

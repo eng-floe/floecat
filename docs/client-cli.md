@@ -38,8 +38,9 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
 - `namespaces` / `namespace <subcommand>` – Inspect namespace hierarchies, create nested paths.
 - `tables` / `table <subcommand>` – Manage table definitions, specify schema JSON, upstream
   connectors, and properties.
-- `snapshots` / `stats` – Query snapshot lineage and table/column/file statistics (`stats files`
-  lists per-file row/byte counts and per-column metrics).
+- `snapshots` / `stats` – Query snapshot lineage, table/column/file statistics, and index artifacts
+  (`stats files` lists per-file row/byte counts and per-column metrics; `stats index` lists stored
+  sidecar index artifacts for a snapshot).
 - `constraints` – Manage snapshot-scoped table constraints (`get`, `list`, `put`/`update`/`add`,
   `delete`) using either table FQNs or table IDs.
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
@@ -141,7 +142,8 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
 - **Triggering a connector to read an upstream table**
 
   ```
-  connector trigger glue-iceberg
+  connector trigger glue-iceberg --mode metadata-only
+  connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
   ```
 
 - **Managing snapshot constraints**

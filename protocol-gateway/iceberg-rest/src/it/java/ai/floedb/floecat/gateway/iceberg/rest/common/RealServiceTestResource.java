@@ -176,16 +176,16 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     if (configuredEndpoint == null || configuredEndpoint.isBlank()) {
       configuredEndpoint = "http://localhost:4566";
     }
-    testConfig.put("floecat.gateway.storage-credential.properties.s3.endpoint", configuredEndpoint);
+    testConfig.put("floecat.connector.integration.storage-credential.properties.s3.endpoint", configuredEndpoint);
     String connectorIntegration =
-        System.getProperty("floecat.gateway.connector-integration-enabled");
+        System.getProperty("floecat.connector.integration.enabled");
     if (connectorIntegration != null && !connectorIntegration.isBlank()) {
-      testConfig.put("floecat.gateway.connector-integration-enabled", connectorIntegration);
+      testConfig.put("floecat.connector.integration.enabled", connectorIntegration);
     }
     testConfig.put(TEST_GRPC_PORT_PROPERTY, Integer.toString(httpPort));
     if (!TestS3Fixtures.useAwsFixtures()) {
-      testConfig.put("floecat.gateway.metadata-file-io", InMemoryS3FileIO.class.getName());
-      testConfig.put("floecat.gateway.metadata-file-io-root", TEST_S3_ROOT);
+      testConfig.put("floecat.connector.integration.metadata-file-io", InMemoryS3FileIO.class.getName());
+      testConfig.put("floecat.connector.integration.metadata-file-io-root", TEST_S3_ROOT);
     }
     return testConfig;
   }

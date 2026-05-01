@@ -22,14 +22,8 @@ import org.junit.jupiter.api.Test;
 class ReconcilerActivationTest {
 
   @Test
-  void schedulerIsNotBuildTimeGated() {
-    assertThat(ReconcilerScheduler.class.getAnnotations())
-        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
-  }
-
-  @Test
-  void defaultExecutorIsNotBuildTimeGated() {
-    assertThat(DefaultReconcileExecutor.class.getAnnotations())
+  void remoteDefaultExecutorIsNotBuildTimeGated() {
+    assertThat(RemoteDefaultReconcileExecutor.class.getAnnotations())
         .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
   }
 

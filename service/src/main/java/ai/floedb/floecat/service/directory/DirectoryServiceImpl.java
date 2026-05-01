@@ -23,6 +23,8 @@ import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.LookupTableByRefRequest;
+import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableResponse;
 import ai.floedb.floecat.catalog.rpc.LookupViewRequest;
@@ -237,6 +239,35 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   }
 
                   return LookupTableResponse.newBuilder().setName(tableName.get()).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<LookupTableByRefResponse> lookupTableByRef(LookupTableByRefRequest request) {
+    var L = LogHelper.start(LOG, "LookupTableByRef");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+
+                  authz.require(principalContext, List.of("catalog.read", "table.read"));
+
+                  var nameRef = request.getRef();
+                  validateNameRefOrThrow(nameRef);
+                  validateTableNameOrThrow(nameRef);
+
+                  ResourceId tableId =
+                      catalogOverlay.resolveTable(correlationId(), nameRef).orElse(null);
+                  if (tableId == null || tableId.getId().isBlank()) {
+                    return LookupTableByRefResponse.newBuilder().build();
+                  }
+                  return LookupTableByRefResponse.newBuilder().setResourceId(tableId).build();
                 }),
             correlationId())
         .onFailure()

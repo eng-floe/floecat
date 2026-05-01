@@ -74,8 +74,8 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
   `CaptureNow` maps to reconciler capture modes:
   - metadata only -> `METADATA_ONLY`
-  - stats only -> `STATS_ONLY`
-  - metadata plus stats -> `METADATA_AND_STATS`
+  - capture only -> `CAPTURE_ONLY`
+  - metadata plus capture -> `METADATA_AND_CAPTURE`
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
   demand.
@@ -138,14 +138,14 @@ terminal jobs. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
-using `METADATA_AND_STATS`.
+using `METADATA_AND_CAPTURE`.
 
-This ingests metadata/snapshots first and enqueues scoped `STATS_ONLY` follow-up capture for stats.
+This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
 Follow-up payloads now use reconcile scoped stats requests
 (`table_id`, `snapshot_id`, `target_spec`, `column_selectors`) so background capture stays targeted
 without depending on separate unresolved snapshot-id and target lists.
-When a `STATS_ONLY` follow-up batch captures only a subset of requested items, the reconcile result
+When a `CAPTURE_ONLY` batch captures only a subset of requested items, the reconcile result
 is degraded; when none of the requested items are captured, the reconcile result fails instead of
 silently reporting zero processed stats.
 
@@ -193,9 +193,11 @@ Extension points:
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
-  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`. `BeginQuery`
-  optionally accepts a client-specified `query_id` plus `common.QueryInput` records so lifecycle can
-  pre-pin snapshots/expansions for deterministic replay.
+  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService` on the query
+  path. Reconcile planning/execution does not use `ScanBundleService`; it goes through
+  `FloecatConnector` directly. `BeginQuery` optionally accepts a client-specified `query_id` plus
+  `common.QueryInput` records so lifecycle can pre-pin snapshots/expansions for deterministic
+  replay.
 
 Secrets Manager integration (tags + optional per-account assume-role) is documented in
 [`docs/secrets-manager.md`](secrets-manager.md).

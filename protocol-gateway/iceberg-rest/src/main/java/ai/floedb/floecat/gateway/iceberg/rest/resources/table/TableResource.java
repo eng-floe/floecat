@@ -24,6 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TaskRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
@@ -55,7 +56,6 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import org.eclipse.microprofile.config.Config;
 
 @Path("/v1/{prefix}/namespaces/{namespace}")
 @Consumes(MediaType.APPLICATION_JSON)
@@ -63,8 +63,8 @@ import org.eclipse.microprofile.config.Config;
 public class TableResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig connectorConfig;
   @Inject ObjectMapper mapper;
-  @Inject Config mpConfig;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitService tableCommitService;
   @Inject TableRegisterService tableRegisterService;
@@ -82,7 +82,7 @@ public class TableResource {
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
   }
 
   @GET

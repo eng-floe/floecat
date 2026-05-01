@@ -57,9 +57,7 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionRes
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
-import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
-import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -169,11 +167,7 @@ class UserObjectBundleServiceTest {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator orchestrator =
         new StatsOrchestrator(
-            statsRepository,
-            Mockito.mock(ReconcileJobStore.class),
-            tableRepository,
-            new StatsEngineRegistry(
-                List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
+            statsRepository, Mockito.mock(ReconcileJobStore.class), tableRepository);
     statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
     service =
         new UserObjectBundleService(
@@ -273,11 +267,7 @@ class UserObjectBundleServiceTest {
     TableRepository localTableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator localOrchestrator =
         new StatsOrchestrator(
-            localStatsRepository,
-            Mockito.mock(ReconcileJobStore.class),
-            localTableRepository,
-            new StatsEngineRegistry(
-                List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
+            localStatsRepository, Mockito.mock(ReconcileJobStore.class), localTableRepository);
     StatsProviderFactory localStatsFactory =
         new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
     UserObjectBundleService localService =

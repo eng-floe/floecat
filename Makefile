@@ -48,7 +48,8 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
 #   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
-#   make compose-smoke          # sequential docker smoke (localstack + localstack-oidc)
+#   make compose-smoke          # sequential docker smoke (default: localstack + localstack-oidc)
+#   COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -239,14 +240,14 @@ FIXTURE_LOCALSTACK_PROPS := \
 	$(LOCALSTACK_FIXTURE_AWS_PROPS)
 
 REST_LOCALSTACK_IO_PROPS := \
-	-Dfloecat.gateway.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO \
-	-Dfloecat.gateway.storage-credential.scope=* \
-	-Dfloecat.gateway.storage-credential.properties.type=s3 \
-	-Dfloecat.gateway.storage-credential.properties.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
-	-Dfloecat.gateway.storage-credential.properties.s3.region=$(LOCALSTACK_REGION) \
-	-Dfloecat.gateway.storage-credential.properties.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
-	-Dfloecat.gateway.storage-credential.properties.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
-	-Dfloecat.gateway.storage-credential.properties.s3.path-style-access=true
+	-Dfloecat.connector.integration.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO \
+	-Dfloecat.connector.integration.storage-credential.scope=* \
+	-Dfloecat.connector.integration.storage-credential.properties.type=s3 \
+	-Dfloecat.connector.integration.storage-credential.properties.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.connector.integration.storage-credential.properties.s3.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.connector.integration.storage-credential.properties.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.connector.integration.storage-credential.properties.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.connector.integration.storage-credential.properties.s3.path-style-access=true
 
 CATALOG_REAL_AWS_PROPS := \
 	-Dfloecat.kv=dynamodb \

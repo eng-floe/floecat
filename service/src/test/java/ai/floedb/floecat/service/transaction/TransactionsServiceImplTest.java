@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -28,11 +30,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -41,6 +47,7 @@ import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSuppor
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.ConnectorProvisioning;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -48,6 +55,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.TxChange;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
@@ -473,6 +481,80 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void commitAppliedInvalidatesTouchedTableGraphEntry() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var metadataGraph = Mockito.mock(UserGraph.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+    inject(service, "metadataGraph", metadataGraph);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableId = "table-1";
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_PREPARED)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+    when(intentRepo.listByTx(accountId, txId)).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget(accountId, intent.getTargetPointerKey()))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(11L).build(),
+            MutationMeta.newBuilder().setPointerVersion(12L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
+            anyLong()))
+        .thenReturn(true);
+    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            accountId,
+            CommitTransactionRequest.newBuilder().setTxId(txId).build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    verify(metadataGraph)
+        .invalidate(
+            argThat(
+                id ->
+                    id != null
+                        && accountId.equals(id.getAccountId())
+                        && tableId.equals(id.getId())
+                        && id.getKind() == ResourceKind.RK_TABLE));
+  }
+
+  @Test
   void prepareWithoutExpectedVersionPreconditionCapturesCurrentPointerVersion() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
@@ -753,6 +835,90 @@ class TransactionsServiceImplTest {
     assertTrue((Boolean) m.invoke(service, TransactionState.TS_APPLIED));
   }
 
+  @Test
+  void buildProvisionedConnectorMaterializesGatewayProvisioningHint() throws Exception {
+    var service = new TransactionsServiceImpl();
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(resourceId("tbl-1", ResourceKind.RK_TABLE))
+            .setCatalogId(resourceId("cat-1", ResourceKind.RK_CATALOG))
+            .setNamespaceId(resourceId("ns-1", ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .addNamespacePath("db")
+                    .setTableDisplayName("orders")
+                    .setUri("s3://warehouse/db/orders")
+                    .build())
+            .putProperties("s3.region", "us-east-1")
+            .build();
+
+    Connector connector =
+        invokeBuildProvisionedConnector(
+            service,
+            "acct",
+            "tx-1",
+            table,
+            ConnectorProvisioning.newBuilder()
+                .setConnectorUri("s3://warehouse/db/orders")
+                .addSourceNamespacePath("db")
+                .setSourceTableName("orders")
+                .setDisplayName("register:pref:db.orders")
+                .setDescription("Filesystem connector")
+                .putProperties("iceberg.source", "filesystem")
+                .putProperties("s3.region", "us-east-1")
+                .putProperties("floecat.connector.mode", "capture-only")
+                .build());
+
+    assertEquals(ConnectorKind.CK_ICEBERG, connector.getKind());
+    assertEquals("s3://warehouse/db/orders", connector.getUri());
+    assertEquals("register:pref:db.orders", connector.getDisplayName());
+    assertEquals("Filesystem connector", connector.getDescription());
+    assertEquals(List.of("db"), connector.getSource().getNamespace().getSegmentsList());
+    assertEquals("orders", connector.getSource().getTable());
+    assertEquals("filesystem", connector.getPropertiesOrThrow("iceberg.source"));
+    assertEquals("us-east-1", connector.getPropertiesOrThrow("s3.region"));
+    assertNotNull(connector.getResourceId());
+  }
+
+  @Test
+  void buildProvisionedConnectorRequiresConnectorUri() throws Exception {
+    var service = new TransactionsServiceImpl();
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(resourceId("tbl-1", ResourceKind.RK_TABLE))
+            .setCatalogId(resourceId("cat-1", ResourceKind.RK_CATALOG))
+            .setNamespaceId(resourceId("ns-1", ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .addNamespacePath("db")
+                    .setTableDisplayName("orders")
+                    .setUri("s3://warehouse/db/orders")
+                    .build())
+            .build();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                invokeBuildProvisionedConnector(
+                    service,
+                    "acct",
+                    "tx-1",
+                    table,
+                    ConnectorProvisioning.newBuilder()
+                        .addSourceNamespacePath("db")
+                        .setSourceTableName("orders")
+                        .setDisplayName("register:pref:db.orders")
+                        .putProperties("iceberg.source", "filesystem")
+                        .build()));
+
+    assertTrue(error.getMessage().contains("connector_uri"));
+  }
+
   private static Transaction invokeCommitPrivate(
       TransactionsServiceImpl service,
       String accountId,
@@ -793,6 +959,36 @@ class TransactionsServiceImplTest {
             "abortExpired", Transaction.class, com.google.protobuf.Timestamp.class);
     m.setAccessible(true);
     return (Transaction) m.invoke(service, txn, now);
+  }
+
+  private static Connector invokeBuildProvisionedConnector(
+      TransactionsServiceImpl service,
+      String accountId,
+      String txId,
+      Table table,
+      ConnectorProvisioning provisioning)
+      throws Exception {
+    Method m =
+        TransactionsServiceImpl.class.getDeclaredMethod(
+            "buildProvisionedConnector",
+            String.class,
+            String.class,
+            Table.class,
+            ConnectorProvisioning.class,
+            com.google.protobuf.Timestamp.class);
+    m.setAccessible(true);
+    try {
+      return (Connector) m.invoke(service, accountId, txId, table, provisioning, null);
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof Exception ex) {
+        throw ex;
+      }
+      throw e;
+    }
+  }
+
+  private static ResourceId resourceId(String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("acct").setId(id).setKind(kind).build();
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

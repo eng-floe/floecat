@@ -90,6 +90,19 @@ class FloecatConnectorCompatibilityTest {
     }
 
     @Override
+    public FileGroupCaptureResult capturePlannedFileGroup(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
+        Set<String> plannedFilePaths,
+        Set<String> includeColumns,
+        Set<StatsTargetKind> includeTargetKinds,
+        boolean captureIndexes) {
+      return FileGroupCaptureResult.empty();
+    }
+
+    @Override
     public void close() {}
   }
 }

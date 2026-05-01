@@ -20,7 +20,10 @@ import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
@@ -32,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /** Shared CLI helper utilities used by command support classes. */
 public final class CliUtils {
@@ -200,18 +204,68 @@ public final class CliUtils {
   // ---------------------------------------------------------------------------
 
   /**
-   * Parses a capture mode string (e.g. {@code "metadata-only"}, {@code "stats-only"}) into the
-   * corresponding {@link CaptureMode} enum value. Defaults to {@code CM_METADATA_AND_STATS} when
+   * Parses a capture mode string (e.g. {@code "metadata-only"}, {@code "capture-only"}) into the
+   * corresponding {@link CaptureMode} enum value. Defaults to {@code CM_METADATA_AND_CAPTURE} when
    * blank or null.
    */
   public static CaptureMode parseCaptureMode(String s) {
-    if (s == null || s.isBlank()) return CaptureMode.CM_METADATA_AND_STATS;
+    if (s == null || s.isBlank()) return CaptureMode.CM_METADATA_AND_CAPTURE;
     return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
       case "METADATA_ONLY", "CM_METADATA_ONLY" -> CaptureMode.CM_METADATA_ONLY;
-      case "METADATA_AND_STATS", "CM_METADATA_AND_STATS" -> CaptureMode.CM_METADATA_AND_STATS;
-      case "STATS_ONLY", "CM_STATS_ONLY" -> CaptureMode.CM_STATS_ONLY;
+      case "METADATA_AND_CAPTURE", "CM_METADATA_AND_CAPTURE" -> CaptureMode.CM_METADATA_AND_CAPTURE;
+      case "CAPTURE_ONLY", "CM_CAPTURE_ONLY" -> CaptureMode.CM_CAPTURE_ONLY;
       default -> throw new IllegalArgumentException("invalid capture mode: " + s);
     };
+  }
+
+  /** Parses a comma-separated capture output list. */
+  public static Set<CaptureOutput> parseCaptureOutputs(String s) {
+    if (s == null || s.isBlank()) {
+      return Set.of();
+    }
+    java.util.LinkedHashSet<CaptureOutput> outputs = new java.util.LinkedHashSet<>();
+    for (String token : csvList(s)) {
+      switch (token.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+        case "STATS" -> {
+          outputs.add(CaptureOutput.CO_TABLE_STATS);
+          outputs.add(CaptureOutput.CO_FILE_STATS);
+          outputs.add(CaptureOutput.CO_COLUMN_STATS);
+        }
+        case "TABLE_STATS" -> outputs.add(CaptureOutput.CO_TABLE_STATS);
+        case "FILE_STATS" -> outputs.add(CaptureOutput.CO_FILE_STATS);
+        case "COLUMN_STATS" -> outputs.add(CaptureOutput.CO_COLUMN_STATS);
+        case "INDEX", "INDEXES", "PARQUET_PAGE_INDEX", "PAGE_INDEX", "PAGE_INDEXES" ->
+            outputs.add(CaptureOutput.CO_PARQUET_PAGE_INDEX);
+        default -> throw new IllegalArgumentException("invalid capture output: " + token);
+      }
+    }
+    return Set.copyOf(outputs);
+  }
+
+  /** Builds a capture policy from explicit outputs. */
+  public static CapturePolicy buildCapturePolicy(
+      CaptureMode mode, Set<CaptureOutput> requestedOutputs, List<String> columns) {
+    if (mode == CaptureMode.CM_METADATA_ONLY) {
+      return null;
+    }
+    java.util.LinkedHashSet<CaptureOutput> outputs =
+        new java.util.LinkedHashSet<>(requestedOutputs);
+    if (outputs.isEmpty()) {
+      throw new IllegalArgumentException("--capture is required for capture modes");
+    }
+    CapturePolicy.Builder policy = CapturePolicy.newBuilder().addAllOutputs(outputs);
+    for (String column : columns == null ? List.<String>of() : columns) {
+      if (column == null || column.isBlank()) {
+        continue;
+      }
+      policy.addColumns(
+          CaptureColumnPolicy.newBuilder()
+              .setSelector(column)
+              .setCaptureStats(outputs.contains(CaptureOutput.CO_COLUMN_STATS))
+              .setCaptureIndex(outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX))
+              .build());
+    }
+    return policy.build();
   }
 
   /**

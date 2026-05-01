@@ -27,7 +27,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -105,7 +105,7 @@ public class DeltaManifestMaterializer {
 
   @Inject GrpcServiceFacade grpcClient;
   @Inject TableGatewaySupport tableGatewaySupport;
-  @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig config;
 
   public List<Snapshot> materialize(Table table, List<Snapshot> snapshots) {
     if (table == null || !table.hasResourceId() || snapshots == null || snapshots.isEmpty()) {

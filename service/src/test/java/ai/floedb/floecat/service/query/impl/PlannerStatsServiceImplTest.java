@@ -46,9 +46,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
-import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
-import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.grpc.Context;
@@ -56,7 +54,6 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -349,12 +346,7 @@ class PlannerStatsServiceImplTest {
     StatsProviderFactory factory =
         new StatsProviderFactory(
             new StatsOrchestrator(
-                repository,
-                Mockito.mock(ReconcileJobStore.class),
-                tableRepository,
-                new StatsEngineRegistry(
-                    List.of(
-                        TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build()))),
+                repository, Mockito.mock(ReconcileJobStore.class), tableRepository),
             tableRepository,
             store);
     return PlannerStatsBundleService.forTesting(

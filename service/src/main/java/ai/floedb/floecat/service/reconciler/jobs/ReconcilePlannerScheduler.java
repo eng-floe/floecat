@@ -22,10 +22,12 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -47,6 +49,13 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcilePlannerScheduler {
   private static final Logger LOG = Logger.getLogger(ReconcilePlannerScheduler.class);
+  private static final ReconcileCapturePolicy DEFAULT_CAPTURE_POLICY =
+      ReconcileCapturePolicy.of(
+          List.of(),
+          java.util.Set.of(
+              ReconcileCapturePolicy.Output.TABLE_STATS,
+              ReconcileCapturePolicy.Output.FILE_STATS,
+              ReconcileCapturePolicy.Output.COLUMN_STATS));
 
   @Inject AccountRepository accounts;
   @Inject ConnectorRepository connectors;
@@ -235,6 +244,11 @@ public class ReconcilePlannerScheduler {
     }
 
     String key = connector.getResourceId().getAccountId() + ":" + connector.getResourceId().getId();
+    if (connectors.getById(connector.getResourceId()).isEmpty()) {
+      lastEnqueueMs.remove(key);
+      observePlannerEnqueue("skipped", mode, "stale_connector");
+      return;
+    }
     boolean fullRescan = effectiveMode == ReconcileMode.RM_FULL;
     long now = nowMs();
     long notBeforeMs = 0L;
@@ -259,8 +273,8 @@ public class ReconcilePlannerScheduler {
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),
           fullRescan,
-          CaptureMode.METADATA_AND_STATS,
-          ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+          CaptureMode.METADATA_AND_CAPTURE,
+          ReconcileScope.of(List.of(), null, null, List.of(), DEFAULT_CAPTURE_POLICY),
           autoExecutionPolicy(),
           "");
       lastEnqueueMs.put(key, now);

@@ -91,4 +91,39 @@ class IcebergConnectorIssuesTest {
           "expected file-level stats to still be produced");
     }
   }
+
+  @Test
+  void filesystemConnectorInfersLatestMetadataFromBaseLocation() {
+    TestS3Fixtures.seedTpcdsSfoneFixtureOnce();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put("external.namespace", "tpcds_sfone");
+    props.put("external.table-name", "catalog_returns");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+    String tableLocation = TestS3Fixtures.tpcdsSfoneUri("floe_test.db/tpcds_sfone/catalog_returns");
+
+    try (FloecatConnector connector =
+        IcebergConnectorFactory.create(
+            tableLocation, props, "none", new HashMap<>(), new HashMap<>())) {
+      List<FloecatConnector.SnapshotBundle> snapshots =
+          assertDoesNotThrow(
+              () ->
+                  connector.enumerateSnapshots(
+                      "tpcds_sfone",
+                      "catalog_returns",
+                      ResourceId.newBuilder()
+                          .setAccountId("test-account")
+                          .setId("test-table")
+                          .setKind(ResourceKind.RK_TABLE)
+                          .build(),
+                      FloecatConnector.SnapshotEnumerationOptions.full(true)));
+
+      assertNotNull(snapshots);
+      assertFalse(snapshots.isEmpty(), "expected snapshots from base table location");
+    }
+  }
 }

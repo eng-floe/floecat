@@ -18,18 +18,23 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -42,6 +47,8 @@ import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,9 +86,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String first =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String second =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
   }
@@ -96,7 +103,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of()),
             "");
@@ -105,7 +112,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             scope,
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -123,16 +130,16 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String childJobId =
         store.enqueue(
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders"),
             ReconcileExecutionPolicy.defaults(),
             planJobId,
@@ -141,9 +148,9 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         CONNECTOR_ID,
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
-        ReconcileJobKind.EXEC_TABLE,
+        ReconcileJobKind.PLAN_TABLE,
         ReconcileTableTask.of("src.ns", "customers", "customers-table-id", "customers"),
         ReconcileExecutionPolicy.defaults(),
         "other-plan",
@@ -165,9 +172,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.of(
                 "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
@@ -185,6 +192,370 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void persistSnapshotPlanUpdatesStoredSnapshotTask() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(
+                ReconcileFileGroupTask.of(
+                    jobId,
+                    "snapshot-55-group-0",
+                    "table-1",
+                    55L,
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true));
+
+    var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals(1, job.snapshotTask.fileGroups().size());
+    assertEquals(
+        "s3://bucket/data/file-1.parquet",
+        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+  }
+
+  @Test
+  void getReturnsCanonicalSnapshotPlanWhenLookupPointerIsStale() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    Pointer oldLookup = store.pointerStore.get(lookupKey).orElseThrow();
+
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(
+                ReconcileFileGroupTask.of(
+                    jobId,
+                    "snapshot-55-group-0",
+                    "table-1",
+                    55L,
+                    List.of("s3://bucket/data/file-1.parquet"))),
+            true));
+
+    Pointer currentLookup = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lookupKey,
+            currentLookup.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lookupKey)
+                .setBlobUri(oldLookup.getBlobUri())
+                .setVersion(currentLookup.getVersion() + 1)
+                .build()));
+
+    var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+
+    assertEquals(1, job.snapshotTask.fileGroups().size());
+    assertEquals(
+        "s3://bucket/data/file-1.parquet",
+        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void childJobsReturnsCanonicalChildWhenParentPointerIsStale() {
+    store.init();
+
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+
+    String parentPointerKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, childJobId);
+    Pointer oldParentPointer = store.pointerStore.get(parentPointerKey).orElseThrow();
+    var parentLease = store.leaseNext().orElseThrow();
+    assertEquals(parentJobId, parentLease.jobId);
+    var childLease = store.leaseNext().orElseThrow();
+    assertEquals(childJobId, childLease.jobId);
+    store.markRunning(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+
+    Pointer currentParentPointer = store.pointerStore.get(parentPointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            parentPointerKey,
+            currentParentPointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(parentPointerKey)
+                .setBlobUri(oldParentPointer.getBlobUri())
+                .setVersion(currentParentPointer.getVersion() + 1)
+                .build()));
+
+    var children = store.childJobs(ACCOUNT_ID, parentJobId);
+
+    assertEquals(1, children.size());
+    assertEquals("JS_RUNNING", children.getFirst().state);
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(parentPointerKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void queueStatsUsesCanonicalJobWhenLookupPointerIsStale() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    Pointer oldLookup = store.pointerStore.get(lookupKey).orElseThrow();
+
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+
+    Pointer currentLookup = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lookupKey,
+            currentLookup.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lookupKey)
+                .setBlobUri(oldLookup.getBlobUri())
+                .setVersion(currentLookup.getVersion() + 1)
+                .build()));
+
+    var stats = store.queueStats();
+
+    assertEquals(0L, stats.queued);
+    assertEquals(1L, stats.running);
+    assertEquals(0L, stats.cancelling);
+    assertEquals(
+        store
+            .pointerStore
+            .get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
+            .orElseThrow()
+            .getBlobUri(),
+        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void leaseNextSerializesSnapshotFinalizersPerSnapshot() {
+    store.init();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events", java.util.List.of(), true);
+
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-1",
+        "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        "parent-2",
+        "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+
+    assertEquals(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, firstLease.jobKind);
+    assertTrue(store.leaseNext().isEmpty());
+  }
+
+  @Test
+  void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
+    store.init();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.enqueue(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "parent-1",
+                    ""));
+
+    assertTrue(error.getMessage().contains("FINALIZE_SNAPSHOT_CAPTURE"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsImplicitCoverageForPlanSnapshotJobs() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                store.persistSnapshotPlan(
+                    jobId,
+                    ReconcileSnapshotTask.of(
+                        "table-1",
+                        55L,
+                        "db",
+                        "events",
+                        List.of(
+                            ReconcileFileGroupTask.of(
+                                jobId,
+                                "snapshot-55-group-0",
+                                "table-1",
+                                55L,
+                                List.of("s3://bucket/data/file-1.parquet"))))));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+  }
+
+  @Test
+  void persistSnapshotPlanRejectsEmptyCoverageForPlanSnapshotJobs() {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> store.persistSnapshotPlan(jobId, ReconcileSnapshotTask.empty()));
+
+    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+  }
+
+  @Test
+  void persistFileGroupResultUpdatesStoredExecFileGroupTask() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.EXEC_FILE_GROUP,
+            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    store.persistFileGroupResult(
+        jobId,
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(
+                ai.floedb.floecat.reconciler.jobs.ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    2L,
+                    ReconcileIndexArtifactResult.of(
+                        "s3://bucket/index/file-1.parquet.index", "parquet", 1)))));
+
+    var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals(1, job.fileGroupTask.fileResults().size());
+    assertEquals(2L, job.fileGroupTask.fileResults().getFirst().statsProcessed());
+    assertEquals(
+        "s3://bucket/index/file-1.parquet.index",
+        job.fileGroupTask.fileResults().getFirst().indexArtifact().artifactUri());
+  }
+
+  @Test
   void enqueueExecViewRejectsMismatchedDestinationNamespaceIds() {
     store.init();
 
@@ -196,9 +567,9 @@ class DurableReconcileJobStoreTest {
                     ACCOUNT_ID,
                     CONNECTOR_ID,
                     false,
-                    CaptureMode.METADATA_AND_STATS,
+                    CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(List.of("analytics-namespace-id"), null),
-                    ReconcileJobKind.EXEC_VIEW,
+                    ReconcileJobKind.PLAN_VIEW,
                     ReconcileTableTask.empty(),
                     ReconcileViewTask.of(
                         "db", "events_summary", "other-namespace-id", "events-summary-id"),
@@ -220,9 +591,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v1"),
             ReconcileExecutionPolicy.defaults(),
             "",
@@ -232,9 +603,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_TABLE,
+            ReconcileJobKind.PLAN_TABLE,
             ReconcileTableTask.of("src.ns", "orders", "orders-table-id", "orders_v2"),
             ReconcileExecutionPolicy.defaults(),
             "",
@@ -252,9 +623,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.of(
                 "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
@@ -266,9 +637,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.of(
                 "db", "events_summary", "analytics-namespace-id", "events-summary-id"),
@@ -288,9 +659,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.empty(),
             ReconcileExecutionPolicy.defaults(),
@@ -301,9 +672,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of("analytics-namespace-id"), null),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.empty(),
             ReconcileExecutionPolicy.defaults(),
@@ -321,7 +692,7 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         "conn-default",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "");
@@ -330,7 +701,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             "conn-remote",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -356,7 +727,7 @@ class DurableReconcileJobStoreTest {
         ACCOUNT_ID,
         "conn-a",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
         "remote-a");
@@ -365,7 +736,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             "conn-b",
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
@@ -385,13 +756,36 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextDoesNotMatchPinnedJobWhenExecutorFilterIsEmpty() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        "conn-pinned",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+        "remote-a");
+
+    assertTrue(
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote")))
+            .isEmpty());
+  }
+
+  @Test
   void leaseNextAllowsOnlyOneRunningJobPerLane() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String metadataJob =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
-    String statsJob = store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.STATS_ONLY, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String statsJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(metadataJob, firstLease.jobId);
@@ -405,14 +799,98 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void staleLaneLeasePointerStillBlocksConcurrentLease() throws Exception {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    var firstLease = store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob currentJob =
+        store.mapper.readValue(
+            store.blobStore.get(currentCanonical.getBlobUri()),
+            DurableReconcileJobStore.StoredReconcileJob.class);
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, currentJob.laneKey);
+    Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lanePointerKey,
+            lanePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lanePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(lanePointer.getVersion() + 1)
+                .build()));
+
+    store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.CAPTURE_ONLY, scope);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    assertEquals("conn-b", store.leaseNext().orElseThrow().connectorId);
+  }
+
+  @Test
+  void clearLaneLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner() throws Exception {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+
+    store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    assertNotEquals(initialCanonical.getBlobUri(), currentCanonical.getBlobUri());
+
+    DurableReconcileJobStore.StoredReconcileJob activeRecord =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(currentCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, activeRecord.laneKey);
+    Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            lanePointerKey,
+            lanePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(lanePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(lanePointer.getVersion() + 1)
+                .build()));
+
+    Method clearLaneLeaseIfOwned =
+        DurableReconcileJobStore.class.getDeclaredMethod(
+            "clearLaneLeaseIfOwned",
+            DurableReconcileJobStore.StoredReconcileJob.class,
+            String.class);
+    clearLaneLeaseIfOwned.setAccessible(true);
+
+    assertDoesNotThrow(
+        () -> clearLaneLeaseIfOwned.invoke(store, activeRecord, initialCanonical.getBlobUri()));
+
+    Pointer repairedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertEquals(currentCanonical.getBlobUri(), repairedPointer.getBlobUri());
+  }
+
+  @Test
   void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
     String firstJob =
-        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String secondJob =
-        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -423,6 +901,111 @@ class DurableReconcileJobStoreTest {
 
     var secondLease = store.leaseNext().orElseThrow();
     assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void staleSnapshotLeasePointerStillBlocksConcurrentSnapshotLease() throws Exception {
+    store.init();
+
+    String firstJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-a",
+            "");
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    var firstLease = store.leaseNext().orElseThrow();
+
+    String snapshotLeasePointerKey = Keys.reconcileSnapshotLeasePointer("table-1", 55L);
+    Pointer snapshotLeasePointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            snapshotLeasePointerKey,
+            snapshotLeasePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(snapshotLeasePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(snapshotLeasePointer.getVersion() + 1)
+                .build()));
+
+    store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        "conn-b",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+        ReconcileExecutionPolicy.defaults(),
+        "parent-b",
+        "");
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    assertEquals("conn-b", store.leaseNext().orElseThrow().connectorId);
+  }
+
+  @Test
+  void clearSnapshotLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner()
+      throws Exception {
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-a",
+            "");
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer initialCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+
+    store.leaseNext().orElseThrow();
+
+    Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    assertNotEquals(initialCanonical.getBlobUri(), currentCanonical.getBlobUri());
+
+    String snapshotLeasePointerKey = Keys.reconcileSnapshotLeasePointer("table-1", 55L);
+    Pointer snapshotLeasePointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            snapshotLeasePointerKey,
+            snapshotLeasePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(snapshotLeasePointerKey)
+                .setBlobUri(initialCanonical.getBlobUri())
+                .setVersion(snapshotLeasePointer.getVersion() + 1)
+                .build()));
+
+    DurableReconcileJobStore.StoredReconcileJob activeRecord =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(currentCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+
+    Method clearSnapshotLeaseIfOwned =
+        DurableReconcileJobStore.class.getDeclaredMethod(
+            "clearSnapshotLeaseIfOwned",
+            DurableReconcileJobStore.StoredReconcileJob.class,
+            String.class);
+    clearSnapshotLeaseIfOwned.setAccessible(true);
+
+    assertDoesNotThrow(
+        () -> clearSnapshotLeaseIfOwned.invoke(store, activeRecord, initialCanonical.getBlobUri()));
+
+    Pointer repairedPointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertEquals(currentCanonical.getBlobUri(), repairedPointer.getBlobUri());
   }
 
   @Test
@@ -432,9 +1015,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope secondScope = ReconcileScope.of(List.of("a", "b"), null);
 
     String firstJob =
-        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
     String secondJob =
-        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.CAPTURE_ONLY, secondScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
@@ -448,36 +1031,214 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextAllowsConcurrentFileGroupJobsForSameTable() {
+    store.init();
+
+    String firstJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-1",
+                "snapshot-55-group-0",
+                "table-1",
+                55L,
+                List.of("s3://bucket/table-1/file-0.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+    String secondJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-1",
+                "snapshot-55-group-1",
+                "table-1",
+                55L,
+                List.of("s3://bucket/table-1/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    var secondLease = store.leaseNext().orElseThrow();
+
+    assertEquals(firstJob, firstLease.jobId);
+    assertEquals(secondJob, secondLease.jobId);
+    assertNotEquals(firstLease.jobId, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextAllowsConcurrentFileGroupJobsForSnapshotZero() {
+    store.init();
+
+    String firstJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-0",
+                "snapshot-0-group-0",
+                "table-1",
+                0L,
+                List.of("s3://bucket/table-1/file-0.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+    String secondJob =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            "conn-a",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileFileGroupTask.of(
+                "plan-0",
+                "snapshot-0-group-1",
+                "table-1",
+                0L,
+                List.of("s3://bucket/table-1/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-plan-a",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    var secondLease = store.leaseNext().orElseThrow();
+
+    assertEquals(firstJob, firstLease.jobId);
+    assertEquals(secondJob, secondLease.jobId);
+    assertNotEquals(firstLease.jobId, secondLease.jobId);
+  }
+
+  @Test
   void successfulJobClearsDedupeAndAllowsFreshEnqueue() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
     String first =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var leased = store.leaseNext().orElseThrow();
     store.markSucceeded(first, leased.leaseEpoch, System.currentTimeMillis(), 10, 2, 4, 20);
 
     String second =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     assertNotEquals(first, second);
   }
 
   @Test
-  void enqueuePreservesScopedStatsRequests() {
+  void enqueueRepairsMissingSecondaryPointersForDedupedQueuedJob() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    var canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob job =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    String expectedReadyKey =
+        Keys.reconcileReadyPointerByDue(job.nextAttemptAtMs, job.accountId, job.laneKey, job.jobId);
+    job.readyPointerKey = "";
+    overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
+
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    var lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
+
+    var readyPointer = store.pointerStore.get(expectedReadyKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(expectedReadyKey, readyPointer.getVersion()));
+
+    Pointer dedupePointer =
+        firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            dedupePointer.getKey(),
+            dedupePointer.getVersion(),
+            Pointer.newBuilder()
+                .setKey(dedupePointer.getKey())
+                .setBlobUri(canonicalPointer.getBlobUri())
+                .setVersion(dedupePointer.getVersion() + 1)
+                .build()));
+
+    String dedupedJobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertEquals(jobId, dedupedJobId);
+    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+    assertTrue(store.pointerStore.get(expectedReadyKey).isPresent());
+    Pointer repairedCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    Pointer repairedDedupePointer =
+        firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
+    assertEquals(repairedCanonical.getBlobUri(), repairedDedupePointer.getBlobUri());
+    DurableReconcileJobStore.StoredReconcileJob repairedJob =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(repairedCanonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    assertEquals(expectedReadyKey, repairedJob.readyPointerKey);
+
+    var lease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, lease.jobId);
+  }
+
+  @Test
+  void enqueuePreservesDedupeOwnershipWhenCanonicalPointerBlobIsMissing() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob job =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    Pointer advancedCanonicalPointer =
+        overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
+    assertTrue(store.blobStore.delete(advancedCanonicalPointer.getBlobUri()));
+
+    String dedupedJobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertEquals(jobId, dedupedJobId);
+    assertTrue(store.pointerStore.get(canonicalPointerKey).isPresent());
+  }
+
+  @Test
+  void enqueuePreservesScopedCaptureRequests() {
     store.init();
     ReconcileScope scope =
         ReconcileScope.of(
             List.of(),
             "tbl",
-            List.of(scopedStatsRequest("tbl", 42L, "table", List.of("c1", "#3"))));
+            List.of(scopedCaptureRequest("tbl", 42L, "table", List.of("c1", "#3"))));
 
     String jobId =
-        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     ReconcileJob job = store.get(jobId).orElseThrow();
     assertEquals(
-        List.of(scopedStatsRequest("tbl", 42L, "table", List.of("#3", "c1"))),
-        job.scope.destinationStatsRequests());
+        List.of(scopedCaptureRequest("tbl", 42L, "table", List.of("#3", "c1"))),
+        job.scope.destinationCaptureRequests());
   }
 
   @Test
@@ -489,7 +1250,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of("tier", "gold")),
@@ -501,7 +1262,14 @@ class DurableReconcileJobStoreTest {
     assertEquals("gold", job.executionPolicy.attributes().get("tier"));
     assertEquals("", job.executorId);
 
-    var lease = store.leaseNext().orElseThrow();
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote"),
+                    java.util.Set.of("remote-executor")))
+            .orElseThrow();
     assertEquals(jobId, lease.jobId);
     assertEquals("remote-executor", lease.pinnedExecutorId);
     assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
@@ -522,7 +1290,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
 
@@ -549,9 +1317,9 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty(),
-            ReconcileJobKind.EXEC_VIEW,
+            ReconcileJobKind.PLAN_VIEW,
             ReconcileTableTask.empty(),
             ReconcileViewTask.of("src_ns", "src_view", "dst-ns-id", "dst-view-id"),
             ReconcileExecutionPolicy.defaults(),
@@ -578,7 +1346,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
     assertTrue(store.get(ACCOUNT_ID, jobId).isPresent());
@@ -594,14 +1362,14 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "t1"));
     String second =
         store.enqueue(
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "t2"));
 
     var firstPage = store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of());
@@ -629,7 +1397,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext();
     assertTrue(firstLease.isPresent());
@@ -643,6 +1411,40 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextRepairsCanonicalJobWhenLookupAndReadyPointersAreMissing() {
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob record =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    String readyKey = record.readyPointerKey;
+
+    Pointer lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
+    Pointer readyPointer = store.pointerStore.get(readyKey).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(readyKey, readyPointer.getVersion()));
+
+    var repairedLease = store.leaseNext().orElseThrow();
+
+    assertEquals(jobId, repairedLease.jobId);
+    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+  }
+
+  @Test
   void cancellingLeaseIsReclaimedWithoutLosingCancellationIntent() throws Exception {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
@@ -653,7 +1455,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -691,12 +1493,13 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
         firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
+    assertFalse(store.leaseNext().isPresent());
 
     // Cancel should poke lease expiry, allowing reclaim well before the original 5s lease.
     Thread.sleep(1300L);
@@ -724,7 +1527,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -751,7 +1554,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -776,7 +1579,7 @@ class DurableReconcileJobStoreTest {
             ACCOUNT_ID,
             CONNECTOR_ID,
             false,
-            CaptureMode.METADATA_AND_STATS,
+            CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -810,9 +1613,9 @@ class DurableReconcileJobStoreTest {
     ReconcileScope runningScope = ReconcileScope.of(List.of(), "tbl-r");
     ReconcileScope cancellingScope = ReconcileScope.of(List.of(), "tbl-c");
 
-    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, queuedScope);
-    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, runningScope);
-    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, cancellingScope);
+    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_CAPTURE, queuedScope);
+    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_CAPTURE, runningScope);
+    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_CAPTURE, cancellingScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
@@ -850,7 +1653,7 @@ class DurableReconcileJobStoreTest {
     store.init();
 
     store.enqueue(
-        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
     // Take the first lease so the job is removed from the ready queue.
     // leaseNext() short-circuits via leaseReadyDue() here — reclaim is NOT triggered yet.
     store.leaseNext().orElseThrow();
@@ -867,6 +1670,23 @@ class DurableReconcileJobStoreTest {
     // After the fix: readRecordByBlobUri() catches it and returns Optional.empty().
     assertDoesNotThrow(() -> store.leaseNext());
     assertTrue(store.leaseNext().isEmpty());
+  }
+
+  @Test
+  void leaseNextAvoidsRedundantReadyCandidateBlobReloadBeforeLeaseMutation() {
+    CountingBlobStore blobStore = new CountingBlobStore();
+    store.blobStore = blobStore;
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+    blobStore.resetGetCount();
+
+    var lease = store.leaseNext().orElseThrow();
+
+    assertEquals(CONNECTOR_ID, lease.connectorId);
+    assertEquals(
+        1, blobStore.getCount(), "expected one ready-candidate read on the uncontended happy path");
   }
 
   /** BlobStore that throws StorageNotFoundException on every get() call. */
@@ -908,8 +1728,57 @@ class DurableReconcileJobStoreTest {
     }
   }
 
-  private static ReconcileScope.ScopedStatsRequest scopedStatsRequest(
+  private static final class CountingBlobStore extends InMemoryBlobStore {
+    private final AtomicInteger getCount = new AtomicInteger();
+
+    @Override
+    public byte[] get(String uri) {
+      getCount.incrementAndGet();
+      return super.get(uri);
+    }
+
+    int getCount() {
+      return getCount.get();
+    }
+
+    void resetGetCount() {
+      getCount.set(0);
+    }
+  }
+
+  private static ReconcileScope.ScopedCaptureRequest scopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
-    return new ReconcileScope.ScopedStatsRequest(tableId, snapshotId, targetSpec, columnSelectors);
+    return new ReconcileScope.ScopedCaptureRequest(
+        tableId, snapshotId, targetSpec, columnSelectors);
+  }
+
+  private Optional<Pointer> firstPointerWithPrefix(String prefix) {
+    StringBuilder next = new StringBuilder();
+    List<Pointer> pointers = store.pointerStore.listPointersByPrefix(prefix, 10, "", next);
+    return pointers.stream().findFirst();
+  }
+
+  private Pointer overwriteCanonicalRecordWithoutSync(
+      String canonicalPointerKey, DurableReconcileJobStore.StoredReconcileJob record) {
+    Pointer currentPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    String nextBlobUri =
+        Keys.reconcileJobBlobUri(
+            record.accountId, record.jobId, "test-manual-" + UUID.randomUUID());
+    assertDoesNotThrow(
+        () ->
+            store.blobStore.put(
+                nextBlobUri,
+                store.mapper.writeValueAsBytes(record),
+                "application/json; charset=UTF-8"));
+    Pointer nextPointer =
+        Pointer.newBuilder()
+            .setKey(canonicalPointerKey)
+            .setBlobUri(nextBlobUri)
+            .setVersion(currentPointer.getVersion() + 1L)
+            .build();
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            canonicalPointerKey, currentPointer.getVersion(), nextPointer));
+    return nextPointer;
   }
 }

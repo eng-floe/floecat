@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.telemetry;
 
 import io.quarkus.test.junit.QuarkusTestProfile;
+import java.lang.management.ManagementFactory;
 import java.util.Map;
 
 public class ProfilingPolicyTestProfile implements QuarkusTestProfile {
@@ -33,8 +34,16 @@ public class ProfilingPolicyTestProfile implements QuarkusTestProfile {
         Map.entry("floecat.profiling.policy.enabled", "true"),
         Map.entry("floecat.profiling.policy.gc.enabled", "true"),
         Map.entry("floecat.profiling.policy.gc.threshold-bytes", "1048576"),
-        Map.entry("floecat.profiling.policy.gc.gc-name", "G1 Old Generation"),
+        Map.entry("floecat.profiling.policy.gc.gc-name", activeGcName()),
         Map.entry("floecat.profiling.policy.gc.cooldown", "PT0S"),
         Map.entry("floecat.profiling.policy-poll-interval", "PT2S"));
+  }
+
+  private static String activeGcName() {
+    return ManagementFactory.getGarbageCollectorMXBeans().stream()
+        .map(bean -> bean.getName() == null ? "" : bean.getName().trim())
+        .filter(name -> !name.isEmpty())
+        .findFirst()
+        .orElse("G1 Old Generation");
   }
 }

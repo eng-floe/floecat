@@ -224,8 +224,10 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
 - **Compose smoke:** `make compose-smoke` runs DuckDB table federation checks plus Trino table and
-  view lifecycle checks in LocalStack mode. The Trino block creates and replaces an Iceberg view
-  via SQL and verifies both definitions are queryable.
+  view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
+  `COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke`, which starts the service in
+  `reconciler-control` mode and enables the remote `executor` profile. The Trino block creates and
+  replaces an Iceberg view via SQL and verifies both definitions are queryable.
 
 ---
 
@@ -238,11 +240,13 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
   `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
   Request-supplied FileIO properties are merged over gateway defaults from
-  `floecat.gateway.storage-credential.properties.*`.
+  `floecat.connector.integration.storage-credential.properties.*`.
 - **Registered Iceberg connectors:** tables registered or committed through the gateway are now
-  wired back to Floecat as ordinary `iceberg.source=rest` connectors. Steady-state discovery comes
-  from Floecat’s own REST catalog, while the table record’s `location` and `metadata-location`
-  remain the source of truth for Iceberg clients.
+  wired back to Floecat as gateway-managed REST connectors tagged with
+  `floecat.connector.mode=capture-only`. The upstream source may still be modeled with
+  `iceberg.source=rest`, but capture-only enforcement comes from the explicit mode property rather
+  than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
+  table record’s `location` and `metadata-location` remain the source of truth for Iceberg clients.
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
   delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
   and `aws.profile_path` when clients expect AWS SDK profile-based access.

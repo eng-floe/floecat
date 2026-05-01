@@ -17,10 +17,12 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,9 +36,11 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutorRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.ArrayList;
@@ -44,6 +48,21 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReconcilePlannerSchedulerTest {
+
+  private static void stubConnectorLookup(ConnectorRepository connectors, Connector... rows) {
+    for (Connector row : rows) {
+      when(connectors.getById(argThat(id -> sameResourceId(id, row.getResourceId()))))
+          .thenReturn(java.util.Optional.of(row));
+    }
+  }
+
+  private static boolean sameResourceId(ResourceId left, ResourceId right) {
+    return left != null
+        && right != null
+        && left.getAccountId().equals(right.getAccountId())
+        && left.getId().equals(right.getId())
+        && left.getKind() == right.getKind();
+  }
 
   @Test
   void runPlannerPassUsesOpaqueAccountTokensBetweenPages() {
@@ -93,6 +112,10 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of();
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-b", "conn-b1", "bravo-1"));
 
     scheduler.runPlannerPass(5L, 1, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -150,6 +173,10 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of();
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-a", "conn-a2", "alpha-2"));
 
     scheduler.runPlannerPass(100L, 10, 1, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -186,6 +213,7 @@ class ReconcilePlannerSchedulerTest {
               next.append(token == null ? "" : token);
               return List.of(connector("acct-a", "conn-a1", "alpha-1"));
             });
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
 
     scheduler.runPlannerPass(100L, 10, 1, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -223,6 +251,11 @@ class ReconcilePlannerSchedulerTest {
               }
               return List.of(connector("acct-b", "conn-b1", "bravo-1"));
             });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-a1", "alpha-1"),
+        connector("acct-a", "conn-a2", "alpha-2"),
+        connector("acct-b", "conn-b1", "bravo-1"));
 
     scheduler.runPlannerPass(5L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -255,6 +288,10 @@ class ReconcilePlannerSchedulerTest {
             List.of(
                 connector("acct-a", "conn-disabled", "alpha-1", false),
                 connector("acct-a", "conn-enabled", "alpha-2", true)));
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-a", "conn-disabled", "alpha-1", false),
+        connector("acct-a", "conn-enabled", "alpha-2", true));
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
@@ -279,6 +316,7 @@ class ReconcilePlannerSchedulerTest {
           .thenReturn(List.of(account("acct-a", "alpha")));
       when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
           .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+      stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
       when(scheduler.jobs.enqueuePlan(
               anyString(),
               anyString(),
@@ -299,6 +337,41 @@ class ReconcilePlannerSchedulerTest {
   }
 
   @Test
+  void runPlannerPassEnqueuesDefaultCapturePolicy() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+
+    List<ReconcileScope> enqueuedScopes = new ArrayList<>();
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenAnswer(
+            invocation -> {
+              enqueuedScopes.add(invocation.getArgument(4, ReconcileScope.class));
+              return "job-1";
+            });
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    assertEquals(1, enqueuedScopes.size());
+    assertTrue(enqueuedScopes.getFirst().hasCapturePolicy());
+    assertEquals(
+        java.util.Set.of(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.FILE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS),
+        enqueuedScopes.getFirst().capturePolicy().outputs());
+  }
+
+  @Test
   void runPlannerPassDoesNotEnqueueWhenPlannerExecutorIsUnavailable() {
     TestScheduler scheduler = new TestScheduler();
     scheduler.accounts = mock(AccountRepository.class);
@@ -311,6 +384,7 @@ class ReconcilePlannerSchedulerTest {
         .thenReturn(List.of(account("acct-a", "alpha")));
     when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
         .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 

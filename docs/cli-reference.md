@@ -34,6 +34,7 @@ snapshot delete <table> <snapshot_id>
 stats table <catalog.ns[.ns...].table> [--snapshot <id|current>]
 stats columns <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
 stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+stats index <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
 constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json]
 constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
 constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]
@@ -88,6 +89,10 @@ connector validate <kind> <uri>
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
+    --mode metadata-only|metadata-and-capture|capture-only
+    [--capture stats|table-stats|file-stats|column-stats|index,...]
+    [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
+    [--snapshot <id>|--current] [--columns c1,#id2,...]
 connector job <jobId>
 
 Credential types (`--cred-type`):
@@ -117,6 +122,11 @@ Auth properties (generic options):
 - `--auth aws.profile_path=<path>` – optional shared credentials/config file path.
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
 - `--auth cache_path=<path>` – optional CLI cache path.
+
+Trigger notes:
+- `--mode` is required on `connector trigger`.
+- `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 
 CLI cache examples:
 - Databricks:

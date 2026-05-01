@@ -57,13 +57,14 @@ import org.junit.jupiter.api.BeforeEach;
 
 abstract class AbstractReconcilerServiceTestBase {
   protected ReconcilerService service;
+  protected LogicalSchemaMapper schemaMapper;
   protected PrincipalContext principal;
   protected ResourceId connectorId;
 
   @BeforeEach
   void setUp() {
     service = new ReconcilerService();
-    service.schemaMapper = new LogicalSchemaMapper();
+    schemaMapper = new LogicalSchemaMapper();
     service.credentialResolver = new InMemoryCredentialResolver();
     principal =
         PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr-id").build();
@@ -73,6 +74,14 @@ abstract class AbstractReconcilerServiceTestBase {
             .setId("connector-1")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
+  }
+
+  protected QueuedReconcileWorkerSupport queuedWorkerSupport() {
+    QueuedReconcileWorkerSupport support = new QueuedReconcileWorkerSupport();
+    support.reconcilerService = service;
+    support.backend = service.backend;
+    support.schemaMapper = schemaMapper;
+    return support;
   }
 
   protected Connector activeConnector() {
@@ -299,6 +308,16 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public boolean indexArtifactsCapturedForFilePaths(
+        ReconcileContext ctx,
+        ResourceId tableId,
+        long snapshotId,
+        List<String> filePaths,
+        Set<String> selectors) {
+      return false;
+    }
+
+    @Override
     public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
       if (catalogId == null || catalogId.getId().isBlank()) {
         throw new IllegalArgumentException("catalogId is required");
@@ -473,6 +492,19 @@ abstract class AbstractReconcilerServiceTestBase {
         long snapshotId,
         Set<String> includeColumns) {
       return List.of();
+    }
+
+    @Override
+    public FileGroupCaptureResult capturePlannedFileGroup(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
+        Set<String> plannedFilePaths,
+        Set<String> includeColumns,
+        Set<StatsTargetKind> includeTargetKinds,
+        boolean captureIndexes) {
+      return FileGroupCaptureResult.empty();
     }
 
     @Override

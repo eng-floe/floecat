@@ -26,10 +26,12 @@ import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.StatsProducer;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -314,5 +316,96 @@ class StatsRepositoryTargetStorageTest {
                 .orElseThrow()
                 .getMetadata())
         .isEqualTo(metadata);
+  }
+
+  @Test
+  void identicalPutTargetStatsRetryIsIdempotent() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 8080L;
+
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+
+    repository.putTargetStats(tableRecord);
+    repository.putTargetStats(tableRecord);
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(tableRecord);
+  }
+
+  @Test
+  void conflictingPutTargetStatsForSameTargetIsRejected() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9090L;
+
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(11L).build(), null));
+
+    assertThatThrownBy(
+            () ->
+                repository.putTargetStats(
+                    TargetStatsRecords.tableRecord(
+                        TABLE_ID,
+                        snapshotId,
+                        TableValueStats.newBuilder().setRowCount(12L).build(),
+                        null)))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class)
+        .hasMessageContaining("pointer bound to different blob");
+  }
+
+  @Test
+  void puttingStatsDoesNotAdvanceTablePointerVersion() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    TableRepository tableRepository = new TableRepository(pointerStore, blobStore);
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 9191L;
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("a")
+            .setId("c")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("a")
+            .setId("n")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+
+    tableRepository.create(
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .build());
+    long before = tableRepository.metaFor(TABLE_ID).getPointerVersion();
+
+    statsRepository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(42L).setDataFileCount(3L).build(),
+            null));
+
+    long after = tableRepository.metaFor(TABLE_ID).getPointerVersion();
+
+    assertThat(after).isEqualTo(before);
+    assertThat(
+            statsRepository.metaForTargetStats(
+                TABLE_ID,
+                snapshotId,
+                StatsTargetIdentity.tableTarget(),
+                com.google.protobuf.Timestamp.getDefaultInstance()))
+        .extracting(ai.floedb.floecat.common.rpc.MutationMeta::getPointerVersion)
+        .isEqualTo(1L);
   }
 }

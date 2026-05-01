@@ -52,27 +52,6 @@ public interface IcebergGatewayConfig {
 
   Optional<String> defaultWarehousePath();
 
-  Optional<String> defaultRegion();
-
-  Optional<StorageCredentialConfig> storageCredential();
-
-  Optional<String> metadataFileIo();
-
-  Optional<String> metadataFileIoRoot();
-
-  Optional<String> selfUri();
-
-  interface StorageCredentialConfig {
-    Optional<String> scope();
-
-    Map<String, String> properties();
-  }
-
-  Map<String, RegisterConnectorTemplate> registerConnectors();
-
-  @WithDefault("true")
-  boolean connectorIntegrationEnabled();
-
   @WithDefault("PT10M")
   Duration planTaskTtl();
 
@@ -94,28 +73,4 @@ public interface IcebergGatewayConfig {
 
   @WithDefault("PT30M")
   Duration idempotencyKeyLifetime();
-
-  interface RegisterConnectorTemplate {
-    String uri();
-
-    Optional<String> displayName();
-
-    Optional<String> description();
-
-    Map<String, String> properties();
-
-    Optional<AuthTemplate> auth();
-
-    @WithDefault("true")
-    boolean captureStatistics();
-  }
-
-  interface AuthTemplate {
-    @WithDefault("none")
-    String scheme();
-
-    Map<String, String> properties();
-
-    Map<String, String> headerHints();
-  }
 }

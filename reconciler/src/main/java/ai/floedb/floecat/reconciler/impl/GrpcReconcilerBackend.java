@@ -21,22 +21,29 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetIndexArtifactRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
+import ai.floedb.floecat.catalog.rpc.LookupTableByRefRequest;
+import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
+import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
+import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
@@ -44,8 +51,10 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
@@ -64,11 +73,18 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -76,6 +92,10 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
@@ -87,7 +107,7 @@ import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Typed;
+import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -98,10 +118,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
-@Typed(GrpcReconcilerBackend.class)
 public class GrpcReconcilerBackend implements ReconcilerBackend {
+  private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
+
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -111,6 +133,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private final Optional<String> headerName;
   private final Optional<String> staticToken;
   private final Duration statsTimeout;
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
+  @Inject CaptureEngineRegistry captureEngineRegistry;
+  @Inject CredentialResolver credentialResolver;
 
   public GrpcReconcilerBackend(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
@@ -147,6 +172,12 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @GrpcClient("floecat")
   TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsStub;
+
+  @GrpcClient("floecat")
+  TableIndexServiceGrpc.TableIndexServiceBlockingStub index;
+
+  @GrpcClient("floecat")
+  MutinyTableIndexServiceGrpc.MutinyTableIndexServiceStub indexMutiny;
 
   @Override
   public ResourceId ensureNamespace(ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
@@ -195,17 +226,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   public ResourceId ensureTable(
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    try {
-      ResourceId tableId =
-          directory(ctx)
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(normalizedTable).build())
-              .getResourceId();
+    Optional<ResourceId> existingTableId = lookupTable(ctx, normalizedTable);
+    if (existingTableId.isPresent()) {
+      ResourceId tableId = existingTableId.get();
       maybeUpdateTable(ctx, tableId, namespaceId, descriptor);
       return tableId;
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
     }
     var namespaceResponse =
         namespace(ctx)
@@ -231,17 +256,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    try {
-      return Optional.of(
-          directory(ctx)
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(normalizedTable).build())
-              .getResourceId());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return Optional.empty();
-      }
-      throw e;
+    var response =
+        directory(ctx)
+            .lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(normalizedTable).build());
+    if (!response.hasResourceId() || response.getResourceId().getId().isBlank()) {
+      return Optional.empty();
     }
+    return Optional.of(response.getResourceId());
   }
 
   @Override
@@ -416,6 +437,19 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return;
     }
     var spec = buildSnapshotSpec(snapshot);
+    long snapshotId = snapshot.getSnapshotId();
+    Set<Long> knownSnapshotIds = existingSnapshotIds(ctx, tableId);
+    if (knownSnapshotIds.contains(snapshotId)) {
+      var mask = buildSnapshotUpdateMask(spec);
+      var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
+      Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
+      if (existing.isPresent()
+          && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
+        return;
+      }
+      snapshot(ctx).updateSnapshot(update);
+      return;
+    }
     try {
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
       return;
@@ -426,21 +460,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
     }
 
-    var mask =
-        FieldMask.newBuilder()
-            .addPaths("upstream_created_at")
-            .addPaths("ingested_at")
-            .addPaths("parent_snapshot_id")
-            .addPaths("schema_json")
-            .addPaths("partition_spec")
-            .addPaths("sequence_number")
-            .addPaths("manifest_list")
-            .addPaths("summary")
-            .addPaths("schema_id")
-            .addPaths("format_metadata")
-            .build();
+    var mask = buildSnapshotUpdateMask(spec);
     var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
-    Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshot.getSnapshotId());
+    Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
     if (existing.isPresent() && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
       return;
     }
@@ -452,6 +474,81 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
     }
+  }
+
+  @Override
+  public Optional<FloecatConnector.SnapshotFilePlan> fetchSnapshotFilePlan(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        Optional.empty(),
+        (source, sourceCtx) -> {
+          Optional<FloecatConnector.SnapshotFilePlan> planned =
+              source.planSnapshotFiles(
+                  sourceCtx.sourceNamespace(), sourceCtx.sourceTable(), tableId, snapshotId);
+          LOG.infof(
+              "GrpcReconcilerBackend.fetchSnapshotFilePlan tableId=%s snapshotId=%d source=%s.%s present=%s dataFiles=%d deleteFiles=%d",
+              tableId.getId(),
+              snapshotId,
+              sourceCtx.sourceNamespace(),
+              sourceCtx.sourceTable(),
+              planned.isPresent(),
+              planned.map(plan -> plan.dataFiles().size()).orElse(0),
+              planned.map(plan -> plan.deleteFiles().size()).orElse(0));
+          return planned;
+        });
+  }
+
+  @Override
+  public CaptureEngineResult capturePlannedFileGroup(
+      ReconcileContext ctx, PlannedFileGroupCaptureRequest request) {
+    if (request == null
+        || request.tableId() == null
+        || request.plannedFilePaths() == null
+        || request.plannedFilePaths().isEmpty()
+        || request.snapshotId() < 0) {
+      return CaptureEngineResult.empty();
+    }
+    if (captureEngineRegistry == null) {
+      return CaptureEngineResult.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        request.tableId(),
+        CaptureEngineResult.empty(),
+        (source, sourceCtx) -> {
+          CaptureEngineResult capture =
+              captureEngineRegistry.capture(
+                  new CaptureEngineRequest(
+                      lookupConnector(ctx, sourceCtx.connectorId()),
+                      sourceCtx.sourceNamespace(),
+                      sourceCtx.sourceTable(),
+                      request.tableId(),
+                      request.snapshotId(),
+                      request.planId(),
+                      request.groupId(),
+                      request.plannedFilePaths(),
+                      request.statsColumns(),
+                      request.indexColumns(),
+                      request.requestedStatsTargetKinds(),
+                      request.capturePageIndex()));
+          if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
+            return capture;
+          }
+          return CaptureEngineResult.of(
+              capture.statsRecords(),
+              List.of(),
+              FileGroupIndexArtifactStager.stage(
+                  request.tableId(),
+                  request.snapshotId(),
+                  request.plannedFilePaths(),
+                  capture.statsRecords(),
+                  capture.pageIndexEntries()));
+        });
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -510,6 +607,29 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       .addTargetKinds(targetKind)
                       .build());
       return response != null && !response.getRecordsList().isEmpty();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public boolean hasZeroDataFileTableStats(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    try {
+      var response =
+          statistics(ctx)
+              .listTargetStats(
+                  buildStatsAlreadyCapturedRequest(tableId, snapshotId).toBuilder()
+                      .addTargetKinds(StatsTargetKind.STK_TABLE)
+                      .build());
+      if (response == null || response.getRecordsList().isEmpty()) {
+        return false;
+      }
+      var tableRecord = response.getRecords(0);
+      return tableRecord.hasTable() && tableRecord.getTable().getDataFileCount() <= 0L;
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return false;
@@ -595,6 +715,66 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public boolean indexArtifactsCapturedForFilePaths(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      List<String> filePaths,
+      Set<String> selectors) {
+    if (filePaths == null || filePaths.isEmpty()) {
+      return true;
+    }
+    Set<String> normalizedSelectors = normalizeIndexSelectors(selectors);
+    if (normalizedSelectors == null) {
+      return false;
+    }
+    try {
+      for (String filePath : filePaths) {
+        if (filePath == null || filePath.isBlank()) {
+          return false;
+        }
+        var response =
+            index(ctx)
+                .getIndexArtifact(
+                    GetIndexArtifactRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                        .setTarget(
+                            IndexTarget.newBuilder()
+                                .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
+                                .build())
+                        .build());
+        if (response == null
+            || !response.hasRecord()
+            || response.getRecord().getState() != IndexArtifactState.IAS_READY) {
+          return false;
+        }
+        if (!normalizedSelectors.isEmpty()
+            && !persistedIndexSelectors(response.getRecord()).containsAll(normalizedSelectors)) {
+          return false;
+        }
+      }
+      return true;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {
+    if (artifacts == null || artifacts.isEmpty()) {
+      return;
+    }
+    indexMutiny(ctx)
+        .putIndexArtifacts(Multi.createFrom().iterable(groupIndexArtifactRequests(artifacts)))
+        .await()
+        .atMost(statsTimeout);
+  }
+
+  @Override
   public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     if (stats == null || stats.isEmpty()) {
       return;
@@ -665,6 +845,81 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         + snapshotId
         + "/"
         + digest;
+  }
+
+  private static Set<String> normalizeIndexSelectors(Set<String> selectors) {
+    if (selectors == null || selectors.isEmpty()) {
+      return Set.of();
+    }
+    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    for (String selector : selectors) {
+      if (selector == null || selector.isBlank()) {
+        continue;
+      }
+      String trimmed = selector.trim();
+      if (trimmed.startsWith("#")) {
+        return null;
+      }
+      normalized.add(trimmed);
+    }
+    return Set.copyOf(normalized);
+  }
+
+  private static Set<String> persistedIndexSelectors(
+      ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
+    if (record == null) {
+      return Set.of();
+    }
+    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
+    if (encoded.isBlank()) {
+      return Set.of();
+    }
+    LinkedHashSet<String> selectors = new LinkedHashSet<>();
+    for (String token : encoded.split(",")) {
+      if (token != null && !token.isBlank()) {
+        selectors.add(token.trim());
+      }
+    }
+    return Set.copyOf(selectors);
+  }
+
+  private static List<PutIndexArtifactsRequest> groupIndexArtifactRequests(
+      List<StagedIndexArtifact> artifacts) {
+    LinkedHashMap<String, PutIndexArtifactsRequest.Builder> grouped = new LinkedHashMap<>();
+    for (StagedIndexArtifact artifact : artifacts) {
+      if (artifact == null || artifact.record() == null) {
+        continue;
+      }
+      var record = artifact.record();
+      if (!record.hasTableId() || record.getTableId().getId().isBlank()) {
+        throw new IllegalArgumentException("record missing tableId");
+      }
+      if (!record.hasTarget()) {
+        throw new IllegalArgumentException("record missing target");
+      }
+      byte[] content = artifact.content();
+      if (content == null || content.length == 0) {
+        throw new IllegalArgumentException("staged artifact missing content");
+      }
+      String key = record.getTableId().toString() + "|" + record.getSnapshotId();
+      grouped
+          .computeIfAbsent(
+              key,
+              ignored ->
+                  PutIndexArtifactsRequest.newBuilder()
+                      .setTableId(record.getTableId())
+                      .setSnapshotId(record.getSnapshotId()))
+          .addItems(
+              PutIndexArtifactItem.newBuilder()
+                  .setRecord(record)
+                  .setContent(com.google.protobuf.ByteString.copyFrom(content))
+                  .setContentType(
+                      artifact.contentType() == null || artifact.contentType().isBlank()
+                          ? "application/x-parquet"
+                          : artifact.contentType())
+                  .build());
+    }
+    return grouped.values().stream().map(PutIndexArtifactsRequest.Builder::build).toList();
   }
 
   private List<PutTargetStatsRequest> groupTargetRequests(List<TargetStatsRecord> stats) {
@@ -921,6 +1176,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return withHeaders(statisticsMutiny, ctx);
   }
 
+  private MutinyTableIndexServiceGrpc.MutinyTableIndexServiceStub indexMutiny(
+      ReconcileContext ctx) {
+    return withHeaders(indexMutiny, ctx);
+  }
+
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directory(ReconcileContext ctx) {
     return withHeaders(directory, ctx);
   }
@@ -948,6 +1208,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsStub(
       ReconcileContext ctx) {
     return withHeaders(constraintsStub, ctx);
+  }
+
+  private TableIndexServiceGrpc.TableIndexServiceBlockingStub index(ReconcileContext ctx) {
+    return withHeaders(index, ctx);
   }
 
   private <T extends AbstractStub<T>> T withHeaders(T stub, ReconcileContext ctx) {
@@ -1035,6 +1299,35 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return builder.build();
   }
 
+  private FieldMask buildSnapshotUpdateMask(SnapshotSpec spec) {
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("upstream_created_at");
+    if (spec.hasParentSnapshotId()) {
+      mask.addPaths("parent_snapshot_id");
+    }
+    if (spec.hasSchemaJson()) {
+      mask.addPaths("schema_json");
+    }
+    if (spec.hasPartitionSpec()) {
+      mask.addPaths("partition_spec");
+    }
+    if (spec.hasSequenceNumber()) {
+      mask.addPaths("sequence_number");
+    }
+    if (spec.hasManifestList()) {
+      mask.addPaths("manifest_list");
+    }
+    if (!spec.getSummaryMap().isEmpty()) {
+      mask.addPaths("summary");
+    }
+    if (spec.hasSchemaId()) {
+      mask.addPaths("schema_id");
+    }
+    if (!spec.getFormatMetadataMap().isEmpty()) {
+      mask.addPaths("format_metadata");
+    }
+    return mask.build();
+  }
+
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {
     return descriptor.properties() != null ? descriptor.properties() : Map.of();
   }
@@ -1076,6 +1369,123 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return connectorId == null || connectorId.isBlank()
         ? null
         : ResourceId.newBuilder().setKind(ResourceKind.RK_CONNECTOR).setId(connectorId).build();
+  }
+
+  private Optional<SourceConnectorContext> sourceConnectorContext(
+      ReconcileContext ctx, ResourceId tableId) {
+    if (tableId == null || tableId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    Table tableRecord;
+    try {
+      tableRecord =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+    if (!tableRecord.hasUpstream()) {
+      return Optional.empty();
+    }
+    ResourceId connectorId = sourceConnectorId(tableRecord.getUpstream());
+    String sourceNamespace = sourceNamespace(tableRecord.getUpstream());
+    String sourceTable = sourceName(tableRecord.getUpstream());
+    if (connectorId == null
+        || connectorId.getId().isBlank()
+        || sourceNamespace.isBlank()
+        || sourceTable.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.of(new SourceConnectorContext(connectorId, sourceNamespace, sourceTable));
+  }
+
+  private <T> T withSourceConnector(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      T emptyValue,
+      SourceConnectorOperation<T> operation) {
+    Optional<SourceConnectorContext> sourceContext = sourceConnectorContext(ctx, tableId);
+    if (sourceContext.isEmpty()) {
+      return emptyValue;
+    }
+    Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
+    ResourceId connectorId = sourceContext.get().connectorId();
+    ConnectorConfig config =
+        resolveCredentials(
+            ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId);
+    try (FloecatConnector source = connectorOpener.open(config)) {
+      return operation.apply(source, sourceContext.get());
+    } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw new ReconcileFailureException(
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .TABLE_MISSING,
+            "source object missing: "
+                + sourceContext.get().sourceNamespace()
+                + "."
+                + sourceContext.get().sourceTable(),
+            e);
+      }
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Failed to open source connector for table " + tableId.getId(), e);
+    }
+  }
+
+  private ConnectorConfig resolveCredentials(
+      ConnectorConfig base,
+      ai.floedb.floecat.connector.rpc.AuthConfig auth,
+      ResourceId connectorId) {
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != ai.floedb.floecat.connector.rpc.AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (auth == null || auth.getScheme().isBlank() || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connectorId.getAccountId(), connectorId.getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
+  }
+
+  private static boolean isMissingObjectFailure(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    String className = t.getClass().getName();
+    if (className.endsWith("NoSuchTableException")
+        || className.endsWith("NoSuchViewException")
+        || className.endsWith("NoSuchObjectException")
+        || className.endsWith("NotFoundException")) {
+      return true;
+    }
+    String message = t.getMessage();
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    String normalized = message.toLowerCase();
+    return normalized.contains("http 404")
+        || normalized.contains("status 404")
+        || normalized.contains("not found")
+        || normalized.contains("does not exist");
+  }
+
+  @FunctionalInterface
+  interface ConnectorOpener {
+    FloecatConnector open(ConnectorConfig config) throws Exception;
+  }
+
+  private record SourceConnectorContext(
+      ResourceId connectorId, String sourceNamespace, String sourceTable) {}
+
+  @FunctionalInterface
+  private interface SourceConnectorOperation<T> {
+    T apply(FloecatConnector source, SourceConnectorContext sourceContext) throws Exception;
   }
 
   private TableFormat toTableFormat(ConnectorFormat format) {

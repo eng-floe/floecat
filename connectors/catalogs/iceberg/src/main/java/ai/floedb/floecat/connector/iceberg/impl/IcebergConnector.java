@@ -30,6 +30,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ConnectorPlanningSupport;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
+import ai.floedb.floecat.connector.common.ParquetPageIndexReader;
+import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.FilteringNdvProvider;
@@ -88,6 +90,8 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.view.SQLViewRepresentation;
@@ -337,7 +341,66 @@ public abstract class IcebergConnector implements FloecatConnector {
       return List.of();
     }
     return buildTargetStats(
-        table, destinationTableId, snapshot, includeColumns, includeTargetKinds);
+        table, destinationTableId, snapshot, includeColumns, includeTargetKinds, Set.of());
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes) {
+    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
+      return FileGroupCaptureResult.empty();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return FileGroupCaptureResult.empty();
+    }
+    List<TargetStatsRecord> stats =
+        buildTargetStats(
+            table,
+            destinationTableId,
+            snapshot,
+            includeColumns,
+            includeTargetKinds == null || includeTargetKinds.isEmpty()
+                ? Set.of(StatsTargetKind.FILE)
+                : includeTargetKinds,
+            plannedFilePaths);
+    List<ParquetPageIndexEntry> pageIndexEntries =
+        captureIndexes
+            ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
+                .readEntries(plannedFilePaths)
+            : List.of();
+    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+  }
+
+  @Override
+  public Optional<SnapshotFilePlan> planSnapshotFiles(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+
+    try (var planner = new IcebergPlanner(table, snapshotId, Set.of(), Set.of(), null, true)) {
+      List<SnapshotFileEntry> dataFiles = new ArrayList<>();
+      for (PlannedFile<Integer> planned : planner) {
+        dataFiles.add(toDataScanFile(planned));
+      }
+      List<SnapshotFileEntry> deleteFiles =
+          planner.deleteFiles().stream().map(IcebergConnector::toDeleteScanFile).toList();
+      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), deleteFiles));
+    }
   }
 
   private List<TargetStatsRecord> buildTargetStats(
@@ -345,7 +408,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Snapshot snapshot,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -372,7 +436,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
     }
 
-    EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
+    EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
     var columnNames = engineOutput.columnNames();
     var logicalTypes = engineOutput.logicalTypes();
     var tStats =
@@ -664,10 +728,9 @@ public abstract class IcebergConnector implements FloecatConnector {
     return loadTableFromSource(namespaceFq, tableName);
   }
 
-  static LoadedExternalTable loadExternalTable(
-      String metadataLocation, Map<String, String> options) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      throw new IllegalArgumentException("metadataLocation is required");
+  static LoadedExternalTable loadExternalTable(String location, Map<String, String> options) {
+    if (location == null || location.isBlank()) {
+      throw new IllegalArgumentException("location is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
     Map<String, String> ioProps = new HashMap<>();
@@ -699,26 +762,32 @@ public abstract class IcebergConnector implements FloecatConnector {
             sanitized.put(k, v);
           }
         });
-    LOG.infof(
-        "Iceberg external table load metadataLocation=%s ioProps=%s", metadataLocation, sanitized);
+    LOG.infof("Iceberg external table load metadataLocation=%s ioProps=%s", location, sanitized);
     String ioImpl = ioProps.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
     FileIO fileIO = instantiateFileIO(ioImpl);
     ioProps.remove("io-impl");
     fileIO.initialize(ioProps);
-    String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
+    String resolvedMetadataLocation = resolveMetadataLocation(location, fileIO);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);
-    return new LoadedExternalTable(new BaseTable(ops, deriveTableName(metadataLocation)), fileIO);
+    return new LoadedExternalTable(new BaseTable(ops, deriveTableName(location)), fileIO);
   }
 
   static record LoadedExternalTable(Table table, FileIO fileIO) {}
 
-  static String deriveTableName(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
+  static String deriveTableName(String location) {
+    if (location == null || location.isBlank()) {
       return "table";
     }
-    String path = metadataLocation;
+    String path = location;
     if (path.endsWith("/")) {
       path = path.substring(0, path.length() - 1);
+    }
+    if (!path.endsWith(".json")) {
+      int slash = path.lastIndexOf('/');
+      if (slash >= 0 && slash + 1 < path.length()) {
+        path = path.substring(slash + 1);
+      }
+      return path.isBlank() ? "table" : path;
     }
     int slash = path.lastIndexOf('/');
     if (slash >= 0 && slash + 1 < path.length()) {
@@ -743,13 +812,58 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
   }
 
-  private static String resolveMetadataLocation(String input) {
+  private static String resolveMetadataLocation(String input, FileIO fileIO) {
     String trimmed = input.trim();
     if (trimmed.endsWith(".json")) {
       return trimmed;
     }
     String base = trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
-    return base + "/metadata/metadata.json";
+    if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
+      throw new IllegalArgumentException(
+          "filesystem iceberg connector requires prefix-listing support to infer metadata-location");
+    }
+    String metadataDir = base + "/metadata";
+    String latest = latestMetadataLocation(prefixOps, metadataDir);
+    if (latest == null || latest.isBlank()) {
+      throw new IllegalArgumentException(
+          "No Iceberg metadata files found under " + metadataDir + " for location " + base);
+    }
+    return latest;
+  }
+
+  private static String latestMetadataLocation(
+      SupportsPrefixOperations prefixOps, String metadataDir) {
+    long maxVersion = -1L;
+    String latest = null;
+    for (FileInfo info : prefixOps.listPrefix(metadataDir)) {
+      String location = info.location();
+      if (location == null || !location.endsWith(".metadata.json")) {
+        continue;
+      }
+      long version = parseMetadataVersion(location);
+      if (version > maxVersion) {
+        maxVersion = version;
+        latest = location;
+      }
+    }
+    return latest;
+  }
+
+  private static long parseMetadataVersion(String file) {
+    if (file == null || file.isBlank()) {
+      return -1L;
+    }
+    int slash = file.lastIndexOf('/');
+    String name = slash >= 0 ? file.substring(slash + 1) : file;
+    int dash = name.indexOf('-');
+    if (dash <= 0) {
+      return -1L;
+    }
+    try {
+      return Long.parseLong(name.substring(0, dash));
+    } catch (NumberFormatException e) {
+      return -1L;
+    }
   }
 
   private String partitionJson(Table table, ContentFile<?> file) {
@@ -995,8 +1109,63 @@ public abstract class IcebergConnector implements FloecatConnector {
       Map<Integer, LogicalType> logicalTypes,
       List<IcebergPlanner.DeleteFileStat> deleteFiles) {}
 
-  private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
-    try (var planner = new IcebergPlanner(table, snapshotId, colIds, null)) {
+  private static SnapshotFileEntry toDataScanFile(PlannedFile<Integer> planned) {
+    return new SnapshotFileEntry(
+        planned.path(),
+        planned.format(),
+        planned.sizeBytes(),
+        planned.rowCount(),
+        FileContent.FC_DATA,
+        planned.partitionDataJson(),
+        planned.partitionSpecId(),
+        List.of(),
+        planned.sequenceNumber());
+  }
+
+  private static SnapshotFileEntry toDeleteScanFile(IcebergPlanner.DeleteFileStat deleteFile) {
+    return new SnapshotFileEntry(
+        deleteFile.location(),
+        inferDeleteFormat(deleteFile.location()),
+        deleteFile.fileSizeInBytes(),
+        deleteFile.recordCount(),
+        mapDeleteContent(deleteFile.content()),
+        "",
+        0,
+        deleteFile.equalityFieldIds(),
+        deleteFile.fileSequenceNumber());
+  }
+
+  private static String inferDeleteFormat(String location) {
+    if (location == null || location.isBlank()) {
+      return "";
+    }
+    String lower = location.toLowerCase(Locale.ROOT);
+    if (lower.endsWith(".parquet") || lower.endsWith(".parq")) {
+      return "PARQUET";
+    }
+    if (lower.endsWith(".avro")) {
+      return "AVRO";
+    }
+    if (lower.endsWith(".orc")) {
+      return "ORC";
+    }
+    return "";
+  }
+
+  private static FileContent mapDeleteContent(org.apache.iceberg.FileContent content) {
+    if (content == org.apache.iceberg.FileContent.EQUALITY_DELETES) {
+      return FileContent.FC_EQUALITY_DELETES;
+    }
+    if (content == org.apache.iceberg.FileContent.POSITION_DELETES) {
+      return FileContent.FC_POSITION_DELETES;
+    }
+    return FileContent.FC_DATA;
+  }
+
+  private EngineOut runEngine(
+      Table table, long snapshotId, Set<Integer> colIds, Set<String> plannedFilePaths) {
+    try (var planner =
+        new IcebergPlanner(table, snapshotId, colIds, plannedFilePaths, null, true)) {
 
       Map<Integer, String> colNames = planner.columnNamesByKey();
       Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();

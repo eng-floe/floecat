@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -39,31 +41,54 @@ public class RemoteReconcileExecutorPoller {
   private static final long MIN_CANCEL_CHECK_MS = 500L;
   private static final int DEFAULT_MAX_PARALLELISM = 1;
 
+  enum WorkerMode {
+    LOCAL,
+    REMOTE;
+
+    static WorkerMode fromConfig(String value) {
+      if (value == null) {
+        return LOCAL;
+      }
+      try {
+        return WorkerMode.valueOf(value.trim().toUpperCase());
+      } catch (IllegalArgumentException ex) {
+        throw new IllegalArgumentException(
+            "Unsupported floecat.reconciler.worker.mode: " + value, ex);
+      }
+    }
+
+    boolean runsWorkers() {
+      return true;
+    }
+  }
+
   @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject RemoteReconcileExecutorClient client;
   @Inject Config config;
 
-  @ConfigProperty(name = "floecat.reconciler.remote-executor.enabled", defaultValue = "false")
-  boolean remoteExecutorEnabled;
+  @ConfigProperty(name = "floecat.reconciler.worker.mode", defaultValue = "local")
+  String workerModeValue;
 
   private static final Logger LOG = Logger.getLogger(RemoteReconcileExecutorPoller.class);
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
+  private final AtomicBoolean repollRequested = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
+  private volatile WorkerMode workerMode = WorkerMode.LOCAL;
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile ExecutorService workers;
 
   @PostConstruct
   void init() {
-    if (!remoteExecutorEnabled) {
+    workerMode = WorkerMode.fromConfig(workerModeValue);
+    maxParallelism =
+        config
+            .getOptionalValue("reconciler.max-parallelism", Integer.class)
+            .orElse(DEFAULT_MAX_PARALLELISM);
+    if (maxParallelism <= 0 || !workerMode.runsWorkers()) {
+      maxParallelism = 0;
       return;
     }
-    maxParallelism =
-        Math.max(
-            1,
-            config
-                .getOptionalValue("reconciler.max-parallelism", Integer.class)
-                .orElse(DEFAULT_MAX_PARALLELISM));
     workers = Executors.newFixedThreadPool(maxParallelism);
   }
 
@@ -79,39 +104,75 @@ public class RemoteReconcileExecutorPoller {
       every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
-    if (!remoteExecutorEnabled || executorRegistry.orderedExecutors().isEmpty()) {
+    requestDrain();
+  }
+
+  private void requestDrain() {
+    if (!workerMode.runsWorkers()
+        || maxParallelism <= 0
+        || executorRegistry.orderedExecutors().isEmpty()) {
       return;
     }
+    repollRequested.set(true);
     if (!polling.compareAndSet(false, true)) {
       return;
     }
     try {
-      while (reserveWorkerSlot()) {
-        try {
-          Optional<LeaseAssignment> assignment = leaseNextAssignment();
-          if (assignment.isEmpty()) {
+      while (true) {
+        repollRequested.set(false);
+        while (reserveWorkerSlot()) {
+          try {
+            Optional<LeaseAssignment> assignment = leaseNextAssignment();
+            if (assignment.isEmpty()) {
+              inFlight.decrementAndGet();
+              return;
+            }
+            submitAssignment(assignment.get());
+          } catch (RuntimeException e) {
             inFlight.decrementAndGet();
-            return;
+            throw e;
           }
-          submitAssignment(assignment.get());
-        } catch (RuntimeException e) {
-          inFlight.decrementAndGet();
-          throw e;
+        }
+        if (!repollRequested.get()) {
+          return;
         }
       }
     } finally {
       polling.set(false);
+      if (repollRequested.get()) {
+        requestDrain();
+      }
     }
   }
 
   private Optional<LeaseAssignment> leaseNextAssignment() {
-    for (ReconcileExecutor executor : executorRegistry.orderedExecutors()) {
-      Optional<RemoteLeasedJob> lease = client.lease(executor);
-      if (lease.isPresent()) {
-        return Optional.of(new LeaseAssignment(executor, lease.get()));
+    ReconcileJobStore.LeaseRequest request = remoteLeaseRequest();
+    Optional<RemoteLeasedJob> lease;
+    try {
+      lease = client.lease(request, workerLeaseSource());
+    } catch (RuntimeException e) {
+      if (shouldIgnoreStartupUnavailable(e)) {
+        LOG.debugf(
+            "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
+        return Optional.empty();
       }
+      throw e;
     }
-    return Optional.empty();
+    if (lease.isEmpty()) {
+      return Optional.empty();
+    }
+    Optional<ReconcileExecutor> executor = executorRegistry.executorFor(lease.get().lease());
+    if (executor.isEmpty()) {
+      LOG.warnf(
+          "Leased reconcile job jobId=%s kind=%s but no eligible executor matched locally",
+          lease.get().lease().jobId, lease.get().lease().jobKind);
+      return Optional.empty();
+    }
+    return Optional.of(new LeaseAssignment(executor.get(), lease.get()));
+  }
+
+  private ReconcileJobStore.LeaseRequest remoteLeaseRequest() {
+    return executorRegistry.leaseRequest();
   }
 
   private boolean reserveWorkerSlot() {
@@ -126,6 +187,20 @@ public class RemoteReconcileExecutorPoller {
     }
   }
 
+  private String workerLeaseSource() {
+    return switch (workerMode) {
+      case LOCAL -> "local-poller";
+      case REMOTE -> "remote-poller";
+    };
+  }
+
+  private boolean shouldIgnoreStartupUnavailable(RuntimeException error) {
+    if (workerMode != WorkerMode.LOCAL || !(error instanceof StatusRuntimeException statusError)) {
+      return false;
+    }
+    return statusError.getStatus().getCode() == Status.Code.UNAVAILABLE;
+  }
+
   private void submitAssignment(LeaseAssignment assignment) {
     ExecutorService executor = workers;
     if (executor == null) {
@@ -138,12 +213,20 @@ public class RemoteReconcileExecutorPoller {
             try {
               runLease(assignment);
             } finally {
-              inFlight.decrementAndGet();
+              releaseWorkerSlot();
             }
           });
     } catch (RuntimeException e) {
-      inFlight.decrementAndGet();
+      releaseWorkerSlot();
       throw e;
+    }
+  }
+
+  private void releaseWorkerSlot() {
+    inFlight.decrementAndGet();
+    ExecutorService executor = workers;
+    if (workerMode.runsWorkers() && executor != null && !executor.isShutdown()) {
+      requestDrain();
     }
   }
 
@@ -212,6 +295,8 @@ public class RemoteReconcileExecutorPoller {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
             0,
             0,
             0,
@@ -264,51 +349,16 @@ public class RemoteReconcileExecutorPoller {
         LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
         return;
       }
-      if (result.cancelled || cancellationRequested.get()) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.CANCELLED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.CANCELLED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      if (!result.ok()) {
-        completeIfPossible(
-            remoteLease,
-            RemoteLeasedJob.CompletionState.FAILED,
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            result.errors,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            result.message);
-        return;
-      }
-      completeIfPossible(
+      completeForOutcome(
           remoteLease,
-          RemoteLeasedJob.CompletionState.SUCCEEDED,
+          lease,
+          executor.id(),
+          started,
+          cancellationRequested.get()
+              ? ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE
+              : classify(result),
+          result.retryDisposition,
+          result.retryClass,
           result.tablesScanned,
           result.tablesChanged,
           result.viewsScanned,
@@ -317,23 +367,20 @@ public class RemoteReconcileExecutorPoller {
           result.snapshotsProcessed,
           result.statsProcessed,
           result.message);
-      LOG.infof(
-          "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
-          lease.accountId,
-          lease.connectorId,
-          executor.id(),
-          Math.max(0L, System.currentTimeMillis() - started));
     } catch (Exception e) {
       if (leaseValid.get() && !interrupted.get()) {
         long errorCount =
             cancellationRequested.get() ? progress.errors : Math.max(1L, progress.errors);
-        completeIfPossible(
+        completeForOutcome(
             remoteLease,
+            lease,
+            executor.id(),
+            started,
             cancellationRequested.get()
-                    || failureKindOf(e)
-                        == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
-                ? RemoteLeasedJob.CompletionState.CANCELLED
-                : RemoteLeasedJob.CompletionState.FAILED,
+                ? ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE
+                : outcomeOf(e),
+            retryDispositionOf(e),
+            retryClassOf(e),
             progress.tablesScanned,
             progress.tablesChanged,
             progress.viewsScanned,
@@ -343,19 +390,96 @@ public class RemoteReconcileExecutorPoller {
             progress.statsProcessed,
             describeFailure(e));
       }
-      LOG.errorf(
-          e,
-          "Remote reconcile execution failed for job %s executor=%s",
-          lease.jobId,
-          executor.id());
+      if (outcomeOf(e) == ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE) {
+        LOG.infof(
+            "Remote reconcile job became obsolete for job %s executor=%s reason=%s",
+            lease.jobId, executor.id(), describeFailure(e));
+      } else {
+        LOG.errorf(
+            e,
+            "Remote reconcile execution failed for job %s executor=%s",
+            lease.jobId,
+            executor.id());
+      }
     } finally {
       Thread.interrupted();
+    }
+  }
+
+  private void completeForOutcome(
+      RemoteLeasedJob remoteLease,
+      ReconcileJobStore.LeasedJob lease,
+      String executorId,
+      long started,
+      ReconcileExecutor.ExecutionResult.JobOutcome outcome,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message) {
+    switch (outcome) {
+      case SUCCESS -> {
+        completeIfPossible(
+            remoteLease,
+            RemoteLeasedJob.CompletionState.SUCCEEDED,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            tablesScanned,
+            tablesChanged,
+            viewsScanned,
+            viewsChanged,
+            errors,
+            snapshotsProcessed,
+            statsProcessed,
+            message);
+        LOG.infof(
+            "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
+            lease.accountId,
+            lease.connectorId,
+            executorId,
+            Math.max(0L, System.currentTimeMillis() - started));
+      }
+      case OBSOLETE ->
+          completeIfPossible(
+              remoteLease,
+              RemoteLeasedJob.CompletionState.CANCELLED,
+              retryDisposition,
+              retryClass,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              message);
+      case RETRYABLE_FAILURE, TERMINAL_FAILURE ->
+          completeIfPossible(
+              remoteLease,
+              RemoteLeasedJob.CompletionState.FAILED,
+              retryDisposition,
+              retryClass,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              message);
     }
   }
 
   private void completeIfPossible(
       RemoteLeasedJob lease,
       RemoteLeasedJob.CompletionState state,
+      ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -368,6 +492,8 @@ public class RemoteReconcileExecutorPoller {
         client.complete(
             lease,
             state,
+            retryDisposition,
+            retryClass,
             tablesScanned,
             tablesChanged,
             viewsScanned,
@@ -403,6 +529,56 @@ public class RemoteReconcileExecutorPoller {
       cur = cur.getCause();
     }
     return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.RetryDisposition retryDispositionOf(
+      Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.retryDisposition();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.RetryClass retryClassOf(Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.retryClass();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.JobOutcome classify(
+      ReconcileExecutor.ExecutionResult result) {
+    if (result == null) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE;
+    }
+    if (result.cancelled) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE;
+    }
+    return result.outcome;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.JobOutcome outcomeOf(Throwable error) {
+    ReconcileExecutor.ExecutionResult.FailureKind failureKind = failureKindOf(error);
+    if (failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING
+        || failureKind == ReconcileExecutor.ExecutionResult.FailureKind.VIEW_MISSING) {
+      return ReconcileExecutor.ExecutionResult.JobOutcome.OBSOLETE;
+    }
+    return retryDispositionOf(error) == ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL
+        ? ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE
+        : ReconcileExecutor.ExecutionResult.JobOutcome.RETRYABLE_FAILURE;
   }
 
   private static final class ProgressSnapshot {

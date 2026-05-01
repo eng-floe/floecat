@@ -187,6 +187,7 @@ message ConnectorSpec {
   optional string uri = 20;
   AuthConfig auth = 21;
   ReconcilePolicy policy = 30;
+  ConnectorState state = 31;
   map<string,string> properties = 99;
 }
 

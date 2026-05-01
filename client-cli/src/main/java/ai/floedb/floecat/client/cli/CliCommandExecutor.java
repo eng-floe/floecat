@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -79,6 +80,7 @@ public final class CliCommandExecutor {
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
   private final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
+  private final TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
   private final TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
   private final QueryServiceGrpc.QueryServiceBlockingStub queries;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
@@ -100,6 +102,7 @@ public final class CliCommandExecutor {
     this.reconcileControl = builder.reconcileControl;
     this.snapshots = builder.snapshots;
     this.statistics = builder.statistics;
+    this.indexes = builder.indexes;
     this.constraintsService = builder.constraintsService;
     this.queries = builder.queries;
     this.queryScan = builder.queryScan;
@@ -142,6 +145,7 @@ public final class CliCommandExecutor {
         .reconcileControl(ReconcileControlGrpc.newBlockingStub(channel))
         .snapshots(SnapshotServiceGrpc.newBlockingStub(channel))
         .statistics(TableStatisticsServiceGrpc.newBlockingStub(channel))
+        .indexes(TableIndexServiceGrpc.newBlockingStub(channel))
         .constraintsService(TableConstraintsServiceGrpc.newBlockingStub(channel))
         .queries(QueryServiceGrpc.newBlockingStub(channel))
         .queryScan(QueryScanServiceGrpc.newBlockingStub(channel))
@@ -169,6 +173,7 @@ public final class CliCommandExecutor {
     private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
     private SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
     private TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
+    private TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
     private TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
     private QueryServiceGrpc.QueryServiceBlockingStub queries;
     private QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
@@ -237,6 +242,11 @@ public final class CliCommandExecutor {
       return this;
     }
 
+    public Builder indexes(TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes) {
+      this.indexes = indexes;
+      return this;
+    }
+
     public Builder constraintsService(
         TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService) {
       this.constraintsService = constraintsService;
@@ -301,6 +311,7 @@ public final class CliCommandExecutor {
       Objects.requireNonNull(reconcileControl, "reconcileControl");
       Objects.requireNonNull(snapshots, "snapshots");
       Objects.requireNonNull(statistics, "statistics");
+      Objects.requireNonNull(indexes, "indexes");
       Objects.requireNonNull(constraintsService, "constraintsService");
       Objects.requireNonNull(queries, "queries");
       Objects.requireNonNull(queryScan, "queryScan");
@@ -384,6 +395,7 @@ public final class CliCommandExecutor {
               CliArgs.tail(tokens),
               out,
               statistics,
+              indexes,
               snapshots,
               tables,
               namespaces,
@@ -403,6 +415,7 @@ public final class CliCommandExecutor {
               CliArgs.tail(tokens),
               out,
               statistics,
+              indexes,
               snapshots,
               tables,
               namespaces,

@@ -79,6 +79,7 @@ nav:
       - System Scans: system-scans.md
       - System Scans gRPC: system-scans-grpc.md
       - Reconciler: reconciler.md
+      - Rust Remote Capture Executor: rust-remote-capture-executor.md
       - Transactions: transactions.md
   - Connectors:
       - Connector Common: connectors-common.md

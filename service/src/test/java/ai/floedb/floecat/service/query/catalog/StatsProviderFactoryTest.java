@@ -40,14 +40,11 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
-import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
-import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -287,13 +284,9 @@ class StatsProviderFactoryTest {
 
   private static StatsProviderFactory factory(
       CountingStatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
-    StatsEngineRegistry registry =
-        new StatsEngineRegistry(
-            List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build()));
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    StatsOrchestrator orchestrator =
-        new StatsOrchestrator(repository, jobStore, tableRepository, registry);
+    StatsOrchestrator orchestrator = new StatsOrchestrator(repository, jobStore, tableRepository);
     return new StatsProviderFactory(orchestrator, tableRepository, store);
   }
 

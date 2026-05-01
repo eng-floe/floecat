@@ -38,6 +38,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
+import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
@@ -55,9 +57,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
@@ -82,6 +81,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 class TransactionCommitServiceTest {
@@ -133,7 +133,7 @@ class TransactionCommitServiceTest {
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenReturn(tableId);
 
-    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Table table = defaultPlannedTable(tableId);
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
@@ -147,7 +147,24 @@ class TransactionCommitServiceTest {
     when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    when(tableSupport.selfUri()).thenReturn(Optional.of("http://iceberg-rest:9200"));
+    when(tableSupport.resolveTableLocation(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              String requestedLocation = invocation.getArgument(0, String.class);
+              String metadataLocation = invocation.getArgument(1, String.class);
+              if (requestedLocation != null && !requestedLocation.isBlank()) {
+                return requestedLocation;
+              }
+              if (metadataLocation == null || metadataLocation.isBlank()) {
+                return null;
+              }
+              int idx = metadataLocation.indexOf("/metadata/");
+              if (idx > 0) {
+                return metadataLocation.substring(0, idx);
+              }
+              int slash = metadataLocation.lastIndexOf('/');
+              return slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
+            });
     when(tableSupport.getConnector(any()))
         .thenAnswer(
             invocation -> {
@@ -164,8 +181,22 @@ class TransactionCommitServiceTest {
                       .setState(ConnectorState.CS_ACTIVE)
                       .build());
             });
-    when(grpcClient.startCapture(any()))
-        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
+    when(grpcClient.getConnector(any()))
+        .thenAnswer(
+            invocation -> {
+              GetConnectorRequest request = invocation.getArgument(0, GetConnectorRequest.class);
+              ResourceId connectorId = request.getConnectorId();
+              return GetConnectorResponse.newBuilder()
+                  .setConnector(
+                      Connector.newBuilder()
+                          .setResourceId(connectorId)
+                          .setDisplayName("existing-" + connectorId.getId())
+                          .setKind(ConnectorKind.CK_ICEBERG)
+                          .setUri("s3://existing")
+                          .setState(ConnectorState.CS_PAUSED)
+                          .build())
+                  .build();
+            });
   }
 
   private CommitTableResponseDto defaultCommitResponse() {
@@ -196,8 +227,18 @@ class TransactionCommitServiceTest {
             List.of()));
   }
 
+  private Table defaultPlannedTable(ResourceId tableId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .putProperties("location", "s3://floecat/iceberg/orders")
+        .putProperties(
+            "metadata-location", "s3://floecat/iceberg/orders/metadata/00001.metadata.json")
+        .build();
+  }
+
   @Test
   void commitCreateBuildsMappedCreateRequestAndUsesTxPath() throws Exception {
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -251,13 +292,13 @@ class TransactionCommitServiceTest {
             mapper()
                 .readTree(
                     """
-                {
-                  "schema-id":1,
-                  "last-column-id":1,
-                  "type":"struct",
-                  "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-                }
-                """),
+                    {
+                      "schema-id":1,
+                      "last-column-id":1,
+                      "type":"struct",
+                      "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+                    }
+                    """),
             null,
             null,
             null,
@@ -284,95 +325,30 @@ class TransactionCommitServiceTest {
             any(ResourceId.class),
             eq(createRequest),
             eq(tableSupport));
-    verify(grpcClient).prepareTransaction(any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare -> {
+                  if (prepare == null || prepare.getChangesCount() != 1) {
+                    return false;
+                  }
+                  var tableChange =
+                      prepare.getChangesList().stream()
+                          .filter(change -> change.hasTableId() && change.hasTable())
+                          .findFirst()
+                          .orElse(null);
+                  if (tableChange == null || !tableChange.hasPrecondition()) {
+                    return false;
+                  }
+                  return tableChange.hasTableId()
+                      && tableChange.hasTable()
+                      && tableChange.getPrecondition().getExpectedVersion() == 0L;
+                }));
     verify(grpcClient).commitTransaction(any());
   }
 
   @Test
-  void commitCreateWithAssertCreateSkipsPreMaterializationWhenMetadataLocationMissing()
-      throws Exception {
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
-
-    TransactionCommitRequest createTxRequest =
-        new TransactionCommitRequest(
-            List.of(
-                new TransactionCommitRequest.TableChange(
-                    new TableIdentifierDto(List.of("db"), "orders"),
-                    List.of(Map.of("type", "assert-create")),
-                    List.of(
-                        Map.of("action", "set-location", "location", "s3://warehouse/orders")))));
-    when(tableCreateTransactionMapper.buildCreateRequest(
-            eq(List.of("db")),
-            eq("orders"),
-            any(ResourceId.class),
-            any(ResourceId.class),
-            any(TableRequests.Create.class),
-            eq(tableSupport)))
-        .thenReturn(createTxRequest);
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenThrow(new RuntimeException("missing pointer"));
-
-    TableRequests.Create createRequest =
-        new TableRequests.Create(
-            "orders",
-            mapper()
-                .readTree(
-                    """
-                {
-                  "schema-id":1,
-                  "last-column-id":1,
-                  "type":"struct",
-                  "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-                }
-                """),
-            null,
-            null,
-            null,
-            null,
-            false);
-
-    Response response =
-        service.commitCreate(
-            "pref",
-            "idem",
-            List.of("db"),
-            "orders",
-            ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build(),
-            ResourceId.newBuilder().setAccountId("acct-1").setId("ns-id").build(),
-            createRequest,
-            tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService, never())
-        .materializeMetadata(any(), any(), any(), any(), any(), any());
-  }
-
-  @Test
-  void commitReturnsNoContentWhenAlreadyAppliedAndReplaysSideEffects() {
+  void commitReturnsNoContentWhenAlreadyAppliedWithoutReplayingSideEffects() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -390,6 +366,10 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   private com.fasterxml.jackson.databind.ObjectMapper mapper() {
@@ -484,6 +464,92 @@ class TransactionCommitServiceTest {
   }
 
   @Test
+  void commitReplansAgainstFreshTableVersionWhenPointerAdvancesDuringPlanning() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table staleTable =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("base", "stale")
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .putProperties(
+                "metadata-location", "s3://floecat/iceberg/orders/metadata/00001.metadata.json")
+            .build();
+    Table freshTable =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("base", "fresh")
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .putProperties(
+                "metadata-location", "s3://floecat/iceberg/orders/metadata/00002.metadata.json")
+            .build();
+    Table stalePlanned = staleTable.toBuilder().putProperties("planned-version", "stale").build();
+    Table freshPlanned = freshTable.toBuilder().putProperties("planned-version", "fresh").build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(staleTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(freshTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(freshTable)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(stalePlanned, null))
+        .thenReturn(new TableCommitPlanner.PlanResult(freshPlanned, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(metadataMutator, never()).apply(any(), any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTableId()
+                                    && change.hasPrecondition()
+                                    && change.getPrecondition().getExpectedVersion() == 8L
+                                    && "fresh"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("planned-version")))));
+  }
+
+  @Test
   void commitAddsAtomicConnectorChangesForCreatePath() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     Table table =
@@ -533,31 +599,86 @@ class TransactionCommitServiceTest {
             argThat(
                 prepare ->
                     prepare.getChangesList().stream()
-                            .anyMatch(
-                                change ->
-                                    change.hasTargetPointerKey()
-                                        && change
-                                            .getTargetPointerKey()
-                                            .contains("/connectors/by-id/"))
+                                .filter(change -> change.hasConnectorProvisioning())
+                                .count()
+                            == 1
                         && prepare.getChangesList().stream()
-                            .anyMatch(
+                            .filter(change -> change.hasConnectorProvisioning())
+                            .allMatch(
                                 change ->
-                                    change.hasTargetPointerKey()
-                                        && change
-                                            .getTargetPointerKey()
-                                            .contains("/connectors/by-name/"))
+                                    "s3://floecat/iceberg/orders"
+                                            .equals(
+                                                change.getConnectorProvisioning().getConnectorUri())
+                                        && "orders"
+                                            .equals(
+                                                change
+                                                    .getConnectorProvisioning()
+                                                    .getSourceTableName())
+                                        && List.of("db")
+                                            .equals(
+                                                change
+                                                    .getConnectorProvisioning()
+                                                    .getSourceNamespacePathList())
+                                        && "filesystem"
+                                            .equals(
+                                                change
+                                                    .getConnectorProvisioning()
+                                                    .getPropertiesMap()
+                                                    .get("iceberg.source"))
+                                        && !change
+                                            .getConnectorProvisioning()
+                                            .getPropertiesMap()
+                                            .containsKey("metadata-location"))
                         && prepare.getChangesList().stream()
                             .anyMatch(
                                 change ->
                                     change.hasTable()
-                                        && change.getTable().hasUpstream()
-                                        && change.getTable().getUpstream().hasConnectorId()
-                                        && !change
-                                            .getTable()
-                                            .getUpstream()
-                                            .getConnectorId()
-                                            .getId()
-                                            .isBlank())));
+                                        && "s3://floecat/iceberg/orders"
+                                            .equals(
+                                                change
+                                                    .getTable()
+                                                    .getPropertiesMap()
+                                                    .get("location"))
+                                        && "s3://floecat/iceberg/orders/metadata/00001.metadata.json"
+                                            .equals(
+                                                change
+                                                    .getTable()
+                                                    .getPropertiesMap()
+                                                    .get("metadata-location")))));
+  }
+
+  @Test
+  void commitFailsWhenProvisionedConnectorLocationIsMissing() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
+    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
+    assertEquals("CommitStateUnknownException", error.error().type());
+    verify(grpcClient).abortTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -828,7 +949,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitEnqueuesSnapshotScopedStatsCaptureForAddedSnapshots() {
+  void commitDoesNotEnqueueSnapshotScopedStatsCaptureForAddedSnapshots() {
     ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build();
     Table table =
         Table.newBuilder()
@@ -870,14 +991,48 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    org.mockito.ArgumentCaptor<StartCaptureRequest> requestCaptor =
-        org.mockito.ArgumentCaptor.forClass(StartCaptureRequest.class);
-    verify(grpcClient).startCapture(requestCaptor.capture());
-    StartCaptureRequest request = requestCaptor.getValue();
-    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
-    assertEquals("conn-1", request.getScope().getConnectorId().getId());
-    assertEquals("tbl-id", request.getScope().getDestinationTableId());
-    assertEquals(0, request.getScope().getDestinationNamespaceIdsCount());
+    verify(grpcClient, never()).startCapture(any());
+  }
+
+  @Test
+  void commitWithProvisionedConnectorAddsProvisioningChangeWithoutActivation() {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    ArgumentCaptor<ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest> prepareCaptor =
+        ArgumentCaptor.forClass(ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.class);
+    when(grpcClient.prepareTransaction(prepareCaptor.capture()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+
+    assertEquals(
+        1L,
+        prepareCaptor.getValue().getChangesList().stream()
+            .filter(change -> change.hasConnectorProvisioning())
+            .count());
+    verify(grpcClient, never()).updateConnector(any());
+    verify(grpcClient, never()).startCapture(any());
   }
 
   @Test
@@ -1046,49 +1201,6 @@ class TransactionCommitServiceTest {
                                                 .getTable()
                                                 .getPropertiesMap()
                                                 .get("metadata-location")))));
-  }
-
-  @Test
-  void commitWithAssertCreatePreMaterializesWhenMetadataLocationMissing() {
-    ResourceId plannedTableId =
-        ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-create").build();
-    Table planned = Table.newBuilder().setResourceId(plannedTableId).build();
-    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(planned, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenThrow(new RuntimeException("missing pointer"));
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00001.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -1264,28 +1376,13 @@ class TransactionCommitServiceTest {
                     prepare != null
                         && prepare.getChangesCount() >= 2
                         && prepare.getChangesList().stream()
-                            .noneMatch(
-                                change ->
-                                    change.hasTargetPointerKey()
-                                        && change.getTargetPointerKey().contains("/snapshots/"))
-                        && prepare.getChangesList().stream()
-                            .noneMatch(
-                                change ->
-                                    change.hasTargetPointerKey()
-                                        && change.getTargetPointerKey().contains("/tx-journal/"))
-                        && prepare.getChangesList().stream()
-                            .anyMatch(
-                                change ->
-                                    change.hasTargetPointerKey()
-                                        && change
-                                            .getTargetPointerKey()
-                                            .contains("/connectors/by-id/"))
+                                .filter(change -> change.hasConnectorProvisioning())
+                                .count()
+                            == 1
                         && prepare.getChangesList().stream()
                             .anyMatch(
                                 change ->
                                     change.hasTable()
-                                        && change.getTable().hasUpstream()
-                                        && change.getTable().getUpstream().hasConnectorId()
                                         && "s3://meta/new"
                                             .equals(
                                                 change
@@ -1311,6 +1408,12 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
@@ -1330,6 +1433,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
@@ -1772,10 +1877,13 @@ class TransactionCommitServiceTest {
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient)
         .commitTransaction(argThat(commit -> commit != null && !commit.hasIdempotency()));
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void preparedStateFailsWhenPlanningCannotResolveTable() {
+  void preparedStateCommitsWithoutReplanningWhenRequestHashMatches() throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1785,7 +1893,11 @@ class TransactionCommitServiceTest {
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_PREPARED)
+                        .putProperties("iceberg.commit.request-hash", requestHash(request()))
+                        .build())
                 .build());
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenThrow(Status.NOT_FOUND.asRuntimeException());
@@ -1797,14 +1909,17 @@ class TransactionCommitServiceTest {
                 .build());
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
-    assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
-    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
     verify(grpcClient, never()).abortTransaction(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void alreadyAppliedReplaysPostCommitUpdates() {
+  void alreadyAppliedDoesNotReplayPostCommitUpdates() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1822,10 +1937,13 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
   }
 
   @Test
-  void alreadyAppliedReplaysPreCommitSnapshotUpdatesWhenPresent() {
+  void alreadyAppliedDoesNotReplayPreCommitSnapshotUpdatesWhenPresent() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1843,6 +1961,9 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
@@ -2140,7 +2261,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void beginUsesRequestHashAsIdempotencyFallback() {
+  void beginGeneratesRequestHashIdempotencyFallbackForOrdinaryCommits() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2163,6 +2284,162 @@ class TransactionCommitServiceTest {
                     req != null
                         && req.hasIdempotency()
                         && req.getIdempotency().getKey().startsWith("req:cat:")));
+  }
+
+  @Test
+  void commitCreateRetainsRequestHashIdempotencyFallback() {
+    TableRequests.Create createRequest =
+        new TableRequests.Create("orders", null, null, Map.of(), null, null, false);
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableCreateTransactionMapper.buildCreateRequest(
+            eq(List.of("db")),
+            eq("orders"),
+            any(ResourceId.class),
+            any(ResourceId.class),
+            eq(createRequest),
+            eq(tableSupport)))
+        .thenReturn(requestWithAssertCreate());
+
+    Response response =
+        service.commitCreate(
+            "pref",
+            null,
+            List.of("db"),
+            "orders",
+            ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build(),
+            ResourceId.newBuilder().setAccountId("acct-1").setId("ns-id").build(),
+            createRequest,
+            tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient)
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
+                        && req.getIdempotency().getKey().startsWith("req:cat:")));
+  }
+
+  @Test
+  void retryWithoutExplicitIdempotencyReusesRequestHashIdempotencyAfterConflict() {
+    when(grpcClient.beginTransaction(any()))
+        .thenAnswer(
+            invocation -> {
+              var req =
+                  invocation.getArgument(
+                      0, ai.floedb.floecat.transaction.rpc.BeginTransactionRequest.class);
+              String key = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+              String txId = key == null || key.isBlank() ? "tx-1" : "sticky-tx";
+              return BeginTransactionResponse.newBuilder()
+                  .setTransaction(Transaction.newBuilder().setTxId(txId))
+                  .build();
+            });
+    when(grpcClient.getTransaction(any()))
+        .thenAnswer(
+            invocation -> {
+              String txId =
+                  invocation
+                      .getArgument(0, ai.floedb.floecat.transaction.rpc.GetTransactionRequest.class)
+                      .getTxId();
+              TransactionState state =
+                  "sticky-tx".equals(txId)
+                      ? TransactionState.TS_APPLY_FAILED_CONFLICT
+                      : TransactionState.TS_OPEN;
+              return GetTransactionResponse.newBuilder()
+                  .setTransaction(Transaction.newBuilder().setTxId(txId).setState(state))
+                  .build();
+            });
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response first = service.commit("pref", null, request(), tableSupport);
+    Response second = service.commit("pref", null, request(), tableSupport);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), first.getStatus());
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), second.getStatus());
+    verify(grpcClient, Mockito.times(2))
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
+                        && req.getIdempotency().getKey().startsWith("req:cat:")));
+  }
+
+  @Test
+  void explicitIdempotencyReusesTransactionAndRejectsMismatchedPayloadOnRetry() throws Exception {
+    TransactionCommitRequest initialRequest = requestWithAddSnapshot(123L);
+    TransactionCommitRequest mismatchedRequest = requestWithAddSnapshot(456L);
+    String initialHash = requestHash(initialRequest);
+
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("sticky-tx"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_OPEN)
+                        .putProperties("iceberg.commit.request-hash", initialHash))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("sticky-tx")
+                        .setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response first = service.commit("pref", "idem", initialRequest, tableSupport);
+    Response second = service.commit("pref", "idem", mismatchedRequest, tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), first.getStatus());
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), second.getStatus());
+    verify(grpcClient, Mockito.times(2))
+        .beginTransaction(
+            argThat(
+                req ->
+                    req != null
+                        && req.hasIdempotency()
+                        && "idem".equals(req.getIdempotency().getKey())));
   }
 
   @Test
@@ -2433,7 +2710,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void postCommitSnapshotFailureStillReturnsNoContentAfterApplied() {
+  void alreadyAppliedSkipsPostCommitSnapshotWorkAndReturnsNoContent() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2451,6 +2728,9 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).startCapture(any());
+    verify(tableLifecycleService, never())
+        .resolveTableId(any(), Mockito.<List<String>>any(), any());
   }
 
   @Test
@@ -2496,7 +2776,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void alreadyAppliedStillRejectsUnknownUpdateAction() {
+  void alreadyAppliedReturnsNoContentWithoutRevalidatingUpdates() {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2511,9 +2791,9 @@ class TransactionCommitServiceTest {
 
     Response response = service.commit("pref", "idem", requestWithUnknownUpdate(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -2547,7 +2827,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void preparedStateRejectsMissingRequirements() {
+  void preparedStateSkipsRequestShapeValidationWhenRequestHashMatches() throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2557,20 +2837,29 @@ class TransactionCommitServiceTest {
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_PREPARED)
+                        .putProperties("iceberg.commit.request-hash", requestHash(request()))
+                        .build())
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
     Response response = service.commit("pref", "idem", requestWithNullRequirements(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
-    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void preparedStateRejectsMissingUpdates() {
+  void preparedStateSkipsUpdateValidationWhenRequestHashMatches() throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2580,20 +2869,29 @@ class TransactionCommitServiceTest {
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_PREPARED)
+                        .putProperties("iceberg.commit.request-hash", requestHash(request()))
+                        .build())
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
     Response response = service.commit("pref", "idem", requestWithNullUpdates(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
-    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void preparedStateReturnsBadRequestWhenPlannerRejectsRequirement() {
+  void preparedStateSkipsPlannerRequirementValidationWhenRequestHashMatches() throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2603,7 +2901,17 @@ class TransactionCommitServiceTest {
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_PREPARED)
+                        .putProperties("iceberg.commit.request-hash", requestHash(request()))
+                        .build())
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
@@ -2619,15 +2927,14 @@ class TransactionCommitServiceTest {
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
-    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void preparedStateReturnsBadRequestWhenPlannerRejectsUpdateAction() {
+  void preparedStateSkipsPlannerUpdateValidationWhenRequestHashMatches() throws Exception {
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -2637,7 +2944,17 @@ class TransactionCommitServiceTest {
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_PREPARED)
+                        .putProperties("iceberg.commit.request-hash", requestHash(request()))
+                        .build())
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
@@ -2653,11 +2970,10 @@ class TransactionCommitServiceTest {
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
-    assertEquals("ValidationException", error.error().type());
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
-    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
@@ -2695,7 +3011,11 @@ class TransactionCommitServiceTest {
                 prepare ->
                     prepare != null
                         && prepare.getChangesList().stream()
-                                .filter(change -> change.hasTableId())
+                                .filter(change -> change.hasConnectorProvisioning())
+                                .count()
+                            == 2
+                        && prepare.getChangesList().stream()
+                                .filter(change -> change.hasTable())
                                 .count()
                             == 2
                         && prepare.getChangesList().stream()
@@ -2845,6 +3165,16 @@ class TransactionCommitServiceTest {
     }
   }
 
+  private String requestHash(TransactionCommitRequest request) throws Exception {
+    Method requestHash =
+        TransactionCommitService.class.getDeclaredMethod("requestHash", List.class);
+    requestHash.setAccessible(true);
+    return (String)
+        requestHash.invoke(
+            service,
+            request == null || request.tableChanges() == null ? List.of() : request.tableChanges());
+  }
+
   private TransactionCommitRequest requestWithPostCommitUpdate() {
     Map<String, Object> assignUuid = new LinkedHashMap<>();
     assignUuid.put("action", "assign-uuid");
@@ -2878,18 +3208,6 @@ class TransactionCommitServiceTest {
                 new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(unknown))));
   }
 
-  private TransactionCommitRequest requestWithSetSnapshotRef(String refName, long snapshotId) {
-    Map<String, Object> update = new LinkedHashMap<>();
-    update.put("action", "set-snapshot-ref");
-    update.put("ref-name", refName);
-    update.put("snapshot-id", snapshotId);
-    update.put("type", "branch");
-    return new TransactionCommitRequest(
-        List.of(
-            new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(update))));
-  }
-
   private TransactionCommitRequest requestWithNullRequirements() {
     return new TransactionCommitRequest(
         List.of(
@@ -2898,6 +3216,20 @@ class TransactionCommitServiceTest {
   }
 
   private TransactionCommitRequest requestWithAssertCreate() {
+    Map<String, Object> setMetadataLocation = new LinkedHashMap<>();
+    setMetadataLocation.put("action", "set-properties");
+    setMetadataLocation.put(
+        "updates",
+        Map.of("metadata-location", "s3://floecat/iceberg/orders/metadata/00001.metadata.json"));
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"),
+                List.of(Map.of("type", "assert-create")),
+                List.of(setMetadataLocation))));
+  }
+
+  private TransactionCommitRequest requestWithAssertCreateWithoutMetadataLocation() {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(

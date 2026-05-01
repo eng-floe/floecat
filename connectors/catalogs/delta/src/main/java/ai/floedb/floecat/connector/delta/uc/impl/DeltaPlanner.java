@@ -66,6 +66,7 @@ final class DeltaPlanner implements Planner<String> {
   private final Map<String, LogicalType> nameToLogical = new LinkedHashMap<>();
   private final NdvProvider ndvProvider;
   private final Set<String> columnSet;
+  private final Set<String> plannedFilePaths;
   private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
   private boolean hasInlineDeletionVectors = false;
 
@@ -75,11 +76,16 @@ final class DeltaPlanner implements Planner<String> {
       String tableRoot,
       long version,
       Set<String> includeColumns,
+      Set<String> plannedFilePaths,
       Map<String, LogicalType> nameToType,
       NdvProvider ndvProvider,
       boolean includeStats) {
 
     this.ndvProvider = ndvProvider;
+    this.plannedFilePaths =
+        plannedFilePaths == null || plannedFilePaths.isEmpty()
+            ? Collections.emptySet()
+            : Collections.unmodifiableSet(new LinkedHashSet<>(plannedFilePaths));
 
     final Table table = Table.forPath(engine, Objects.requireNonNull(tableRoot));
     final Snapshot snapshot = table.getSnapshotAsOfVersion(engine, version);
@@ -113,6 +119,9 @@ final class DeltaPlanner implements Planner<String> {
 
             FileStatus fs = InternalScanFileUtils.getAddFileStatus(scanFileRow);
             String path = fs.getPath();
+            if (!this.plannedFilePaths.isEmpty() && !this.plannedFilePaths.contains(path)) {
+              continue;
+            }
             long sizeBytes = fs.getSize();
 
             long rowCount = 0L;

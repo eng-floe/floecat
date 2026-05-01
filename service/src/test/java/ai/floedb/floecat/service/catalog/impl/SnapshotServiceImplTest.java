@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
@@ -190,5 +192,58 @@ class SnapshotServiceImplTest {
     verify(svc.snapshotRepo).create(cap.capture());
     assertTrue(cap.getValue().hasParentSnapshotId());
     assertEquals(0L, cap.getValue().getParentSnapshotId());
+  }
+
+  @Test
+  void updateSnapshot_allowsDeltaVersionZero() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    var existing =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(0L)
+            .setSchemaJson("{\"type\":\"struct\"}")
+            .build();
+    when(svc.snapshotRepo.metaFor(eq(tableId), eq(0L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(svc.snapshotRepo.getById(eq(tableId), eq(0L))).thenReturn(Optional.of(existing));
+    when(svc.snapshotRepo.metaForSafe(eq(tableId), eq(0L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
+    when(svc.snapshotRepo.update(any(Snapshot.class), eq(7L))).thenReturn(true);
+
+    var req =
+        UpdateSnapshotRequest.newBuilder()
+            .setSpec(
+                SnapshotSpec.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(0L)
+                    .setUpstreamCreatedAt(existing.getUpstreamCreatedAt())
+                    .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+            .build();
+
+    assertDoesNotThrow(() -> svc.updateSnapshot(req).await().indefinitely());
   }
 }

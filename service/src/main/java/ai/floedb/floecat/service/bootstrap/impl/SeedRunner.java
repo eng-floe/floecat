@@ -25,7 +25,6 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
@@ -38,8 +37,16 @@ import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -48,11 +55,15 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.MetadataUtils;
+import io.quarkus.grpc.GrpcClient;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -63,14 +74,26 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SeedRunner {
+  private static final ReconcileCapturePolicy FIXTURE_CAPTURE_POLICY =
+      ReconcileCapturePolicy.of(
+          List.of(),
+          Set.of(
+              ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX,
+              ReconcileCapturePolicy.Output.TABLE_STATS,
+              ReconcileCapturePolicy.Output.FILE_STATS,
+              ReconcileCapturePolicy.Output.COLUMN_STATS));
+
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
   private static final String EXAMPLES_CATALOG = "examples";
   private static final List<String> ICEBERG_NAMESPACE = List.of("iceberg");
@@ -82,6 +105,8 @@ public class SeedRunner {
   private static final int SEED_TOKEN_MAX_ATTEMPTS = 6;
   private static final long SEED_TOKEN_INITIAL_BACKOFF_MS = 250L;
   private static final long SEED_TOKEN_MAX_BACKOFF_MS = 5_000L;
+  private Executor seedExecutor =
+      runnable -> Thread.ofPlatform().name("floecat-startup-seed").start(runnable);
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
@@ -89,7 +114,9 @@ public class SeedRunner {
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject ConnectorRepository connectorRepo;
-  @Inject ReconcilerService reconciler;
+
+  @GrpcClient("floecat")
+  ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
 
   @ConfigProperty(name = "floecat.seed.enabled", defaultValue = "true")
   boolean enabled;
@@ -112,7 +139,21 @@ public class SeedRunner {
   @ConfigProperty(name = "floecat.seed.oidc.timeout", defaultValue = "10s")
   Duration seedOidcTimeout;
 
+  @ConfigProperty(name = "floecat.seed.sync.timeout", defaultValue = "5m")
+  Duration seedSyncTimeout;
+
+  @ConfigProperty(name = "floecat.seed.sync.poll-interval", defaultValue = "250ms")
+  Duration seedSyncPollInterval;
+
   private volatile java.util.Optional<String> seedAuthorizationHeader;
+
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors == null) {
+      return;
+    }
+    managedExecutors.stream().findFirst().ifPresent(executor -> seedExecutor = executor);
+  }
 
   void onStart(@Observes StartupEvent ev) {
     if (!enabled) {
@@ -126,13 +167,24 @@ public class SeedRunner {
     }
 
     LOG.infof("Starting seedData() mode=%s", seedMode);
-    try {
-      seedData();
-      LOG.info("Startup seeding completed successfully");
-    } catch (Throwable t) {
-      LOG.error("Startup seeding failed", t);
-      throw t;
-    }
+    seedExecutor.execute(
+        () -> {
+          String previousName = Thread.currentThread().getName();
+          boolean restoreName = !"floecat-startup-seed".equals(previousName);
+          if (restoreName) {
+            Thread.currentThread().setName("floecat-startup-seed");
+          }
+          try {
+            seedData();
+            LOG.info("Startup seeding completed successfully");
+          } catch (Throwable t) {
+            LOG.error("Startup seeding failed", t);
+          } finally {
+            if (restoreName) {
+              Thread.currentThread().setName(previousName);
+            }
+          }
+        });
   }
 
   public void seedData() {
@@ -678,46 +730,26 @@ public class SeedRunner {
                 .orElse(null);
     var scope =
         table != null
-            ? ReconcileScope.of(List.of(), table.getResourceId().getId())
+            ? ReconcileScope.of(
+                List.of(), table.getResourceId().getId(), List.of(), FIXTURE_CAPTURE_POLICY)
             : namespace == null
-                ? ReconcileScope.empty()
-                : ReconcileScope.of(List.of(namespace.getResourceId().getId()), null);
+                ? ReconcileScope.of(List.of(), null, null, List.of(), FIXTURE_CAPTURE_POLICY)
+                : ReconcileScope.of(
+                    List.of(namespace.getResourceId().getId()),
+                    null,
+                    null,
+                    List.of(),
+                    FIXTURE_CAPTURE_POLICY);
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
-        var result =
-            reconcileWithSeedAuth(
-                connectorId, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
-        if (result.ok()) {
+        GetReconcileJobResponse result = startAndAwaitSeedCapture(connectorId, scope);
+        if (result != null) {
           LOG.infov(
-              "Populated fixture table {0} (scanned={1}, changed={2})",
-              tableName, result.scanned, result.changed);
+              "Populated fixture table {0} (jobId={1}, scanned={2}, changed={3})",
+              tableName, result.getJobId(), result.getTablesScanned(), result.getTablesChanged());
           return;
         }
-        if (result.error != null && isRetryableSeedSyncError(result.error)) {
-          if (attempt == SEED_SYNC_MAX_ATTEMPTS) {
-            LOG.warnf(
-                result.error,
-                "Failed to populate fixture table {0}: {1}",
-                tableName,
-                result.message());
-            return;
-          }
-          if (Thread.currentThread().isInterrupted()) {
-            LOG.warnf(
-                "Seed sync thread interrupted for %s; clearing interrupt and retrying", tableName);
-            Thread.interrupted();
-          }
-          LOG.warnf(
-              "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
-              tableName, attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
-          LockSupport.parkNanos(backoffMs * 1_000_000L);
-          backoffMs = Math.min(backoffMs * 2, SEED_SYNC_MAX_BACKOFF_MS);
-          continue;
-        }
-        LOG.warnf(
-            result.error, "Failed to populate fixture table {0}: {1}", tableName, result.message());
-        return;
       } catch (RuntimeException e) {
         // gRPC blocking calls may set the interrupt flag (e.g., CANCELLED: Thread interrupted).
         // During startup seeding we treat this as transient; clear the flag so retries can proceed.
@@ -727,7 +759,8 @@ public class SeedRunner {
           Thread.interrupted(); // clears interrupt status
         }
         if (!isRetryableSeedSyncError(e) || attempt == SEED_SYNC_MAX_ATTEMPTS) {
-          throw e;
+          LOG.warnf(e, "Failed to populate fixture table {0}: {1}", tableName, e.getMessage());
+          return;
         }
         LOG.warnf(
             "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
@@ -768,16 +801,112 @@ public class SeedRunner {
     return false;
   }
 
-  private ReconcilerService.Result reconcileWithSeedAuth(
-      ResourceId connectorId, ReconcileScope scope, ReconcilerService.CaptureMode mode) {
-    var header = seedAuthorizationHeader();
-    var principal =
-        PrincipalContext.newBuilder()
-            .setAccountId(connectorId.getAccountId())
-            .setSubject("seed-runner")
-            .setCorrelationId("seed-sync-" + connectorId.getId())
-            .build();
-    return reconciler.reconcile(principal, connectorId, true, scope, mode, header.orElse(null));
+  private GetReconcileJobResponse startAndAwaitSeedCapture(
+      ResourceId connectorId, ReconcileScope scope) {
+    StartCaptureResponse submitted = startCaptureWithSeedAuth(connectorId, scope);
+    return awaitSeedCaptureJob(connectorId, submitted.getJobId());
+  }
+
+  private StartCaptureResponse startCaptureWithSeedAuth(
+      ResourceId connectorId, ReconcileScope scope) {
+    return reconcileControlWithSeedAuth(connectorId)
+        .startCapture(
+            StartCaptureRequest.newBuilder()
+                .setScope(toCaptureScope(connectorId, scope))
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setFullRescan(true)
+                .build());
+  }
+
+  private GetReconcileJobResponse awaitSeedCaptureJob(ResourceId connectorId, String jobId) {
+    if (seedSyncTimeout.isZero() || seedSyncTimeout.isNegative()) {
+      throw new IllegalStateException("floecat.seed.sync.timeout must be greater than 0");
+    }
+    if (seedSyncPollInterval.isZero() || seedSyncPollInterval.isNegative()) {
+      throw new IllegalStateException("floecat.seed.sync.poll-interval must be greater than 0");
+    }
+
+    long deadlineNanos = System.nanoTime() + seedSyncTimeout.toNanos();
+    while (true) {
+      GetReconcileJobResponse response =
+          reconcileControlWithSeedAuth(connectorId)
+              .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId(jobId).build());
+      switch (response.getState()) {
+        case JS_SUCCEEDED:
+          return response;
+        case JS_FAILED:
+          throw new IllegalStateException(formatSeedJobFailure("failed", response));
+        case JS_CANCELLED:
+        case JS_CANCELLING:
+          throw new IllegalStateException(formatSeedJobFailure("cancelled", response));
+        case JS_QUEUED:
+        case JS_RUNNING:
+        case JS_UNSPECIFIED:
+        case UNRECOGNIZED:
+          if (System.nanoTime() >= deadlineNanos) {
+            throw Status.DEADLINE_EXCEEDED
+                .withDescription(
+                    "seed capture job "
+                        + jobId
+                        + " did not complete within "
+                        + seedSyncTimeout.toSeconds()
+                        + "s")
+                .asRuntimeException();
+          }
+          LockSupport.parkNanos(seedSyncPollInterval.toNanos());
+          break;
+      }
+    }
+  }
+
+  private static String formatSeedJobFailure(String outcome, GetReconcileJobResponse response) {
+    String message = response.getMessage();
+    return "seed capture job "
+        + response.getJobId()
+        + " "
+        + outcome
+        + (message == null || message.isBlank() ? "" : ": " + message);
+  }
+
+  private CaptureScope toCaptureScope(ResourceId connectorId, ReconcileScope scope) {
+    CaptureScope.Builder builder = CaptureScope.newBuilder().setConnectorId(connectorId);
+    if (scope != null) {
+      builder.addAllDestinationNamespaceIds(scope.destinationNamespaceIds());
+      if (scope.destinationTableId() != null && !scope.destinationTableId().isBlank()) {
+        builder.setDestinationTableId(scope.destinationTableId());
+      }
+      if (scope.destinationViewId() != null && !scope.destinationViewId().isBlank()) {
+        builder.setDestinationViewId(scope.destinationViewId());
+      }
+    }
+    return builder.setCapturePolicy(fixtureCapturePolicy()).build();
+  }
+
+  private static CapturePolicy fixtureCapturePolicy() {
+    return CapturePolicy.newBuilder()
+        .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+        .addOutputs(CaptureOutput.CO_TABLE_STATS)
+        .addOutputs(CaptureOutput.CO_FILE_STATS)
+        .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+        .build();
+  }
+
+  private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlWithSeedAuth(
+      ResourceId connectorId) {
+    Metadata metadata = new Metadata();
+    metadata.put(
+        Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER),
+        seedCorrelationId(connectorId));
+    seedAuthorizationHeader()
+        .ifPresent(
+            header ->
+                metadata.put(
+                    Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), header));
+    return reconcileControl.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+  }
+
+  private static String seedCorrelationId(ResourceId connectorId) {
+    return "seed-sync-" + connectorId.getId();
   }
 
   private java.util.Optional<String> seedAuthorizationHeader() {
@@ -789,10 +918,7 @@ public class SeedRunner {
         return seedAuthorizationHeader;
       }
       var built = buildSeedAuthorizationHeader();
-      if (built.isPresent()) {
-        seedAuthorizationHeader = built;
-        return seedAuthorizationHeader;
-      }
+      seedAuthorizationHeader = built;
       return built;
     }
   }

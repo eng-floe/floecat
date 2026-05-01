@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
@@ -173,6 +175,34 @@ public final class Schemas {
               })
           .withCasBlobs();
 
+  public static final ResourceSchema<IndexArtifactRecord, IndexArtifactKey> INDEX_ARTIFACT =
+      ResourceSchema.<IndexArtifactRecord, IndexArtifactKey>of(
+              "index-artifact",
+              (IndexArtifactKey key) ->
+                  Keys.snapshotIndexArtifactPointer(
+                      key.accountId(), key.tableId(), key.snapshotId(), key.targetId()),
+              (IndexArtifactKey key) ->
+                  Keys.snapshotIndexArtifactBlobUri(
+                      key.accountId(), key.tableId(), key.targetId(), key.sha256()),
+              (IndexArtifactRecord v) -> Map.of(),
+              (IndexArtifactRecord v) -> {
+                if (!v.hasTableId() || v.getTableId().getId().isBlank()) {
+                  throw new IllegalArgumentException("table_id must be set on IndexArtifactRecord");
+                }
+                if (!v.hasTarget()
+                    || v.getTarget().getTargetCase() == IndexTarget.TargetCase.TARGET_NOT_SET) {
+                  throw new IllegalArgumentException("target must be set on IndexArtifactRecord");
+                }
+                var sha = Hashing.sha256Hex(v.toByteArray());
+                return new IndexArtifactKey(
+                    v.getTableId().getAccountId(),
+                    v.getTableId().getId(),
+                    v.getSnapshotId(),
+                    indexArtifactTargetStorageId(v.getTarget()),
+                    sha);
+              })
+          .withCasBlobs();
+
   private static void validateTargetValueCompatibility(
       StatsTarget target, TargetStatsRecord.ValueCase valueCase) {
     switch (target.getTargetCase()) {
@@ -197,6 +227,14 @@ public final class Schemas {
       case TARGET_NOT_SET ->
           throw new IllegalArgumentException("target must be set on TargetStatsRecord");
     }
+  }
+
+  private static String indexArtifactTargetStorageId(IndexTarget target) {
+    return switch (target.getTargetCase()) {
+      case FILE -> "file:" + target.getFile().getFilePath();
+      case TARGET_NOT_SET ->
+          throw new IllegalArgumentException("target must be set on IndexArtifactRecord");
+    };
   }
 
   public static final ResourceSchema<SnapshotConstraints, SnapshotConstraintsKey>

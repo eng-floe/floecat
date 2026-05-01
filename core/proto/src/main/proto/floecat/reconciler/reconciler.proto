@@ -18,6 +18,9 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.reconciler.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/catalog/index.proto";
+import "floecat/catalog/stats.proto";
+import "floecat/catalog/view.proto";
 import "floecat/connector/connector.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
@@ -31,32 +34,55 @@ message CaptureScope {
   repeated string destination_namespace_ids = 2;
   // Optional destination table id used to narrow the scope to a single table.
   string destination_table_id = 3;
-  // Optional exact stats capture requests for STATS_ONLY and async follow-up execution.
-  repeated ScopedStatsRequest destination_stats_requests = 4;
+  // Optional exact capture requests used to preserve snapshot/target scope through planning into
+  // file-group execution.
+  repeated ScopedCaptureRequest destination_capture_requests = 4;
   // Optional destination view id used to narrow the scope to a single view.
   string destination_view_id = 5;
+  // Explicit unified capture policy for reconcile execution. Required whenever capture outputs are
+  // requested.
+  CapturePolicy capture_policy = 6;
 }
 
-message ScopedStatsRequest {
+message ScopedCaptureRequest {
   // Immutable destination table id for this scoped request.
   string table_id = 1;
   // Snapshot to capture for this scoped request.
   uint64 snapshot_id = 2;
-  // Encoded stats target identity for this request.
+  // Encoded target identity for this request.
   string target_spec = 3;
   // Optional selectors used when the target is TABLE and column scope is needed.
   repeated string column_selectors = 4;
 }
 
-// Controls whether reconcile should refresh metadata, persisted statistics, or both.
+enum CaptureOutput {
+  CO_UNSPECIFIED = 0;
+  CO_TABLE_STATS = 1;
+  CO_FILE_STATS = 2;
+  CO_COLUMN_STATS = 3;
+  CO_PARQUET_PAGE_INDEX = 4;
+}
+
+message CaptureColumnPolicy {
+  string selector = 1;
+  bool capture_stats = 2;
+  bool capture_index = 3;
+}
+
+message CapturePolicy {
+  repeated CaptureColumnPolicy columns = 1;
+  repeated CaptureOutput outputs = 2;
+}
+
+// Controls whether reconcile should refresh metadata, run capture outputs, or both.
 enum CaptureMode {
   CM_UNSPECIFIED = 0;
-  // Reconcile metadata only; do not capture stats.
+  // Reconcile metadata only; do not run capture outputs.
   CM_METADATA_ONLY = 1;
-  // Reconcile metadata now, then capture stats as part of the same logical reconcile flow.
-  CM_METADATA_AND_STATS = 2;
-  // Capture stats only for already-known destination tables/snapshots.
-  CM_STATS_ONLY = 3;
+  // Reconcile metadata and then run capture outputs as part of the same logical reconcile flow.
+  CM_METADATA_AND_CAPTURE = 2;
+  // Run capture outputs only for already-known destination tables/snapshots.
+  CM_CAPTURE_ONLY = 3;
 }
 
 // High-level execution class used by schedulers and executors for placement decisions.
@@ -75,14 +101,21 @@ enum ExecutionClass {
 // Logical reconcile job type.
 //
 // The current model is split:
-// - PLAN_CONNECTOR is the top-level connector job that enumerates child work.
-// - EXEC_TABLE is a child job that executes one planned table task.
-// - EXEC_VIEW is a child job that executes one planned view task.
+// - PLAN_CONNECTOR discovers connector-scoped work.
+// - PLAN_TABLE plans one table-scoped unit of work.
+// - PLAN_VIEW plans one view-scoped unit of work.
+// - PLAN_SNAPSHOT freezes one snapshot-scoped plan.
+// - FINALIZE_SNAPSHOT_CAPTURE validates complete snapshot coverage and commits snapshot-wide
+//   aggregate capture outputs.
+// - EXEC_FILE_GROUP performs heavy file-group execution.
 enum ReconcileJobKind {
   RJK_UNSPECIFIED = 0;
   RJK_PLAN_CONNECTOR = 1;
-  RJK_EXEC_TABLE = 2;
-  RJK_EXEC_VIEW = 3;
+  RJK_PLAN_TABLE = 2;
+  RJK_PLAN_VIEW = 3;
+  RJK_PLAN_SNAPSHOT = 4;
+  RJK_EXEC_FILE_GROUP = 5;
+  RJK_FINALIZE_SNAPSHOT_CAPTURE = 6;
 }
 
 // One table-scoped unit of reconcile work emitted by a planner job.
@@ -115,6 +148,60 @@ message ReconcileViewTask {
   string destination_view_display_name = 5;
   // Explicit execution mode: STRICT uses destination_view_id, DISCOVERY uses namespace + name.
   string mode = 6;
+}
+
+// One snapshot-scoped planning unit emitted after metadata detection.
+message ReconcileSnapshotTask {
+  // Stable destination table id for the snapshot being planned.
+  string table_id = 1;
+  // Snapshot to plan.
+  uint64 snapshot_id = 2;
+  // Fully qualified upstream source namespace.
+  string source_namespace = 3;
+  // Upstream source table name.
+  string source_table = 4;
+  // Immutable grouped file plan persisted on the PLAN_SNAPSHOT job after planning completes.
+  repeated ReconcileFileGroupTask file_groups = 5;
+  // True when the snapshot planner explicitly persisted the file-group plan, including a
+  // legitimate zero-group plan.
+  bool file_group_plan_recorded = 6;
+}
+
+// One grouped file execution unit emitted by snapshot planning.
+message ReconcileFileResult {
+  enum State {
+    RFRS_UNSPECIFIED = 0;
+    RFRS_SUCCEEDED = 1;
+    RFRS_FAILED = 2;
+    RFRS_SKIPPED = 3;
+  }
+
+  message ReconcileIndexArtifactResult {
+    string artifact_uri = 1;
+    string artifact_format = 2;
+    uint32 artifact_format_version = 3;
+  }
+
+  string file_path = 1;
+  State state = 2;
+  uint64 stats_processed = 3;
+  string message = 4;
+  ReconcileIndexArtifactResult index_artifact = 5;
+}
+
+message ReconcileFileGroupTask {
+  // Immutable persisted snapshot plan identity.
+  string plan_id = 1;
+  // Immutable file-group identity within the snapshot plan.
+  string group_id = 2;
+  // Stable destination table id for this file group.
+  string table_id = 3;
+  // Snapshot to execute.
+  uint64 snapshot_id = 4;
+  // Files assigned to this execution group.
+  repeated string file_paths = 5;
+  // Per-file execution results persisted on the EXEC_FILE_GROUP job.
+  repeated ReconcileFileResult file_results = 6;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -176,12 +263,16 @@ message LeasedReconcileJob {
   // Executor currently holding the lease, if any.
   string executor_id = 9;
   ReconcileJobKind kind = 10;
-  // Present for EXEC_TABLE jobs; empty otherwise.
+  // Present for PLAN_TABLE jobs; empty otherwise.
   ReconcileTableTask table_task = 11;
-  // Parent job id for child execution jobs.
+  // Parent job id for child planning or execution jobs.
   string parent_job_id = 12;
-  // Present for EXEC_VIEW jobs; empty otherwise.
+  // Present for PLAN_VIEW jobs; empty otherwise.
   ReconcileViewTask view_task = 13;
+  // Present for PLAN_SNAPSHOT jobs; empty otherwise.
+  ReconcileSnapshotTask snapshot_task = 14;
+  // Present for EXEC_FILE_GROUP jobs; empty otherwise.
+  ReconcileFileGroupTask file_group_task = 15;
 }
 
 // Request from an executor asking the scheduler for work it is willing to run.
@@ -194,6 +285,8 @@ message LeaseReconcileJobRequest {
   repeated string lanes = 3;
   // Job kinds this worker accepts.
   repeated ReconcileJobKind job_kinds = 4;
+  // Local executor ids available to satisfy pinned-executor routing.
+  repeated string executor_ids = 5;
 }
 
 message LeaseReconcileJobResponse {
@@ -256,6 +349,27 @@ enum ReconcileCompletionState {
   RCS_CANCELLED = 3;
 }
 
+enum ReconcileFailureRetryDisposition {
+  RFRD_UNSPECIFIED = 0;
+  RFRD_RETRYABLE = 1;
+  RFRD_TERMINAL = 2;
+}
+
+enum ReconcileFailureKind {
+  RFK_UNSPECIFIED = 0;
+  RFK_CONNECTOR_MISSING = 1;
+  RFK_TABLE_MISSING = 2;
+  RFK_VIEW_MISSING = 3;
+  RFK_INTERNAL = 4;
+}
+
+enum ReconcileFailureRetryClass {
+  RFRC_UNSPECIFIED = 0;
+  RFRC_TRANSIENT_ERROR = 1;
+  RFRC_DEPENDENCY_NOT_READY = 2;
+  RFRC_STATE_UNCERTAIN = 3;
+}
+
 // Final result reported by an executor when it finishes leased work.
 message CompleteLeasedReconcileJobRequest {
   string job_id = 1;
@@ -270,6 +384,8 @@ message CompleteLeasedReconcileJobRequest {
   string message = 9;
   uint64 views_scanned = 10;
   uint64 views_changed = 11;
+  ReconcileFailureRetryDisposition failure_retry_disposition = 12;
+  ReconcileFailureRetryClass failure_retry_class = 13;
 }
 
 message CompleteLeasedReconcileJobResponse {
@@ -286,6 +402,267 @@ message GetReconcileCancellationResponse {
   bool cancellation_requested = 1;
 }
 
+message GetLeasedFileGroupExecutionRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message GetLeasedPlanConnectorInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanConnectorInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  ai.floedb.floecat.common.ResourceId connector_id = 3;
+  CaptureMode mode = 4;
+  bool full_rescan = 5;
+  CaptureScope scope = 6;
+  ExecutionPolicy execution_policy = 7;
+  string pinned_executor_id = 8;
+}
+
+message GetLeasedPlanConnectorInputResponse {
+  LeasedPlanConnectorInput input = 1;
+}
+
+message PlannedTablePlanJob {
+  CaptureScope scope = 1;
+  ReconcileTableTask table_task = 2;
+}
+
+message PlannedViewPlanJob {
+  CaptureScope scope = 1;
+  ReconcileViewTask view_task = 2;
+}
+
+message SubmitLeasedPlanConnectorResultRequest {
+  message Success {
+    repeated PlannedTablePlanJob table_jobs = 1;
+    repeated PlannedViewPlanJob view_jobs = 2;
+  }
+
+  message Failure {
+    string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanConnectorResultResponse {
+  bool accepted = 1;
+}
+
+message GetLeasedPlanTableInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanTableInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureMode mode = 5;
+  bool full_rescan = 6;
+  CaptureScope scope = 7;
+  ReconcileTableTask table_task = 8;
+}
+
+message GetLeasedPlanTableInputResponse {
+  LeasedPlanTableInput input = 1;
+}
+
+message PlannedSnapshotPlanJob {
+  CaptureScope scope = 1;
+  ReconcileSnapshotTask snapshot_task = 2;
+}
+
+message SubmitLeasedPlanTableResultRequest {
+  message Success {
+    repeated PlannedSnapshotPlanJob snapshot_jobs = 1;
+  }
+
+  message Failure {
+    string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanTableResultResponse {
+  bool accepted = 1;
+}
+
+message GetLeasedPlanViewInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanViewInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureScope scope = 5;
+  ReconcileViewTask view_task = 6;
+}
+
+message GetLeasedPlanViewInputResponse {
+  LeasedPlanViewInput input = 1;
+}
+
+message PlannedViewMutation {
+  ai.floedb.floecat.common.ResourceId destination_view_id = 1;
+  ai.floedb.floecat.catalog.ViewSpec view_spec = 2;
+  string idempotency_key = 3;
+}
+
+message SubmitLeasedPlanViewResultRequest {
+  message Success {
+    PlannedViewMutation mutation = 1;
+  }
+
+  message Failure {
+    string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanViewResultResponse {
+  bool accepted = 1;
+  uint64 views_changed = 2;
+}
+
+message GetLeasedPlanSnapshotInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message LeasedPlanSnapshotInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId connector_id = 4;
+  CaptureMode mode = 5;
+  bool full_rescan = 6;
+  CaptureScope scope = 7;
+  ReconcileSnapshotTask snapshot_task = 8;
+}
+
+message GetLeasedPlanSnapshotInputResponse {
+  LeasedPlanSnapshotInput input = 1;
+}
+
+message PlannedFileGroupExecutionJob {
+  CaptureScope scope = 1;
+  ReconcileFileGroupTask file_group_task = 2;
+}
+
+message SubmitLeasedPlanSnapshotResultRequest {
+  message Success {
+    repeated PlannedFileGroupExecutionJob file_group_jobs = 1;
+  }
+
+  message Failure {
+    string message = 1;
+    ReconcileFailureKind failure_kind = 2;
+    ReconcileFailureRetryDisposition retry_disposition = 3;
+    ReconcileFailureRetryClass retry_class = 4;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedPlanSnapshotResultResponse {
+  bool accepted = 1;
+}
+
+message LeasedFileGroupExecution {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.connector.Connector source_connector = 4;
+  string source_namespace = 5;
+  string source_table = 6;
+  ai.floedb.floecat.common.ResourceId table_id = 7;
+  uint64 snapshot_id = 8;
+  string plan_id = 9;
+  string group_id = 10;
+  repeated string file_paths = 11;
+  CapturePolicy capture_policy = 12;
+}
+
+message GetLeasedFileGroupExecutionResponse {
+  LeasedFileGroupExecution execution = 1;
+}
+
+message LeasedFileGroupIndexArtifact {
+  ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
+  bytes content = 2;
+  string content_type = 3;
+}
+
+message SubmitLeasedFileGroupExecutionResultRequest {
+  message Success {
+    string result_id = 1;
+    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 2;
+    repeated LeasedFileGroupIndexArtifact index_artifacts = 3;
+  }
+
+  message Failure {
+    string result_id = 1;
+    string message = 2;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedFileGroupExecutionResultResponse {
+  bool accepted = 1;
+}
+
 message GetReconcileJobRequest {
   string job_id = 1;
 }
@@ -293,7 +670,7 @@ message GetReconcileJobRequest {
 // Durable job status returned to clients and operators.
 //
 // For PLAN_CONNECTOR jobs, the service may return an aggregated state/counter view derived from the
-// parent plan job plus its child EXEC_TABLE/EXEC_VIEW jobs.
+// parent plan job plus its child PLAN_TABLE/PLAN_VIEW jobs.
 message GetReconcileJobResponse {
   string job_id = 1;
   // Connector id as a plain string for lightweight display and filtering.
@@ -317,14 +694,30 @@ message GetReconcileJobResponse {
   // Executor that most recently ran or is currently running the job.
   string executor_id = 15;
   ReconcileJobKind kind = 16;
-  // Parent job id for child execution jobs; empty for top-level plan jobs.
+  // Parent job id for child planning or execution jobs; empty for top-level plan jobs.
   string parent_job_id = 17;
-  // Planned table task carried by an EXEC_TABLE job.
+  // Planned table task carried by a PLAN_TABLE job.
   ReconcileTableTask table_task = 18;
-  // Planned view task carried by an EXEC_VIEW job.
+  // Planned view task carried by a PLAN_VIEW job.
   ReconcileViewTask view_task = 19;
   uint64 views_scanned = 20;
   uint64 views_changed = 21;
+  // Planned snapshot task carried by a PLAN_SNAPSHOT job.
+  ReconcileSnapshotTask snapshot_task = 22;
+  // Planned file-group task carried by an EXEC_FILE_GROUP job.
+  ReconcileFileGroupTask file_group_task = 23;
+  // Planned file-group count for snapshot-scoped execution.
+  uint64 file_groups_total = 24;
+  // Successfully completed file-group count for snapshot-scoped execution.
+  uint64 file_groups_completed = 25;
+  // Failed or cancelled file-group count for snapshot-scoped execution.
+  uint64 file_groups_failed = 26;
+  // Planned file count for snapshot-scoped execution.
+  uint64 files_total = 27;
+  // Successfully completed file count for snapshot-scoped execution.
+  uint64 files_completed = 28;
+  // Failed or cancelled file count for snapshot-scoped execution.
+  uint64 files_failed = 29;
 }
 
 // Lists reconcile jobs visible to the caller.
@@ -432,4 +825,34 @@ service ReconcileExecutorControl {
   // Reads current cancellation state for a job.
   rpc GetReconcileCancellation(GetReconcileCancellationRequest)
       returns (GetReconcileCancellationResponse);
+  // Returns the planner worker payload for one leased PLAN_CONNECTOR job.
+  rpc GetLeasedPlanConnectorInput(GetLeasedPlanConnectorInputRequest)
+      returns (GetLeasedPlanConnectorInputResponse);
+  // Persists one planner worker result for a leased PLAN_CONNECTOR job.
+  rpc SubmitLeasedPlanConnectorResult(SubmitLeasedPlanConnectorResultRequest)
+      returns (SubmitLeasedPlanConnectorResultResponse);
+  // Returns the planner worker payload for one leased PLAN_TABLE job.
+  rpc GetLeasedPlanTableInput(GetLeasedPlanTableInputRequest)
+      returns (GetLeasedPlanTableInputResponse);
+  // Persists one planner worker result for a leased PLAN_TABLE job.
+  rpc SubmitLeasedPlanTableResult(SubmitLeasedPlanTableResultRequest)
+      returns (SubmitLeasedPlanTableResultResponse);
+  // Returns the planner worker payload for one leased PLAN_VIEW job.
+  rpc GetLeasedPlanViewInput(GetLeasedPlanViewInputRequest)
+      returns (GetLeasedPlanViewInputResponse);
+  // Acknowledges one planner worker result for a leased PLAN_VIEW job.
+  rpc SubmitLeasedPlanViewResult(SubmitLeasedPlanViewResultRequest)
+      returns (SubmitLeasedPlanViewResultResponse);
+  // Returns the planner worker payload for one leased PLAN_SNAPSHOT job.
+  rpc GetLeasedPlanSnapshotInput(GetLeasedPlanSnapshotInputRequest)
+      returns (GetLeasedPlanSnapshotInputResponse);
+  // Persists one planner worker result for a leased PLAN_SNAPSHOT job.
+  rpc SubmitLeasedPlanSnapshotResult(SubmitLeasedPlanSnapshotResultRequest)
+      returns (SubmitLeasedPlanSnapshotResultResponse);
+  // Returns the standalone worker payload for one leased EXEC_FILE_GROUP job.
+  rpc GetLeasedFileGroupExecution(GetLeasedFileGroupExecutionRequest)
+      returns (GetLeasedFileGroupExecutionResponse);
+  // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
+  rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
+      returns (SubmitLeasedFileGroupExecutionResultResponse);
 }

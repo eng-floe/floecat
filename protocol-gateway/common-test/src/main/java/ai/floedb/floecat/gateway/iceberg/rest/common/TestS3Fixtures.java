@@ -64,6 +64,10 @@ public final class TestS3Fixtures {
   private static final Path FIXTURE_ROOT = resolveFixtureRoot("iceberg-fixtures");
   private static final Path SIMPLE_ROOT = FIXTURE_ROOT.resolve("simple");
   private static final Path TPCDS_SFONE_ROOT = FIXTURE_ROOT.resolve("tpcds_sfone");
+  private static final Path YB_TPCDS_CALL_CENTER_ROOT =
+      FIXTURE_ROOT
+          .resolve("yb-iceberg-tpcds")
+          .resolve("call_center-78092955d9dc452fbe14ab11d90a85ce");
   private static final Path TARGET_ROOT = resolveTargetRoot();
   private static final Path STAGE_ROOT = TARGET_ROOT.resolve("staged-fixtures");
   private static final String BUCKET = "yb-iceberg-tpcds";
@@ -91,7 +95,14 @@ public final class TestS3Fixtures {
           TPCDS_SFONE_ROOT,
           TPCDS_SFONE_BUCKET,
           "floe_test.db/tpcds_sfone/catalog_returns");
-  private static final List<FixtureSet> DEFAULT_FIXTURE_SETS = List.of(SIMPLE_SET, COMPLEX_SET);
+  private static final FixtureSet YB_TPCDS_CALL_CENTER_SET =
+      new FixtureSet(
+          "yb_tpcds_call_center",
+          YB_TPCDS_CALL_CENTER_ROOT,
+          BUCKET,
+          "call_center-78092955d9dc452fbe14ab11d90a85ce");
+  private static final List<FixtureSet> DEFAULT_FIXTURE_SETS =
+      List.of(SIMPLE_SET, COMPLEX_SET, YB_TPCDS_CALL_CENTER_SET);
   private static final List<FixtureSet> ISSUE_FIXTURE_SETS = List.of(TPCDS_SFONE_SET);
 
   private TestS3Fixtures() {}

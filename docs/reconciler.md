@@ -1,184 +1,228 @@
 # Reconciler
 
 ## Overview
-The `reconciler/` module automates ingestion from upstream connectors. It manages a queue of
+The `reconciler/` module automates ingestion from upstream connectors. It manages a durable queue of
 reconciliation jobs, leases work to workers, instantiates connectors via the SPI, and calls the
-service’s gRPC APIs to create tables, snapshots, statistics, and scan bundles.
+service's gRPC APIs to create or update tables, views, snapshots, statistics, and index artifacts.
 
-This component decouples connector execution from the main service so that long-running scans do not
-block gRPC threads. The service submits capture jobs via `ReconcileControl.StartCapture`, which
-creates jobs in the reconciler’s store.
+This component decouples connector execution from the main service so long-running metadata and
+file-scoped execution work do not block public gRPC threads. The service submits capture jobs via
+`ReconcileControl.StartCapture`, which creates jobs in the reconciler's store.
 
-The current job model is split:
+The current job model is split by responsibility:
 
-- **`PLAN_CONNECTOR`** – top-level connector job. Planning resolves the connector, enumerates the
-  table- and view-scoped work, and enqueues child jobs.
-- **`EXEC_TABLE`** – child table job. Execution performs metadata and/or stats work for exactly one
-  planned table task.
-- **`EXEC_VIEW`** – child view job. Execution materializes or updates exactly one planned view task.
+- **`PLAN_CONNECTOR`**: top-level connector discovery job. Plans table and view work and enqueues
+  child planning jobs.
+- **`PLAN_TABLE`**: child table planning job. Ensures destination table metadata exists and enqueues
+  snapshot planning work for snapshots that need processing.
+- **`PLAN_VIEW`**: child view planning job. Creates or updates exactly one destination view.
+- **`PLAN_SNAPSHOT`**: child snapshot planning job. Freezes the immutable snapshot plan on the
+  parent job payload, records explicit file-group coverage metadata, and enqueues
+  `EXEC_FILE_GROUP` plus `FINALIZE_SNAPSHOT_CAPTURE` children.
+- **`EXEC_FILE_GROUP`**: child execution job. Reads the planned source parquet files through
+  `FloecatConnector`, captures file-target stats, generates parquet sidecar index artifacts,
+  persists per-file execution results, and does not commit snapshot-wide aggregate outputs.
+- **`FINALIZE_SNAPSHOT_CAPTURE`**: child finalization job. Validates the persisted snapshot
+  coverage, waits for all planned `EXEC_FILE_GROUP` children to finish with persisted success
+  results, verifies that the stats store contains exactly the expected file-target records for the
+  snapshot, and then writes snapshot-wide aggregate outputs such as table/column stats.
 
 ## Architecture & Responsibilities
-- **`ReconcileJobStore`** – Interface abstracting job persistence and leasing. In service runtime,
+- **`ReconcileJobStore`**: interface abstracting job persistence and leasing. In service runtime,
   the default is the durable implementation (`DurableReconcileJobStore`) selected by
   `floecat.reconciler.job-store=durable`; in-memory (`InMemoryReconcileJobStore`) remains available
   for lightweight/local usage when `floecat.reconciler.job-store=memory`.
-- **`ReconcilerScheduler`** – Quarkus scheduled bean that polls the job store, leases a job,
-  transitions it to running, invokes `ReconcilerService` or the planner executor, records
-  success/failure stats, and cancels child table/view jobs when a parent plan job terminates
-  unsuccessfully after partial enqueue.
-- **`ReconcilerService`** – Core orchestration:
-  1. Resolves connector metadata via the service’s `Connectors` RPC.
-  2. Plans table-scoped work for connector jobs, preserving destination namespace/table overrides.
-  3. Ensures destination catalogs/namespaces/tables exist (creating them if needed).
+- **`RemoteReconcileExecutorPoller`**: Quarkus scheduled bean that leases reconcile jobs through
+  the `ReconcileExecutorControl` gRPC control plane, starts heartbeats, invokes the matching local
+  executor implementation, reports progress/completion, and repolls while worker capacity is
+  available. In `worker.mode=local`, the poller talks to the colocated service over gRPC; in
+  `worker.mode=remote`, executor-only nodes use the same lease protocol against a separate control
+  plane.
+- **`ReconcilerService`**: core planning/orchestration:
+  1. Resolves connector metadata via the service's `Connectors` RPC.
+  2. Plans connector-scoped table and view work while preserving destination namespace/table
+     overrides.
+  3. Ensures destination catalogs/namespaces/tables exist and updates connector metadata with
+     resolved destination IDs.
   4. Instantiates the connector via `ConnectorFactory`.
-  5. Executes table-scoped metadata/stats work and updates connectors with resolved destination IDs.
-  6. Handles incremental vs full-rescan logic.
-  7. Supports explicit capture modes:
-     - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
-     - `STATS_ONLY`: routes batched snapshot-target capture through the stats control-plane.
-       Fully non-captured batches (`UNCAPTURABLE` / `DEGRADED` only) fail the table job; mixed
-       captured + non-captured batches complete as degraded.
-     - `METADATA_AND_STATS`: ingests metadata/snapshots/constraints, then enqueues scoped
-       `STATS_ONLY` follow-up jobs for discovered snapshots using table-scoped
-       `ScopedStatsRequest` entries (`table_id`, `snapshot_id`, `target_spec`,
-       `column_selectors`).
-- **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
-  Snapshot, Statistics, Directory, Connectors).
-- **`NameParts`** – Utility for parsing namespace/table names.
+  5. Handles incremental vs full-rescan logic.
+  6. Supports explicit capture modes:
+     - `METADATA_ONLY`: advances catalog, table, view, and snapshot metadata without capture.
+     - `CAPTURE_ONLY`: captures stats / index artifacts for explicitly scoped destination tables
+       without reconciling view metadata.
+     - `METADATA_AND_CAPTURE`: ingests metadata and runs capture for matching table work in the same
+       job tree.
+- **Lease executors**:
+  - `RemotePlannerReconcileExecutor` handles `PLAN_CONNECTOR`.
+  - `RemoteDefaultReconcileExecutor` handles `PLAN_TABLE` and `PLAN_VIEW`.
+  - `RemoteSnapshotPlanningReconcileExecutor` handles `PLAN_SNAPSHOT`.
+  - `RemoteFileGroupReconcileExecutor` handles `EXEC_FILE_GROUP`.
+  - `SnapshotFinalizeReconcileExecutor` handles `FINALIZE_SNAPSHOT_CAPTURE`.
+- **`GrpcClients`**: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
+  Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).
+- **`FloecatConnector`**: remains the only component allowed to touch upstream catalogs, table
+  metadata, and object storage. Reconcile planning and file-group execution both go through the
+  connector instance; reconcile does not use `ScanBundleService`.
 
 ## Public API / Surface Area
-While the reconciler itself runs as an internal Quarkus app, it exposes behaviour through the
+While the reconciler itself runs as an internal Quarkus app, it exposes behavior through the
 reconcile control RPCs:
-- `ReconcileControl.StartCapture(connector_id, full_rescan)` – Enqueues a top-level
-  `PLAN_CONNECTOR` job via `ReconcileJobStore`.
-- `ReconcileControl.CaptureNow(...)` – Uses the same split path, but waits for the aggregated
-  outcome of the top-level plan job plus any child `EXEC_TABLE` / `EXEC_VIEW` jobs.
-- `ReconcileControl.GetReconcileJob(job_id)` / `ListReconcileJobs(...)` – Expose both top-level and
-  child jobs. Plan jobs aggregate child counters for user-facing status reads.
 
-Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every second).
+- `ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)`: enqueues a
+  top-level `PLAN_CONNECTOR` job via `ReconcileJobStore`.
+- `ReconcileControl.CaptureNow(...)`: uses the same split path, but waits for the aggregated
+  outcome of the top-level plan job plus any child planning/execution jobs.
+- `ReconcileControl.GetReconcileJob(job_id)` / `ListReconcileJobs(...)`: expose both top-level and
+  child jobs. `PLAN_CONNECTOR` and `PLAN_SNAPSHOT` reads aggregate child counters for user-facing
+  status.
+
+Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default every second).
 
 ## Important Internal Details
-- **Destination binding** – When reconciling, the service ensures the connector’s declared
+- **Destination binding**: when reconciling, the service ensures the connector's declared
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
-- **Statistics ingestion** – Stats persistence is centralized behind the stats control-plane
-  (`StatsCaptureControlPlane` / orchestrator). `STATS_ONLY` runs route capture through registry
-  engines; `METADATA_AND_STATS` schedules those captures asynchronously via follow-up jobs.
-  Follow-up scope now carries table-scoped `ScopedStatsRequest` entries rather than separate
-  snapshot-id and target lists.
-  - When every capture request in a `STATS_ONLY` batch is non-captured, reconcile now fails the
-    table job instead of reporting a silent success with `statsProcessed=0`.
-  - When a batch is mixed, reconcile reports degraded success and preserves the non-captured
-    outcome summary in the result.
-- **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
-  `PutTableConstraints` after snapshot/stats handling.
-  - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
-    the current table reconcile, including when table stats were already captured.
-  - Constraints writes are repeatable/upsert-like: reconciler may rewrite the same
-    table+snapshot constraints on repeated runs (no separate "constraints already captured"
-    tracking is introduced here).
-  - Idempotency keys are derived from `SnapshotConstraints.toByteArray()` (byte-level,
-    order-sensitive payload hashing), not semantic normalization.
-- **Mode-aware behavior** – In `STATS_ONLY`, destination-table misses are treated as skip/no-op
-  rather than job-fatal errors, but capture-path failures are not: a table job fails if none of the
-  requested batch items are captured and degrades if only a subset succeeds.
-- **Plan failure behavior** – If a `PLAN_CONNECTOR` job fails or is cancelled after it already
-  enqueued some `EXEC_TABLE` / `EXEC_VIEW` children, the scheduler cancels those children.
-  User-facing plan job reads surface the parent failure/cancel state immediately rather than waiting
-  for queued/running children to drain.
-- **Scoped plan misses** – A destination namespace scope miss is treated as “no matching table
-  tasks” rather than a planner crash. If a scoped destination table filter matches nothing, the
-  planner still returns an explicit `No tables matched scope` failure so operators get a clear
-  diagnostic instead of a silent success.
-- **Split-phase view behavior** – In split mode, view tasks are planned once per top-level
-  `PLAN_CONNECTOR` job and executed as dedicated `EXEC_VIEW` children, not as part of child
-  `EXEC_TABLE` jobs. This avoids duplicate or skipped view updates while preserving per-view retry
-  and cancellation semantics.
-- **View reconciliation semantics** – Reconcile is current-state, not history-preserving. When an
+- **Statistics ingestion**: stats persistence is centralized behind the stats control plane
+  and the reconcile executor control plane. `CAPTURE_ONLY` routes capture planning through the
+  same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata
+  reconciliation and capture within the same planner/executor job tree. Remote file-group workers
+  submit file-target stats and staged index artifacts back through
+  `SubmitLeasedFileGroupExecutionResult`, and the service persists those results before
+  `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide aggregate stats.
+- **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
+  `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
+  explicit file-group coverage metadata required by `FINALIZE_SNAPSHOT_CAPTURE`. Child
+  `EXEC_FILE_GROUP` and `FINALIZE_SNAPSHOT_CAPTURE` jobs reference the parent plan by
+  `parentJobId`.
+- **File-group execution**:
+  - `EXEC_FILE_GROUP` resolves the parent snapshot plan, captures file-target stats, and records
+    per-file execution results on the child job payload.
+  - Snapshot-wide aggregate outputs are intentionally deferred to
+    `FINALIZE_SNAPSHOT_CAPTURE`, which acts as the barrier for complete snapshot capture.
+  - Sidecar generation and artifact registration happen per source parquet file.
+  - Service-side result submission persists only file-target stats from file-group workers;
+    aggregate table/column outputs are rejected from file-group completion and recomputed once at
+    snapshot finalization time.
+  - `SubmitLeasedFileGroupExecutionResult` requires `result_id`. The service records top-level
+    idempotency for the whole submit payload and per-item idempotency for individual stats/artifact
+    writes so worker retries can safely replay the same result.
+  - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,
+    `file_groups_failed`, `files_total`, `files_completed`, and `files_failed`.
+- **Index artifacts**:
+  - sidecars are parquet artifacts written by execution workers and registered through
+    `IndexArtifactRecord`.
+  - service-side lookup/list/read is exposed by `TableIndexService`.
+- **Connector security boundary**: all upstream I/O remains inside `FloecatConnector`.
+  `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native
+  snapshot file planning.
+- **Mode-aware behavior**:
+  - in `CAPTURE_ONLY`, destination-table misses are treated as skip/no-op rather than job-fatal
+    errors.
+  - `CAPTURE_ONLY` is table-scoped: view scope is rejected, and scoped capture requests must
+    resolve to explicit destination table IDs.
+  - in `METADATA_AND_CAPTURE`, planner/executor availability is validated up front based on scope:
+    table scope requires `PLAN_TABLE`, view scope requires `PLAN_VIEW`, and broad metadata reconcile
+    requires both.
+- **Plan failure behavior**: if a parent plan job fails or is cancelled after enqueuing child jobs,
+  the control plane cancels those children.
+- **View reconciliation semantics**: reconcile is current-state, not history-preserving. When an
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
-  place rather than appending a first-class backend version history.
-- **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
-  job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
-  success.
-- **Job leasing** – `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
-  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort interval.
-  Failed jobs are retried with backoff up to configured attempt limits before terminal failure.
-- **Durable pointer model** – Durable reconcile queue pointers (`/reconcile/jobs/by-id`,
-  `/accounts/by-id/reconcile/jobs/by-id`, `/accounts/by-id/reconcile/jobs/ready`, and
-  `/reconcile/dedupe`) are blob-backed and store the current reconcile job JSON blob URI. When a
-  job state transition writes a new canonical blob version, the store CAS-updates lookup/ready/dedupe
-  pointers to the same blob URI.
-- **GC ownership** – `ReconcileJobGc` remains responsible for reconcile lifecycle cleanup (terminal-state
-  queue/dedupe cleanup and retention-based deletion of old durable job records). `PointerGc` handles
-  structural orphan cleanup, but it does not enforce reconcile retention/state policy.
-  Terminal jobs are removed from active scheduling immediately, but their canonical records remain
-  queryable until reconcile-job retention expires and GC reaps them.
+  place rather than appending a backend version history.
+- **Job leasing**: `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
+  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort
+  interval. Failed jobs are retried with backoff up to configured attempt limits before terminal
+  failure.
 
-### Backend selection
-- `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
-  uses. Set it to `remote` when the reconciler runs as a separate process and must talk to the service
-  over gRPC. In remote mode the reconciler uses `floecat.reconciler.authorization.header`/`token` to send
-  an authorization header on every call. Per-request tokens supplied via `ReconcileContext` override the
-  static token, so the precedence is: request-scoped token → configured token → no header.
+### gRPC auth
+- Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
+  payload/result exchange.
+- `floecat.reconciler.authorization.header` / `token` configure the authorization header used on
+  worker-to-control-plane calls. Per-request tokens supplied via `ReconcileContext` override the
+  static token, so the precedence is request-scoped token, then configured token, then no header.
 
 ## Data Flow & Lifecycle
-```
-Connector StartCapture / CaptureNow → ReconcileJobStore.enqueuePlan
-  → ReconcilerScheduler.pollOnce
-      → jobs.leaseNext (returns account + connector IDs)
+```text
+Connector StartCapture / CaptureNow
+  → ReconcileJobStore.enqueue(PLAN_CONNECTOR)
+  → RemoteReconcileExecutorPoller.pollOnce
+      → leaseNext
       → markRunning
       → if PLAN_CONNECTOR:
           → ReconcilerService.planTableTasks / planViewTasks
-          → enqueue child EXEC_TABLE / EXEC_VIEW jobs
-      → if EXEC_TABLE:
-          → ReconcilerService.reconcile (capture mode on leased job)
-              → Connectors.GetConnector → ConnectorConfig
-              → Ensure destination catalog/namespace/table
-              → ConnectorFactory.create + try-with-resources
-                  → describe / enumerateSnapshots
-                  → ingest metadata/snapshots/constraints
-                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by scoped stats requests
-                  → (for STATS_ONLY) capture via stats control-plane/engine registry
-              → Update connector destination IDs if missing
-      → if EXEC_VIEW:
-          → ReconcilerService.reconcileView
-              → ConnectorFactory.create + try-with-resources
-                  → describeView (or listViewDescriptors fallback)
-                  → ensure destination namespace exists
-                  → create or update the destination view
+          → enqueue PLAN_TABLE / PLAN_VIEW children
+      → if PLAN_TABLE:
+          → ensure destination table metadata
+          → enumerate snapshots via FloecatConnector
+          → enqueue PLAN_SNAPSHOT children
+      → if PLAN_VIEW:
+          → describeView (or listViewDescriptors fallback)
+          → ensure destination namespace exists
+          → create or update the destination view
+      → if PLAN_SNAPSHOT:
+          → ask FloecatConnector for planned parquet file membership
+          → persist grouped file plan on parent job payload
+          → enqueue EXEC_FILE_GROUP children
+          → enqueue FINALIZE_SNAPSHOT_CAPTURE child
+      → if EXEC_FILE_GROUP:
+          → resolve parent PLAN_SNAPSHOT payload
+          → instantiate FloecatConnector
+          → capture file-target stats for planned files
+          → generate parquet sidecar index artifacts
+          → persist per-file execution results and artifact registrations
+      → if FINALIZE_SNAPSHOT_CAPTURE:
+          → validate explicit planned coverage metadata
+          → wait for all planned EXEC_FILE_GROUP children to succeed with persisted results
+          → verify exact file-target coverage in the stats store
+          → roll up snapshot-wide aggregate outputs
       → markSucceeded or markFailed
 ```
-Jobs include `fullRescan`, `executionPolicy`, `jobKind`, optional `tableTask`, and track
-`tablesScanned`, `tablesChanged`, `viewsScanned`, `viewsChanged`, and `errors`.
-`ReconcilerScheduler` uses an `AtomicBoolean` guard to prevent concurrent runs within the same
-instance.
+
+Jobs include `fullRescan`, `executionPolicy`, `jobKind`, and optional task payloads. Snapshot plan
+jobs, file-group jobs, and snapshot finalization jobs also surface file-group/file counters for
+current execution state.
+`RemoteReconcileExecutorPoller` uses `AtomicBoolean` and in-flight counters to avoid over-leasing
+within the same instance while continuing to repoll until worker slots are full.
 
 ## Configuration & Extensibility
 - Scheduling cadence via `reconciler.pollEvery` (defaults to `1s`).
+- Worker mode via `floecat.reconciler.worker.mode`:
+  - `local` runs the lease poller in the same JVM as the control plane.
+  - `remote` keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
+    `reconciler.max-parallelism=0` on control-plane-only nodes.
+- Worker capacity via `reconciler.max-parallelism`.
 - Job store selection:
   - `floecat.reconciler.job-store=durable` (service default) uses persisted queue records plus
     retry/lease tuning via:
     `floecat.reconciler.job-store.max-attempts`, `base-backoff-ms`, `max-backoff-ms`, `lease-ms`,
     `reclaim-interval-ms`, and `ready-scan-limit`.
   - `floecat.reconciler.job-store=memory` uses the in-memory queue implementation.
+- Executor toggles:
+  - `floecat.reconciler.executor.remote-default.enabled`
+  - `floecat.reconciler.executor.remote-planner.enabled`
+  - `floecat.reconciler.executor.remote-snapshot-planner.enabled`
+  - `floecat.reconciler.executor.remote-file-group.enabled`
+  - `FINALIZE_SNAPSHOT_CAPTURE` is handled by the service-local `SnapshotFinalizeReconcileExecutor`
+    and is not behind a separate feature toggle.
 - Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
   references must remain stable for `GetReconcileJob`).
-- Extend `ReconcilerService` to support partial selection (for example column filters) by inspecting
-  `SourceSelector.columns`.
-- Add health checks/metrics by tapping into `ReconcileJobStore` stats or `MeterRegistry` in the
-  scheduler.
+- Extend `FloecatConnector` to add richer snapshot planning or file execution behavior. Query scan
+  planning remains separate behind `ScanBundleService`.
 
 ## Examples & Scenarios
-- **Full rescan** – Operator triggers `connector trigger demo-glue --full`. The job store enqueues a
-  full scan, scheduler leases it, and runs the requested capture mode across the full upstream
-  history. The job transitions to `JS_SUCCEEDED` once the pass completes.
-- **Incremental run** – Without `--full`, `ReconcilerService` restricts its work to the connector’s
-  configured `source.table` (if set) and only ingests new snapshots (parents already known via
-  `SnapshotRepository`).
+- **Full metadata rescan**: operator triggers
+  `connector trigger demo-glue --full --mode metadata-only`. The job store enqueues a
+  full `PLAN_CONNECTOR` job, the worker poller leases it, and the reconciler walks connector
+  discovery and metadata planning across the full upstream history.
+- **Incremental capture run**: operator triggers
+  `connector trigger demo-glue --mode metadata-and-capture --capture stats`. The reconcile path
+  captures table/file/column stats for matching table work while still allowing metadata mutation.
+- **Incremental run**: without `--full`, `ReconcilerService` restricts its work to the connector's
+  configured `source.table` (if set) and only processes newly discovered snapshots.
 
 ## Cross-References
 - Connector SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
-- Service connector RPCs: [`docs/service.md`](service.md)
+- Service connector/query RPCs: [`docs/service.md`](service.md)
+- Rust file-group worker implementation guide:
+  [`docs/rust-remote-capture-executor.md`](rust-remote-capture-executor.md)
 - Concrete connectors: [`docs/connectors-iceberg.md`](connectors-iceberg.md),
   [`docs/connectors-delta.md`](connectors-delta.md)

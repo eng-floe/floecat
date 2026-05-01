@@ -22,7 +22,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
-import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -163,6 +162,42 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
+  void leaseRequestExecutorMatchingRespectsPinnedAndUnpinnedJobs() {
+    ReconcileJobStore.LeaseRequest emptyExecutors =
+        ReconcileJobStore.LeaseRequest.of(
+            java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), java.util.Set.of("remote"));
+    ReconcileJobStore.LeaseRequest wrongExecutor =
+        ReconcileJobStore.LeaseRequest.of(
+            java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+            java.util.Set.of("remote"),
+            java.util.Set.of("remote-b"));
+    ReconcileJobStore.LeaseRequest matchingExecutor =
+        ReconcileJobStore.LeaseRequest.of(
+            java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+            java.util.Set.of("remote"),
+            java.util.Set.of("remote-a"));
+    ReconcileExecutionPolicy policy =
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", Map.of());
+
+    assertThat(
+            emptyExecutors.matches(
+                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+        .isFalse();
+    assertThat(
+            wrongExecutor.matches(
+                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+        .isFalse();
+    assertThat(
+            matchingExecutor.matches(
+                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+        .isTrue();
+    assertThat(
+            emptyExecutors.matches(
+                policy, "", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+        .isTrue();
+  }
+
+  @Test
   void reportsWhetherJobKindHasEnabledExecutor() {
     ReconcileExecutorRegistry registry =
         new ReconcileExecutorRegistry(List.of(new TestExecutor("default", 1, true)));
@@ -194,7 +229,7 @@ class ReconcileExecutorRegistryTest {
         "acct",
         "connector",
         false,
-        CaptureMode.METADATA_AND_STATS,
+        CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
         executionPolicy,
         "lease-1",

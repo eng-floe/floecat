@@ -23,8 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -41,6 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,15 +47,14 @@ import io.grpc.Status;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class TableGatewaySupportTest {
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
-  private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
-  private final Config mpConfig = mock(Config.class);
+  private final IcebergGatewayConfig gatewayConfig = mock(IcebergGatewayConfig.class);
+  private final ConnectorIntegrationConfig connectorConfig = mock(ConnectorIntegrationConfig.class);
   private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
   private final ObjectMapper mapper = new ObjectMapper();
 
@@ -64,16 +62,15 @@ class TableGatewaySupportTest {
 
   @BeforeEach
   void setUp() {
-    when(config.metadataFileIo()).thenReturn(Optional.empty());
-    when(config.metadataFileIoRoot()).thenReturn(Optional.empty());
-    when(config.storageCredential()).thenReturn(Optional.empty());
-    when(config.defaultRegion()).thenReturn(Optional.empty());
-    when(config.catalogMapping()).thenReturn(Map.of());
-    when(config.registerConnectors()).thenReturn(Map.of());
-    when(mpConfig.getPropertyNames()).thenReturn(List.of());
-    when(mpConfig.getOptionalValue(anyString(), eq(String.class))).thenReturn(Optional.empty());
+    when(connectorConfig.metadataFileIo()).thenReturn(Optional.empty());
+    when(connectorConfig.metadataFileIoRoot()).thenReturn(Optional.empty());
+    when(connectorConfig.storageCredential()).thenReturn(Optional.empty());
+    when(connectorConfig.defaultRegion()).thenReturn(Optional.empty());
+    when(connectorConfig.registerConnectors()).thenReturn(Map.of());
+    when(connectorConfig.enabled()).thenReturn(true);
+    when(gatewayConfig.catalogMapping()).thenReturn(Map.of());
 
-    support = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    support = new TableGatewaySupport(grpc, gatewayConfig, connectorConfig, mapper, grpcClient);
   }
 
   @Test
@@ -130,29 +127,19 @@ class TableGatewaySupportTest {
 
   @Test
   void defaultTableConfigFiltersSecretsAndCachesResult() {
-    IcebergGatewayConfig.StorageCredentialConfig storage =
-        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    ConnectorIntegrationConfig.StorageCredentialConfig storage =
+        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
     when(storage.properties())
         .thenReturn(
             Map.of(
                 "s3.endpoint", " http://localhost:4566 ",
+                "s3.path-style-access", "true",
                 "s3.secret-key", "secret",
                 "region", "us-west-2"));
-    when(config.storageCredential()).thenReturn(Optional.of(storage));
-    when(config.metadataFileIo()).thenReturn(Optional.of("io.impl.Custom"));
-    when(config.metadataFileIoRoot()).thenReturn(Optional.of("/warehouse/root"));
-    when(config.defaultRegion()).thenReturn(Optional.of("us-east-1"));
-    when(mpConfig.getPropertyNames())
-        .thenReturn(
-            List.of(
-                "floecat.gateway.storage-credential.properties.s3.path-style-access",
-                "floecat.gateway.storage-credential.properties.s3.access-key-id"));
-    when(mpConfig.getOptionalValue(
-            "floecat.gateway.storage-credential.properties.s3.path-style-access", String.class))
-        .thenReturn(Optional.of("true"));
-    when(mpConfig.getOptionalValue(
-            "floecat.gateway.storage-credential.properties.s3.access-key-id", String.class))
-        .thenReturn(Optional.of("akid"));
+    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
+    when(connectorConfig.metadataFileIo()).thenReturn(Optional.of("io.impl.Custom"));
+    when(connectorConfig.metadataFileIoRoot()).thenReturn(Optional.of("/warehouse/root"));
+    when(connectorConfig.defaultRegion()).thenReturn(Optional.of("us-east-1"));
 
     Map<String, String> configMap = support.defaultTableConfig();
     Map<String, String> cached = support.defaultTableConfig();
@@ -180,11 +167,11 @@ class TableGatewaySupportTest {
 
   @Test
   void credentialsForAccessDelegationRequiresAndReturnsConfiguredCredentials() {
-    IcebergGatewayConfig.StorageCredentialConfig storage =
-        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    ConnectorIntegrationConfig.StorageCredentialConfig storage =
+        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
     when(storage.properties()).thenReturn(Map.of("s3.endpoint", "http://localhost:4566"));
     when(storage.scope()).thenReturn(Optional.of("tenant/*"));
-    when(config.storageCredential()).thenReturn(Optional.of(storage));
+    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
 
     IllegalArgumentException unsupported =
         assertThrows(
@@ -200,15 +187,16 @@ class TableGatewaySupportTest {
 
   @Test
   void resolveRegisterFileIoPropertiesMergesDefaultsAndRequestOverrides() {
-    IcebergGatewayConfig.StorageCredentialConfig storage =
-        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    ConnectorIntegrationConfig.StorageCredentialConfig storage =
+        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
     when(storage.properties())
         .thenReturn(
             Map.of(
                 "s3.endpoint", "http://localhost:4566",
                 "not-io", "ignored"));
-    when(config.storageCredential()).thenReturn(Optional.of(storage));
-    when(config.metadataFileIo()).thenReturn(Optional.of("org.apache.iceberg.aws.s3.S3FileIO"));
+    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
+    when(connectorConfig.metadataFileIo())
+        .thenReturn(Optional.of("org.apache.iceberg.aws.s3.S3FileIO"));
 
     Map<String, String> resolved =
         support.resolveRegisterFileIoProperties(
@@ -238,13 +226,13 @@ class TableGatewaySupportTest {
 
   @Test
   void connectorTemplateForReturnsDirectAndMappedTemplate() {
-    IcebergGatewayConfig.RegisterConnectorTemplate directTemplate =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    IcebergGatewayConfig.RegisterConnectorTemplate mappedTemplate =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    when(config.registerConnectors())
+    ConnectorIntegrationConfig.RegisterConnectorTemplate directTemplate =
+        mock(ConnectorIntegrationConfig.RegisterConnectorTemplate.class);
+    ConnectorIntegrationConfig.RegisterConnectorTemplate mappedTemplate =
+        mock(ConnectorIntegrationConfig.RegisterConnectorTemplate.class);
+    when(connectorConfig.registerConnectors())
         .thenReturn(Map.of("direct", directTemplate, "mapped", mappedTemplate));
-    when(config.catalogMapping()).thenReturn(Map.of("alias", "mapped"));
+    when(gatewayConfig.catalogMapping()).thenReturn(Map.of("alias", "mapped"));
 
     assertSame(directTemplate, support.connectorTemplateFor("direct"));
     assertSame(mappedTemplate, support.connectorTemplateFor("alias"));
@@ -356,25 +344,16 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void credentialsForAccessDelegationUsesPrefixedConfigAndScopeFallback() {
-    IcebergGatewayConfig.StorageCredentialConfig storage =
-        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
-    when(storage.properties()).thenReturn(Map.of());
-    when(storage.scope()).thenReturn(Optional.of(" "));
-    when(config.storageCredential()).thenReturn(Optional.of(storage));
-    when(mpConfig.getPropertyNames())
+  void credentialsForAccessDelegationUsesConfiguredScope() {
+    ConnectorIntegrationConfig.StorageCredentialConfig storage =
+        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
+    when(storage.properties())
         .thenReturn(
-            List.of(
-                "floecat.gateway.storage-credential.properties.s3.endpoint",
-                "floecat.gateway.storage-credential.properties.s3.region"));
-    when(mpConfig.getOptionalValue(
-            "floecat.gateway.storage-credential.properties.s3.endpoint", String.class))
-        .thenReturn(Optional.of("http://localhost:4566"));
-    when(mpConfig.getOptionalValue(
-            "floecat.gateway.storage-credential.properties.s3.region", String.class))
-        .thenReturn(Optional.of("us-east-1"));
-    when(mpConfig.getOptionalValue("floecat.gateway.storage-credential.scope", String.class))
-        .thenReturn(Optional.of("pref/*"));
+            Map.of(
+                "s3.endpoint", "http://localhost:4566",
+                "s3.region", "us-east-1"));
+    when(storage.scope()).thenReturn(Optional.of("pref/*"));
+    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
 
     List<StorageCredentialDto> credentials =
         support.credentialsForAccessDelegation("vended-credentials");
@@ -387,7 +366,7 @@ class TableGatewaySupportTest {
 
   @Test
   void connectorIntegrationEnabledReflectsConfig() {
-    when(config.connectorIntegrationEnabled()).thenReturn(true).thenReturn(false);
+    when(connectorConfig.enabled()).thenReturn(true).thenReturn(false);
     assertEquals(true, support.connectorIntegrationEnabled());
     assertEquals(false, support.connectorIntegrationEnabled());
   }

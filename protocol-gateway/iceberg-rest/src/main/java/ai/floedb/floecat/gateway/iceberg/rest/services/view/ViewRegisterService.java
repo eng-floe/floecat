@@ -19,10 +19,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -46,7 +46,7 @@ public class ViewRegisterService {
   @Inject ViewMetadataService viewMetadataService;
   @Inject TableGatewaySupport tableGatewaySupport;
   @Inject ObjectMapper mapper;
-  @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig config;
 
   public Response register(
       NamespaceRequestContext namespaceContext, String idempotencyKey, ViewRequests.Register req) {

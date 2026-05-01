@@ -47,15 +47,7 @@ class ProfilingPolicyIT {
     assertEquals("gc_pressure", meta.get("policyName"));
     assertEquals("gc_live_bytes", meta.get("policySignal"));
 
-    String metrics =
-        given()
-            .baseUri(metricsUrl.toString())
-            .when()
-            .get()
-            .then()
-            .statusCode(200)
-            .extract()
-            .asString();
+    String metrics = waitForPolicyMetrics();
     assertTrue(metrics.contains("floecat_profiling_captures_total"));
     assertTrue(metrics.contains("trigger=\"policy\""));
     assertTrue(metrics.contains("scope=\"policy\""));
@@ -78,5 +70,27 @@ class ProfilingPolicyIT {
       Thread.sleep(1000);
     }
     throw new AssertionError("policy capture never appeared");
+  }
+
+  private String waitForPolicyMetrics() throws InterruptedException {
+    for (int i = 0; i < 30; i++) {
+      String metrics =
+          given()
+              .baseUri(metricsUrl.toString())
+              .when()
+              .get()
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+      if (metrics.contains("floecat_profiling_captures_total")
+          && metrics.contains("trigger=\"policy\"")
+          && metrics.contains("scope=\"policy\"")
+          && metrics.contains("policy=\"gc_pressure\"")) {
+        return metrics;
+      }
+      Thread.sleep(1000);
+    }
+    throw new AssertionError("policy metrics never appeared");
   }
 }

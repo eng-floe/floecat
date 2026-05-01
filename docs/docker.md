@@ -90,13 +90,12 @@ Notes:
 - For a true split deployment, run `service` as the control plane by setting
   `QUARKUS_PROFILE_SERVICE=reconciler-control`. The compose file pins `executor` to
   `QUARKUS_PROFILE_EXECUTOR=reconciler-executor` by default. That keeps the public APIs,
-  durable queue ownership, and automatic scheduling on the `service` container while disabling
-  local execution there.
+  durable queue ownership, and automatic scheduling on the `service` container while setting
+  `reconciler.max-parallelism=0` there.
 - `executor` uses the same image but sets:
-  `FLOECAT_RECONCILER_SCHEDULER_ENABLED=false`,
-  `FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED=true`,
-  `FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED=true`,
-  `FLOECAT_RECONCILER_BACKEND=remote`,
+  `QUARKUS_PROFILE=reconciler-executor`,
+  `FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED=true`,
+  `FLOECAT_RECONCILER_WORKER_MODE=remote`,
   and `FLOECAT_RECONCILER_AUTO_ENABLED=false`.
 - `docker compose --scale executor=3` starts three identical executor replicas. Each replica
   connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
@@ -170,12 +169,15 @@ Common configuration knobs:
   `FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY`, `FLOECAT_STORAGE_AWS_S3_PATH_STYLE`.
 - **Gateway storage credentials**: `ICEBERG_STORAGE_SCOPE`, `ICEBERG_STORAGE_TYPE`,
   `ICEBERG_STORAGE_KEY_ID`, `ICEBERG_STORAGE_SECRET`, `ICEBERG_STORAGE_REGION`,
-  plus `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
-  `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
+  plus `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
+  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
 - **Reconciler split deployment**:
-  `FLOECAT_RECONCILER_SCHEDULER_ENABLED`, `FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED`,
-  `FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED`, `FLOECAT_RECONCILER_BACKEND`,
+  `FLOECAT_RECONCILER_WORKER_MODE`, `FLOECAT_RECONCILER_MAX_PARALLELISM`,
+  `FLOECAT_RECONCILER_REMOTE_DEFAULT_EXECUTOR_ENABLED`,
+  `FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED`,
+  `FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED`,
+  `FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN`,
   `QUARKUS_PROFILE_SERVICE`, `QUARKUS_PROFILE_EXECUTOR`.
 

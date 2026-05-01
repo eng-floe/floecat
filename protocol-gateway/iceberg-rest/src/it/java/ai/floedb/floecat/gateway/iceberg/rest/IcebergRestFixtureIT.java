@@ -28,12 +28,14 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
@@ -41,23 +43,38 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
-import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
-import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
+import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
+import ai.floedb.floecat.transaction.rpc.TxChange;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -84,7 +101,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -100,11 +116,6 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 
 @QuarkusTest
 @QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
@@ -311,9 +322,7 @@ class IcebergRestFixtureIT {
 
     Assertions.assertTrue(
         commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () ->
-            "persisted metadata should reside under fixture storage: "
-                + commitMetadataLocation);
+        () -> "persisted metadata should reside under fixture storage: " + commitMetadataLocation);
     assertFixtureObjectExists(
         commitMetadataLocation, "persisted metadata file should exist in fixture storage");
     given()
@@ -373,7 +382,8 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("requirements", List.of(), "updates", List.of(addSnapshotUpdate, setRefUpdate)))
+        .body(
+            Map.of("requirements", List.of(), "updates", List.of(addSnapshotUpdate, setRefUpdate)))
         .when()
         .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
         .then()
@@ -427,13 +437,7 @@ class IcebergRestFixtureIT {
 
     long wrongSnapshot = actualSnapshot == null ? 1L : actualSnapshot.longValue() + 1;
     Map<String, Object> assertRef =
-        Map.of(
-            "type",
-            "assert-ref-snapshot-id",
-            "ref",
-            "main",
-            "snapshot-id",
-            wrongSnapshot);
+        Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", wrongSnapshot);
 
     given()
         .spec(spec)
@@ -473,13 +477,110 @@ class IcebergRestFixtureIT {
     given()
         .spec(spec)
         .body(
-            Map.of(
-                "requirements", List.of(Map.of("type", "assert-create")), "updates", List.of()))
+            Map.of("requirements", List.of(Map.of("type", "assert-create")), "updates", List.of()))
         .when()
         .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
         .then()
         .statusCode(409)
         .body("error.type", equalTo("CommitFailedException"));
+  }
+
+  @Test
+  void competingCreateTransactionsReserveSingleTableName() {
+    String namespace = uniqueName("it_ns_");
+    String tableName = uniqueName("it_tbl_");
+    createNamespace(namespace);
+
+    ResourceId catalogId = resolveCatalogId();
+    ResourceId namespaceId = resolveNamespaceId(namespace);
+    String accountId = resolveSeedAccountId();
+    ResourceId winnerId = randomTableId(accountId);
+    ResourceId loserId = randomTableId(accountId);
+    Table winnerTable =
+        newCreateTableStub(winnerId, catalogId, namespaceId, tableName).toBuilder()
+            .putProperties("test-owner", "winner")
+            .build();
+    Table loserTable =
+        newCreateTableStub(loserId, catalogId, namespaceId, tableName).toBuilder()
+            .putProperties("test-owner", "loser")
+            .build();
+
+    try {
+      String winnerTxId =
+          withTransactionsClient(
+              stub ->
+                  stub.beginTransaction(BeginTransactionRequest.newBuilder().build())
+                      .getTransaction()
+                      .getTxId());
+      String loserTxId =
+          withTransactionsClient(
+              stub ->
+                  stub.beginTransaction(BeginTransactionRequest.newBuilder().build())
+                      .getTransaction()
+                      .getTxId());
+
+      var winnerPrepared =
+          withTransactionsClient(
+              stub ->
+                  stub.prepareTransaction(
+                      PrepareTransactionRequest.newBuilder()
+                          .setTxId(winnerTxId)
+                          .addChanges(createTableTxChange(winnerId, winnerTable))
+                          .build()));
+      Assertions.assertEquals(
+          TransactionState.TS_PREPARED, winnerPrepared.getTransaction().getState());
+
+      var loserPrepared =
+          withTransactionsClient(
+              stub ->
+                  stub.prepareTransaction(
+                      PrepareTransactionRequest.newBuilder()
+                          .setTxId(loserTxId)
+                          .addChanges(createTableTxChange(loserId, loserTable))
+                          .build()));
+      Assertions.assertEquals(
+          TransactionState.TS_PREPARED, loserPrepared.getTransaction().getState());
+
+      var winnerCommitted =
+          withTransactionsClient(
+              stub ->
+                  stub.commitTransaction(
+                      CommitTransactionRequest.newBuilder().setTxId(winnerTxId).build()));
+      Assertions.assertEquals(
+          TransactionState.TS_APPLIED, winnerCommitted.getTransaction().getState());
+
+      var loserCommitted =
+          withTransactionsClient(
+              stub ->
+                  stub.commitTransaction(
+                      CommitTransactionRequest.newBuilder().setTxId(loserTxId).build()));
+      Assertions.assertEquals(
+          TransactionState.TS_APPLY_FAILED_CONFLICT, loserCommitted.getTransaction().getState());
+
+      ResourceId resolvedId = resolveTableId(namespace, tableName);
+      Assertions.assertEquals(
+          winnerId.getId(), resolvedId.getId(), "by-name should resolve winner");
+
+      Table resolvedTable =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(resolvedId).build())
+                      .getTable());
+      Assertions.assertEquals(tableName, resolvedTable.getDisplayName());
+      Assertions.assertEquals("winner", resolvedTable.getPropertiesMap().get("test-owner"));
+
+      StatusRuntimeException loserLookupFailure =
+          Assertions.assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  withTableClient(
+                      stub ->
+                          stub.getTable(GetTableRequest.newBuilder().setTableId(loserId).build())));
+      Assertions.assertEquals(Status.Code.NOT_FOUND, loserLookupFailure.getStatus().getCode());
+    } finally {
+      deleteTableResource(namespace, tableName);
+      deleteNamespaceResource(namespace);
+    }
   }
 
   @Test
@@ -966,13 +1067,7 @@ class IcebergRestFixtureIT {
                 Map.entry("summary", Map.of("operation", "append"))));
 
     Map<String, Object> badRequirement =
-        Map.of(
-            "type",
-            "assert-ref-snapshot-id",
-            "ref",
-            "main",
-            "snapshot-id",
-            wrongSnapshotB);
+        Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", wrongSnapshotB);
 
     Map<String, Object> commitBody =
         Map.of(
@@ -1341,7 +1436,6 @@ class IcebergRestFixtureIT {
     throw new IOException("Fixture metadata not found for " + relativeMetadataPath);
   }
 
-
   private static String relativeMetadataPath(String location) {
     if (location == null || location.isBlank()) {
       return location;
@@ -1384,10 +1478,10 @@ class IcebergRestFixtureIT {
 
   private static boolean parseConnectorIntegration() {
     return ConfigProvider.getConfig()
-        .getOptionalValue("floecat.gateway.connector-integration-enabled", Boolean.class)
+        .getOptionalValue("floecat.connector.integration.enabled", Boolean.class)
         .orElseGet(
             () -> {
-              String raw = System.getProperty("floecat.gateway.connector-integration-enabled");
+              String raw = System.getProperty("floecat.connector.integration.enabled");
               if (raw == null || raw.isBlank()) {
                 raw = System.getenv("FLOECAT_GATEWAY_CONNECTOR_INTEGRATION_ENABLED");
               }
@@ -1564,8 +1658,7 @@ class IcebergRestFixtureIT {
           .then()
           .statusCode(200);
 
-      Map<String, Object> commitPayload =
-          new LinkedHashMap<>();
+      Map<String, Object> commitPayload = new LinkedHashMap<>();
       Map<String, Object> assertTableUuid = new LinkedHashMap<>();
       assertTableUuid.put("type", "assert-table-uuid");
       assertTableUuid.put("uuid", tableUuid);
@@ -1627,8 +1720,7 @@ class IcebergRestFixtureIT {
           commitNode.path("last-sequence-number").asLong() >= 1L,
           "last-sequence-number should be >= 1");
       Assertions.assertEquals(
-          snapshotId,
-          commitNode.path("refs").path("main").path("snapshot-id").asLong());
+          snapshotId, commitNode.path("refs").path("main").path("snapshot-id").asLong());
       Assertions.assertTrue(
           responseNode.path("metadata-location").asText("").contains("/metadata/"),
           "metadata-location should be populated");
@@ -1814,18 +1906,28 @@ class IcebergRestFixtureIT {
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
                             .setDestinationTableId(tableId.getId())
+                            .setCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
                             .build())
-                    .setMode(CaptureMode.CM_STATS_ONLY)
+                    .setMode(CaptureMode.CM_CAPTURE_ONLY)
                     .setFullRescan(true)
-                    .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(30).build())
+                    .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(60).build())
                     .build());
             stub.startCapture(
                 StartCaptureRequest.newBuilder()
                     .setScope(
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
+                            .setCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
                             .build())
-                    .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                    .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
                     .setFullRescan(true)
                     .build());
             return null;
@@ -1854,49 +1956,44 @@ class IcebergRestFixtureIT {
       List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStats =
           awaitColumnStats(tableId, current, Duration.ofSeconds(30));
       Assertions.assertFalse(columnStats.isEmpty(), "Column statistics must be available");
-      columnStats
-          .forEach(
-              col -> {
-                Assertions.assertNotNull(col.getDisplayName(), "Column name should be set");
-                Assertions.assertFalse(col.getDisplayName().isBlank(), "Column name should be set");
+      columnStats.forEach(
+          col -> {
+            Assertions.assertNotNull(col.getDisplayName(), "Column name should be set");
+            Assertions.assertFalse(col.getDisplayName().isBlank(), "Column name should be set");
+            Assertions.assertFalse(
+                col.getLogicalType().isBlank(),
+                () -> "Logical type should be populated for " + col.getDisplayName());
+            if (col.hasNdv()) {
+              Assertions.assertTrue(
+                  col.getNdv().hasApprox() || col.getNdv().hasExact(),
+                  () -> "NDV should contain exact or approx estimate for " + col.getDisplayName());
+              if (col.getNdv().hasApprox()) {
+                var approx = col.getNdv().getApprox();
+                Assertions.assertTrue(
+                    approx.getEstimate() > 0.0d,
+                    () -> "Approximate NDV must be positive for " + col.getDisplayName());
+                Assertions.assertTrue(
+                    approx.getRowsSeen() > 0,
+                    () -> "rows-seen must be positive for " + col.getDisplayName());
+                Assertions.assertTrue(
+                    approx.getRowsTotal() >= approx.getRowsSeen(),
+                    () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
                 Assertions.assertFalse(
-                    col.getLogicalType().isBlank(),
-                    () -> "Logical type should be populated for " + col.getDisplayName());
-                if (col.hasNdv()) {
-                  Assertions.assertTrue(
-                      col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                      () ->
-                          "NDV should contain exact or approx estimate for "
-                              + col.getDisplayName());
-                  if (col.getNdv().hasApprox()) {
-                    var approx = col.getNdv().getApprox();
-                    Assertions.assertTrue(
-                        approx.getEstimate() > 0.0d,
-                        () -> "Approximate NDV must be positive for " + col.getDisplayName());
-                    Assertions.assertTrue(
-                        approx.getRowsSeen() > 0,
-                        () -> "rows-seen must be positive for " + col.getDisplayName());
-                    Assertions.assertTrue(
-                        approx.getRowsTotal() >= approx.getRowsSeen(),
-                        () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
-                    Assertions.assertFalse(
-                        approx.getMethod().isBlank(),
-                        () -> "NDV method must be set for " + col.getDisplayName());
-                  }
-                  Assertions.assertFalse(
-                      col.getNdv().getSketchesList().isEmpty(),
-                      () -> "Sketch metadata must be present for " + col.getDisplayName());
-                  col.getNdv()
-                      .getSketchesList()
-                      .forEach(
-                          sketch ->
-                              Assertions.assertFalse(
-                                  sketch.getType().isBlank(),
-                                  () ->
-                                      "Sketch type must be set for column "
-                                          + col.getDisplayName()));
-                }
-              });
+                    approx.getMethod().isBlank(),
+                    () -> "NDV method must be set for " + col.getDisplayName());
+              }
+              Assertions.assertFalse(
+                  col.getNdv().getSketchesList().isEmpty(),
+                  () -> "Sketch metadata must be present for " + col.getDisplayName());
+              col.getNdv()
+                  .getSketchesList()
+                  .forEach(
+                      sketch ->
+                          Assertions.assertFalse(
+                              sketch.getType().isBlank(),
+                              () -> "Sketch type must be set for column " + col.getDisplayName()));
+            }
+          });
     }
   }
 
@@ -1987,12 +2084,7 @@ class IcebergRestFixtureIT {
 
     registerTable(namespace, table, METADATA_V3, false);
 
-    Map<String, Object> commitRequest =
-        Map.of(
-            "requirements",
-            List.of(),
-            "updates",
-            List.of());
+    Map<String, Object> commitRequest = Map.of("requirements", List.of(), "updates", List.of());
 
     String commitMetadataLocation =
         given()
@@ -2010,8 +2102,7 @@ class IcebergRestFixtureIT {
     Assertions.assertNotNull(commitMetadataLocation, "metadata-location should be populated");
     Assertions.assertTrue(
         commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () ->
-            "metadata-location should reside under fixture storage: " + commitMetadataLocation);
+        () -> "metadata-location should reside under fixture storage: " + commitMetadataLocation);
     String fileName = commitMetadataLocation.substring(commitMetadataLocation.lastIndexOf('/') + 1);
     Assertions.assertTrue(
         fileName.contains("-"), "materialized metadata file should include a version prefix");
@@ -2020,8 +2111,7 @@ class IcebergRestFixtureIT {
         ensurePromotedMetadata(fetchTablePropertyMetadataLocation(namespace, table));
     Assertions.assertTrue(
         persistedLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () ->
-            "persisted metadata should be stored under fixture storage: " + persistedLocation);
+        () -> "persisted metadata should be stored under fixture storage: " + persistedLocation);
     Assertions.assertTrue(
         persistedLocation.endsWith(".metadata.json"),
         "persisted metadata should be an Iceberg metadata file");
@@ -2099,13 +2189,6 @@ class IcebergRestFixtureIT {
     return responseLocation;
   }
 
-  private String fixtureMetadataTarget(String namespace, String table) {
-    return TestS3Fixtures.bucketUri(
-        String.format(
-            "metadata/%s/%s/00000-00000000-0000-0000-0000-000000000000.metadata.json",
-            namespace, table));
-  }
-
   private String fetchMetadataLocation(String namespace, String table) {
     return given()
         .spec(spec)
@@ -2122,8 +2205,7 @@ class IcebergRestFixtureIT {
     Table tableRecord =
         withTableClient(
             stub ->
-                stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
-                    .getTable());
+                stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
     if (tableRecord == null) {
       return null;
     }
@@ -2331,121 +2413,36 @@ class IcebergRestFixtureIT {
     return key.isEmpty() ? TEST_S3_ROOT.resolve(bucket) : TEST_S3_ROOT.resolve(bucket).resolve(key);
   }
 
-  private Map<String, Object> stageCreateRequest(String table, String namespace) {
-    String stagedMetadataLocation = TestS3Fixtures.stageTableUri(namespace, table, METADATA_V3);
-    Map<String, Object> request = new LinkedHashMap<>();
-    request.put("name", table);
-    request.put("schema", fixtureSchema());
-    request.put("partition-spec", fixturePartitionSpec());
-    request.put("write-order", fixtureWriteOrder());
-    Map<String, Object> props = new LinkedHashMap<>(fixtureIoProperties());
-    props.put("metadata-location", stagedMetadataLocation);
-    request.put("properties", props);
-    request.put("location", String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table));
-    request.put("stage-create", true);
-    return request;
+  private TxChange createTableTxChange(ResourceId tableId, Table table) {
+    return TxChange.newBuilder()
+        .setTableId(tableId)
+        .setTable(table)
+        .setPrecondition(Precondition.newBuilder().setExpectedVersion(0L))
+        .build();
   }
 
-  private Map<String, Object> fixtureSchema() {
-    if (fixtureSchemaJson == null || fixtureSchemaJson.isBlank()) {
-      throw new IllegalStateException("Fixture schema JSON is required");
-    }
-    try {
-      @SuppressWarnings("unchecked")
-      Map<String, Object> schema =
-          MAPPER.readValue(fixtureSchemaJson, Map.class);
-      if (fixtureSchemaId != null) {
-        schema.putIfAbsent("schema-id", fixtureSchemaId);
-      }
-      if (fixtureLastColumnId != null) {
-        schema.putIfAbsent("last-column-id", fixtureLastColumnId);
-      }
-      return schema;
-    } catch (IOException e) {
-      throw new IllegalStateException("Failed to parse fixture schema JSON", e);
-    }
+  private Table newCreateTableStub(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId, String tableName) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setDisplayName(tableName)
+        .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(System.currentTimeMillis()))
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .build())
+        .build();
   }
 
-  private Map<String, Object> fixturePartitionSpec() {
-    if (fixtureMetadata == null) {
-      throw new IllegalStateException("Fixture metadata is required");
-    }
-    int targetId = fixtureDefaultSpecId == null ? fixtureMetadata.defaultSpecId() : fixtureDefaultSpecId;
-    var spec =
-        fixtureMetadata.specs().stream()
-            .filter(s -> s.specId() == targetId)
-            .findFirst()
-            .orElseThrow(() -> new IllegalStateException("Default partition spec not found"));
-    List<Map<String, Object>> fields =
-        spec.fields().stream()
-            .map(
-                field -> {
-                  Map<String, Object> entry = new LinkedHashMap<>();
-                  entry.put("name", field.name());
-                  entry.put("field-id", field.fieldId());
-                  entry.put("source-id", field.sourceId());
-                  entry.put("transform", field.transform().toString());
-                  return entry;
-                })
-            .collect(Collectors.toList());
-    Map<String, Object> payload = new LinkedHashMap<>();
-    payload.put("spec-id", spec.specId());
-    payload.put("fields", fields);
-    return payload;
-  }
-
-  private Map<String, Object> fixtureWriteOrder() {
-    if (fixtureMetadata == null) {
-      throw new IllegalStateException("Fixture metadata is required");
-    }
-    int targetId =
-        fixtureDefaultSortOrderId == null
-            ? fixtureMetadata.defaultSortOrderId()
-            : fixtureDefaultSortOrderId;
-    var order =
-        fixtureMetadata.sortOrders().stream()
-            .filter(o -> o.orderId() == targetId)
-            .findFirst()
-            .orElseThrow(() -> new IllegalStateException("Default sort order not found"));
-    List<Map<String, Object>> fields =
-        order.fields().stream()
-            .map(
-                field -> {
-                  Map<String, Object> entry = new LinkedHashMap<>();
-                  entry.put("source-id", field.sourceId());
-                  entry.put("transform", field.transform().toString());
-                  entry.put("direction", field.direction().name().toLowerCase(Locale.ROOT));
-                  entry.put(
-                      "null-order",
-                      field.nullOrder().name().toLowerCase(Locale.ROOT).replace('_', '-'));
-                  return entry;
-                })
-            .collect(Collectors.toList());
-    Map<String, Object> payload = new LinkedHashMap<>();
-    payload.put("order-id", order.orderId());
-    payload.put("fields", fields);
-    return payload;
-  }
-
-  private Connector awaitConnectorForTable(String namespace, String table, Duration timeout) {
-    long deadline = System.nanoTime() + timeout.toNanos();
-    while (System.nanoTime() < deadline) {
-      Connector connector = findConnectorBySourceSelection(namespace, table);
-      if (connector == null) {
-        connector = findConnectorViaTableUpstream(namespace, table);
-      }
-      if (connector != null) {
-        return connector;
-      }
-      try {
-        TimeUnit.MILLISECONDS.sleep(200);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
-    }
-    Assertions.fail("Timed out waiting for connector for " + namespace + "." + table);
-    return null;
+  private ResourceId randomTableId(String accountId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setId("tbl-" + UUID.randomUUID())
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
   }
 
   private Connector awaitConnectorById(ResourceId connectorId, Duration timeout) {
@@ -2480,54 +2477,6 @@ class IcebergRestFixtureIT {
     return null;
   }
 
-  private Connector findConnectorBySourceSelection(String namespace, String table) {
-    return withConnectorsClient(
-        stub -> {
-          ListConnectorsResponse response =
-              stub.listConnectors(ListConnectorsRequest.newBuilder().build());
-          return response.getConnectorsList().stream()
-              .filter(
-                  c ->
-                      table.equals(c.getSource().getTable())
-                          && namespace.equals(
-                              String.join(".", c.getSource().getNamespace().getSegmentsList())))
-              .findFirst()
-              .orElse(null);
-        });
-  }
-
-  private Connector findConnectorViaTableUpstream(String namespace, String table) {
-    try {
-      ResourceId tableId = resolveTableId(namespace, table);
-      if (tableId == null || tableId.getId().isBlank()) {
-        return null;
-      }
-      Table tableRecord =
-          withTableClient(
-              stub ->
-                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
-      if (tableRecord == null
-          || !tableRecord.hasUpstream()
-          || !tableRecord.getUpstream().hasConnectorId()) {
-        return null;
-      }
-      ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
-      if (connectorId == null || connectorId.getId().isBlank()) {
-        return null;
-      }
-      return withConnectorsClient(
-          stub ->
-              stub.getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
-                  .getConnector());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND
-          || e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-        return null;
-      }
-      throw e;
-    }
-  }
-
   private <S extends AbstractBlockingStub<S>, T> T withServiceClient(
       String serviceName, Function<ManagedChannel, S> stubFactory, Function<S, T> fn) {
     parseUpstreamTarget();
@@ -2560,8 +2509,7 @@ class IcebergRestFixtureIT {
 
   private <T> T withReconcileControlClient(
       Function<ReconcileControlGrpc.ReconcileControlBlockingStub, T> fn) {
-    return withServiceClient(
-        "ReconcileControl", ReconcileControlGrpc::newBlockingStub, fn);
+    return withServiceClient("ReconcileControl", ReconcileControlGrpc::newBlockingStub, fn);
   }
 
   private <T> T withDirectoryClient(
@@ -2579,7 +2527,8 @@ class IcebergRestFixtureIT {
     try {
       AccountServiceGrpc.AccountServiceBlockingStub accounts =
           AccountServiceGrpc.newBlockingStub(channel);
-      ListAccountsResponse response = accounts.listAccounts(ListAccountsRequest.getDefaultInstance());
+      ListAccountsResponse response =
+          accounts.listAccounts(ListAccountsRequest.getDefaultInstance());
       List<Account> accountsList = response.getAccountsList();
       if (accountsList.isEmpty()) {
         throw new IllegalStateException("No accounts returned by service");
@@ -2608,6 +2557,20 @@ class IcebergRestFixtureIT {
   private <T> T withStatisticsClient(
       Function<TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub, T> fn) {
     return withServiceClient("Statistics", TableStatisticsServiceGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withTransactionsClient(Function<TransactionsGrpc.TransactionsBlockingStub, T> fn) {
+    return withServiceClient("Transactions", TransactionsGrpc::newBlockingStub, fn);
+  }
+
+  private ResourceId resolveCatalogId() {
+    return withDirectoryClient(
+            stub ->
+                stub.resolveCatalog(
+                    ResolveCatalogRequest.newBuilder()
+                        .setRef(NameRef.newBuilder().setCatalog(CATALOG).build())
+                        .build()))
+        .getResourceId();
   }
 
   private ResourceId resolveTableId(String namespace, String table) {

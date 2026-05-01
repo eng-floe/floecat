@@ -84,6 +84,19 @@ class FloecatConnectorDefaultChainTest {
     }
 
     @Override
+    public FileGroupCaptureResult capturePlannedFileGroup(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
+        Set<String> plannedFilePaths,
+        Set<String> includeColumns,
+        Set<StatsTargetKind> includeTargetKinds,
+        boolean captureIndexes) {
+      return FileGroupCaptureResult.empty();
+    }
+
+    @Override
     public void close() {}
 
     // Overrides only listViews() + describeView(); listViewDescriptors() uses the default chain.

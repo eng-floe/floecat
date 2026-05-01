@@ -30,6 +30,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ConnectorPlanningSupport;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
+import ai.floedb.floecat.connector.common.ParquetPageIndexReader;
+import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
@@ -175,7 +177,74 @@ abstract class DeltaConnector implements FloecatConnector {
       return List.of();
     }
     return buildTargetStats(
-        tableRoot, destinationTableId, includeColumns, snapshotId, snapshot, includeTargetKinds);
+        tableRoot,
+        destinationTableId,
+        includeColumns,
+        snapshotId,
+        snapshot,
+        includeTargetKinds,
+        Set.of());
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes) {
+    if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
+      return FileGroupCaptureResult.empty();
+    }
+    final String tableRoot = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      return FileGroupCaptureResult.empty();
+    }
+    List<TargetStatsRecord> stats =
+        buildTargetStats(
+            tableRoot,
+            destinationTableId,
+            includeColumns,
+            snapshotId,
+            snapshot,
+            includeTargetKinds == null || includeTargetKinds.isEmpty()
+                ? Set.of(StatsTargetKind.FILE)
+                : includeTargetKinds,
+            plannedFilePaths);
+    List<ParquetPageIndexEntry> pageIndexEntries =
+        captureIndexes
+            ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
+            : List.of();
+    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+  }
+
+  @Override
+  public Optional<SnapshotFilePlan> planSnapshotFiles(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    final String tableRoot = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+
+    try (var planner =
+        new DeltaPlanner(
+            engine, parquetInput, tableRoot, snapshotId, Set.of(), Set.of(), null, null, false)) {
+      List<SnapshotFileEntry> dataFiles = new ArrayList<>();
+      for (PlannedFile<String> planned : planner) {
+        dataFiles.add(toDataScanFile(planned));
+      }
+      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), List.of()));
+    }
   }
 
   @Override
@@ -238,6 +307,19 @@ abstract class DeltaConnector implements FloecatConnector {
     return Map.copyOf(merged);
   }
 
+  private static SnapshotFileEntry toDataScanFile(PlannedFile<String> planned) {
+    return new SnapshotFileEntry(
+        planned.path(),
+        planned.format(),
+        planned.sizeBytes(),
+        planned.rowCount(),
+        FileContent.FC_DATA,
+        planned.partitionDataJson(),
+        planned.partitionSpecId(),
+        List.of(),
+        planned.sequenceNumber());
+  }
+
   protected Table loadTable(String tableRoot) {
     return Table.forPath(engine, tableRoot);
   }
@@ -292,6 +374,7 @@ abstract class DeltaConnector implements FloecatConnector {
       String tableRoot,
       long version,
       Set<String> includeNames,
+      Set<String> plannedFilePaths,
       Map<String, LogicalType> nameToType) {
 
     NdvProvider bootstrap = null;
@@ -314,6 +397,7 @@ abstract class DeltaConnector implements FloecatConnector {
             tableRoot,
             version,
             includeNames,
+            plannedFilePaths,
             nameToType,
             ndvProvider,
             true)) {
@@ -390,7 +474,8 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<String> includeColumns,
       long version,
       Snapshot snapshot,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -409,7 +494,7 @@ abstract class DeltaConnector implements FloecatConnector {
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-    EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
+    EngineOut engineOut = runEngine(tableRoot, version, includeNames, plannedFilePaths, nameToType);
     if (engineOut.hasInlineDeletionVectors()) {
       throw new UnsupportedOperationException(
           "Delta table uses inline deletion vectors; not supported for snapshot " + version);

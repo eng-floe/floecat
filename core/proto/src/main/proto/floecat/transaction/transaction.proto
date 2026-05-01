@@ -19,6 +19,7 @@ option java_package = "ai.floedb.floecat.transaction.rpc";
 
 import "floecat/common/common.proto";
 import "floecat/catalog/table.proto";
+import "floecat/connector/connector.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
 
@@ -71,10 +72,21 @@ message TxChange {
     // Optional: use a previously staged blob URI for the target pointer.
     string intended_blob_uri = 11;
     ai.floedb.floecat.catalog.Table table = 12;
+    ai.floedb.floecat.connector.Connector connector = 13;
+    ConnectorProvisioning connector_provisioning = 14;
   }
 
   // Optimistic checks for the target resource.
   ai.floedb.floecat.common.Precondition precondition = 20;
+}
+
+message ConnectorProvisioning {
+  string connector_uri = 1;
+  repeated string source_namespace_path = 2;
+  string source_table_name = 3;
+  string display_name = 4;
+  string description = 5;
+  map<string,string> properties = 6;
 }
 
 message PrepareTransactionRequest {

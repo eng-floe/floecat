@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -153,6 +154,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  TableIndexServiceGrpc.TableIndexServiceBlockingStub indexes;
+
+  @Inject
+  @GrpcClient("floecat")
   TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
 
   @Inject
@@ -225,6 +230,7 @@ public class Shell implements Runnable {
               .reconcileControl(reconcileControl)
               .snapshots(snapshots)
               .statistics(statistics)
+              .indexes(indexes)
               .constraintsService(constraintsService)
               .queries(queries)
               .queryScan(queryScan)
@@ -501,6 +507,7 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats index <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json] (defaults to current snapshot)
          constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
          constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]      (replace bundle)
@@ -514,7 +521,9 @@ public class Shell implements Runnable {
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-stats|stats-only]
+         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
+             [--capture stats|table-stats|file-stats|column-stats|index,...]
+             # Defaults to --mode capture-only --capture stats.
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -543,7 +552,9 @@ public class Shell implements Runnable {
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
-             [--mode metadata-only|metadata-and-stats|stats-only]
+             [--mode metadata-only|metadata-and-capture|capture-only]
+             [--capture stats|table-stats|file-stats|column-stats|index,...]
+             # --mode is required. --capture is required for capture modes.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--snapshot <id>|--current] [--columns c1,#id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
@@ -620,6 +631,7 @@ public class Shell implements Runnable {
     tables = TableServiceGrpc.newBlockingStub(overrideChannel);
     directory = DirectoryServiceGrpc.newBlockingStub(overrideChannel);
     statistics = TableStatisticsServiceGrpc.newBlockingStub(overrideChannel);
+    indexes = TableIndexServiceGrpc.newBlockingStub(overrideChannel);
     constraintsService = TableConstraintsServiceGrpc.newBlockingStub(overrideChannel);
     snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
     viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
@@ -722,6 +734,7 @@ public class Shell implements Runnable {
     tables = tables.withInterceptors(authInterceptor);
     directory = directory.withInterceptors(authInterceptor);
     statistics = statistics.withInterceptors(authInterceptor);
+    indexes = indexes.withInterceptors(authInterceptor);
     constraintsService = constraintsService.withInterceptors(authInterceptor);
     snapshots = snapshots.withInterceptors(authInterceptor);
     viewService = viewService.withInterceptors(authInterceptor);

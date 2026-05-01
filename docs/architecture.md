@@ -57,10 +57,9 @@ The following modules compose the system (see linked docs for deep dives):
    repository APIs, and records incremental NDV, histograms, and scan manifests. Reconcile execution
    is mode-split:
    - `METADATA_ONLY` for table/snapshot state
-   - `STATS_ONLY` for stats enrichment only (via stats control-plane / engine registry), with
+   - `CAPTURE_ONLY` for stats enrichment only (via stats control-plane / engine registry), with
      failure on fully non-captured batches and degraded success on partial capture
-   - `METADATA_AND_STATS` for metadata ingest plus queued `STATS_ONLY` follow-up capture using
-     table-scoped stats requests
+   - `METADATA_AND_CAPTURE` for metadata ingest plus capture using table-scoped capture requests
 3. The **Service** exposes CRUD RPCs for catalogs/namespaces/tables/views, plus query-lifecycle and
    statistics APIs. Requests traverse interceptors that inject `PrincipalContext`, correlation IDs,
    and optional query leases before hitting service implementations.
@@ -73,5 +72,5 @@ The following modules compose the system (see linked docs for deep dives):
 
 - **Core table state (single-table commit):** synchronous request path updates table/snapshot state
   before returning success.
-- **Post-core side effects (connector/snapshot sync actions):** best-effort after commit apply and not part of atomic commit state.
+- **Post-core side effects (connector/snapshot sync actions):** best-effort after commit apply and not part of atomic commit state. This includes gateway-triggered service-side `CAPTURE_ONLY` stats bootstrap for managed REST connectors tagged with `floecat.connector.mode=capture-only`.
 - **Multi-table transaction endpoint:** request-level atomic apply through backend transactions, with idempotent replay and optimistic preconditions.

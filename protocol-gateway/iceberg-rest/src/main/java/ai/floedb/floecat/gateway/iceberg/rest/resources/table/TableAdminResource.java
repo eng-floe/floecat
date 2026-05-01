@@ -21,6 +21,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
@@ -38,15 +39,14 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import org.eclipse.microprofile.config.Config;
 
 @Path("/v1/{prefix}")
 @Produces(MediaType.APPLICATION_JSON)
 public class TableAdminResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig connectorConfig;
   @Inject ObjectMapper mapper;
-  @Inject Config mpConfig;
   @Inject TableRenameService tableRenameService;
   @Inject TransactionCommitService transactionCommitService;
   @Inject CommitTrafficLogger commitTrafficLogger;
@@ -55,7 +55,7 @@ public class TableAdminResource {
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
   }
 
   @Path("/tables/rename")

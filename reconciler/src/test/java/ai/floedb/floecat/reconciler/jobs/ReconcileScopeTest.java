@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcileScopeTest {
@@ -44,25 +45,42 @@ class ReconcileScopeTest {
   }
 
   @Test
-  void storesExplicitStatsRequests() {
+  void storesExplicitCaptureRequests() {
     ReconcileScope scope =
         ReconcileScope.of(
             List.of(),
             TABLE_ID,
             List.of(
-                scopedStatsRequest(TABLE_ID, 10L, "table", List.of()),
-                scopedStatsRequest(TABLE_ID, 11L, "column:7", List.of())));
+                scopedCaptureRequest(TABLE_ID, 10L, "table", List.of()),
+                scopedCaptureRequest(TABLE_ID, 11L, "column:7", List.of())));
 
-    assertTrue(scope.hasStatsRequestFilter());
+    assertTrue(scope.hasCaptureRequestFilter());
     assertEquals(
         List.of(
-            scopedStatsRequest(TABLE_ID, 10L, "table", List.of()),
-            scopedStatsRequest(TABLE_ID, 11L, "column:7", List.of())),
-        scope.destinationStatsRequests());
+            scopedCaptureRequest(TABLE_ID, 10L, "table", List.of()),
+            scopedCaptureRequest(TABLE_ID, 11L, "column:7", List.of())),
+        scope.destinationCaptureRequests());
   }
 
-  private static ReconcileScope.ScopedStatsRequest scopedStatsRequest(
+  @Test
+  void storesCapturePolicy() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("c1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+
+    assertTrue(scope.hasCapturePolicy());
+    assertEquals(policy.columns(), scope.capturePolicy().columns());
+    assertEquals(policy.outputs(), scope.capturePolicy().outputs());
+  }
+
+  private static ReconcileScope.ScopedCaptureRequest scopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
-    return new ReconcileScope.ScopedStatsRequest(tableId, snapshotId, targetSpec, columnSelectors);
+    return new ReconcileScope.ScopedCaptureRequest(
+        tableId, snapshotId, targetSpec, columnSelectors);
   }
 }

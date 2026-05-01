@@ -28,6 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -46,7 +47,6 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;
-import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -55,8 +55,8 @@ public class StageCommitProcessor {
 
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
+  @Inject ConnectorIntegrationConfig connectorConfig;
   @Inject ObjectMapper mapper;
-  @Inject Config mpConfig;
   @Inject StagedTableService stagedTableService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
@@ -65,7 +65,7 @@ public class StageCommitProcessor {
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
   }
 
   public StageCommitResult commitStage(

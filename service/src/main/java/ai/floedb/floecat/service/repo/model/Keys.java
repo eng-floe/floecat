@@ -30,6 +30,7 @@ public final class Keys {
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
   public static final String SEG_TARGET_STATS = "/target-stats/";
+  public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
   public static final String SEG_FILE_STATS = "/file-stats/";
   public static final String SEG_CONSTRAINTS = "/constraints/";
   public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
@@ -477,6 +478,49 @@ public final class Keys {
     return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(prefix);
   }
 
+  public static String snapshotIndexArtifactDirectoryPointer(
+      String accountId, String tableId, long snapshotId) {
+    return String.format(
+        "/accounts/%s/tables/%s/snapshots/%019d/index-artifacts/",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        reqNonNegative("snapshot_id", snapshotId));
+  }
+
+  public static String snapshotIndexArtifactPointer(
+      String accountId, String tableId, long snapshotId, String targetId) {
+    String target = req("target_id", targetId);
+    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId) + encode(target);
+  }
+
+  public static String snapshotIndexArtifactBlobUri(
+      String accountId, String tableId, String targetId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String target = req("target_id", targetId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/index-artifacts/%s/%s.pb",
+        encode(tid), encode(tbid), encode(target), encode(sha));
+  }
+
+  public static String snapshotIndexArtifactsPrefix(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId);
+  }
+
+  public static String snapshotIndexSidecarBlobUri(
+      String accountId, String tableId, long snapshotId, String targetId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String target = req("target_id", targetId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
+        encode(tid), encode(tbid), sid, encode(target), encode(sha));
+  }
+
   public static String snapshotFileStatsDirectoryPointer(
       String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "files/";
@@ -780,6 +824,15 @@ public final class Keys {
   public static String reconcileDedupePointerPrefix(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
+  }
+
+  public static String reconcileSnapshotLeasePointer(String tableId, long snapshotId) {
+    String tid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return "/accounts/by-id/reconcile/snapshot-leases/"
+        + encode(tid)
+        + "/"
+        + String.format("%019d", sid);
   }
 
   public static String reconcileLaneLeasePointer(String accountId, String laneKey) {
