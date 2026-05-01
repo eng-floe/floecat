@@ -784,6 +784,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../transactions/" class="md-nav__link">
         
   
@@ -1803,7 +1826,7 @@ layer for:</p>
 <li><code>StatsOrchestrator</code> is the internal resolution entrypoint for planner/query reads.</li>
 <li><code>StatsEngineRegistry</code> handles capability/priority engine selection for compute capture.</li>
 <li><code>StatsCaptureControlPlane</code> is the explicit capture entrypoint for control-plane callers
-  (for example reconciler <code>STATS_ONLY</code> routing); current service implementation delegates to
+  (for example reconciler <code>CAPTURE_ONLY</code> routing); current service implementation delegates to
   <code>StatsOrchestrator.triggerBatch(batchRequest)</code>.</li>
 <li>Public read/list RPCs remain <code>StatsStore</code> authoritative reads.</li>
 </ul>
@@ -1847,7 +1870,7 @@ order.</p>
 <li>checks <code>StatsStore</code> for an existing record</li>
 <li>for <code>SYNC</code>, calls <code>StatsEngineRegistry.captureBatch()</code> on miss (single-item requests are
    wrapped via <code>StatsCaptureBatchRequest.of(request)</code>)</li>
-<li>if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped <code>STATS_ONLY</code> follow-up carrying the
+<li>if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped <code>CAPTURE_ONLY</code> follow-up carrying the
    unresolved table-scoped stats requests and returns empty for unresolved items</li>
 </ol>
 <p>Current enqueue policy:</p>

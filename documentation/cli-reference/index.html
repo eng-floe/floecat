@@ -794,6 +794,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../transactions/" class="md-nav__link">
         
   
@@ -1560,6 +1583,7 @@ snapshot delete &lt;table&gt; &lt;snapshot_id&gt;
 stats table &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;]
 stats columns &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N]
 stats files &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N]
+stats index &lt;catalog.ns[.ns...].table&gt; [--snapshot &lt;id|current&gt;] [--limit N] [--json]
 constraints get &lt;id|catalog.ns[.ns...].table&gt; [--snapshot &lt;id&gt;] [--json]
 constraints list &lt;id|catalog.ns[.ns...].table&gt; [--limit N] [--json]
 constraints put &lt;id|catalog.ns[.ns...].table&gt; [--snapshot &lt;id&gt;] --file &lt;snapshot_constraints_json&gt; [--idempotency &lt;key&gt;] [--json]
@@ -1614,6 +1638,10 @@ connector validate &lt;kind&gt; &lt;uri&gt;
     [--policy-enabled] [--policy-interval-sec &lt;n&gt;] [--policy-max-par &lt;n&gt;]
     [--policy-not-before-epoch &lt;sec&gt;] [--props k=v ...]
 connector trigger &lt;display_name|id&gt; [--full]
+    --mode metadata-only|metadata-and-capture|capture-only
+    [--capture stats|table-stats|file-stats|column-stats|index,...]
+    [--dest-ns &lt;a.b[.c]&gt;] [--dest-table &lt;name&gt;] [--dest-view &lt;name&gt;]
+    [--snapshot &lt;id&gt;|--current] [--columns c1,#id2,...]
 connector job &lt;jobId&gt;
 
 Credential types (`--cred-type`):
@@ -1643,6 +1671,11 @@ Auth properties (generic options):
 - `--auth aws.profile_path=&lt;path&gt;` – optional shared credentials/config file path.
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
 - `--auth cache_path=&lt;path&gt;` – optional CLI cache path.
+
+Trigger notes:
+- `--mode` is required on `connector trigger`.
+- `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 
 CLI cache examples:
 - Databricks:

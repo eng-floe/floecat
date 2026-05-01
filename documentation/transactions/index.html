@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/transactions/">
       
       
-        <link rel="prev" href="../reconciler/">
+        <link rel="prev" href="../rust-remote-capture-executor/">
       
       
         <link rel="next" href="../connectors-common/">
@@ -767,6 +767,29 @@
   
   <span class="md-ellipsis">
     Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
     
   </span>
   
@@ -1934,7 +1957,8 @@ It is the backend used by both:
 <li>Reads current transaction state:</li>
 <li><code>TS_APPLIED</code> =&gt; returns HTTP 204 immediately.</li>
 <li><code>TS_APPLY_FAILED_CONFLICT</code> =&gt; returns HTTP 409 immediately.</li>
-<li>For open/retryable paths, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.</li>
+<li>For <code>TS_OPEN</code> transactions, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.</li>
+<li>For <code>TS_PREPARED</code>, <code>TS_APPLYING</code>, and <code>TS_APPLY_FAILED_RETRYABLE</code>, the gateway verifies the persisted request hash matches and then skips fresh planning/materialization, driving commit/confirmation from the already-persisted intents.</li>
 <li>During prepare, each table change now includes <code>precondition.expected_version</code> sourced from table <code>MutationMeta.pointer_version</code> fetched at planning time.</li>
 <li>REST returns 204 only when backend is <code>TS_APPLIED</code>; deterministic failures map to 409.
    Unknown commit state maps are:</li>
@@ -1946,6 +1970,7 @@ It is the backend used by both:
 <li>401 for unauthenticated</li>
 <li>403 for permission denied</li>
 <li>There are no gateway-managed post-commit side effects in this path; once the backend apply succeeds, later reconciliation is handled independently by the service scheduler.</li>
+<li>Gateway-managed REST connectors may trigger a service-side post-commit <code>CAPTURE_ONLY</code> stats bootstrap, but that enqueue is explicitly best-effort and not part of the atomic transaction outcome.</li>
 <li>Stage-create materialization (<code>stage-id</code>) is not supported in multi-table <code>/transactions/commit</code>; staged create should use single-table commit flow.</li>
 <li>Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (<code>TS_APPLIED</code>) paths.</li>
 <li>Ambiguous commit outcomes use a short bounded confirmation poll before returning unknown-state:</li>

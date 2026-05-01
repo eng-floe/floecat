@@ -784,6 +784,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../transactions/" class="md-nav__link">
         
   
@@ -1814,16 +1837,18 @@ structures for resource identifiers, catalog services, query lifecycle metadata,
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
 <p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>query/</code>, <code>execution/</code>,
-<code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>). Generated Java stubs live under the <code>ai.floedb.floecat.*.rpc</code>
-packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.</p>
+<code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
+under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
+CLI, and reconciler.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>common/common.proto</code></strong> – Defines <code>QueryInput</code>, <code>ResourceId</code>, <code>NameRef</code>, <code>SnapshotRef</code>, pagination, rich error
   payloads, <code>PrincipalContext</code>, and idempotency/optimistic-concurrency helpers. Every other schema
   imports this file.</li>
 <li><strong><code>catalog/*.proto</code></strong> – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
-  lookups, and table statistics. Each service exposes the same Create/List/Get/Update/Delete (CLGUD)
-  lifecycle with <code>PageRequest</code>/<code>PageResponse</code> support; stats schemas also cover per-file statistics.</li>
+  lookups, table statistics, and index artifacts. Each service exposes the same
+  Create/List/Get/Update/Delete (CLGUD) lifecycle with <code>PageRequest</code>/<code>PageResponse</code> support; stats
+  schemas also cover per-file statistics and index artifact metadata.</li>
 <li><strong><code>connector/connector.proto</code></strong> – Connector management RPCs plus reconciliation job tracking and
   validation routines.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
@@ -1833,6 +1858,10 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 <li><strong><code>query/user_objects_bundle.proto</code></strong> – <code>GetUserObjects</code> streams resolved relation metadata for planner binding, including per-column <code>ColumnResult</code> outcomes (<code>READY</code> with <code>ColumnInfo</code> or <code>FAILED</code> with <code>ColumnFailure</code>).</li>
 <li><strong><code>execution/scan.proto</code></strong> – Scan metadata (data/delete files + per-file stats) produced by
   connectors and consumed at execution time.</li>
+<li><strong><code>execution/capture.proto</code></strong> – File-group execution RPCs used by the combined stats/index
+  capture worker path.</li>
+<li><strong><code>reconciler/reconciler.proto</code></strong> – Reconcile queue/job tracking contracts, including split
+  planning/execution job kinds and per-file execution results.</li>
 <li><strong><code>types/types.proto</code></strong> – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.</li>
 <li><strong><code>account/account.proto</code></strong> – Account CRUD service for multi-tenancy.</li>
@@ -1879,6 +1908,11 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 <td>Accepts per-snapshot target stats envelopes (table/column/expression/file). <code>ListTargetStats</code> supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call.</td>
 </tr>
 <tr>
+<td><code>TableIndexService</code></td>
+<td><code>GetIndexArtifact</code>, <code>ListIndexArtifacts</code>, client-streaming <code>PutIndexArtifacts</code></td>
+<td>Stores and resolves snapshot-scoped parquet sidecar artifact metadata keyed by table, snapshot, and target file.</td>
+</tr>
+<tr>
 <td><code>TableConstraintsService</code></td>
 <td><code>GetTableConstraints</code>, <code>ListTableConstraints</code>, <code>PutTableConstraints</code>, <code>MergeTableConstraints</code>, <code>AppendTableConstraints</code>, <code>DeleteTableConstraints</code>, <code>AddTableConstraint</code>, <code>DeleteTableConstraint</code></td>
 <td>Snapshot-scoped constraints CRUD for user tables. <code>PutTableConstraints</code> is full-bundle upsert, <code>MergeTableConstraints</code> is server-side merge by <code>constraint.name</code> plus shallow merge of bundle <code>properties</code> (incoming keys win), <code>AppendTableConstraints</code> is server-side append-only (duplicate names rejected), and <code>AddTableConstraint</code>/<code>DeleteTableConstraint</code> are single-constraint partial mutations. All write operations require snapshot existence (<code>NOT_FOUND</code> when missing).</td>
@@ -1902,6 +1936,11 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 <td><code>QueryService</code></td>
 <td><code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>, <code>FetchScanBundle</code>.</td>
 <td></td>
+</tr>
+<tr>
+<td><code>ReconcileExecutorControl</code></td>
+<td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>SubmitLeasedFileGroupExecutionResult</code></td>
+<td>Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs.</td>
 </tr>
 <tr>
 <td><code>PlannerStatsService</code></td>
@@ -1953,6 +1992,16 @@ engine release.</p>
 <li><strong>File-level stats</strong> – <code>FileTargetStats</code> anchors counts and sketches to
   a file path. File stats are written as <code>TargetStatsRecord</code> values with <code>target.file</code> identity via
   <code>PutTargetStats</code>; the service enforces consistent <code>table_id</code>/<code>snapshot_id</code> in a stream.</li>
+<li><strong>Index artifact streams</strong> – <code>PutIndexArtifacts</code> requires each client stream to target exactly one
+  <code>table_id</code> and one <code>snapshot_id</code>. Multiple snapshots must be written through separate client
+  streams.</li>
+<li><strong>Leased file-group result submission</strong> – <code>SubmitLeasedFileGroupExecutionResult.Success</code> and
+  <code>.Failure</code> both require <code>result_id</code>. The control plane uses that identifier for top-level replay
+  protection on the entire request payload, while service-side writes also keep per-item
+  idempotency for stats and index artifacts.</li>
+<li><strong>Executor leasing filters</strong> – <code>LeaseReconcileJobRequest</code> accepts execution class, lane, job kind,
+  <code>executor_id</code>, and repeated <code>executor_ids</code> selectors so a worker fleet can advertise both its
+  concrete worker identity and the executor implementations it is willing to run.</li>
 <li><strong>Stats vs constraints snapshot policy</strong> – <code>PutTargetStats</code> currently accepts unknown snapshots
   (lenient ordering), while <code>PutTableConstraints</code> is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
@@ -1988,8 +2037,9 @@ engine release.</p>
    <a href="../service/#security-and-context"><code>docs/service.md</code></a>) and call gRPC endpoints.</li>
 <li>Mutations include <code>IdempotencyKey</code> for once-and-only-once semantics; the service persists a hash
   of the request along with the resultant <code>MutationMeta</code> so replays yield the previous payload.</li>
-<li>Connectors written against the SPI return <code>ScanFile</code> and stats payloads that exactly match the
-  protos defined here; the reconciler pipes them back via the catalog/statistics services.</li>
+<li>Connectors written against the SPI return <code>ScanFile</code>, stats, and file-group capture metadata
+  that exactly match the protos defined here; the reconciler pipes them back via the
+  catalog/statistics/index services.</li>
 <li>
 <p>Planners call <code>QueryService.BeginQuery</code> to create query leases, optionally extend them via
    <code>RenewQuery</code>, call <code>FetchScanBundle</code> per table when they need manifests, and close leases out via

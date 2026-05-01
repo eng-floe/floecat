@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/service/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/rust-remote-capture-executor/">
       
       
-        <link rel="prev" href="../architecture/">
+        <link rel="prev" href="../reconciler/">
       
       
-        <link rel="next" href="../operations/">
+        <link rel="next" href="../transactions/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Service Runtime - Floecat Documentation</title>
+        <title>Rust Remote Capture Executor - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#service-runtime" class="md-skip">
+        <a href="#rust-remote-capture-executor" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Service Runtime
+              Rust Remote Capture Executor
             
           </span>
         </div>
@@ -287,8 +287,6 @@
       
   
   
-    
-  
   
   
     
@@ -301,11 +299,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -321,7 +321,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             Getting Started
@@ -378,32 +378,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Service Runtime
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
         
   
   
@@ -414,197 +392,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
-    <span class="md-ellipsis">
-      Overview
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architecture-responsibilities" class="md-nav__link">
-    <span class="md-ellipsis">
-      Architecture &amp; Responsibilities
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Architecture &amp; Responsibilities">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#key-packages" class="md-nav__link">
-    <span class="md-ellipsis">
-      Key packages
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#public-api-surface-area" class="md-nav__link">
-    <span class="md-ellipsis">
-      Public API / Surface Area
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#important-internal-details" class="md-nav__link">
-    <span class="md-ellipsis">
-      Important Internal Details
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Important Internal Details">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#baseserviceimpl-idempotency" class="md-nav__link">
-    <span class="md-ellipsis">
-      BaseServiceImpl &amp; Idempotency
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#repository-layer" class="md-nav__link">
-    <span class="md-ellipsis">
-      Repository Layer
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#security-and-context" class="md-nav__link">
-    <span class="md-ellipsis">
-      Security and Context
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#query-lifecycle-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Query Lifecycle Service
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#builtin-catalog-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Builtin Catalog Service
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#gc-and-bootstrap" class="md-nav__link">
-    <span class="md-ellipsis">
-      GC and Bootstrap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#statistics-streaming-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Statistics streaming semantics
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#data-flow-lifecycle" class="md-nav__link">
-    <span class="md-ellipsis">
-      Data Flow &amp; Lifecycle
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Data Flow &amp; Lifecycle">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#typical-request-path" class="md-nav__link">
-    <span class="md-ellipsis">
-      Typical request path
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-extensibility" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration &amp; Extensibility
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#examples-scenarios" class="md-nav__link">
-    <span class="md-ellipsis">
-      Examples &amp; Scenarios
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cross-references" class="md-nav__link">
-    <span class="md-ellipsis">
-      Cross-References
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -834,8 +621,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -846,13 +635,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -868,7 +655,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -994,10 +781,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1008,6 +817,212 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-are-replacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      What You Are Replacing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required Protocol Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-plane-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Control-Plane Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worker-identity-and-leasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worker Identity and Leasing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution Loop
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-file-group-payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standalone File-Group Payload
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result Contract
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-id-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result ID Rules
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idempotency-and-retry-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Idempotency and Retry Semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-and-lease-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cancellation and Lease Handling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-rust-worker-must-produce" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the Rust Worker Must Produce
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimal Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-integration-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Integration Strategy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#duplicate-submit-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      Duplicate submit rejected
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lease-lost-during-long-parquet-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lease lost during long parquet work
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-completed-but-artifacts-missing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job completed but artifacts missing
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1747,19 +1762,163 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#architecture-responsibilities" class="md-nav__link">
+  <a href="#what-you-are-replacing" class="md-nav__link">
     <span class="md-ellipsis">
-      Architecture &amp; Responsibilities
+      What You Are Replacing
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Architecture &amp; Responsibilities">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required Protocol Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-plane-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Control-Plane Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worker-identity-and-leasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Worker Identity and Leasing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution Loop
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-file-group-payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      Standalone File-Group Payload
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result Contract
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#result-id-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      Result ID Rules
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idempotency-and-retry-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Idempotency and Retry Semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-and-lease-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cancellation and Lease Handling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-rust-worker-must-produce" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the Rust Worker Must Produce
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimal Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-integration-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Integration Strategy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#key-packages" class="md-nav__link">
+  <a href="#duplicate-submit-rejected" class="md-nav__link">
     <span class="md-ellipsis">
-      Key packages
+      Duplicate submit rejected
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lease-lost-during-long-parquet-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lease lost during long parquet work
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-completed-but-artifacts-missing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job completed but artifacts missing
     </span>
   </a>
   
@@ -1767,135 +1926,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#public-api-surface-area" class="md-nav__link">
-    <span class="md-ellipsis">
-      Public API / Surface Area
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#important-internal-details" class="md-nav__link">
-    <span class="md-ellipsis">
-      Important Internal Details
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Important Internal Details">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#baseserviceimpl-idempotency" class="md-nav__link">
-    <span class="md-ellipsis">
-      BaseServiceImpl &amp; Idempotency
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#repository-layer" class="md-nav__link">
-    <span class="md-ellipsis">
-      Repository Layer
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#security-and-context" class="md-nav__link">
-    <span class="md-ellipsis">
-      Security and Context
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#query-lifecycle-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Query Lifecycle Service
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#builtin-catalog-service" class="md-nav__link">
-    <span class="md-ellipsis">
-      Builtin Catalog Service
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#gc-and-bootstrap" class="md-nav__link">
-    <span class="md-ellipsis">
-      GC and Bootstrap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#statistics-streaming-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Statistics streaming semantics
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#data-flow-lifecycle" class="md-nav__link">
-    <span class="md-ellipsis">
-      Data Flow &amp; Lifecycle
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Data Flow &amp; Lifecycle">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#typical-request-path" class="md-nav__link">
-    <span class="md-ellipsis">
-      Typical request path
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-extensibility" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration &amp; Extensibility
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#examples-scenarios" class="md-nav__link">
-    <span class="md-ellipsis">
-      Examples &amp; Scenarios
-    </span>
-  </a>
   
 </li>
       
@@ -1924,7 +1954,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/main/docs/service.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/main/docs/rust-remote-capture-executor.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1932,261 +1962,262 @@
   
 
 
-<h1 id="service-runtime">Service Runtime<a class="headerlink" href="#service-runtime" title="Permanent link">&para;</a></h1>
+<h1 id="rust-remote-capture-executor">Rust Remote Capture Executor<a class="headerlink" href="#rust-remote-capture-executor" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p>The <code>service/</code> module is the authoritative runtime for Floecat. It hosts the Quarkus gRPC server,
-implements every public API from <a href="../proto/"><code>proto/</code></a>, manages multi-account security contexts,
-translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
-tasks such as idempotency/CAS/pointer/transaction/reconcile-job GC and repository seeding.</p>
-<p>It is structured for testability: each gRPC service delegates to repository abstractions, which in
-turn encapsulate storage backends. Tests such as
-<code>service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java</code> and
-<code>service/src/test/java/ai/floedb/floecat/service/it/QueryServiceIT.java</code> probe repository semantics and
-query lifecycle / scan bundle logic.</p>
-<h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code>┌────────────────────────────────────────────────────────────────────────────┐
-│ Quarkus runtime                                                            │
-│  ├─ Interceptors (context, localization, metering)                         │
-│  ├─ Security (PrincipalProvider, Authorizer)                               │
-│  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Account,           │
-│  │            Directory, Statistics, Connectors, QueryService)             │
-│  ├─ QueryService (QueryContextStore, QueryServiceImpl)                     │
-│  ├─ Repositories (CatalogRepository, NamespaceRepository, TableRepository, │
-│  │                ViewRepository, SnapshotRepository, StatsRepository,     │
-│  │                ConnectorRepository, AccountRepository,                   │
-│  │                IdempotencyRepositoryImpl)                               │
-│  └─ GC &amp; Bootstrap (IdempotencyGc, CasBlobGc, PointerGc, TransactionGc,    │
-│                  ReconcileJobGc, SeedRunner)                                │
-└────────────────────────────────────────────────────────────────────────────┘
-</code></pre></div>
-<h3 id="key-packages">Key packages<a class="headerlink" href="#key-packages" title="Permanent link">&para;</a></h3>
+<p>This page describes how to replace the current Java <code>EXEC_FILE_GROUP</code> worker with a Rust remote
+worker that speaks Floecat's leased reconcile protocol directly.</p>
+<p>The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:</p>
+<ol>
+<li>Leases eligible reconcile jobs from the control plane.</li>
+<li>Fetches the standalone file-group execution payload for each leased job.</li>
+<li>Reads parquet files and computes stats and parquet page-index sidecars.</li>
+<li>Submits success or failure back through the control plane.</li>
+</ol>
+<p>If you only need file-group capture replacement, you do not need to replace the Java planner
+workers. <code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, and <code>PLAN_SNAPSHOT</code> can remain in the
+existing JVM control plane or executor fleet.</p>
+<h2 id="what-you-are-replacing">What You Are Replacing<a class="headerlink" href="#what-you-are-replacing" title="Permanent link">&para;</a></h2>
+<p>The current JVM path for file-group execution is:</p>
 <ul>
-<li><code>service/common</code> – Shared helpers (<code>BaseServiceImpl</code>, <code>IdempotencyGuard</code>, <code>Canonicalizer</code>,
-  pagination utilities, structured logging).</li>
-<li><code>service/context</code> – gRPC interceptors injecting <code>PrincipalContext</code>, correlation IDs, query IDs,
-  engine versions, and bridging outbound headers.</li>
-<li><code>service/security</code> – Minimal <code>PrincipalProvider</code> and <code>Authorizer</code> scaffolding; pluggable for
-  production identity providers.</li>
-<li><code>service/repo</code> – Resource repositories layering pointer/blob stores and parsing protobuf payloads;
-  includes key generation utilities (<code>Keys</code>, <code>ResourceKey</code>) and value normalizers.</li>
-<li><code>service/catalog</code> / <code>directory</code> / <code>account</code> / <code>statistics</code> / <code>connector</code> – gRPC service
-  implementations.</li>
-<li><code>catalog/builtin</code> – Shared builtin catalog data model, validator, and loader helpers.</li>
-<li><code>service/query</code> – Query lifecycle management (<code>QueryContext</code>, <code>QueryContextStore</code>,
-  <code>QueryServiceImpl</code>).</li>
-<li><code>service/query/graph</code> – MetadataGraph cache + immutable node models shared by planners/executors
-  (see <a href="../metadata-graph/"><code>docs/metadata-graph.md</code></a>).</li>
-<li><code>service/gc</code> – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
-  artifacts, and durable reconcile jobs.</li>
-<li><code>service/bootstrap</code> – Optional seeding of demo accounts and catalog data.</li>
-<li><code>service/metrics</code> – <code>ServiceTelemetryInterceptor</code> + <code>StorageUsageMetrics</code> for Micrometer integration.</li>
+<li><code>RemoteReconcileExecutorPoller</code> leases <code>EXEC_FILE_GROUP</code> jobs.</li>
+<li><code>RemoteFileGroupReconcileExecutor</code> fetches <code>LeasedFileGroupExecution</code>.</li>
+<li><code>StandaloneJavaFileGroupExecutionRunner</code> performs the actual parquet work.</li>
+<li><code>SubmitLeasedFileGroupExecutionResult</code> persists stats, index artifacts, and per-file results.</li>
 </ul>
-<h2 id="public-api-surface-area">Public API / Surface Area<a class="headerlink" href="#public-api-surface-area" title="Permanent link">&para;</a></h2>
-<p>Each gRPC implementation derives from <code>BaseServiceImpl</code>, gaining retry semantics, error mapping, and
-helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
+<p>A Rust worker replaces the execution portion of that flow. It should behave like an external
+implementation of the current worker contract, not like a new public API.</p>
+<h2 id="required-protocol-surface">Required Protocol Surface<a class="headerlink" href="#required-protocol-surface" title="Permanent link">&para;</a></h2>
+<p>At minimum, the Rust worker must implement these <code>ReconcileExecutorControl</code> RPCs from
+<a href="../proto/"><code>docs/proto.md</code></a>:</p>
 <ul>
-<li><strong>CatalogServiceImpl</strong> – Enforces <code>catalog.read</code>/<code>catalog.write</code> permissions, canonicalises names,
-  uses <code>IdempotencyGuard</code> for Create, and ensures namespace cascading checks during Delete.</li>
-<li><strong>NamespaceServiceImpl</strong> – Handles hierarchical selectors, supports recursive listing, and ensures
-  <code>require_empty</code> semantics on deletion by inspecting repository counts.</li>
-<li><strong>TableServiceImpl</strong> – Validates <code>UpstreamRef</code>, enforces unique names before writing, supports
-  partial updates via <code>FieldMask</code>, and coordinates snapshot/statistics purging.</li>
-<li><strong>ViewServiceImpl</strong> – Stores SQL definitions and references to base tables.</li>
-<li><strong>SnapshotServiceImpl</strong> – Binds snapshots to tables, ensuring parent-child relationships remain
-  intact.</li>
-<li><strong>TableStatisticsServiceImpl</strong> – Persists per-snapshot target/file stats; validates
-  NDV/histogram payloads; paginates target listings (optionally filtered by target kind); uses
-  client-streaming <code>PutTargetStats</code> to batch writes per stream.</li>
-<li><strong>DirectoryServiceImpl</strong> – Provides fast name↔ID lookup via <code>MetadataGraph</code> (Resolve<em>/Lookup</em>) and
-  reuses the graph’s ResolveFQ helpers for list/prefix pagination.</li>
-<li><strong>AccountServiceImpl</strong> – Administers accounts and enforces conventional permissions.</li>
-<li><strong>ConnectorsImpl</strong> – Manages connector lifecycle, validates <code>ConnectorSpec</code> via SPI factories,
-  wires reconciliation job submission, and exposes <code>ValidateConnector</code> + <code>StartCapture</code>.
-  <code>CaptureNow</code> maps to reconciler capture modes:</li>
-<li>metadata only -&gt; <code>METADATA_ONLY</code></li>
-<li>capture only -&gt; <code>CAPTURE_ONLY</code></li>
-<li>metadata plus capture -&gt; <code>METADATA_AND_CAPTURE</code></li>
-<li><strong>QueryServiceImpl</strong> – Administers query leases (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>,
-  <code>GetQuery</code>) and exposes <code>FetchScanBundle</code> so planners can request connector scan metadata on
-  demand.</li>
-<li><strong>SystemObjectsServiceImpl</strong> – Loads immutable builtin catalogs from disk/classpath, caches them
-  per engine version, and serves them via <code>GetSystemObjects</code>.</li>
+<li><code>LeaseReconcileJob</code></li>
+<li><code>StartLeasedReconcileJob</code></li>
+<li><code>RenewReconcileLease</code></li>
+<li><code>ReportReconcileProgress</code></li>
+<li><code>GetReconcileCancellation</code></li>
+<li><code>GetLeasedFileGroupExecution</code></li>
+<li><code>SubmitLeasedFileGroupExecutionResult</code></li>
+<li><code>CompleteLeasedReconcileJob</code></li>
 </ul>
-<h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
-<h3 id="baseserviceimpl-idempotency">BaseServiceImpl &amp; Idempotency<a class="headerlink" href="#baseserviceimpl-idempotency" title="Permanent link">&para;</a></h3>
-<p><code>BaseServiceImpl</code> centralises retry policies (<code>BACKOFF_MIN/MAX</code>, jitter, <code>RETRIES</code>), correlation-ID
-propagation, and error translation (storage/repository exceptions → gRPC status codes per
-<code>errors_en.properties</code>). <code>IdempotencyGuard</code> stores request fingerprints inside
-<code>IdempotencyRepository</code> (backed by the pointer/blob store) so replays reuse prior results.</p>
-<h3 id="repository-layer">Repository Layer<a class="headerlink" href="#repository-layer" title="Permanent link">&para;</a></h3>
-<p>Each repository extends <code>BaseResourceRepository&lt;T&gt;</code>:
-- Reserves pointer keys via CAS before writing blobs.
-- Writes blobs with checksum verification (<code>sha256B64</code>).
-- Maintains <code>MutationMeta</code> (pointer key, blob URI, pointer version, ETag, timestamp).
-- Provides convenience accessors such as <code>getByName</code>, <code>getById</code>, <code>list</code>, and <code>metaForSafe</code>.
-- Deletes tolerate missing blobs when cleaning up pointers, so skewed pointer/blob states can still be removed safely.</p>
-<p><code>BaseResourceRepository</code> also exposes <code>reserveAllOrRollback</code> for multi-key updates, and
-<code>compareAndDelete</code> semantics for CAS-based deletions. Tests ensure parity between in-memory and AWS
-implementations.</p>
-<h3 id="security-and-context">Security and Context<a class="headerlink" href="#security-and-context" title="Permanent link">&para;</a></h3>
-<p><code>InboundContextInterceptor</code> reads <code>x-query-id</code>, <code>x-engine-version</code>, and <code>x-correlation-id</code> headers,
-plus optional OIDC session/authorization headers, validates account membership, hydrates
-MDC/OpenTelemetry attributes, and enforces the configured <code>floecat.auth.mode</code>.
-<code>OutboundContextClientInterceptor</code> mirrors the same headers for internal gRPC calls
-(service-to-service).</p>
-<p><code>Authorizer</code> currently performs simple list membership checks on <code>PrincipalContext.permissions</code>; it
-can be replaced by injecting a custom implementation.</p>
-<p>External session header authentication is documented in
-<a href="../external-authentication/"><code>docs/external-authentication.md</code></a>.</p>
-<h3 id="query-lifecycle-service">Query Lifecycle Service<a class="headerlink" href="#query-lifecycle-service" title="Permanent link">&para;</a></h3>
-<p><code>QueryContextStore</code> is a Caffeine cache keyed by query ID. Each <code>QueryContext</code> tracks state,
-expiration, <code>PrincipalContext</code>, encoded <code>SnapshotSet</code>, and <code>ExpansionMap</code>.
-<code>QueryServiceImpl.beginQuery</code> resolves name or ID references via Directory/Snapshot/Table services,
-pins snapshots, and stores the lease. Planners request connector <code>ScanBundle</code>s later via
-<code>FetchScanBundle</code>, which streams data/delete files for a specific table. The lease data (snapshots,
-expansion map, obligations) is returned to the caller inside the <code>QueryDescriptor</code>.</p>
-<h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
-<p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
-configured location, caches them by engine kind, and exposes them through
-<code>SystemObjectsService.GetSystemObjects</code>. Clients must send both <code>x-engine-kind</code> and
-<code>x-engine-version</code>; the RPC always returns the filtered builtin bundle for the requested engine.</p>
-<h3 id="gc-and-bootstrap">GC and Bootstrap<a class="headerlink" href="#gc-and-bootstrap" title="Permanent link">&para;</a></h3>
-<p><code>IdempotencyGc</code> runs on a configurable cadence (see <code>floecat.gc.*</code> config) and sweeps expired
-idempotency records in slices to avoid starvation. <code>CasBlobGc</code> enumerates blob prefixes and removes
-CAS blobs with no remaining pointers once they exceed the configured min-age. <code>PointerGc</code> removes
-orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
-intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. <code>SeedRunner</code>
-populates demo data when <code>floecat.seed.enabled=true</code>.</p>
-<p>For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
-using <code>METADATA_AND_CAPTURE</code>.</p>
-<p>This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
-Query scan bundles remain available immediately; stats availability follows queued capture completion.
-Follow-up payloads now use reconcile scoped stats requests
-(<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>, <code>column_selectors</code>) so background capture stays targeted
-without depending on separate unresolved snapshot-id and target lists.
-When a <code>CAPTURE_ONLY</code> batch captures only a subset of requested items, the reconcile result
-is degraded; when none of the requested items are captured, the reconcile result fails instead of
-silently reporting zero processed stats.</p>
-<h3 id="statistics-streaming-semantics">Statistics streaming semantics<a class="headerlink" href="#statistics-streaming-semantics" title="Permanent link">&para;</a></h3>
-<p><code>TableStatisticsServiceImpl</code> enforces a single <code>table_id</code> + <code>snapshot_id</code> per streamed call to
-<code>PutTargetStats</code>, rejects mixed idempotency keys within a stream, and applies
-idempotent writes when a key is present. Each stream returns one response summarising the total
-rows upserted after all batches have been consumed.</p>
-<h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
-<h3 id="typical-request-path">Typical request path<a class="headerlink" href="#typical-request-path" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code>client → Quarkus Server
-  → InboundContextInterceptor (principal/query/correlation)
-  → LocalizeErrorsInterceptor (message catalog)
-  → ServiceTelemetryInterceptor (metrics/latency)
-  → ServiceImpl (authz + validation)
-      → Repository (CAS pointer/blob operations)
-  ← response + MutationMeta
+<p>For a file-group-only worker, lease only <code>RJK_EXEC_FILE_GROUP</code>.</p>
+<h2 id="control-plane-configuration">Control-Plane Configuration<a class="headerlink" href="#control-plane-configuration" title="Permanent link">&para;</a></h2>
+<p>Run the service as the reconcile control plane:</p>
+<div class="highlight"><pre><span></span><code><span class="na">%reconciler-control.floecat.reconciler.worker.mode</span><span class="o">=</span><span class="s">remote</span>
+<span class="na">%reconciler-control.reconciler.max-parallelism</span><span class="o">=</span><span class="s">0</span>
+<span class="na">%reconciler-control.floecat.reconciler.auto.enabled</span><span class="o">=</span><span class="s">true</span>
 </code></pre></div>
-<h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
-<p>Notable <code>application.properties</code> keys:</p>
-<table>
-<thead>
-<tr>
-<th>Property</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>quarkus.grpc.server.*</code></td>
-<td>Port, HTTP2, plaintext/reflection toggles.</td>
-</tr>
-<tr>
-<td><code>quarkus.grpc.clients.floecat.*</code></td>
-<td>Loopback client config for internal RPC calls.</td>
-</tr>
-<tr>
-<td><code>floecat.seed.enabled</code></td>
-<td>Enable demo data seeding.</td>
-</tr>
-<tr>
-<td><code>floecat.kv</code> / <code>floecat.blob</code></td>
-<td>Select pointer/blob store implementation (<code>memory</code>, <code>dynamodb</code>, <code>s3</code>).</td>
-</tr>
-<tr>
-<td><code>floecat.query.*</code></td>
-<td>Default TTL, grace period, max cache size, safety expiry for query contexts.</td>
-</tr>
-<tr>
-<td><code>floecat.gc.idempotency.*</code></td>
-<td>Cadence, page size, batch limit, slice duration for idempotency GC.</td>
-</tr>
-<tr>
-<td><code>floecat.gc.cas.*</code></td>
-<td>Cadence, page size, min-age, tick slice settings for CAS blob GC.</td>
-</tr>
-<tr>
-<td><code>floecat.gc.pointer.*</code></td>
-<td>Cadence, page size, min-age, tick slice settings for pointer GC.</td>
-</tr>
-<tr>
-<td><code>floecat.gc.reconcile-jobs.*</code></td>
-<td>Cadence, retention, and slice settings for durable reconcile-job GC.</td>
-</tr>
-<tr>
-<td><code>floecat.reconciler.job-store.*</code></td>
-<td>Durable reconcile queue selection and retry/lease tuning.</td>
-</tr>
-<tr>
-<td><code>quarkus.log.*</code></td>
-<td>JSON logging, file rotation, audit handlers per RPC package.</td>
-</tr>
-<tr>
-<td><code>quarkus.otel.*</code> / <code>quarkus.micrometer.*</code></td>
-<td>Observability exporters (see <a href="../operations/"><code>docs/operations.md</code></a>).</td>
-</tr>
-<tr>
-<td><code>floecat.auth.mode</code></td>
-<td>Auth enforcement mode (<code>oidc</code>, <code>dev</code>).</td>
-</tr>
-<tr>
-<td><code>floecat.auth.platform-admin.role</code></td>
-<td>IdP role name granted permission to manage accounts (default <code>platform-admin</code>).</td>
-</tr>
-<tr>
-<td><code>floecat.secrets.aws.role-arn</code></td>
-<td>Optional role to assume per account when using AWS Secrets Manager.</td>
-</tr>
-</tbody>
-</table>
-<p>Extension points:
-- <strong>Storage</strong> – Provide custom <code>PointerStore</code>/<code>BlobStore</code> (see <a href="../storage-spi/"><code>docs/storage-spi.md</code></a>).
-- <strong>Security</strong> – Replace <code>Authorizer</code> or interceptors with CDI alternatives.
-- <strong>Connectors</strong> – Register new SPI implementations and expose them via <code>ConnectorRepository</code>.
-- <strong>QueryService</strong> – Extend query metadata by enriching <code>QueryContext</code> creation or injecting
-  additional connector metadata via the <code>FetchScanBundle</code> RPC / <code>ScanBundleService</code> on the query
-  path. Reconcile planning/execution does not use <code>ScanBundleService</code>; it goes through
-  <code>FloecatConnector</code> directly. <code>BeginQuery</code> optionally accepts a client-specified <code>query_id</code> plus
-  <code>common.QueryInput</code> records so lifecycle can pre-pin snapshots/expansions for deterministic
-  replay.</p>
-<p>Secrets Manager integration (tags + optional per-account assume-role) is documented in
-<a href="../secrets-manager/"><code>docs/secrets-manager.md</code></a>.</p>
-<h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
+<p>Relevant shared settings:</p>
+<div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.job-store</span><span class="o">=</span><span class="s">durable</span>
+<span class="na">floecat.reconciler.authorization.header</span><span class="o">=</span><span class="s">authorization</span>
+<span class="na">floecat.reconciler.authorization.token</span><span class="o">=</span><span class="s">&lt;shared-token&gt;</span>
+<span class="na">floecat.reconciler.job-store.lease-ms</span><span class="o">=</span><span class="s">30000</span>
+</code></pre></div>
+<p>The Rust worker should target the control-plane gRPC endpoint and send the same authorization
+header/token pair configured on the service.</p>
+<h2 id="worker-identity-and-leasing">Worker Identity and Leasing<a class="headerlink" href="#worker-identity-and-leasing" title="Permanent link">&para;</a></h2>
+<p>The lease request supports:</p>
 <ul>
-<li><strong>Create Catalog</strong> – <code>CatalogServiceImpl.createCatalog</code> canonicalises <code>display_name</code>, allocates a
-  UUIDv4 identifier, reserves <code>/accounts/{account}/catalogs/by-name/{name}</code> and <code>/by-id/{uuid}</code>
-  pointer keys, writes the <code>catalog.pb</code> blob, and returns <code>MutationMeta</code>. If the caller supplies an
-  <code>IdempotencyKey</code>, the repository short-circuits duplicates.</li>
-<li><strong>Delete Namespace</strong> – Namespace deletions with <code>require_empty=true</code> check child counts via
-  <code>NamespaceRepository.countChildren</code>. If tables exist, the service raises <code>MC_CONFLICT.namespace.not_empty</code>.</li>
-<li><strong>Query lease renewal</strong> – Clients call <code>QueryService.RenewQuery</code> before <code>expires_at</code>; the store extends
-  the TTL if the query remains <code>ACTIVE</code>. A stale or ended query returns <code>MC_NOT_FOUND.query.not_found</code>.</li>
+<li>execution classes</li>
+<li>lanes</li>
+<li>job kinds</li>
+<li><code>executor_id</code></li>
+<li>repeated <code>executor_ids</code></li>
+</ul>
+<p>For a Rust file-group worker, use:</p>
+<ul>
+<li><code>job_kinds = [RJK_EXEC_FILE_GROUP]</code></li>
+<li><code>executor_id = &lt;stable worker instance id&gt;</code></li>
+<li><code>executor_ids</code> containing the executor implementations this process can satisfy</li>
+</ul>
+<p>The current Java poller advertises local executor ids so pinned jobs can route to compatible
+workers. A Rust fleet should do the same if you intend to use pinned executor routing.</p>
+<h2 id="execution-loop">Execution Loop<a class="headerlink" href="#execution-loop" title="Permanent link">&para;</a></h2>
+<p>The happy-path loop is:</p>
+<div class="highlight"><pre><span></span><code>LeaseReconcileJob
+  → StartLeasedReconcileJob
+  → GetLeasedFileGroupExecution
+  → run parquet capture
+  → SubmitLeasedFileGroupExecutionResult(success)
+  → CompleteLeasedReconcileJob(RCS_SUCCEEDED)
+</code></pre></div>
+<p>The failure path is:</p>
+<div class="highlight"><pre><span></span><code>LeaseReconcileJob
+  → StartLeasedReconcileJob
+  → GetLeasedFileGroupExecution
+  → run parquet capture
+  → SubmitLeasedFileGroupExecutionResult(failure)
+  → CompleteLeasedReconcileJob(RCS_FAILED)
+</code></pre></div>
+<p>During execution:</p>
+<ul>
+<li>renew the lease before expiry</li>
+<li>report progress periodically</li>
+<li>check cancellation periodically</li>
+<li>stop work if the lease is no longer valid</li>
+</ul>
+<h2 id="standalone-file-group-payload">Standalone File-Group Payload<a class="headerlink" href="#standalone-file-group-payload" title="Permanent link">&para;</a></h2>
+<p><code>GetLeasedFileGroupExecution</code> returns the standalone worker payload. The important fields are:</p>
+<ul>
+<li><code>job_id</code></li>
+<li><code>lease_epoch</code></li>
+<li><code>parent_job_id</code></li>
+<li><code>source_connector</code></li>
+<li><code>source_namespace</code></li>
+<li><code>source_table</code></li>
+<li><code>table_id</code></li>
+<li><code>snapshot_id</code></li>
+<li><code>plan_id</code></li>
+<li><code>group_id</code></li>
+<li><code>file_paths</code></li>
+<li><code>capture_policy</code></li>
+</ul>
+<p>For a Rust worker, <code>source_connector</code> is important because it carries the resolved upstream
+connector definition and auth material needed to read source files.</p>
+<h2 id="result-contract">Result Contract<a class="headerlink" href="#result-contract" title="Permanent link">&para;</a></h2>
+<p><code>SubmitLeasedFileGroupExecutionResult</code> has two outcomes:</p>
+<ul>
+<li><code>success</code></li>
+<li><code>failure</code></li>
+</ul>
+<p>Both now require <code>result_id</code>.</p>
+<p>Success carries:</p>
+<ul>
+<li><code>result_id</code></li>
+<li><code>stats_records</code></li>
+<li><code>index_artifacts</code></li>
+</ul>
+<p>Failure carries:</p>
+<ul>
+<li><code>result_id</code></li>
+<li><code>message</code></li>
+</ul>
+<p>The service enforces top-level idempotency on <code>job_id + result_id</code> and also keeps per-item
+idempotency for stats and artifact writes. This gives you safe replay semantics if the worker loses
+the gRPC response and retries the same submission.</p>
+<h2 id="result-id-rules">Result ID Rules<a class="headerlink" href="#result-id-rules" title="Permanent link">&para;</a></h2>
+<p>For the same durable outcome, reuse the same <code>result_id</code> on retries.</p>
+<p>Recommended shape:</p>
+<div class="highlight"><pre><span></span><code>&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:success
+&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:failure
+</code></pre></div>
+<p>That is the same stability rule the current Java file-group executor now follows when <code>plan_id</code>
+and <code>group_id</code> are available.</p>
+<p>Do not reuse one <code>result_id</code> for different payloads. The control plane now rejects replay with the
+same <code>result_id</code> if the full request payload changes.</p>
+<h2 id="idempotency-and-retry-semantics">Idempotency and Retry Semantics<a class="headerlink" href="#idempotency-and-retry-semantics" title="Permanent link">&para;</a></h2>
+<p>The worker should assume the following:</p>
+<ul>
+<li><code>SubmitLeasedFileGroupExecutionResult</code> is safe to retry only if the same <code>result_id</code> and the
+  same payload are reused.</li>
+<li>success and failure are different outcomes and must not share a <code>result_id</code>.</li>
+<li><code>CompleteLeasedReconcileJob</code> is a separate terminal-state RPC. Do not assume a successful result
+  submit also marks the job terminal.</li>
+</ul>
+<p>Recommended retry behavior:</p>
+<ol>
+<li>Generate one stable <code>result_id</code> per durable success or failure outcome.</li>
+<li>If the submit RPC times out or the response is lost, retry the same request unchanged.</li>
+<li>If <code>CompleteLeasedReconcileJob</code> times out after a successful submit, retry completion with the
+   same terminal counters/message.</li>
+</ol>
+<h2 id="cancellation-and-lease-handling">Cancellation and Lease Handling<a class="headerlink" href="#cancellation-and-lease-handling" title="Permanent link">&para;</a></h2>
+<p>The worker should treat lease expiry and cancellation as first-class control signals.</p>
+<p>Recommended loop:</p>
+<ol>
+<li>Start a heartbeat task after <code>StartLeasedReconcileJob</code>.</li>
+<li>Call <code>RenewReconcileLease</code> on a cadence comfortably below <code>lease-ms</code>.</li>
+<li>Treat <code>renewed=false</code> as loss of ownership and stop work.</li>
+<li>Poll <code>GetReconcileCancellation</code> or rely on the cancellation flag returned by renew/progress.</li>
+<li>If cancellation is requested, stop execution and submit:</li>
+<li><code>SubmitLeasedFileGroupExecutionResult(failure)</code> only if you want a durable failure payload, or</li>
+<li>no result payload if no per-file result should be persisted</li>
+<li>Finish with <code>CompleteLeasedReconcileJob(RCS_CANCELLED)</code> when appropriate.</li>
+</ol>
+<h2 id="what-the-rust-worker-must-produce">What the Rust Worker Must Produce<a class="headerlink" href="#what-the-rust-worker-must-produce" title="Permanent link">&para;</a></h2>
+<p>The service expects the same logical outputs the Java runner currently produces:</p>
+<ul>
+<li><code>TargetStatsRecord</code> values for requested capture outputs</li>
+<li><code>LeasedFileGroupIndexArtifact</code> records with:</li>
+<li><code>IndexArtifactRecord</code></li>
+<li>raw artifact bytes</li>
+<li>content type</li>
+</ul>
+<p>The worker is responsible for ensuring:</p>
+<ul>
+<li>every planned file requested for page-index capture gets a matching artifact</li>
+<li>artifact metadata matches the target file identity</li>
+<li>null or missing outputs are not sent for required planned files</li>
+</ul>
+<h2 id="minimal-architecture">Minimal Architecture<a class="headerlink" href="#minimal-architecture" title="Permanent link">&para;</a></h2>
+<p>A practical Rust implementation usually has these pieces:</p>
+<ul>
+<li>protobuf-generated Rust client/server types for <code>core/proto</code></li>
+<li>a gRPC client for <code>ReconcileExecutorControl</code></li>
+<li>a lease manager</li>
+<li>a heartbeat/cancellation task</li>
+<li>a parquet execution engine</li>
+<li>an adapter that converts engine outputs into Floecat protobuf messages</li>
+</ul>
+<p>Keep the protobuf adapter isolated from the parquet engine. That makes it easier to test retry and
+idempotency behavior separately from file scanning logic.</p>
+<h2 id="recommended-integration-strategy">Recommended Integration Strategy<a class="headerlink" href="#recommended-integration-strategy" title="Permanent link">&para;</a></h2>
+<p>Start small:</p>
+<ol>
+<li>Implement a Rust worker that only leases <code>RJK_EXEC_FILE_GROUP</code>.</li>
+<li>Initially support <code>requestsStats=false</code> / <code>capturePageIndex=false</code> no-op file groups correctly.</li>
+<li>Add stats capture.</li>
+<li>Add parquet page-index artifact generation.</li>
+<li>Run the Rust worker alongside the existing JVM planner workers.</li>
+<li>Disable <code>floecat.reconciler.executor.remote-file-group.enabled</code> on JVM executor nodes once the
+   Rust worker is ready to own all file-group jobs.</li>
+</ol>
+<p>This keeps the planner/control-plane behavior stable while you replace only the parquet execution
+layer.</p>
+<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<p>This worker does not need to:</p>
+<ul>
+<li>implement public catalog CRUD APIs</li>
+<li>replace <code>ReconcileControl</code></li>
+<li>replace planner workers unless you want full non-JVM reconcile</li>
+<li>embed into the Quarkus service process</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="duplicate-submit-rejected">Duplicate submit rejected<a class="headerlink" href="#duplicate-submit-rejected" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>same <code>result_id</code>, different success/failure payload</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>make <code>result_id</code> stable per durable outcome</li>
+<li>retry with identical payload bytes</li>
+</ul>
+<h3 id="lease-lost-during-long-parquet-work">Lease lost during long parquet work<a class="headerlink" href="#lease-lost-during-long-parquet-work" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>renew cadence too slow</li>
+<li>worker blocked heartbeat thread</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>renew on a dedicated async task</li>
+<li>renew well before <code>lease-ms</code></li>
+</ul>
+<h3 id="job-completed-but-artifacts-missing">Job completed but artifacts missing<a class="headerlink" href="#job-completed-but-artifacts-missing" title="Permanent link">&para;</a></h3>
+<p>Likely cause:</p>
+<ul>
+<li>page-index capture returned incomplete artifact set</li>
+</ul>
+<p>Fix:</p>
+<ul>
+<li>validate one artifact per planned file before calling success submit</li>
 </ul>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
-<li>RPC contracts: <a href="../proto/"><code>docs/proto.md</code></a></li>
-<li>Connector SPI &amp; implementations: <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a>,
-  <a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a>, <a href="../connectors-delta/"><code>docs/connectors-delta.md</code></a></li>
-<li>Storage implementations consumed by repositories:
-  <a href="../storage-spi/"><code>docs/storage-spi.md</code></a>, <a href="../storage-memory/"><code>docs/storage-memory.md</code></a>,
-  <a href="../storage-aws/"><code>docs/storage-aws.md</code></a></li>
-<li>Reconciler orchestrating connectors: <a href="../reconciler/"><code>docs/reconciler.md</code></a></li>
+<li>Reconcile architecture: <a href="../reconciler/"><code>reconciler.md</code></a></li>
+<li>RPC contracts: <a href="../proto/"><code>proto.md</code></a></li>
+<li>Operations and split deployment: <a href="../operations/"><code>operations.md</code></a></li>
+<li>Docker split deployment examples: <a href="../docker/"><code>docker.md</code></a></li>
 </ul>
 
 
