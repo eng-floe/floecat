@@ -24,8 +24,8 @@ Non-goals for the current release:
 | Iceberg REST surface | Floecat service(s) | Notes |
 | --- | --- | --- |
 | `/v1/config` | Gateway config only | Synthesizes prefixes, default properties, supported endpoints; `warehouse` is optional and defaults to the configured prefix. |
-| Namespace CRUD | `NamespaceService` | Includes property mutation and existence checks (HEAD); create returns 200 with `CreateNamespaceResponse`. |
-| Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via `TableMetadataImportService`. |
+| Namespace CRUD | `NamespaceLookupSupport`, `NamespaceMutationSupport`, `NamespacePropertyUpdateSupport` | Includes property mutation and existence checks (HEAD); create returns 200 with `CreateNamespaceResponse`. |
+| Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via `TableMetadataImportService`; overwrite-register reuses the existing table identity and snapshot lineage instead of forcing a fresh metadata snapshot during registration. |
 | Table rename/move | `TableService.UpdateTable` | Uses field masks for namespace + display name changes. |
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
 | `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
@@ -69,7 +69,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 ## Runtime Architecture Overview
 
 1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
-2. **Context resolution:** `RequestContextFactory` still builds request-scoped namespace/table context records, while `ResourceResolver` owns the newer catalog/resource lookup model used by the refactored table transaction path.
+2. **Context resolution:** `ResourceResolver` builds the catalog/resource references used throughout the gateway (`CatalogRef`, `NamespaceRef`, `TableRef`, `ViewRef`). The older request-context factory/record layer has been removed.
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. Table orchestration is further split by concern into `load`, `materialization`, `metadata`, and `transaction`.
 4. **gRPC translation:** service orchestration flows use `GrpcServiceFacade` so backend calls inherit Floecat’s auth context and telemetry consistently.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
@@ -243,6 +243,10 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
   Request-supplied FileIO properties are merged over gateway defaults from
   `floecat.connector.integration.storage-credential.properties.*`.
+- **Register overwrite semantics:** `POST /v1/{prefix}/namespaces/{namespace}/register` with
+  `overwrite=true` is intended to preserve the existing Floecat table identity and imported
+  snapshot lineage for an already-registered table. The overwrite path reuses the current table
+  and snapshot IDs instead of treating register as a brand-new create flow.
 - **Registered Iceberg connectors:** tables registered or committed through the gateway are now
   wired back to Floecat as gateway-managed REST connectors tagged with
   `floecat.connector.mode=capture-only`. The upstream source may still be modeled with
