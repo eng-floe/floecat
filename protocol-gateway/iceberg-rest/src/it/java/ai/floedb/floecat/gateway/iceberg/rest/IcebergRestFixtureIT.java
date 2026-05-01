@@ -2194,8 +2194,7 @@ class IcebergRestFixtureIT {
     if (metadataLocation.startsWith("s3://")) {
       return metadataLocation;
     }
-    Path stagedTableRoot = TestS3Fixtures.stageBucketPath().resolve(namespace).resolve(table);
-    if (Files.exists(stagedTableRoot.resolve("metadata"))) {
+    if (TestS3Fixtures.stagedTableExists(namespace, table)) {
       return TestS3Fixtures.stageTableUri(namespace, table, metadataLocation);
     }
     return TestS3Fixtures.bucketUri(metadataLocation);

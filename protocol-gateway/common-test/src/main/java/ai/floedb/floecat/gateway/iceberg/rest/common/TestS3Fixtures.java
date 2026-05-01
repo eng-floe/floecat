@@ -138,6 +138,28 @@ public final class TestS3Fixtures {
     return STAGE_ROOT;
   }
 
+  public static boolean stagedTableExists(String namespace, String table) {
+    if (namespace == null || namespace.isBlank() || table == null || table.isBlank()) {
+      return false;
+    }
+    if (!useAwsFixtures()) {
+      return Files.exists(stageBucketPath().resolve(namespace).resolve(table).resolve("metadata"));
+    }
+    String metadataPrefix = namespace + "/" + table + "/metadata/";
+    try (S3Client s3 = buildS3Client()) {
+      ListObjectsV2Response response =
+          s3.listObjectsV2(
+              ListObjectsV2Request.builder()
+                  .bucket(STAGE_BUCKET)
+                  .prefix(metadataPrefix)
+                  .maxKeys(1)
+                  .build());
+      return !response.contents().isEmpty();
+    } catch (NoSuchBucketException e) {
+      return false;
+    }
+  }
+
   public static void seedFixtures() {
     seedFixtures(DEFAULT_FIXTURE_SETS);
   }
