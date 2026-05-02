@@ -2074,13 +2074,13 @@
 </tr>
 <tr>
 <td>Namespace CRUD</td>
-<td><code>NamespaceService</code></td>
+<td><code>NamespaceLookupSupport</code>, <code>NamespaceMutationSupport</code>, <code>NamespacePropertyUpdateSupport</code></td>
 <td>Includes property mutation and existence checks (HEAD); create returns 200 with <code>CreateNamespaceResponse</code>.</td>
 </tr>
 <tr>
 <td>Table CRUD, commit, register</td>
 <td><code>TableService</code>, <code>SnapshotService</code>, connector services</td>
-<td>Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via <code>TableMetadataImportService</code>.</td>
+<td>Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via <code>TableMetadataImportService</code>; overwrite-register reuses the existing table identity and snapshot lineage instead of forcing a fresh metadata snapshot during registration.</td>
 </tr>
 <tr>
 <td>Table rename/move</td>
@@ -2139,7 +2139,8 @@
 <div class="highlight"><pre><span></span><code>protocol-gateway/iceberg-rest/
 ├── src/main/java/ai/floedb/floecat/gateway/iceberg/rest
 │   ├── api/              # Request/response DTOs &amp; serializers
-│   ├── common/           # Cross-cutting helpers (context factory, filters, error mappers, metadata utils)
+│   ├── catalog/          # Catalog/resource resolver records and lookup helpers
+│   ├── common/           # Cross-cutting helpers (filters, error mappers, metadata utils)
 │   ├── resources/        # JAX-RS controllers (config, namespace, table, view, system)
 │   └── services/         # Adapters and workflows (accounts, catalog, table, metadata, planning, staging, clients)
 └── src/test/java/...     # RestAssured tests, unit tests mirroring the same package structure
@@ -2147,20 +2148,21 @@
 <p>Key packages under <code>services</code>:</p>
 <ul>
 <li><code>services.catalog</code> – low-level helpers (table lifecycle, connector wiring, requirement enforcement, metadata sync).</li>
-<li><code>services.table</code> / <code>services.view</code> / <code>services.namespace</code> – high-level use cases (create, commit, register, delete, property updates, rename).</li>
+<li><code>services.table</code> – top-level table workflows plus subpackages for <code>load</code>, <code>materialization</code>, <code>metadata</code>, and <code>transaction</code>.</li>
+<li><code>services.view</code> / <code>services.namespace</code> – high-level view and namespace use cases.</li>
 <li><code>services.metadata</code> – metadata import/materialization (Iceberg metadata files, snapshot transforms).</li>
 <li><code>services.planning</code> – scan planning orchestration plus <code>PlanTaskManager</code>.</li>
 <li><code>services.staging</code> – staged payload repository and TTL management.</li>
-<li><code>services.client</code> – typed gRPC clients (TableClient, NamespaceClient, ViewClient, SnapshotClient, QueryClient, ConnectorClient, etc.).</li>
+<li><code>services.client</code> – shared gRPC facade/wrappers used by the higher-level services.</li>
 </ul>
 <p>Tests mirror this layout so package-private collaborators (e.g., staged table repositories, planners) are still accessible without widening visibility.</p>
 <hr />
 <h2 id="runtime-architecture-overview">Runtime Architecture Overview<a class="headerlink" href="#runtime-architecture-overview" title="Permanent link">&para;</a></h2>
 <ol>
 <li><strong>Request entry:</strong> Quarkus REST controllers receive Iceberg REST requests. <code>AccountHeaderFilter</code> enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.</li>
-<li><strong>Context resolution:</strong> <code>RequestContextFactory</code> resolves catalog prefixes, namespace paths, and table IDs by calling Floecat’s <code>DirectoryService</code> and <code>TableLifecycleService</code>. Context records travel with each request.</li>
-<li><strong>Service orchestration:</strong> Controllers delegate to <code>services.table/*</code>, <code>services.view/*</code>, <code>services.namespace/*</code>, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.</li>
-<li><strong>gRPC translation:</strong> Typed clients (<code>TableClient</code>, <code>SnapshotClient</code>, <code>ViewClient</code>, etc.) wrap <code>GrpcWithHeaders</code> so every call inherits Floecat’s auth context and telemetry.</li>
+<li><strong>Context resolution:</strong> <code>ResourceResolver</code> builds the catalog/resource references used throughout the gateway (<code>CatalogRef</code>, <code>NamespaceRef</code>, <code>TableRef</code>, <code>ViewRef</code>). The older request-context factory/record layer has been removed.</li>
+<li><strong>Service orchestration:</strong> Controllers delegate to <code>services.table/*</code>, <code>services.view/*</code>, <code>services.namespace/*</code>, etc. Table orchestration is further split by concern into <code>load</code>, <code>materialization</code>, <code>metadata</code>, and <code>transaction</code>.</li>
+<li><strong>gRPC translation:</strong> service orchestration flows use <code>GrpcServiceFacade</code> so backend calls inherit Floecat’s auth context and telemetry consistently.</li>
 <li><strong>Response mapping:</strong> <code>TableResponseMapper</code>, <code>ViewResponseMapper</code>, <code>NamespaceResponseMapper</code>, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., <code>write.metadata.path</code>, storage credentials).</li>
 <li><strong>Connectors &amp; credentials:</strong> registered Iceberg tables provision a Floecat-backed connector during commit, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.</li>
 <li><strong>Plan/task caching:</strong> <code>PlanTaskManager</code> persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for <code>/tasks</code>.</li>
@@ -2317,6 +2319,10 @@ and no marker file/state is required.</p>
   <code>s3.path-style-access</code>, etc. when non-default storage wiring is needed (for example LocalStack).
   Request-supplied FileIO properties are merged over gateway defaults from
   <code>floecat.connector.integration.storage-credential.properties.*</code>.</li>
+<li><strong>Register overwrite semantics:</strong> <code>POST /v1/{prefix}/namespaces/{namespace}/register</code> with
+  <code>overwrite=true</code> is intended to preserve the existing Floecat table identity and imported
+  snapshot lineage for an already-registered table. The overwrite path reuses the current table
+  and snapshot IDs instead of treating register as a brand-new create flow.</li>
 <li><strong>Registered Iceberg connectors:</strong> tables registered or committed through the gateway are now
   wired back to Floecat as gateway-managed REST connectors tagged with
   <code>floecat.connector.mode=capture-only</code>. The upstream source may still be modeled with
