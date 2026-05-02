@@ -321,8 +321,8 @@ class IcebergRestFixtureIT {
     Assertions.assertNotNull(commitMetadataLocation, "commit should materialize metadata");
 
     Assertions.assertTrue(
-        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () -> "persisted metadata should reside under fixture storage: " + commitMetadataLocation);
+        commitMetadataLocation.startsWith(stagedMetadataPrefix(namespace, table)),
+        () -> "persisted metadata should reside under staged fixture storage: " + commitMetadataLocation);
     assertFixtureObjectExists(
         commitMetadataLocation, "persisted metadata file should exist in fixture storage");
     given()
@@ -1896,6 +1896,9 @@ class IcebergRestFixtureIT {
           awaitConnectorById(tableRecord.getUpstream().getConnectorId(), Duration.ofSeconds(45));
       Assertions.assertNotNull(connector, "Connector should be retrievable for trino_test");
 
+      SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+      List<TargetStatsRecord> preCaptureColumnStats = listColumnStatRecords(tableId, current);
+
       withReconcileControlClient(
           stub -> {
             // The fixture table is already mirrored by registration. Use a table-scoped
@@ -1916,20 +1919,6 @@ class IcebergRestFixtureIT {
                     .setFullRescan(true)
                     .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(60).build())
                     .build());
-            stub.startCapture(
-                StartCaptureRequest.newBuilder()
-                    .setScope(
-                        CaptureScope.newBuilder()
-                            .setConnectorId(connector.getResourceId())
-                            .setCapturePolicy(
-                                CapturePolicy.newBuilder()
-                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
-                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
-                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
-                            .build())
-                    .setMode(CaptureMode.CM_METADATA_AND_CAPTURE)
-                    .setFullRescan(true)
-                    .build());
             return null;
           });
 
@@ -1946,52 +1935,69 @@ class IcebergRestFixtureIT {
           importedSnapshotIds.containsAll(fixtureSnapshotIds),
           "Snapshot catalog should contain fixture snapshot ids");
 
-      SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
       TableValueStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
       Assertions.assertTrue(
           stats.getRowCount() > 0, "Fixture stats should report a positive row count");
       Assertions.assertTrue(
           stats.getTotalSizeBytes() > 0, "Fixture stats should track total bytes");
 
-      List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStats =
-          awaitColumnStats(tableId, current, Duration.ofSeconds(30));
-      Assertions.assertFalse(columnStats.isEmpty(), "Column statistics must be available");
-      columnStats.forEach(
-          col -> {
-            Assertions.assertNotNull(col.getDisplayName(), "Column name should be set");
-            Assertions.assertFalse(col.getDisplayName().isBlank(), "Column name should be set");
+      List<TargetStatsRecord> columnStatRecords =
+          awaitColumnStatRecords(tableId, current, Duration.ofSeconds(30));
+      Assertions.assertFalse(columnStatRecords.isEmpty(), "Column statistics must be available");
+      String preCaptureDetail =
+          preCaptureColumnStats.isEmpty()
+              ? "[]"
+              : preCaptureColumnStats.toString();
+      columnStatRecords.forEach(
+          record -> {
+            var col = record.getScalar();
+            String detail =
+                "columnId="
+                    + record.getTarget().getColumn().getColumnId()
+                    + ", displayName='"
+                    + col.getDisplayName()
+                    + "', logicalType='"
+                    + col.getLogicalType()
+                    + "', valueCount="
+                    + col.getValueCount()
+                    + ", nullCount="
+                    + (col.hasNullCount() ? col.getNullCount() : "<unset>")
+                    + ", nanCount="
+                    + (col.hasNanCount() ? col.getNanCount() : "<unset>")
+                    + ", preCaptureStats="
+                    + preCaptureDetail;
+            Assertions.assertNotNull(col.getDisplayName(), () -> "Column name should be set: " + detail);
             Assertions.assertFalse(
-                col.getLogicalType().isBlank(),
-                () -> "Logical type should be populated for " + col.getDisplayName());
+                col.getDisplayName().isBlank(), () -> "Column name should be set: " + detail);
+            Assertions.assertFalse(
+                col.getLogicalType().isBlank(), () -> "Logical type should be populated: " + detail);
             if (col.hasNdv()) {
               Assertions.assertTrue(
                   col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                  () -> "NDV should contain exact or approx estimate for " + col.getDisplayName());
+                  () -> "NDV should contain exact or approx estimate: " + detail);
               if (col.getNdv().hasApprox()) {
                 var approx = col.getNdv().getApprox();
                 Assertions.assertTrue(
                     approx.getEstimate() > 0.0d,
-                    () -> "Approximate NDV must be positive for " + col.getDisplayName());
+                    () -> "Approximate NDV must be positive: " + detail);
                 Assertions.assertTrue(
-                    approx.getRowsSeen() > 0,
-                    () -> "rows-seen must be positive for " + col.getDisplayName());
+                    approx.getRowsSeen() > 0, () -> "rows-seen must be positive: " + detail);
                 Assertions.assertTrue(
                     approx.getRowsTotal() >= approx.getRowsSeen(),
-                    () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
+                    () -> "rows-total must be >= rows-seen: " + detail);
                 Assertions.assertFalse(
-                    approx.getMethod().isBlank(),
-                    () -> "NDV method must be set for " + col.getDisplayName());
+                    approx.getMethod().isBlank(), () -> "NDV method must be set: " + detail);
               }
               Assertions.assertFalse(
                   col.getNdv().getSketchesList().isEmpty(),
-                  () -> "Sketch metadata must be present for " + col.getDisplayName());
+                  () -> "Sketch metadata must be present: " + detail);
               col.getNdv()
                   .getSketchesList()
                   .forEach(
                       sketch ->
                           Assertions.assertFalse(
                               sketch.getType().isBlank(),
-                              () -> "Sketch type must be set for column " + col.getDisplayName()));
+                              () -> "Sketch type must be set: " + detail));
             }
           });
     }
@@ -2101,8 +2107,8 @@ class IcebergRestFixtureIT {
 
     Assertions.assertNotNull(commitMetadataLocation, "metadata-location should be populated");
     Assertions.assertTrue(
-        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () -> "metadata-location should reside under fixture storage: " + commitMetadataLocation);
+        commitMetadataLocation.startsWith(stagedMetadataPrefix(namespace, table)),
+        () -> "metadata-location should reside under staged fixture storage: " + commitMetadataLocation);
     String fileName = commitMetadataLocation.substring(commitMetadataLocation.lastIndexOf('/') + 1);
     Assertions.assertTrue(
         fileName.contains("-"), "materialized metadata file should include a version prefix");
@@ -2110,8 +2116,8 @@ class IcebergRestFixtureIT {
     String persistedLocation =
         ensurePromotedMetadata(fetchTablePropertyMetadataLocation(namespace, table));
     Assertions.assertTrue(
-        persistedLocation.startsWith(FIXTURE_METADATA_PREFIX),
-        () -> "persisted metadata should be stored under fixture storage: " + persistedLocation);
+        persistedLocation.startsWith(stagedMetadataPrefix(namespace, table)),
+        () -> "persisted metadata should be stored under staged fixture storage: " + persistedLocation);
     Assertions.assertTrue(
         persistedLocation.endsWith(".metadata.json"),
         "persisted metadata should be an Iceberg metadata file");
@@ -2128,16 +2134,10 @@ class IcebergRestFixtureIT {
     Map<String, String> properties = fixtureIoProperties();
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", table);
-    String registerMetadataLocation =
-        metadataLocation != null && metadataLocation.startsWith("s3://")
-            ? metadataLocation
-            : TestS3Fixtures.bucketUri(metadataLocation);
+    String registerMetadataLocation = resolveRegisterMetadataLocation(namespace, table, metadataLocation);
     payload.put("metadata-location", registerMetadataLocation);
     payload.put("overwrite", overwrite);
     payload.put("properties", properties);
-    System.out.printf(
-        "FixtureIT register namespace=%s table=%s metadata=%s overwrite=%s%n",
-        namespace, table, metadataLocation, overwrite);
     Response registerResponse =
         given()
             .spec(spec)
@@ -2183,10 +2183,25 @@ class IcebergRestFixtureIT {
               + registerResponse.asString());
       return null;
     }
-    System.out.printf(
-        "FixtureIT register response namespace=%s table=%s metadataLocation=%s%n",
-        namespace, table, responseLocation);
     return responseLocation;
+  }
+
+  private String resolveRegisterMetadataLocation(
+      String namespace, String table, String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return metadataLocation;
+    }
+    if (metadataLocation.startsWith("s3://")) {
+      return metadataLocation;
+    }
+    if (TestS3Fixtures.stagedTableExists(namespace, table)) {
+      return TestS3Fixtures.stageTableUri(namespace, table, metadataLocation);
+    }
+    return TestS3Fixtures.bucketUri(metadataLocation);
+  }
+
+  private String stagedMetadataPrefix(String namespace, String table) {
+    return TestS3Fixtures.stageTableUri(namespace, table, "metadata/");
   }
 
   private String fetchMetadataLocation(String namespace, String table) {
@@ -2644,6 +2659,24 @@ class IcebergRestFixtureIT {
 
   private List<ai.floedb.floecat.catalog.rpc.ScalarStats> awaitColumnStats(
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
+    return columnStatsFromTargetRecords(awaitColumnStatRecords(tableId, snapshotRef, timeout));
+  }
+
+  private List<TargetStatsRecord> listColumnStatRecords(ResourceId tableId, SnapshotRef snapshotRef) {
+    var response =
+        withStatisticsClient(
+            stub ->
+                stub.listTargetStats(
+                    ListTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(snapshotRef)
+                        .setPage(PageRequest.newBuilder().setPageSize(200).build())
+                        .build()));
+    return columnTargetStatsFromRecords(response.getRecordsList());
+  }
+
+  private List<TargetStatsRecord> awaitColumnStatRecords(
+      ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
       var response =
@@ -2655,9 +2688,9 @@ class IcebergRestFixtureIT {
                           .setSnapshot(snapshotRef)
                           .setPage(PageRequest.newBuilder().setPageSize(200).build())
                           .build()));
-      var columns = columnStatsFromTargetRecords(response.getRecordsList());
-      if (!columns.isEmpty()) {
-        return columns;
+      var records = columnTargetStatsFromRecords(response.getRecordsList());
+      if (!records.isEmpty()) {
+        return records;
       }
       try {
         TimeUnit.MILLISECONDS.sleep(200);
@@ -2677,10 +2710,7 @@ class IcebergRestFixtureIT {
   private static List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStatsFromTargetRecords(
       List<TargetStatsRecord> records) {
     List<ai.floedb.floecat.catalog.rpc.ScalarStats> out = new ArrayList<>();
-    for (TargetStatsRecord record : records) {
-      if (!record.getTarget().hasColumn() || !record.hasScalar()) {
-        continue;
-      }
+    for (TargetStatsRecord record : columnTargetStatsFromRecords(records)) {
       var scalar = record.getScalar();
       var builder =
           ai.floedb.floecat.catalog.rpc.ScalarStats.newBuilder()
@@ -2709,6 +2739,17 @@ class IcebergRestFixtureIT {
         builder.setMax(scalar.getMax());
       }
       out.add(builder.build());
+    }
+    return out;
+  }
+
+  private static List<TargetStatsRecord> columnTargetStatsFromRecords(List<TargetStatsRecord> records) {
+    List<TargetStatsRecord> out = new ArrayList<>();
+    for (TargetStatsRecord record : records) {
+      if (!record.getTarget().hasColumn() || !record.hasScalar()) {
+        continue;
+      }
+      out.add(record);
     }
     return out;
   }

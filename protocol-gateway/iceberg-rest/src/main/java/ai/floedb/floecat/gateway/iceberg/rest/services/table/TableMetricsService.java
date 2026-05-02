@@ -17,8 +17,8 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.MetricsRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -33,7 +33,7 @@ public class TableMetricsService {
 
   @Inject ObjectMapper mapper;
 
-  public Response publish(TableRequestContext tableContext, MetricsRequests.Report request) {
+  public Response publish(TableRef tableContext, MetricsRequests.Report request) {
     if (request == null) {
       return IcebergErrorResponses.validation("Request body is required");
     }

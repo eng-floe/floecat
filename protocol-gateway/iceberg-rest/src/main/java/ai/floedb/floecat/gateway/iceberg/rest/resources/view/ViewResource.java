@@ -17,14 +17,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewCommitService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewCreateService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewDeleteService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewListService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewLoadService;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.ResourceResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.ViewRef;
+import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -38,18 +34,13 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import java.util.List;
 
 @Path("/v1/{prefix}/namespaces/{namespace}/views")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class ViewResource {
-  @Inject RequestContextFactory requestContextFactory;
-  @Inject ViewListService viewListService;
-  @Inject ViewCreateService viewCreateService;
-  @Inject ViewLoadService viewLoadService;
-  @Inject ViewDeleteService viewDeleteService;
-  @Inject ViewCommitService viewCommitService;
+  @Inject ResourceResolver resourceResolver;
+  @Inject ViewService viewService;
 
   @GET
   public Response list(
@@ -57,8 +48,8 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return viewListService.list(namespaceContext, pageToken, pageSize);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
+    return viewService.list(namespaceContext, pageToken, pageSize);
   }
 
   @POST
@@ -67,8 +58,8 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Create req) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return viewCreateService.create(namespaceContext, idempotencyKey, req);
+    NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
+    return viewService.create(namespaceContext, idempotencyKey, req);
   }
 
   @Path("/{view}")
@@ -77,9 +68,8 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
-    List<String> namespacePath = viewContext.namespacePath();
-    return viewLoadService.get(viewContext, namespace, view, namespacePath);
+    ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
+    return viewService.get(viewContext);
   }
 
   @Path("/{view}")
@@ -88,8 +78,8 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
-    return viewLoadService.exists(viewContext);
+    ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
+    return viewService.exists(viewContext);
   }
 
   @Path("/{view}")
@@ -97,10 +87,9 @@ public class ViewResource {
   public Response delete(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @PathParam("view") String view,
-      @HeaderParam("Idempotency-Key") String idempotencyKey) {
-    ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
-    return viewDeleteService.delete(viewContext);
+      @PathParam("view") String view) {
+    ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
+    return viewService.delete(viewContext);
   }
 
   @Path("/{view}")
@@ -109,10 +98,8 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view,
-      @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Commit req) {
-    ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
-    List<String> namespacePath = viewContext.namespacePath();
-    return viewCommitService.commit(viewContext, namespacePath, namespace, view, req);
+    ViewRef viewContext = resourceResolver.view(prefix, namespace, view);
+    return viewService.commit(viewContext, req);
   }
 }

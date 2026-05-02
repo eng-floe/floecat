@@ -30,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -363,7 +364,7 @@ public class TablePropertyService {
     return asLong(main.get("snapshot-id"));
   }
 
-  TableMetadataView metadataFromProperties(Map<String, String> props) {
+  public TableMetadataView metadataFromProperties(Map<String, String> props) {
     Map<String, String> safeProps = props == null ? Map.of() : Map.copyOf(props);
     Integer formatVersion = asInteger(propsValue(safeProps, "format-version"));
     Integer lastColumnId = asInteger(propsValue(safeProps, "last-column-id"));

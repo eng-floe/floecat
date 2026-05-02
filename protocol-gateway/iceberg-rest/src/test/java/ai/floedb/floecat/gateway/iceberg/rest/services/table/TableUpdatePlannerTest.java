@@ -35,6 +35,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;

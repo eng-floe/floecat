@@ -16,18 +16,14 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FailedPlanningResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -38,13 +34,9 @@ import java.util.List;
 public class TablePlanOrchestrationService {
   @Inject TablePlanService tablePlanService;
   @Inject PlanTaskManager planTaskManager;
-  @Inject IcebergGatewayConfig config;
-  @Inject GrpcWithHeaders grpc;
 
   public Response plan(
-      TableRequestContext tableContext,
-      PlanRequests.Plan rawRequest,
-      TableGatewaySupport tableSupport) {
+      TableRef tableContext, PlanRequests.Plan rawRequest, TableGatewaySupport tableSupport) {
     PlanRequests.Plan request = rawRequest == null ? PlanRequests.Plan.empty() : rawRequest;
     Long startSnapshotId = request.startSnapshotId();
     Long endSnapshotId = request.endSnapshotId();
@@ -73,11 +65,9 @@ public class TablePlanOrchestrationService {
     boolean useSnapshotSchema = Boolean.TRUE.equals(request.useSnapshotSchema());
     String planId = null;
     try {
-      ResourceId catalogId =
-          CatalogResolver.resolveCatalogId(grpc, config, tableContext.catalog().catalogName());
       var handle =
           tablePlanService.startPlan(
-              catalogId,
+              tableContext.catalog().catalogId(),
               tableContext.tableId(),
               copyOfOrNull(request.select()),
               startSnapshotId,
@@ -145,7 +135,7 @@ public class TablePlanOrchestrationService {
     return Response.noContent().build();
   }
 
-  public Response consumeTask(TableRequestContext tableContext, String planTaskId) {
+  public Response consumeTask(TableRef tableContext, String planTaskId) {
     return planTaskManager
         .consumeTask(tableContext.namespaceName(), tableContext.table(), planTaskId)
         .map(response -> Response.ok(response).build())

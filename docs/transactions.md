@@ -170,5 +170,5 @@ planned table change:
 - gRPC service: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionsServiceImpl.java`
 - Intent applier: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionIntentApplierSupport.java`
 - Intent repo: `service/src/main/java/ai/floedb/floecat/service/repo/impl/TransactionIntentRepository.java`
-- REST bridge: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/TransactionCommitService.java`
+- REST bridge: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/transaction/TransactionCommitService.java`
 - Single-table entrypoint: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/TableCommitService.java`

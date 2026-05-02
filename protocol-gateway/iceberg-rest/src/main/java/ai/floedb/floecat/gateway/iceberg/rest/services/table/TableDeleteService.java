@@ -18,7 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import io.grpc.Status;
@@ -34,7 +34,7 @@ public class TableDeleteService {
   @Inject ConnectorProvisioningService connectorProvisioningService;
 
   public Response delete(
-      TableRequestContext tableContext,
+      TableRef tableContext,
       String tableName,
       Boolean purgeRequested,
       TableGatewaySupport tableSupport) {

@@ -91,10 +91,12 @@ final class StatsCanonicalizer {
   /**
    * Computes canonical SHA-256 input bytes for scalar payload fingerprinting.
    *
-   * <p>Cosmetic labels are excluded from identity.
+   * <p>Display name participates in identity so idempotent writes do not collapse named and unnamed
+   * variants of the same scalar payload.
    */
   static byte[] canonicalFingerprint(ScalarStats stats) {
     var c = new Canonicalizer();
+    c.scalar("display_name", stats.getDisplayName());
     c.scalar("logical_type", stats.getLogicalType());
     canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
     c.scalar("value_count", stats.getValueCount());

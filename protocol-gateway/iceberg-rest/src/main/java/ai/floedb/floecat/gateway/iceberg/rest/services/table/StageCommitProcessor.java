@@ -21,14 +21,12 @@ import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -37,11 +35,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction.TransactionCommitService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -54,19 +51,10 @@ public class StageCommitProcessor {
   private static final Logger LOG = Logger.getLogger(StageCommitProcessor.class);
 
   @Inject GrpcWithHeaders grpc;
-  @Inject IcebergGatewayConfig config;
-  @Inject ConnectorIntegrationConfig connectorConfig;
-  @Inject ObjectMapper mapper;
   @Inject StagedTableService stagedTableService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
-
-  private TableGatewaySupport tableSupport;
-
-  @PostConstruct
-  void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, connectorConfig, mapper, grpcClient);
-  }
+  @Inject TableGatewaySupport tableSupport;
 
   public StageCommitResult commitStage(
       String prefix,

@@ -96,9 +96,7 @@ final class IcebergPlanner implements Planner<Integer> {
     this.defaultSpec = table.spec();
 
     for (Types.NestedField field : schema.columns()) {
-      idToName.put(field.fieldId(), field.name());
-      idToLogical.put(field.fieldId(), IcebergTypeMapper.toLogical(field.type()));
-      idToIceType.put(field.fieldId(), field.type());
+      collectFieldMetadata(field);
     }
 
     this.columnSet =
@@ -196,6 +194,27 @@ final class IcebergPlanner implements Planner<Integer> {
       org.apache.iceberg.FileContent content,
       Long fileSequenceNumber,
       List<Integer> equalityFieldIds) {}
+
+  private void collectFieldMetadata(Types.NestedField field) {
+    if (field == null) {
+      return;
+    }
+    idToName.put(field.fieldId(), field.name());
+    idToLogical.put(field.fieldId(), IcebergTypeMapper.toLogical(field.type()));
+    idToIceType.put(field.fieldId(), field.type());
+
+    Type type = field.type();
+    if (type.isStructType()) {
+      for (Types.NestedField child : type.asStructType().fields()) {
+        collectFieldMetadata(child);
+      }
+    } else if (type.isListType()) {
+      collectFieldMetadata(type.asListType().fields().getFirst());
+    } else if (type.isMapType()) {
+      collectFieldMetadata(type.asMapType().fields().get(0));
+      collectFieldMetadata(type.asMapType().fields().get(1));
+    }
+  }
 
   private PlannedFile<Integer> toPlanned(DataFile dataFile) {
     Map<Integer, Long> valueCounts = dataFile.valueCounts();

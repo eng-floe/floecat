@@ -60,7 +60,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -125,15 +125,15 @@ class TableResourceTest extends AbstractRestResourceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any()))
         .thenAnswer(
             invocation ->
                 MaterializeMetadataResult.success(
                     invocation.getArgument(
-                        4,
+                        3,
                         ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView
                             .class),
-                    invocation.getArgument(5, String.class)));
+                    invocation.getArgument(4, String.class)));
   }
 
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
