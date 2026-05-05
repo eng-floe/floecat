@@ -718,6 +718,8 @@ message GetReconcileJobResponse {
   uint64 files_completed = 28;
   // Failed or cancelled file count for snapshot-scoped execution.
   uint64 files_failed = 29;
+  // Number of index artifacts produced by this job subtree.
+  uint64 indexes_processed = 30;
 }
 
 // Lists reconcile jobs visible to the caller.
