@@ -491,6 +491,7 @@ class TableCommitServiceTest {
         idempotencyKey,
         stageId,
         null,
+        null,
         request,
         tableSupport);
   }

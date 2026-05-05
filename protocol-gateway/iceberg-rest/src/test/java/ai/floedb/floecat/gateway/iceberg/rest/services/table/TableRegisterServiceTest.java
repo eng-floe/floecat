@@ -66,7 +66,6 @@ class TableRegisterServiceTest {
     service.tableLoadService = tableLoadService;
     service.tableRegisterRequestBuilder = tableRegisterRequestBuilder;
     when(tableSupport.resolveRegisterFileIoProperties(any())).thenReturn(Map.of());
-    when(tableSupport.defaultCredentials()).thenReturn(List.of());
   }
 
   @Test
@@ -109,7 +108,7 @@ class TableRegisterServiceTest {
         .thenReturn(tableId);
     when(tableLifecycleService.getTable(eq(tableId))).thenReturn(table);
     when(tableLoadService.loadResolvedTable(
-            eq("trino_test"), any(Table.class), eq(List.of()), eq(tableSupport)))
+            eq("trino_test"), any(Table.class), eq((String) null), eq(tableSupport)))
         .thenReturn(Response.ok().build());
 
     Response response = service.register(namespaceRef, "idem", request, tableSupport);
@@ -118,5 +117,6 @@ class TableRegisterServiceTest {
     verify(transactionCommitService)
         .commitRegister(eq("pref"), eq("idem"), any(), eq(tableSupport));
     verify(transactionCommitService, never()).commit(any(), any(), any(), any());
+    verify(tableSupport, never()).credentialsForAccessDelegation(any(Table.class), any());
   }
 }

@@ -88,6 +88,7 @@ class RolePermissionsTest {
 
     assertThat(permissions)
         .contains("system-objects.read")
+        .contains(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL)
         .doesNotContain(
             "catalog.write",
             "namespace.write",
@@ -112,5 +113,12 @@ class RolePermissionsTest {
         RolePermissions.permissionsForRoles(List.of(RolePermissions.DELETE_ACCOUNT_ROLE), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(DELETE_ACCOUNT_PERMS);
+  }
+
+  @Test
+  void devModeGrantsInternalStorageAuthorityResolutionPermission() {
+    var permissions = RolePermissions.permissionsForRoles(List.of(), true);
+
+    assertThat(permissions).contains(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
   }
 }

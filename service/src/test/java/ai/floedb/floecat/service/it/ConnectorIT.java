@@ -42,6 +42,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -131,6 +132,8 @@ public class ConnectorIT {
   @Inject TableRepository tables;
   @Inject ViewRepository views;
   @Inject SnapshotRepository snaps;
+  @Inject ConnectorRepository connectorRepo;
+  @Inject CredentialResolver credentialResolver;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
   @Inject BlobStore blobs;
@@ -326,7 +329,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -345,7 +348,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -386,7 +389,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -405,7 +408,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -512,7 +515,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.yb_iceberg_tpcds");
     props.put("external.table-name", "call_center");
@@ -528,7 +531,7 @@ public class ConnectorIT {
                 .setUri(YB_TPCDS_METADATA_LOCATION)
                 .setSource(source(List.of("fixtures", "yb_iceberg_tpcds")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -605,7 +608,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -624,7 +627,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -669,7 +672,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -688,7 +691,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -743,7 +746,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -762,7 +765,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -832,7 +835,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
@@ -851,7 +854,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -922,7 +925,7 @@ public class ConnectorIT {
 
     var props = new HashMap<String, String>();
     props.putAll(
-        TestS3Fixtures.fileIoProperties(
+        icebergFixtureNonSecretFileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
     props.put("external.namespace", "sales.us");
     props.put("external.table-name", "trino_types");
@@ -940,7 +943,7 @@ public class ConnectorIT {
                 .setUri(metadataLocation)
                 .setSource(source(List.of("sales", "us")))
                 .setDestination(dest)
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
 
@@ -1247,11 +1250,17 @@ public class ConnectorIT {
                               .build())
                       .setTable("call_center"))
               .setDestination(dest("cat-delta"))
-              .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-              .putAllProperties(TestDeltaFixtures.s3Options())
+              .setAuth(deltaFixtureStorageAuth())
+              .putAllProperties(deltaFixtureNonSecretS3Options())
               .build();
 
       var conn = TestSupport.createConnector(connectors, spec);
+      var stored = connectorRepo.getById(conn.getResourceId()).orElseThrow();
+      assertFalse(stored.getAuth().hasCredentials());
+      assertTrue(
+          credentialResolver
+              .resolve(conn.getResourceId().getAccountId(), conn.getResourceId().getId())
+              .isPresent());
       var job = runReconcile(conn.getResourceId());
       assertNotNull(job);
       assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
@@ -1315,8 +1324,8 @@ public class ConnectorIT {
                                   .build())
                           .setTable("call_center"))
                   .setDestination(dest("cat-delta-plan-files"))
-                  .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-                  .putAllProperties(TestDeltaFixtures.s3Options())
+                  .setAuth(deltaFixtureStorageAuth())
+                  .putAllProperties(deltaFixtureNonSecretS3Options())
                   .build());
 
       var planJob = runReconcile(conn.getResourceId(), true, null, true);
@@ -2170,10 +2179,7 @@ public class ConnectorIT {
             .setCredentials(
                 AuthCredentials.newBuilder()
                     .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("secret-token")))
-            .putProperties("client_secret", "super-secret")
             .putProperties("scope", "all-apis")
-            .putProperties("token", "also-secret")
-            .putHeaderHints("Authorization", "Bearer secret-token")
             .putHeaderHints("X-Test", "keep")
             .build();
     var spec =
@@ -2191,10 +2197,7 @@ public class ConnectorIT {
     var returnedAuth = created.getConnector().getAuth();
 
     assertFalse(returnedAuth.hasCredentials());
-    assertEquals("****", returnedAuth.getPropertiesMap().get("client_secret"));
-    assertEquals("****", returnedAuth.getPropertiesMap().get("token"));
     assertEquals("all-apis", returnedAuth.getPropertiesMap().get("scope"));
-    assertEquals("****", returnedAuth.getHeaderHintsMap().get("Authorization"));
     assertEquals("keep", returnedAuth.getHeaderHintsMap().get("X-Test"));
 
     var fetched =
@@ -2205,11 +2208,226 @@ public class ConnectorIT {
     var fetchedAuth = fetched.getConnector().getAuth();
 
     assertFalse(fetchedAuth.hasCredentials());
-    assertEquals("****", fetchedAuth.getPropertiesMap().get("client_secret"));
-    assertEquals("****", fetchedAuth.getPropertiesMap().get("token"));
     assertEquals("all-apis", fetchedAuth.getPropertiesMap().get("scope"));
-    assertEquals("****", fetchedAuth.getHeaderHintsMap().get("Authorization"));
     assertEquals("keep", fetchedAuth.getHeaderHintsMap().get("X-Test"));
+  }
+
+  @Test
+  void connectorRejectsSecretBearingAuthPropertiesAndHeaderHints() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-auth-reject", "");
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("auth-reject")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-auth-reject"))
+                                .setAuth(
+                                    AuthConfig.newBuilder()
+                                        .setScheme("oauth2")
+                                        .putProperties("client_secret", "super-secret")
+                                        .putProperties("token", "also-secret")
+                                        .putHeaderHints("Authorization", "Bearer secret-token")
+                                        .build())
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void icebergConnectorStoresCredentialsOutOfBand() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-iceberg-auth", "");
+    var authCredentials =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("access-key")
+                    .setSecretAccessKey("secret-key")
+                    .setSessionToken("session-token"))
+            .build();
+    var created =
+        connectors.createConnector(
+            CreateConnectorRequest.newBuilder()
+                .setSpec(
+                    ConnectorSpec.newBuilder()
+                        .setDisplayName("iceberg-auth-store")
+                        .setKind(ConnectorKind.CK_ICEBERG)
+                        .setUri("s3://bucket/table/metadata/00001.metadata.json")
+                        .setSource(source(List.of("raw")))
+                        .setDestination(dest("cat-iceberg-auth"))
+                        .putProperties("iceberg.source", "filesystem")
+                        .putProperties("external.namespace", "raw")
+                        .setAuth(
+                            AuthConfig.newBuilder()
+                                .setScheme("aws-sigv4")
+                                .setCredentials(authCredentials))
+                        .build())
+                .build());
+
+    ResourceId connectorId = created.getConnector().getResourceId();
+    var stored = connectorRepo.getById(connectorId).orElseThrow();
+
+    assertFalse(stored.getAuth().hasCredentials());
+    assertEquals(
+        authCredentials,
+        credentialResolver.resolve(connectorId.getAccountId(), connectorId.getId()).orElseThrow());
+  }
+
+  @Test
+  void icebergConnectorRejectsSecretBearingPropertiesOnCreateAndUpdate() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-iceberg-props", "");
+
+    var createEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("iceberg-secret-props")
+                                .setKind(ConnectorKind.CK_ICEBERG)
+                                .setUri("s3://bucket/table/metadata/00001.metadata.json")
+                                .setSource(source(List.of("raw")))
+                                .setDestination(dest("cat-iceberg-props"))
+                                .putProperties("iceberg.source", "filesystem")
+                                .putProperties("s3.secret-access-key", "should-not-store")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+
+    var created =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("iceberg-safe-props")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri("s3://bucket/table/metadata/00001.metadata.json")
+                .setSource(source(List.of("raw")))
+                .setDestination(dest("cat-iceberg-props"))
+                .putProperties("iceberg.source", "filesystem")
+                .putProperties("s3.region", "us-east-1")
+                .build());
+
+    var updateEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                updateConnectorProperties(
+                    created.getResourceId(),
+                    Map.of(
+                        "iceberg.source", "filesystem",
+                        "s3.session-token", "should-not-store")));
+    TestSupport.assertGrpcAndMc(
+        updateEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void polarisIcebergConnectorRejectsInlineStaticS3Credentials() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-polaris-props", "");
+
+    var createEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("polaris-inline-s3-creds")
+                                .setKind(ConnectorKind.CK_ICEBERG)
+                                .setUri("http://polaris:8181/api/catalog")
+                                .setSource(source(List.of("sales")))
+                                .setDestination(dest("cat-polaris-props"))
+                                .putProperties("iceberg.source", "rest")
+                                .putProperties("rest.flavor", "polaris")
+                                .putProperties("warehouse", "quickstart_catalog")
+                                .putProperties("s3.access-key-id", "should-not-store")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void deltaConnectorRejectsInlineStaticS3Credentials() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-delta-props", "");
+
+    var createEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("delta-inline-s3-creds")
+                                .setKind(ConnectorKind.CK_DELTA)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("main", "tpcds")))
+                                .setDestination(dest("cat-delta-props"))
+                                .putProperties("delta.source", "unity")
+                                .putProperties("s3.access-key-id", "should-not-store")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void glueConnectorRejectsInlineStaticS3Credentials() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-glue-props", "");
+
+    var createEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("glue-inline-s3-creds")
+                                .setKind(ConnectorKind.CK_GLUE)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("main", "sales")))
+                                .setDestination(dest("cat-glue-props"))
+                                .putProperties("s3.access-key-id", "should-not-store")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void unityConnectorRejectsInlineStaticS3Credentials() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-unity-props", "");
+
+    var createEx =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("unity-inline-s3-creds")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("main", "sales")))
+                                .setDestination(dest("cat-unity-props"))
+                                .putProperties("s3.secret-access-key", "should-not-store")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
   }
 
   @Test
@@ -2527,5 +2745,59 @@ public class ConnectorIT {
     return SourceSelector.newBuilder()
         .setNamespace(NamespacePath.newBuilder().addAllSegments(namespace).build())
         .build();
+  }
+
+  private static Map<String, String> deltaFixtureNonSecretS3Options() {
+    var props = new LinkedHashMap<>(TestDeltaFixtures.s3Options());
+    props.remove("s3.access-key-id");
+    props.remove("s3.secret-access-key");
+    props.remove("s3.session-token");
+    return props;
+  }
+
+  private static Map<String, String> icebergFixtureNonSecretFileIoProperties(String localRoot) {
+    var props = new LinkedHashMap<>(TestS3Fixtures.fileIoProperties(localRoot));
+    props.remove("s3.access-key-id");
+    props.remove("s3.secret-access-key");
+    props.remove("s3.session-token");
+    return props;
+  }
+
+  private static AuthConfig icebergFixtureStorageAuth() {
+    var auth = AuthConfig.newBuilder().setScheme("none");
+    String accessKey = System.getProperty("floecat.fixture.aws.s3.access-key-id");
+    String secretKey = System.getProperty("floecat.fixture.aws.s3.secret-access-key");
+    String sessionToken = System.getProperty("floecat.fixture.aws.s3.session-token");
+    if (accessKey == null || accessKey.isBlank() || secretKey == null || secretKey.isBlank()) {
+      return auth.build();
+    }
+
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId(accessKey)
+                    .setSecretAccessKey(secretKey)
+                    .setSessionToken(sessionToken == null ? "" : sessionToken));
+    return auth.setCredentials(creds).build();
+  }
+
+  private static AuthConfig deltaFixtureStorageAuth() {
+    var auth = AuthConfig.newBuilder().setScheme("none");
+    String accessKey = System.getProperty("floecat.fixture.aws.s3.access-key-id");
+    String secretKey = System.getProperty("floecat.fixture.aws.s3.secret-access-key");
+    String sessionToken = System.getProperty("floecat.fixture.aws.s3.session-token");
+    if (accessKey == null || accessKey.isBlank() || secretKey == null || secretKey.isBlank()) {
+      return auth.build();
+    }
+
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId(accessKey)
+                    .setSecretAccessKey(secretKey)
+                    .setSessionToken(sessionToken == null ? "" : sessionToken));
+    return auth.setCredentials(creds).build();
   }
 }

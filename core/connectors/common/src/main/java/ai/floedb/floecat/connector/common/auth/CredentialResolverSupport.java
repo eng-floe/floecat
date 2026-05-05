@@ -151,22 +151,9 @@ public final class CredentialResolverSupport {
           }
         }
       }
-      case AWS -> {
-        var aws = credential.getAws();
-        putIfNotBlank(options, "s3.access-key-id", aws.getAccessKeyId());
-        putIfNotBlank(options, "s3.secret-access-key", aws.getSecretAccessKey());
-        putIfNotBlank(options, "s3.session-token", aws.getSessionToken());
-      }
-      case AWS_WEB_IDENTITY -> {
-        var web = credential.getAwsWebIdentity();
-        Credentials creds = assumeRoleWithWebIdentity(web, credential.getPropertiesMap());
-        applyAwsCredentials(options, creds);
-      }
-      case AWS_ASSUME_ROLE -> {
-        var ar = credential.getAwsAssumeRole();
-        Credentials creds = assumeRole(ar);
-        applyAwsCredentials(options, creds);
-      }
+      case AWS, AWS_WEB_IDENTITY, AWS_ASSUME_ROLE ->
+          resolveStorageCredentials(credential)
+              .ifPresent(resolved -> options.putAll(resolved.asS3Properties()));
       case RFC8693_TOKEN_EXCHANGE -> {
         String token =
             exchangeRfc8693(
@@ -208,6 +195,33 @@ public final class CredentialResolverSupport {
     var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
 
     return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
+  }
+
+  public static java.util.Optional<ResolvedStorageCredentials> resolveStorageCredentials(
+      AuthCredentials credential) {
+    if (credential == null) {
+      return java.util.Optional.empty();
+    }
+    return switch (credential.getCredentialCase()) {
+      case AWS ->
+          java.util.Optional.of(
+              new ResolvedStorageCredentials(
+                  blankToNull(credential.getAws().getAccessKeyId()),
+                  blankToNull(credential.getAws().getSecretAccessKey()),
+                  blankToNull(credential.getAws().getSessionToken()),
+                  null));
+      case AWS_WEB_IDENTITY -> {
+        Credentials creds =
+            assumeRoleWithWebIdentity(
+                credential.getAwsWebIdentity(), credential.getPropertiesMap());
+        yield java.util.Optional.of(toResolvedStorageCredentials(creds));
+      }
+      case AWS_ASSUME_ROLE -> {
+        Credentials creds = assumeRole(credential.getAwsAssumeRole());
+        yield java.util.Optional.of(toResolvedStorageCredentials(creds));
+      }
+      default -> java.util.Optional.empty();
+    };
   }
 
   private static void putIfNotBlank(Map<String, String> target, String key, String value) {
@@ -271,6 +285,18 @@ public final class CredentialResolverSupport {
     putIfNotBlank(options, "s3.access-key-id", creds.accessKeyId());
     putIfNotBlank(options, "s3.secret-access-key", creds.secretAccessKey());
     putIfNotBlank(options, "s3.session-token", creds.sessionToken());
+  }
+
+  private static ResolvedStorageCredentials toResolvedStorageCredentials(Credentials creds) {
+    if (creds == null) {
+      throw new IllegalStateException("AWS STS did not return credentials");
+    }
+    Instant expiresAt = creds.expiration();
+    return new ResolvedStorageCredentials(
+        blankToNull(creds.accessKeyId()),
+        blankToNull(creds.secretAccessKey()),
+        blankToNull(creds.sessionToken()),
+        expiresAt);
   }
 
   private static Credentials assumeRole(AuthCredentials.AwsAssumeRole ar) {

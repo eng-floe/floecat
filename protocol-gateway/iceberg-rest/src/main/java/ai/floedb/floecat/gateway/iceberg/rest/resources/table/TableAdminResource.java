@@ -57,7 +57,6 @@ public class TableAdminResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @NotNull @Valid TransactionCommitRequest request) {
     String path = String.format("/v1/%s/transactions/commit", prefix);
-    commitTrafficLogger.logRequest("POST", path, request);
     Response response =
         transactionCommitService.commit(prefix, idempotencyKey, request, tableSupport);
     commitTrafficLogger.logResponse("POST", path, response.getStatus(), response.getEntity());

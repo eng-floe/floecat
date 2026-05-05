@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
@@ -33,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -49,6 +52,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
+import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -68,6 +72,8 @@ import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdRequest;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
@@ -106,6 +112,7 @@ public abstract class AbstractRestResourceTest {
   @InjectMock protected GrpcClients clients;
   @InjectMock protected TableMetadataImportService metadataImportService;
   @InjectMock protected TableDropCleanupService tableDropCleanupService;
+  @InjectMock protected StorageCredentialAuthority storageCredentialAuthority;
   @Inject protected StagedTableRepository stageRepository;
   @Inject protected ViewMetadataService viewMetadataService;
 
@@ -161,6 +168,22 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(grpc.withHeaders(transactionsStub)).thenReturn(transactionsStub);
     Mockito.when(querySchemaStub.describeInputs(Mockito.any()))
         .thenReturn(DescribeInputsResponse.getDefaultInstance());
+    Mockito.when(tableStub.getTable(Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              GetTableRequest request = inv.getArgument(0, GetTableRequest.class);
+              ResourceId tableId =
+                  request != null ? request.getTableId() : ResourceId.getDefaultInstance();
+              Table table =
+                  FIXTURE.table().toBuilder()
+                      .setResourceId(tableId)
+                      .setDisplayName(
+                          tableId != null && !tableId.getId().isBlank()
+                              ? tableDisplayName(tableId.getId())
+                              : FIXTURE.table().getDisplayName())
+                      .build();
+              return GetTableResponse.newBuilder().setTable(table).build();
+            });
     Mockito.when(snapshotStub.createSnapshot(Mockito.any()))
         .thenReturn(CreateSnapshotResponse.newBuilder().build());
     Mockito.when(snapshotStub.deleteSnapshot(Mockito.any()))
@@ -191,6 +214,17 @@ public abstract class AbstractRestResourceTest {
             });
     Mockito.when(connectorsStub.deleteConnector(Mockito.any()))
         .thenReturn(DeleteConnectorResponse.newBuilder().build());
+    Mockito.when(storageCredentialAuthority.clientSafeConfig(Mockito.any())).thenReturn(Map.of());
+    Mockito.when(storageCredentialAuthority.resolveForTable(Mockito.any(), Mockito.anyBoolean()))
+        .thenReturn(null);
+    Mockito.when(
+            storageCredentialAuthority.resolveServerSideFileIoConfig(
+                Mockito.any(), Mockito.anyBoolean()))
+        .thenReturn(Map.of());
+    Mockito.when(
+            storageCredentialAuthority.resolveFileIoConfigForLocation(
+                Mockito.anyString(), Mockito.anyBoolean()))
+        .thenReturn(Map.of());
     Mockito.when(transactionsStub.beginTransaction(Mockito.any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -214,6 +248,24 @@ public abstract class AbstractRestResourceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
+    Mockito.when(transactionsStub.reserveTransactionTableId(Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              ReserveTransactionTableIdRequest request =
+                  inv.getArgument(0, ReserveTransactionTableIdRequest.class);
+              String id =
+                  request == null || request.getTableFq().isBlank()
+                      ? "reserved-table"
+                      : request.getTableFq().replace('.', ':');
+              return ReserveTransactionTableIdResponse.newBuilder()
+                  .setTableId(
+                      ResourceId.newBuilder()
+                          .setAccountId(TEST_ACCOUNT_ID)
+                          .setKind(ResourceKind.RK_TABLE)
+                          .setId(id)
+                          .build())
+                  .build();
+            });
     Mockito.when(metadataImportService.importMetadata(Mockito.any(), Mockito.any()))
         .thenAnswer(
             inv -> {
@@ -322,6 +374,14 @@ public abstract class AbstractRestResourceTest {
         .setKind(kind)
         .setId(builder.toString())
         .build();
+  }
+
+  private static String tableDisplayName(String resourceId) {
+    if (resourceId == null || resourceId.isBlank()) {
+      return FIXTURE.table().getDisplayName();
+    }
+    int idx = resourceId.lastIndexOf(':');
+    return idx >= 0 && idx + 1 < resourceId.length() ? resourceId.substring(idx + 1) : resourceId;
   }
 
   private static ImportedSnapshot currentSnapshotFromFixture() {

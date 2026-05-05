@@ -20,6 +20,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import com.google.protobuf.ByteString;
 import java.time.Instant;
@@ -151,5 +156,41 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(metadataAndStats).containsExactly(10L);
     assertThat(statsOnly).isEmpty();
     assertThat(fullRescan).isEmpty();
+  }
+
+  @Test
+  void activeConnectorRehydratesStoredCredentialsIntoResolvedConfig() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("s3://bucket/table/metadata/00001.metadata.json")
+            .putProperties("iceberg.source", "filesystem")
+            .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4"))
+            .build();
+    ((InMemoryCredentialResolver) service.credentialResolver)
+        .store(
+            connectorId.getAccountId(),
+            connectorId.getId(),
+            AuthCredentials.newBuilder()
+                .setAws(
+                    AuthCredentials.AwsCredentials.newBuilder()
+                        .setAccessKeyId("access-key")
+                        .setSecretAccessKey("secret-key")
+                        .setSessionToken("session-token"))
+                .build());
+    service.backend = new ReturningBackend(connector);
+
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+    ReconcilerService.ActiveConnector active = service.activeConnectorForResult(ctx, connectorId);
+
+    assertThat(active.config().options())
+        .doesNotContainKeys("s3.access-key-id", "s3.secret-access-key", "s3.session-token");
+    assertThat(active.resolvedConfig().options())
+        .containsEntry("s3.access-key-id", "access-key")
+        .containsEntry("s3.secret-access-key", "secret-key")
+        .containsEntry("s3.session-token", "session-token");
   }
 }

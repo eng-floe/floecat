@@ -65,7 +65,7 @@ make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=locals
 
 ### Split reconciler mode
 
-The same service image can now run as a control-plane node or as a remote executor node.
+The same service image can run as a control-plane node or as a remote executor node.
 
 Run a control plane plus one executor node:
 
@@ -167,10 +167,10 @@ Common configuration knobs:
 - **AWS wiring**: `FLOECAT_STORAGE_AWS_REGION`, `FLOECAT_STORAGE_AWS_S3_ENDPOINT`,
   `FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT`, `FLOECAT_STORAGE_AWS_ACCESS_KEY_ID`,
   `FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY`, `FLOECAT_STORAGE_AWS_S3_PATH_STYLE`.
-- **Gateway storage credentials**: `ICEBERG_STORAGE_SCOPE`, `ICEBERG_STORAGE_TYPE`,
-  `ICEBERG_STORAGE_KEY_ID`, `ICEBERG_STORAGE_SECRET`, `ICEBERG_STORAGE_REGION`,
-  plus `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
-  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
+- **Gateway client-safe storage defaults**:
+  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
+  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for
+  non-default endpoints. Temporary vended credentials come from storage authorities.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
 - **Reconciler split deployment**:
   `FLOECAT_RECONCILER_WORKER_MODE`, `FLOECAT_RECONCILER_MAX_PARALLELISM`,
@@ -208,6 +208,11 @@ If `AWS_PROFILE` is unset, the SDK falls back to env vars or the instance/contai
 
 If your images run as a non-root user, mount `~/.aws` into that user’s home in
 `docker/docker-compose.yml`.
+
+For Iceberg REST credential vending, define a storage authority after the stack starts instead of
+injecting static gateway credentials. In LocalStack-style setups, the authority typically carries a
+storage prefix, region, endpoint, path-style flag, and source credentials supplied with
+`storage-authority create ... --cred-type aws ...`.
 
 ## OIDC Notes
 

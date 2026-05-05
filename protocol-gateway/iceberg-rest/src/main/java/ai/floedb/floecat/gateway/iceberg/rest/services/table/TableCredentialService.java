@@ -16,23 +16,27 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CredentialsResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 
 @ApplicationScoped
 public class TableCredentialService {
+  @Inject TableLifecycleService tableLifecycleService;
 
   public Response load(TableRef tableContext, String planId, TableGatewaySupport tableSupport) {
-    // hook for future credential resolution per plan/table context
+    Table tableRecord = tableLifecycleService.getTable(tableContext.tableId());
     List<StorageCredentialDto> credentials;
     try {
-      credentials = tableSupport.credentialsForAccessDelegation("vended-credentials");
+      credentials = tableSupport.credentialsForAccessDelegation(tableRecord, "vended-credentials");
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }

@@ -99,10 +99,26 @@ public class TableRegisterRequestBuilder {
       merged.put("location", importedMetadata.tableLocation());
     }
     if (registerIoProperties != null && !registerIoProperties.isEmpty()) {
-      merged.putAll(registerIoProperties);
+      registerIoProperties.forEach(
+          (key, value) -> {
+            if (!isSecretBearingProperty(key) && value != null) {
+              merged.put(key, value);
+            }
+          });
     }
     MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
     return merged;
+  }
+
+  private boolean isSecretBearingProperty(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    String normalized = key.toLowerCase();
+    return normalized.contains("secret")
+        || normalized.contains("access-key")
+        || normalized.contains("session-token")
+        || normalized.contains("token");
   }
 
   private List<ImportedSnapshot> snapshotsToImport(ImportedMetadata importedMetadata) {

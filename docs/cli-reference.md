@@ -95,6 +95,24 @@ connector trigger <display_name|id> [--full]
     [--snapshot <id>|--current] [--columns c1,#id2,...]
 connector job <jobId>
 
+storage-authorities
+storage-authority list [--page-size <N>]
+storage-authority get <display_name|id>
+storage-authority create <display_name> --location-prefix <uri-prefix>
+    [--desc <text>] [--enabled true|false] [--type <type>]
+    [--region <region>] [--endpoint <uri>] [--path-style-access true|false]
+    [--assume-role-arn <arn>] [--assume-role-external-id <id>]
+    [--assume-role-session-name <name>] [--duration-seconds <n>]
+    [--cred-type aws|aws-assume-role|aws-web-identity] [--cred k=v ...] [--cred-head k=v ...]
+storage-authority update <display_name|id> [--display <name>]
+    [--location-prefix <uri-prefix>] [--desc <text>] [--enabled true|false]
+    [--type <type>] [--region <region>] [--endpoint <uri>]
+    [--path-style-access true|false] [--assume-role-arn <arn>]
+    [--assume-role-external-id <id>] [--assume-role-session-name <name>]
+    [--duration-seconds <n>] [--cred-type aws|aws-assume-role|aws-web-identity]
+    [--cred k=v ...] [--cred-head k=v ...] [--etag <etag>]
+storage-authority delete <display_name|id> [--etag <etag>]
+
 Credential types (`--cred-type`):
 - `bearer` – required: `token` (use this for personal access tokens).
 - `client` – required: `endpoint`, `client_id`, `client_secret`.
@@ -118,6 +136,7 @@ Any type can include extra `--cred k=v` entries to populate `AuthCredentials.pro
 `--cred-head k=v` entries to populate `AuthCredentials.headers` (used by token exchange requests).
 
 Auth properties (generic options):
+- Secret-bearing auth values must use `--cred-type ...` / `--cred ...`, not `--auth k=v`.
 - `--auth aws.profile=<name>` – use an AWS CLI/profile for SigV4 and S3 auth (for example `default`, `dev`).
 - `--auth aws.profile_path=<path>` – optional shared credentials/config file path.
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
@@ -145,6 +164,13 @@ Auth credential types explained (end-user view):
 - `aws`: Floecat uses static AWS access keys (plus optional session token).
 - `aws-web-identity`: Floecat assumes an AWS role using a web identity token.
 - `aws-assume-role`: Floecat assumes an AWS role using existing AWS credentials.
+
+Storage authority notes:
+- Storage authorities are the source of truth for object-store credential vending to Iceberg REST clients.
+- `storage-authority create` requires `--location-prefix` and credentials.
+- For static AWS source credentials (`--cred-type aws`), also set `--assume-role-arn` when you want Floecat to vend temporary AWS session credentials instead of rejecting static credentials.
+- `storage-authority update` only mutates fields named in its update mask. Omitting `--cred-*` on CLI update leaves the existing secret unchanged.
+- Connector `--auth` / `auth.properties` should only carry non-secret settings such as `aws.profile`, `aws.profile_path`, or `oauth.mode=cli`.
 
 help
 quit

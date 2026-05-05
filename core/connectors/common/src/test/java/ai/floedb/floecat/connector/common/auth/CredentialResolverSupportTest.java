@@ -383,6 +383,34 @@ class CredentialResolverSupportTest {
   }
 
   @Test
+  void awsCredentialsMapToIcebergS3OptionKeys() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret")
+                    .setSessionToken("session"))
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "s3://bucket",
+            Map.of("iceberg.source", "filesystem"),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("akid", applied.options().get("s3.access-key-id"));
+    assertEquals("secret", applied.options().get("s3.secret-access-key"));
+    assertEquals("session", applied.options().get("s3.session-token"));
+    assertNull(applied.auth().props().get("access_key_id"));
+    assertNull(applied.auth().props().get("secret_access_key"));
+    assertNull(applied.auth().props().get("session_token"));
+  }
+
+  @Test
   void buildAssumeRoleRequestUsesDefaults() {
     var ar =
         AuthCredentials.AwsAssumeRole.newBuilder()

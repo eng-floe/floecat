@@ -17,7 +17,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.api.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.time.Instant;
 import java.util.Map;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record StorageCredentialDto(String prefix, Map<String, String> config) {}
+public record StorageCredentialDto(
+    String prefix, Map<String, String> config, @JsonProperty("expires-at") Instant expiresAt) {
+  public StorageCredentialDto(String prefix, Map<String, String> config) {
+    this(prefix, config, null);
+  }
+}

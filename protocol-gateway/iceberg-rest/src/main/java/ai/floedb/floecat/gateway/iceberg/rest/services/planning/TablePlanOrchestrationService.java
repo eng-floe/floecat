@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FailedPlanningResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -34,9 +36,13 @@ import java.util.List;
 public class TablePlanOrchestrationService {
   @Inject TablePlanService tablePlanService;
   @Inject PlanTaskManager planTaskManager;
+  @Inject TableLifecycleService tableLifecycleService;
 
   public Response plan(
-      TableRef tableContext, PlanRequests.Plan rawRequest, TableGatewaySupport tableSupport) {
+      TableRef tableContext,
+      PlanRequests.Plan rawRequest,
+      String accessDelegationMode,
+      TableGatewaySupport tableSupport) {
     PlanRequests.Plan request = rawRequest == null ? PlanRequests.Plan.empty() : rawRequest;
     Long startSnapshotId = request.startSnapshotId();
     Long endSnapshotId = request.endSnapshotId();
@@ -63,6 +69,7 @@ public class TablePlanOrchestrationService {
     boolean caseSensitive =
         request.caseSensitive() == null || Boolean.TRUE.equals(request.caseSensitive());
     boolean useSnapshotSchema = Boolean.TRUE.equals(request.useSnapshotSchema());
+    Table tableRecord = tableLifecycleService.getTable(tableContext.tableId());
     String planId = null;
     try {
       var handle =
@@ -82,7 +89,9 @@ public class TablePlanOrchestrationService {
       planTaskManager.registerSubmittedPlan(
           planId, tableContext.namespaceName(), tableContext.table());
       TablePlanResponseDto planned =
-          tablePlanService.fetchPlan(planId, tableSupport.defaultCredentials());
+          tablePlanService.fetchPlan(
+              planId,
+              tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode));
       PlanTaskManager.PlanDescriptor descriptor =
           planTaskManager.registerCompletedPlan(
               planId,

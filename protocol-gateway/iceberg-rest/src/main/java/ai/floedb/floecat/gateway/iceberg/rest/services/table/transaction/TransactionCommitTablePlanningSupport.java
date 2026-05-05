@@ -21,7 +21,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
@@ -29,6 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitResponseBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitPlanner;
@@ -42,10 +42,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
@@ -55,6 +53,7 @@ public class TransactionCommitTablePlanningSupport {
 
   @Inject TransactionCommitExecutionSupport transactionCommitExecutionSupport;
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject GrpcServiceFacade grpcClient;
   @Inject TableCommitPlanner tableCommitPlanner;
   @Inject CommitResponseBuilder responseBuilder;
   @Inject TablePropertyService tablePropertyService;
@@ -158,32 +157,21 @@ public class TransactionCommitTablePlanningSupport {
     return table.toBuilder().setResourceId(tableId).build();
   }
 
-  ResourceId atomicCreateTableId(
-      String accountId,
-      String txId,
-      ResourceId catalogId,
-      ResourceId namespaceId,
-      List<String> namespacePath,
-      String tableName) {
-    String catalogPart = catalogId == null ? "<catalog>" : catalogId.getId();
-    String namespacePart =
-        namespacePath == null || namespacePath.isEmpty()
-            ? (namespaceId == null ? "<namespace>" : namespaceId.getId())
-            : String.join(".", namespacePath);
-    String seed =
-        (txId == null ? "" : txId)
-            + "|"
-            + catalogPart
-            + "|"
-            + namespacePart
-            + "|"
-            + (tableName == null ? "" : tableName);
-    UUID deterministicId = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8));
-    return ResourceId.newBuilder()
-        .setAccountId(accountId == null ? "" : accountId)
-        .setId("tbl-" + deterministicId)
-        .setKind(ResourceKind.RK_TABLE)
-        .build();
+  ResourceId reserveCreateTableId(
+      String txId, List<String> namespacePath, String catalogName, String tableName) {
+    String namespace =
+        namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
+    String tableFq =
+        namespace.isBlank()
+            ? catalogName + "." + tableName
+            : catalogName + "." + namespace + "." + tableName;
+    return grpcClient
+        .reserveTransactionTableId(
+            ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdRequest.newBuilder()
+                .setTxId(txId)
+                .setTableFq(tableFq)
+                .build())
+        .getTableId();
   }
 
   private PreMaterializedTable preMaterializeTableBeforeCommit(

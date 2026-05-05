@@ -158,8 +158,11 @@ public class DeltaManifestMaterializer {
   }
 
   protected FileIO newFileIo(Table table) {
-    Map<String, String> props = new LinkedHashMap<>(tableGatewaySupport.defaultFileIoProperties());
-    if (table.getPropertiesCount() > 0) {
+    Map<String, String> props = new LinkedHashMap<>();
+    if (tableGatewaySupport != null) {
+      String location = metadataRoot(table);
+      props.putAll(tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, location));
+    } else if (table != null && table.getPropertiesCount() > 0) {
       table
           .getPropertiesMap()
           .forEach(

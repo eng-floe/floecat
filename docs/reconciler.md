@@ -155,7 +155,7 @@ Connector StartCapture / CaptureNow
           → enumerate snapshots via FloecatConnector
           → enqueue PLAN_SNAPSHOT children
       → if PLAN_VIEW:
-          → describeView (or listViewDescriptors fallback)
+          → describeView
           → ensure destination namespace exists
           → create or update the destination view
       → if PLAN_SNAPSHOT:

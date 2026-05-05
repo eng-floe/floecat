@@ -57,7 +57,7 @@ Flags:
 
 ### Reconciler deployment modes
 
-The reconciler can now run in three shapes from the same artifact:
+The reconciler runs in three shapes from the same artifact:
 
 - **All-in-one**: default profile; public APIs, durable queue ownership, and local executor polling stay in one runtime.
 - **Control plane**: `QUARKUS_PROFILE=reconciler-control`; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.
@@ -88,9 +88,8 @@ Recommended split deployment:
 
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
-and `EXEC_FILE_GROUP` work. `CaptureNow` follows the same plan-plus-child execution path rather
-than a legacy connector-wide execution mode. File-group workers submit results through
-`SubmitLeasedFileGroupExecutionResult`, which now requires `result_id` so the control plane can
+and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through
+`SubmitLeasedFileGroupExecutionResult`, which requires `result_id` so the control plane can
 enforce replay safety across worker retries.
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
@@ -110,7 +109,7 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
 ### Telemetry hub configuration
-The service now uses the telemetry hub core + Micrometer backend. The following flags are available in
+The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 `service/src/main/resources/application.properties` (the `telemetry-otlp` profile toggles OTLP tracing/log exports):
 
 ```

@@ -60,7 +60,7 @@ public class TableLoadService {
     }
     List<StorageCredentialDto> credentials;
     try {
-      credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+      credentials = tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -71,7 +71,7 @@ public class TableLoadService {
                 tableRecord,
                 loadData.metadata(),
                 loadData.snapshots(),
-                tableSupport.defaultTableConfig(),
+                tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {
       builder.header(HttpHeaders.ETAG, etagValue);
@@ -86,7 +86,7 @@ public class TableLoadService {
       TableGatewaySupport tableSupport) {
     List<StorageCredentialDto> credentials;
     try {
-      credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+      credentials = tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -119,7 +119,7 @@ public class TableLoadService {
                 tableRecord,
                 loadData.metadata(),
                 loadData.snapshots(),
-                tableSupport.defaultTableConfig(),
+                tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {
       builder.header(HttpHeaders.ETAG, etagValue);

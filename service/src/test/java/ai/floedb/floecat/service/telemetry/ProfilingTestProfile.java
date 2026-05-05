@@ -26,6 +26,7 @@ public class ProfilingTestProfile implements QuarkusTestProfile {
         "quarkus.profile", "telemetry-prof",
         "floecat.profiling.enabled", "true",
         "floecat.profiling.endpoints-enabled", "true",
+        "floecat.profiling.artifact-dir", ProfilingTestPaths.artifactDir("resource"),
         "floecat.profiling.capture-duration", "100MS",
         "floecat.profiling.max-capture-bytes", "1048576",
         "floecat.profiling.rate-limit", "5",

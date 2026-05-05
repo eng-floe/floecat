@@ -32,15 +32,9 @@ public interface ConnectorIntegrationConfig {
 
   Optional<String> defaultRegion();
 
-  Optional<StorageCredentialConfig> storageCredential();
+  Map<String, String> storageCredentialProperties();
 
   Map<String, RegisterConnectorTemplate> registerConnectors();
-
-  interface StorageCredentialConfig {
-    Optional<String> scope();
-
-    Map<String, String> properties();
-  }
 
   interface RegisterConnectorTemplate {
     Optional<String> displayName();

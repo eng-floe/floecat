@@ -2,8 +2,8 @@
 
 ## External Session Header
 
-The `floecat` service can accept an external session header carrying a JWT. This is validated by
-Quarkus OIDC and used to authenticate gRPC calls.
+The `floecat` service accepts an external session header carrying a JWT. Quarkus OIDC validates it
+and Floecat uses it to authenticate gRPC calls.
 
 Auth modes:
 - `floecat.auth.mode=oidc`: require session or authorization header.
@@ -16,7 +16,7 @@ an admin account on startup.
 ## Local Keycloak (dev)
 
 For local testing you can run Keycloak with a pre-seeded realm that issues `account_id` and `roles`
-claims compatible with Floecat.
+claims expected by Floecat.
 
 Start Keycloak:
 ```

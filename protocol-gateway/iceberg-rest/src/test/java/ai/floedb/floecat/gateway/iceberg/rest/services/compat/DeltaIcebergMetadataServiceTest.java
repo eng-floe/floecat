@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
@@ -52,5 +53,38 @@ class DeltaIcebergMetadataServiceTest {
         service.load(tableId, table, SnapshotLister.Mode.REFS);
 
     assertEquals(0, result.snapshots().size());
+  }
+
+  @Test
+  void loadScopesTableResourceIdBeforeManifestMaterialization() {
+    DeltaIcebergMetadataService service = new DeltaIcebergMetadataService();
+    service.snapshotClient = mock(GrpcServiceFacade.class);
+    service.translator = mock(DeltaIcebergMetadataTranslator.class);
+    service.manifestMaterializer = mock(DeltaManifestMaterializer.class);
+
+    ResourceId scopedTableId =
+        ResourceId.newBuilder().setAccountId("acct-1").setId("cat:db:delta_orders").build();
+    Table unscopedTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:delta_orders").build())
+            .putProperties("storage_location", "s3://floecat-delta/call_center")
+            .build();
+    Table scopedTable = unscopedTable.toBuilder().setResourceId(scopedTableId).build();
+    Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(10L).build();
+
+    when(service.snapshotClient.listSnapshots(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
+    when(service.translator.translate(scopedTable, List.of(snapshot)))
+        .thenReturn(
+            IcebergMetadata.newBuilder()
+                .setMetadataLocation("floe+delta://cat:db:delta_orders/metadata/10.metadata.json")
+                .build());
+    when(service.manifestMaterializer.materialize(scopedTable, List.of(snapshot)))
+        .thenReturn(List.of(snapshot));
+
+    service.load(scopedTableId, unscopedTable, SnapshotLister.Mode.ALL);
+
+    verify(service.translator).translate(scopedTable, List.of(snapshot));
+    verify(service.manifestMaterializer).materialize(scopedTable, List.of(snapshot));
   }
 }

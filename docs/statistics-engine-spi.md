@@ -43,7 +43,7 @@ Current target support in native engines:
 - `COLUMN`
 - `FILE`
 
-`EXPRESSION` capture engines are future work.
+`EXPRESSION` capture engines are not implemented.
 
 `StatsCaptureRequest.columnSelectors`:
 

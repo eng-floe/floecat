@@ -465,6 +465,8 @@ class ViewResourceTest extends AbstractRestResourceTest {
                     List.of())),
             Map.of("comment", "registered"));
     writeMetadataFile(root, metadataLocation, metadata);
+    when(storageCredentialAuthority.resolveFileIoConfigForLocation(metadataLocation, false))
+        .thenReturn(storageAuthorityIoPropsForFixture());
 
     when(viewStub.createView(any()))
         .thenAnswer(
@@ -665,5 +667,19 @@ class ViewResourceTest extends AbstractRestResourceTest {
     if (value != null && !value.isBlank()) {
       props.put(key, value);
     }
+  }
+
+  private static Map<String, String> storageAuthorityIoPropsForFixture() {
+    if (!Boolean.parseBoolean(System.getProperty("floecat.fixtures.use-aws-s3", "false"))) {
+      return Map.of();
+    }
+    Map<String, String> ioProps = new LinkedHashMap<>();
+    addIfPresent(ioProps, "s3.endpoint", "floecat.fixture.aws.s3.endpoint");
+    addIfPresent(ioProps, "s3.region", "floecat.fixture.aws.s3.region");
+    addIfPresent(ioProps, "s3.access-key-id", "floecat.fixture.aws.s3.access-key-id");
+    addIfPresent(ioProps, "s3.secret-access-key", "floecat.fixture.aws.s3.secret-access-key");
+    addIfPresent(ioProps, "s3.session-token", "floecat.fixture.aws.s3.session-token");
+    addIfPresent(ioProps, "s3.path-style-access", "floecat.fixture.aws.s3.path-style-access");
+    return Map.copyOf(ioProps);
   }
 }

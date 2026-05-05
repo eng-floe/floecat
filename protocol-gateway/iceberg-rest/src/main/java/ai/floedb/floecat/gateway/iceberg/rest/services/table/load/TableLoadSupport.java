@@ -26,7 +26,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -169,10 +168,9 @@ public class TableLoadSupport {
     }
     LOG.infof("Hydrating load metadata from metadata-location=%s", metadataLocation);
     try {
-      Map<String, String> ioProps = new LinkedHashMap<>(tableSupport.defaultFileIoProperties());
-      if (tableRecord != null && tableRecord.getPropertiesCount() > 0) {
-        ioProps.putAll(FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap()));
-      }
+      Map<String, String> ioProps =
+          new LinkedHashMap<>(
+              tableSupport.serverSideFileIoPropertiesForLocation(tableRecord, metadataLocation));
       IcebergMetadata imported =
           tableMetadataImportService.importMetadata(metadataLocation, ioProps).icebergMetadata();
       LOG.infof(

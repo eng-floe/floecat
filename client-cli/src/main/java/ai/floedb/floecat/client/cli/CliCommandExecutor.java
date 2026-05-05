@@ -32,6 +32,7 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.Objects;
@@ -85,6 +86,7 @@ public final class CliCommandExecutor {
   private final QueryServiceGrpc.QueryServiceBlockingStub queries;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
+  private final StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities;
   private final Supplier<String> getAccountId;
   private final Consumer<String> setAccountId;
   private final Supplier<String> getCatalog;
@@ -107,6 +109,7 @@ public final class CliCommandExecutor {
     this.queries = builder.queries;
     this.queryScan = builder.queryScan;
     this.querySchema = builder.querySchema;
+    this.storageAuthorities = builder.storageAuthorities;
     this.getAccountId = builder.getAccountId;
     this.setAccountId = builder.setAccountId;
     this.getCatalog = builder.getCatalog;
@@ -150,6 +153,7 @@ public final class CliCommandExecutor {
         .queries(QueryServiceGrpc.newBlockingStub(channel))
         .queryScan(QueryScanServiceGrpc.newBlockingStub(channel))
         .querySchema(QuerySchemaServiceGrpc.newBlockingStub(channel))
+        .storageAuthorities(StorageAuthoritiesGrpc.newBlockingStub(channel))
         .build();
   }
 
@@ -178,6 +182,7 @@ public final class CliCommandExecutor {
     private QueryServiceGrpc.QueryServiceBlockingStub queries;
     private QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
     private QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
+    private StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities;
     private Supplier<String> getAccountId = () -> "";
     private Consumer<String> setAccountId = id -> {};
     private Supplier<String> getCatalog = () -> "";
@@ -268,6 +273,12 @@ public final class CliCommandExecutor {
       return this;
     }
 
+    public Builder storageAuthorities(
+        StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities) {
+      this.storageAuthorities = storageAuthorities;
+      return this;
+    }
+
     /** Supplier for the current account id. Defaults to {@code () -> ""}. */
     public Builder getAccountId(Supplier<String> getAccountId) {
       this.getAccountId = getAccountId;
@@ -316,6 +327,7 @@ public final class CliCommandExecutor {
       Objects.requireNonNull(queries, "queries");
       Objects.requireNonNull(queryScan, "queryScan");
       Objects.requireNonNull(querySchema, "querySchema");
+      Objects.requireNonNull(storageAuthorities, "storageAuthorities");
       return new CliCommandExecutor(this);
     }
   }
@@ -432,6 +444,9 @@ public final class CliCommandExecutor {
               directory,
               getCatalog,
               getAccountId);
+      case "storage-authorities", "storage-authority" ->
+          StorageAuthorityCliSupport.handle(
+              command, CliArgs.tail(tokens), out, storageAuthorities, getAccountId);
       default -> {
         out.println("Unknown command. Type 'help'.");
         return false;

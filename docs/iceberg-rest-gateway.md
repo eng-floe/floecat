@@ -11,7 +11,7 @@ This module (`protocol-gateway/iceberg-rest`) implements the Apache Iceberg REST
 - **Single catalog focus:** one Floecat catalog per REST prefix (multi-catalog ACID transactions remain out of scope).
 - **Reusability:** keep Iceberg-specific plumbing isolated, allowing additional protocols to reuse the same staging, metadata, and connector services.
 
-Non-goals for the current release:
+Out of scope:
 
 - Serving manifests/files directly from the gateway.
 - Async/streaming scan planning.
@@ -28,8 +28,8 @@ Non-goals for the current release:
 | Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via `TableMetadataImportService`; overwrite-register reuses the existing table identity and snapshot lineage instead of forcing a fresh metadata snapshot during registration. |
 | Table rename/move | `TableService.UpdateTable` | Uses field masks for namespace + display name changes. |
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
-| `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
-| `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
+| `/tables/{table}/credentials` | `StorageCredentialAuthority` + `StorageAuthorities` gRPC service | Returns vended credentials for the resolved table storage prefix when access delegation requests them. |
+| `/tables/{table}/metrics` | Logging only | Validates payloads and logs them; the Iceberg REST contract does not map them into Floecat stats APIs. |
 | `/tables/rename`, `/transactions/commit` | Table services + transaction service | Validates requirement/update payloads and commits all table changes in one backend transaction (with idempotent replay). |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
 | `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
@@ -69,11 +69,11 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 ## Runtime Architecture Overview
 
 1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
-2. **Context resolution:** `ResourceResolver` builds the catalog/resource references used throughout the gateway (`CatalogRef`, `NamespaceRef`, `TableRef`, `ViewRef`). The older request-context factory/record layer has been removed.
+2. **Context resolution:** `ResourceResolver` builds the catalog/resource references used throughout the gateway (`CatalogRef`, `NamespaceRef`, `TableRef`, `ViewRef`).
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. Table orchestration is further split by concern into `load`, `materialization`, `metadata`, and `transaction`.
 4. **gRPC translation:** service orchestration flows use `GrpcServiceFacade` so backend calls inherit Floecat’s auth context and telemetry consistently.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** registered Iceberg tables provision a Floecat-backed connector during commit, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.
+6. **Connectors & credentials:** registered Iceberg tables provision a Floecat-backed connector during commit. Storage authorities are the source of truth for client-safe storage config and temporary credential vending, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -94,7 +94,10 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
 1. Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.
-2. Compute metadata location, connector configuration, and default storage credentials.
+2. Compute metadata location, connector configuration, and storage config/credentials. Storage
+   authority resolution prefers the concrete table `location`, then the metadata-location-derived
+   table root, and only falls back to `upstream.uri` when that URI is a real storage URI such as
+   `s3://...`.
 3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (provided via `Iceberg-Transaction-Id`/`Idempotency-Key` or generated). `StagedTableService` enforces TTL and idempotency.
 4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
 
@@ -155,14 +158,14 @@ Limits/Follow-ups:
   SQL definitions, creation search path, and output columns.
 - View commit updates keep the backend’s canonical SQL/search-path/output-column fields in sync
   with the Iceberg metadata payload when that information is present.
-- Floecat’s backend view record remains current-state only. Iceberg-style version history is stored
+- Floecat’s backend view record is current-state only. Iceberg-style version history is stored
   in the metadata JSON property for REST compatibility, not as first-class backend view versions.
 
 ---
 
 ## Delta Compatibility Layer
 
-The gateway now supports loading Floecat Delta tables through the Iceberg REST surface so engines
+The gateway supports loading Floecat Delta tables through the Iceberg REST surface so engines
 like DuckDB can query `examples.delta.<table>` via the same REST attach used for native Iceberg
 tables.
 
@@ -181,8 +184,8 @@ tables.
    - missing `snap-<snapshot-id>-compat.avro`: regenerate manifest + manifest-list from the
      original Delta snapshot state at read time
 
-This gives "refresh-on-read" behavior without requiring clients to know anything about Delta,
-and no marker file/state is required.
+This gives "refresh-on-read" behavior without requiring clients to know anything about Delta, and
+no marker file/state is required.
 
 Load responses follow Iceberg REST `snapshots` semantics:
 - `snapshots=all` returns all valid snapshots
@@ -214,8 +217,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 ## Commit Guarantees (Current)
 
-- **Single-table core state:** synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.
-- **Post-core side effects:** none in the gateway commit path. Reconciliation happens later via the service scheduler.
+- **Single-table core state:** synchronous and strongly consistent within the request. Table and snapshot metadata needed for the next client commit or read is advanced in the core path.
+- **Post-core side effects:** none in the gateway commit path. Reconciliation is scheduled separately.
 - **Multi-table `/transactions/commit`:** atomic backend transaction across all table changes in one request.
 
 ---
@@ -235,29 +238,36 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 ## Operational Notes & Current Limitations
 
-- **Register IO scope:** `POST /v1/{prefix}/namespaces/{namespace}/register` now treats
-  FileIO properties as request-scoped connector config. Runtime/global storage wiring
-  (`floecat.storage.aws.*`)
-  is no longer required for register flows. Use the register payload `properties` for
-  `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
-  `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
-  Request-supplied FileIO properties are merged over gateway defaults from
-  `floecat.connector.integration.storage-credential.properties.*`.
+- **Register IO scope:** `POST /v1/{prefix}/namespaces/{namespace}/register` treats
+  FileIO properties as request-scoped connector config. Use the register payload `properties` for
+  `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`,
+  `s3.secret-access-key`, `s3.path-style-access`, etc. when non-default storage wiring is needed
+  (for example LocalStack). Request-supplied FileIO properties are merged over any non-secret
+  gateway defaults such as endpoint/path-style settings.
+  These are request-scoped import credentials for register-time server-side reads. They are not
+  persisted as storage-authority credentials and are not vended back to REST clients.
 - **Register overwrite semantics:** `POST /v1/{prefix}/namespaces/{namespace}/register` with
   `overwrite=true` is intended to preserve the existing Floecat table identity and imported
   snapshot lineage for an already-registered table. The overwrite path reuses the current table
   and snapshot IDs instead of treating register as a brand-new create flow.
-- **Registered Iceberg connectors:** tables registered or committed through the gateway are now
-  wired back to Floecat as gateway-managed REST connectors tagged with
+- **Registered Iceberg connectors:** tables registered or committed through the gateway are wired
+  back to Floecat as gateway-managed REST connectors tagged with
   `floecat.connector.mode=capture-only`. The upstream source may still be modeled with
   `iceberg.source=rest`, but capture-only enforcement comes from the explicit mode property rather
   than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
   table record’s `location` and `metadata-location` remain the source of truth for Iceberg clients.
-- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
-  delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
-  and `aws.profile_path` when clients expect AWS SDK profile-based access.
+- **Credentials:** `/tables/{table}/credentials`, table load responses, and plan responses return
+  vended credentials only when access delegation requests them and a matching storage authority is
+  configured for the resolved storage prefix. Floecat does not vend static long-lived credentials;
+  storage authorities are expected to resolve or mint temporary credentials.
+- **Client-safe config:** table load responses may include non-secret storage settings such as
+  endpoint, region, and path-style access. Those values come from storage-authority client-safe
+  config rather than from the upstream connector definition.
+- **Credential source separation:** connector secrets are never used for Iceberg REST client
+  credential vending. Storage-authority secrets are the only credential source used for client
+  vending.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
-- **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
+- **Async planning:** plans are synchronous and completed inline; streaming manifests and async planning (`/plans/{id}`) are not supported.
 - **Multi-table ACID scope:** atomic within a single `/transactions/commit` backend transaction; request validation rejects duplicate table identifiers.
 - **Reconciliation freshness:** stats and other connector-derived state are eventually refreshed by scheduled reconciliation after the commit has already succeeded.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
@@ -267,6 +277,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 ## Client Quick Start
 
 ### DuckDB
+
+Client-managed credentials example (no delegation):
 
 ```sql
 INSTALL httpfs;
@@ -295,7 +307,12 @@ INSERT INTO iceberg_floecat.core.quark_events VALUES (1), (2), (3), (4);
 SELECT * FROM iceberg_floecat.core.quark_events;
 ```
 
+This example is intentionally non-vended: DuckDB is configured with its own S3 secret and asks the
+gateway for `ACCESS_DELEGATION_MODE 'none'`.
+
 ### Trino
+
+Client-managed credentials example (no delegation):
 
 `etc/catalog/analytics_rest.properties`:
 
@@ -338,7 +355,19 @@ INSERT INTO analytics.sales.stream_orders VALUES (1, 'east'), (2, 'west');
 SELECT * FROM analytics.sales.stream_orders;
 ```
 
-Trino picks up the REST prefix/warehouse from the catalog properties, while the gateway injects consistent metadata paths and credentials.
+This example is also intentionally non-vended: Trino is configured with static object-store
+credentials. Use this mode when the client is expected to bring its own storage credentials.
+
+Preferred model: storage-authority-backed credential vending
+
+- Configure upstream catalog access on the Floecat connector as needed for Polaris, Glue, Unity,
+  Delta, or other source systems.
+- Configure storage authorities for the table prefixes you want Floecat to vend.
+- Use client access delegation only on engines that support consuming Iceberg REST
+  `storage-credentials`.
+
+In that preferred model, Floecat vends temporary object-store credentials from storage authorities;
+the client does not need static S3 keys in its catalog config.
 
 ---
 

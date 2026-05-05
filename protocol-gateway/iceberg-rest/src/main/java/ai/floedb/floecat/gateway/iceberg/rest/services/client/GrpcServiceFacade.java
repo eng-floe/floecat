@@ -91,6 +91,10 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
@@ -101,6 +105,8 @@ import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdRequest;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdResponse;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -250,6 +256,11 @@ public class GrpcServiceFacade {
     return transactionStub().getTransaction(request);
   }
 
+  public ReserveTransactionTableIdResponse reserveTransactionTableId(
+      ReserveTransactionTableIdRequest request) {
+    return transactionStub().reserveTransactionTableId(request);
+  }
+
   public ResolveCatalogResponse resolveCatalog(ResolveCatalogRequest request) {
     return directoryStub().resolveCatalog(request);
   }
@@ -264,6 +275,16 @@ public class GrpcServiceFacade {
 
   public ResolveViewResponse resolveView(ResolveViewRequest request) {
     return directoryStub().resolveView(request);
+  }
+
+  public ResolveStorageAuthorityResponse resolveStorageAuthority(
+      ResolveStorageAuthorityRequest request) {
+    return storageAuthorityStub().resolveStorageAuthority(request);
+  }
+
+  public ResolveStorageAuthorityResponse resolveStorageAuthorityForLocation(
+      ResolveStorageAuthorityForLocationRequest request) {
+    return storageAuthorityStub().resolveStorageAuthorityForLocation(request);
   }
 
   public QueryServiceGrpc.QueryServiceBlockingStub queryStub() {
@@ -308,5 +329,9 @@ public class GrpcServiceFacade {
 
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub() {
     return grpc.withHeaders(grpc.raw().directory());
+  }
+
+  private StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorityStub() {
+    return grpc.withHeaders(grpc.raw().storageAuthorities());
   }
 }

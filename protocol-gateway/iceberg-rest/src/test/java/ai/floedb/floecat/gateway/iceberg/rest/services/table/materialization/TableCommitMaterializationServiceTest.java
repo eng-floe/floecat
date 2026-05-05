@@ -74,14 +74,6 @@ class TableCommitMaterializationServiceTest {
     TableMetadataView materialized =
         metadata.withMetadataLocation(
             "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
-    when(materializeMetadataService.materialize(
-            "cat.db",
-            "orders",
-            metadata,
-            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json"))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
 
     Table table =
@@ -98,6 +90,15 @@ class TableCommitMaterializationServiceTest {
                             .build())
                     .build())
             .build();
+    when(materializeMetadataService.materialize(
+            "cat.db",
+            "orders",
+            table,
+            metadata,
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json"))
+        .thenReturn(
+            new MaterializeResult(
+                "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
     MaterializeMetadataResult result =
         service.materializeMetadata(
             "cat.db",
@@ -143,7 +144,7 @@ class TableCommitMaterializationServiceTest {
             base.statistics(),
             base.partitionStatistics(),
             base.snapshots());
-    when(materializeMetadataService.materialize("cat.db", "orders", noLocation, null))
+    when(materializeMetadataService.materialize("cat.db", "orders", null, noLocation, null))
         .thenReturn(new MaterializeResult(null, noLocation));
 
     MaterializeMetadataResult result =
@@ -197,6 +198,7 @@ class TableCommitMaterializationServiceTest {
     when(materializeMetadataService.materialize(
             eq("cat.db"),
             eq("orders"),
+            eq(table),
             any(TableMetadataView.class),
             eq("s3://warehouse/tables/orders/metadata/")))
         .thenReturn(
@@ -257,6 +259,7 @@ class TableCommitMaterializationServiceTest {
     when(materializeMetadataService.materialize(
             eq("cat.db"),
             eq("orders"),
+            eq(table),
             any(TableMetadataView.class),
             eq("s3://warehouse/tables/orders/metadata/")))
         .thenReturn(
@@ -306,6 +309,7 @@ class TableCommitMaterializationServiceTest {
     when(materializeMetadataService.materialize(
             eq("iceberg"),
             eq("orders"),
+            eq((Table) null),
             any(TableMetadataView.class),
             eq("s3://warehouse/iceberg/orders/metadata/")))
         .thenReturn(
@@ -352,6 +356,7 @@ class TableCommitMaterializationServiceTest {
     when(materializeMetadataService.materialize(
             eq("cat.db"),
             eq("orders"),
+            eq((Table) null),
             argThat(
                 md ->
                     md != null
@@ -405,6 +410,7 @@ class TableCommitMaterializationServiceTest {
     when(materializeMetadataService.materialize(
             eq("cat.db"),
             eq("orders"),
+            eq((Table) null),
             argThat(
                 md ->
                     md != null

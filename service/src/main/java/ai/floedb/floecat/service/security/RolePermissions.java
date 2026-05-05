@@ -28,6 +28,8 @@ public final class RolePermissions {
   public static final String INIT_ACCOUNT_ROLE = "init-account";
   public static final String DELETE_ACCOUNT_ROLE = "delete-account";
   public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
+  public static final String STORAGE_AUTHORITY_RESOLVE_INTERNAL =
+      "storage-authority.resolve-internal";
   private static final List<String> READ_PERMS =
       List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
   private static final List<String> FULL_PERMS =
@@ -46,7 +48,8 @@ public final class RolePermissions {
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
-  private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
+  private static final List<String> SYSTEM_OBJECTS_PERMS =
+      List.of("system-objects.read", STORAGE_AUTHORITY_RESOLVE_INTERNAL);
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
           "account.read",
@@ -96,6 +99,7 @@ public final class RolePermissions {
     }
     if (devMode) {
       perms.add("account.write");
+      perms.add(STORAGE_AUTHORITY_RESOLVE_INTERNAL);
     }
     if (perms.isEmpty()) {
       perms.addAll(devMode ? FULL_PERMS : READ_PERMS);

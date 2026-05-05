@@ -189,6 +189,7 @@ public class TransactionCommitService {
                   idempotencyBase,
                   null,
                   null,
+                  null,
                   commitReq,
                   tableSupport);
           ResourceId tableId;
@@ -202,8 +203,8 @@ public class TransactionCommitService {
               throw e;
             }
             tableId =
-                tablePlanningSupport.atomicCreateTableId(
-                    accountId, txId, catalogId, namespaceId, namespacePath, identifier.name());
+                tablePlanningSupport.reserveCreateTableId(
+                    txId, namespacePath, catalogName, identifier.name());
             tableResponse = null;
           }
           Response assertCreateError =

@@ -21,6 +21,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -54,6 +55,7 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
@@ -436,6 +438,17 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(snapshotStub.listSnapshots(any()))
         .thenReturn(
             ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
+    when(storageCredentialAuthority.resolveForTable(any(), eq(true)))
+        .thenReturn(
+            List.of(
+                new StorageCredentialDto(
+                    "s3://yb-iceberg-tpcds/trino_test",
+                    Map.of(
+                        "type", "s3",
+                        "s3.access-key-id", "temp-key",
+                        "s3.secret-access-key", "temp-secret",
+                        "s3.session-token", "temp-session"),
+                    Instant.parse("2026-05-02T18:00:00Z"))));
 
     given()
         .header("X-Iceberg-Access-Delegation", "vended-credentials")
@@ -864,6 +877,54 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void stageCreateSanitizesSensitivePropertiesBeforePersisting() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+    payload.put(
+        "properties",
+        Map.of(
+            "metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            "s3.access-key-id", "temp-key",
+            "token_endpoint", "https://issuer.example/token",
+            "warehouse", "s3://warehouse/db/orders"));
+    payload.put("stage-create", true);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200);
+
+    java.util.Optional<StagedTableEntry> entry =
+        stageRepository.findSingle("account1", "foo", List.of("db"), "orders");
+    assertTrue(entry.isPresent());
+    Map<String, String> persisted = entry.get().request().properties();
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00001.metadata.json",
+        persisted.get("metadata-location"));
+    assertEquals("s3://warehouse/db/orders", persisted.get("warehouse"));
+    assertFalse(persisted.containsKey("s3.access-key-id"));
+    assertFalse(persisted.containsKey("token_endpoint"));
+  }
+
+  @Test
   void stageCreateUsesNamespaceLocationWhenMissingRequestLocation() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -900,6 +961,72 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.location", equalTo("s3://warehouse/db/orders"));
+  }
+
+  @Test
+  void stageCreateVendsCredentialsUsingSpecDerivedLocation() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+    payload.put("location", "s3://warehouse/db/orders");
+    payload.put("stage-create", true);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .header("X-Iceberg-Access-Delegation", "vended-credentials")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400);
+  }
+
+  @Test
+  void stageCreateVendsCredentialsUsingMetadataLocationWhenLocationIsAbsent() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+    payload.put(
+        "properties",
+        Map.of("metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json"));
+    payload.put("stage-create", true);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .header("X-Iceberg-Access-Delegation", "vended-credentials")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400);
   }
 
   @Test
@@ -1131,7 +1258,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
         .body("'file-scan-tasks'.size()", equalTo(1))
         .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
-        .body("'delete-files'.size()", equalTo(0));
+        .body("'delete-files'.size()", equalTo(0))
+        .body("'storage-credentials'.size()", equalTo(0));
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
     verify(queryStub).beginQuery(req.capture());
@@ -1143,6 +1271,44 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
     verify(queryScanStub, times(1)).fetchScanBundle(any());
+  }
+
+  @Test
+  void plansTableScanVendsCredentialsOnlyWhenRequested() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    ScanFile file =
+        ScanFile.newBuilder()
+            .setFilePath("s3://bucket/file.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(10)
+            .setRecordCount(5)
+            .build();
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(storageCredentialAuthority.resolveForTable(any(), eq(true)))
+        .thenReturn(
+            List.of(
+                new StorageCredentialDto(
+                    "s3://bucket",
+                    Map.of("type", "s3", "s3.access-key-id", "temp-key"),
+                    Instant.parse("2026-05-02T18:00:00Z"))));
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .header("X-Iceberg-Access-Delegation", "vended-credentials")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200)
+        .body("'storage-credentials'.size()", equalTo(1))
+        .body("'storage-credentials'[0].prefix", equalTo("s3://bucket"));
   }
 
   @Test
@@ -1386,18 +1552,39 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void loadCredentialsReturnsStaticCredentials() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+  void loadCredentialsReturnsAuthorityBackedCredentials() {
+    ResourceId tableId =
+        ResourceId.newBuilder().setAccountId(TEST_ACCOUNT_ID).setId("cat:db:orders").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setAccountId(TEST_ACCOUNT_ID).setId("connector-1").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    String expectedAccessKey =
-        System.getProperty(
-            "floecat.connector.integration.storage-credential.properties.s3.access-key-id",
-            System.getProperty("floecat.fixture.aws.s3.access-key-id", "test-key"));
-    String expectedSecretKey =
-        System.getProperty(
-            "floecat.connector.integration.storage-credential.properties.s3.secret-access-key",
-            System.getProperty("floecat.fixture.aws.s3.secret-access-key", "test-secret"));
+    when(tableStub.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(
+                    Table.newBuilder()
+                        .setResourceId(tableId)
+                        .setDisplayName("orders")
+                        .putProperties("location", "s3://warehouse/orders")
+                        .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+                        .build())
+                .build());
+    when(storageCredentialAuthority.clientSafeConfig(any()))
+        .thenReturn(Map.of("s3.endpoint", "http://localhost:4566", "s3.path-style-access", "true"));
+    when(storageCredentialAuthority.resolveForTable(any(), eq(true)))
+        .thenReturn(
+            List.of(
+                new StorageCredentialDto(
+                    "s3://warehouse/orders",
+                    Map.of(
+                        "type", "s3",
+                        "s3.endpoint", "http://localhost:4566",
+                        "s3.path-style-access", "true",
+                        "s3.access-key-id", "test-key",
+                        "s3.secret-access-key", "test-secret",
+                        "s3.session-token", "test-session"),
+                    Instant.parse("2026-05-02T18:00:00Z"))));
 
     given()
         .when()
@@ -1405,10 +1592,14 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("'storage-credentials'.size()", equalTo(1))
-        .body("'storage-credentials'[0].prefix", equalTo("*"))
+        .body("'storage-credentials'[0].prefix", equalTo("s3://warehouse/orders"))
         .body("'storage-credentials'[0].config.type", equalTo("s3"))
-        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo(expectedAccessKey))
-        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo(expectedSecretKey));
+        .body("'storage-credentials'[0].'expires-at'", equalTo("2026-05-02T18:00:00Z"))
+        .body("'storage-credentials'[0].config.'s3.endpoint'", equalTo("http://localhost:4566"))
+        .body("'storage-credentials'[0].config.'s3.path-style-access'", equalTo("true"))
+        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
+        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"))
+        .body("'storage-credentials'[0].config.'s3.session-token'", equalTo("test-session"));
   }
 
   @Test

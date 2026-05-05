@@ -137,12 +137,12 @@ intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/
 terminal jobs. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
-For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
+For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using `METADATA_AND_CAPTURE`.
 
 This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
-Follow-up payloads now use reconcile scoped stats requests
+Follow-up payloads use reconcile scoped stats requests
 (`table_id`, `snapshot_id`, `target_spec`, `column_selectors`) so background capture stays targeted
 without depending on separate unresolved snapshot-id and target lists.
 When a `CAPTURE_ONLY` batch captures only a subset of requested items, the reconcile result

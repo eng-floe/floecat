@@ -40,6 +40,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -563,6 +564,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   authz.require(princ, "namespace.write");
 
                   var spec = request.getSpec();
+                  PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), correlationId, "spec.properties");
                   ensureKind(
                       spec.getCatalogId(),
                       ResourceKind.RK_CATALOG,
@@ -672,6 +675,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                             .clearParents()
                                             .addAllParents(parents)
                                             .setDescription(spec.getDescription())
+                                            .putAllProperties(spec.getPropertiesMap())
                                             .setCatalogId(spec.getCatalogId())
                                             .setCreatedAt(tsNow)
                                             .build();
@@ -822,9 +826,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                       GeneratedErrorMessages.MessageKey.NAMESPACE,
                                       Map.of("id", nsId.getId())));
 
-                  var desired =
-                      applyNamespaceSpecPatch(
-                          current, request.getSpec(), normalizeMask(request.getUpdateMask()), corr);
+                  var mask = normalizeMask(request.getUpdateMask());
+                  var desired = applyNamespaceSpecPatch(current, request.getSpec(), mask, corr);
+                  if (maskTargets(mask, "properties")) {
+                    PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        request.getSpec().getPropertiesMap(), corr, "spec.properties");
+                  }
 
                   if (desired.equals(current)) {
                     var metaNoop = namespaceRepo.metaFor(nsId);

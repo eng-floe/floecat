@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,13 +35,16 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.config.StorageAwsConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
@@ -55,7 +59,12 @@ class TableGatewaySupportTest {
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
   private final IcebergGatewayConfig gatewayConfig = mock(IcebergGatewayConfig.class);
   private final ConnectorIntegrationConfig connectorConfig = mock(ConnectorIntegrationConfig.class);
+  private final StorageAwsConfig storageAwsConfig = mock(StorageAwsConfig.class);
+  private final StorageAwsConfig.S3Config storageAwsS3Config =
+      mock(StorageAwsConfig.S3Config.class);
   private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
+  private final StorageCredentialAuthority storageCredentialAuthority =
+      mock(StorageCredentialAuthority.class);
   private final ObjectMapper mapper = new ObjectMapper();
 
   private TableGatewaySupport support;
@@ -64,13 +73,29 @@ class TableGatewaySupportTest {
   void setUp() {
     when(connectorConfig.metadataFileIo()).thenReturn(Optional.empty());
     when(connectorConfig.metadataFileIoRoot()).thenReturn(Optional.empty());
-    when(connectorConfig.storageCredential()).thenReturn(Optional.empty());
     when(connectorConfig.defaultRegion()).thenReturn(Optional.empty());
+    when(connectorConfig.storageCredentialProperties()).thenReturn(Map.of());
     when(connectorConfig.registerConnectors()).thenReturn(Map.of());
     when(connectorConfig.enabled()).thenReturn(true);
+    when(storageAwsConfig.region()).thenReturn(Optional.empty());
+    when(storageAwsConfig.s3()).thenReturn(storageAwsS3Config);
+    when(storageAwsS3Config.endpoint()).thenReturn(Optional.empty());
+    when(storageAwsS3Config.pathStyleAccess()).thenReturn(false);
     when(gatewayConfig.catalogMapping()).thenReturn(Map.of());
+    when(storageCredentialAuthority.clientSafeConfig(any())).thenReturn(Map.of());
+    when(storageCredentialAuthority.resolveForTable(any(), anyBoolean())).thenReturn(null);
+    when(storageCredentialAuthority.resolveServerSideFileIoConfig(any(), anyBoolean()))
+        .thenReturn(Map.of());
 
-    support = new TableGatewaySupport(grpc, gatewayConfig, connectorConfig, mapper, grpcClient);
+    support =
+        new TableGatewaySupport(
+            grpc,
+            gatewayConfig,
+            connectorConfig,
+            storageAwsConfig,
+            mapper,
+            grpcClient,
+            storageCredentialAuthority);
   }
 
   @Test
@@ -127,72 +152,95 @@ class TableGatewaySupportTest {
 
   @Test
   void defaultTableConfigFiltersSecretsWithoutLeakingSecrets() {
-    ConnectorIntegrationConfig.StorageCredentialConfig storage =
-        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
-    when(storage.properties())
-        .thenReturn(
-            Map.of(
-                "s3.endpoint", " http://localhost:4566 ",
-                "s3.path-style-access", "true",
-                "s3.secret-key", "secret",
-                "region", "us-west-2"));
-    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
     when(connectorConfig.metadataFileIo()).thenReturn(Optional.of("io.impl.Custom"));
     when(connectorConfig.metadataFileIoRoot()).thenReturn(Optional.of("/warehouse/root"));
-    when(connectorConfig.defaultRegion()).thenReturn(Optional.of("us-east-1"));
+    when(connectorConfig.storageCredentialProperties())
+        .thenReturn(
+            Map.of(
+                "s3.access-key-id", "test",
+                "s3.secret-access-key", "test"));
+    when(storageAwsConfig.region()).thenReturn(Optional.of("us-east-1"));
+    when(storageAwsS3Config.endpoint()).thenReturn(Optional.of("http://localstack:4566"));
+    when(storageAwsS3Config.pathStyleAccess()).thenReturn(true);
 
     Map<String, String> configMap = support.defaultTableConfig();
 
     assertEquals("io.impl.Custom", configMap.get("io-impl"));
     assertEquals("/warehouse/root", configMap.get("fs.floecat.test-root"));
-    assertEquals("http://localhost:4566", configMap.get("s3.endpoint"));
+    assertEquals("http://localstack:4566", configMap.get("s3.endpoint"));
     assertEquals("true", configMap.get("s3.path-style-access"));
-    assertEquals("us-west-2", configMap.get("region"));
     assertEquals("us-east-1", configMap.get("s3.region"));
+    assertEquals("us-east-1", configMap.get("region"));
     assertEquals("us-east-1", configMap.get("client.region"));
     assertFalse(configMap.containsKey("s3.secret-key"));
     assertFalse(configMap.containsKey("s3.access-key-id"));
   }
 
   @Test
-  void defaultCredentialsReturnsStaticWhenNoCredentialsConfigured() {
-    List<StorageCredentialDto> credentials = support.defaultCredentials();
+  void defaultFileIoPropertiesDoNotExposeConfiguredSecrets() {
+    when(connectorConfig.metadataFileIo())
+        .thenReturn(Optional.of("org.apache.iceberg.aws.s3.S3FileIO"));
+    when(connectorConfig.storageCredentialProperties())
+        .thenReturn(
+            Map.of(
+                "s3.access-key-id", "test-key",
+                "s3.secret-access-key", "test-secret",
+                "s3.session-token", "test-session"));
+    when(storageAwsConfig.region()).thenReturn(Optional.of("us-east-1"));
+    when(storageAwsS3Config.endpoint()).thenReturn(Optional.of("http://localstack:4566"));
+    when(storageAwsS3Config.pathStyleAccess()).thenReturn(true);
 
-    assertEquals(1, credentials.size());
-    assertEquals("*", credentials.get(0).prefix());
-    assertEquals(Map.of("type", "static"), credentials.get(0).config());
+    Map<String, String> ioProps = support.defaultFileIoProperties();
+
+    assertEquals("org.apache.iceberg.aws.s3.S3FileIO", ioProps.get("io-impl"));
+    assertEquals("http://localstack:4566", ioProps.get("s3.endpoint"));
+    assertEquals("true", ioProps.get("s3.path-style-access"));
+    assertFalse(ioProps.containsKey("s3.access-key-id"));
+    assertFalse(ioProps.containsKey("s3.secret-access-key"));
+    assertFalse(ioProps.containsKey("s3.session-token"));
   }
 
   @Test
-  void credentialsForAccessDelegationRequiresAndReturnsConfiguredCredentials() {
-    ConnectorIntegrationConfig.StorageCredentialConfig storage =
-        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
-    when(storage.properties()).thenReturn(Map.of("s3.endpoint", "http://localhost:4566"));
-    when(storage.scope()).thenReturn(Optional.of("tenant/*"));
-    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
-
+  void credentialsForAccessDelegationRequiresConnectorBackedSecrets() {
     IllegalArgumentException unsupported =
         assertThrows(
-            IllegalArgumentException.class, () -> support.credentialsForAccessDelegation("sigv4"));
+            IllegalArgumentException.class,
+            () -> support.credentialsForAccessDelegation(Table.getDefaultInstance(), "sigv4"));
     assertEquals("Unsupported access delegation mode: sigv4", unsupported.getMessage());
 
-    List<StorageCredentialDto> credentials =
-        support.credentialsForAccessDelegation("vended-credentials");
-    assertNotNull(credentials);
-    assertEquals("tenant/*", credentials.get(0).prefix());
-    assertEquals("http://localhost:4566", credentials.get(0).config().get("s3.endpoint"));
+    IllegalArgumentException missing =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                support.credentialsForAccessDelegation(
+                    Table.newBuilder().setDisplayName("orders").build(), "vended-credentials"));
+    assertEquals(
+        "Credential vending was requested but no credentials are available", missing.getMessage());
+  }
+
+  @Test
+  void serverSideFileIoPropertiesUseLocationScopedAuthorityForSyntheticTableIds() {
+    ResourceId syntheticTableId =
+        ResourceId.newBuilder().setAccountId("acct").setId("tbl-synthetic").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(syntheticTableId)
+            .putProperties("location", "s3://warehouse/orders")
+            .build();
+    when(storageCredentialAuthority.resolveFileIoConfigForLocation("s3://warehouse/orders", false))
+        .thenReturn(Map.of("s3.endpoint", "http://localstack:4566"));
+
+    Map<String, String> resolved = support.serverSideFileIoProperties(table);
+
+    assertEquals("http://localstack:4566", resolved.get("s3.endpoint"));
+    verify(storageCredentialAuthority)
+        .resolveFileIoConfigForLocation("s3://warehouse/orders", false);
+    verify(storageCredentialAuthority, never())
+        .resolveFileIoConfigForLocation(any(ResourceId.class), any(), anyBoolean());
   }
 
   @Test
   void resolveRegisterFileIoPropertiesMergesDefaultsAndRequestOverrides() {
-    ConnectorIntegrationConfig.StorageCredentialConfig storage =
-        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
-    when(storage.properties())
-        .thenReturn(
-            Map.of(
-                "s3.endpoint", "http://localhost:4566",
-                "not-io", "ignored"));
-    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
     when(connectorConfig.metadataFileIo())
         .thenReturn(Optional.of("org.apache.iceberg.aws.s3.S3FileIO"));
 
@@ -336,30 +384,110 @@ class TableGatewaySupportTest {
     IllegalArgumentException ex =
         assertThrows(
             IllegalArgumentException.class,
-            () -> support.credentialsForAccessDelegation("vended-credentials"));
+            () ->
+                support.credentialsForAccessDelegation(
+                    Table.newBuilder().setDisplayName("orders").build(), "vended-credentials"));
     assertEquals(
         "Credential vending was requested but no credentials are available", ex.getMessage());
   }
 
   @Test
-  void credentialsForAccessDelegationUsesConfiguredScope() {
-    ConnectorIntegrationConfig.StorageCredentialConfig storage =
-        mock(ConnectorIntegrationConfig.StorageCredentialConfig.class);
-    when(storage.properties())
+  void credentialsForAccessDelegationUsesStorageCredentialAuthority() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setAccountId("acct-1").setId("connector-1").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build())
+            .putProperties("location", "s3://warehouse/orders")
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(storageCredentialAuthority.resolveForTable(table, true))
         .thenReturn(
-            Map.of(
-                "s3.endpoint", "http://localhost:4566",
-                "s3.region", "us-east-1"));
-    when(storage.scope()).thenReturn(Optional.of("pref/*"));
-    when(connectorConfig.storageCredential()).thenReturn(Optional.of(storage));
+            List.of(
+                new StorageCredentialDto(
+                    "s3://warehouse/orders",
+                    Map.of(
+                        "type", "s3",
+                        "s3.endpoint", "http://localhost:4566",
+                        "s3.path-style-access", "true",
+                        "s3.access-key-id", "akid",
+                        "s3.secret-access-key", "secret",
+                        "s3.session-token", "session"))));
 
     List<StorageCredentialDto> credentials =
-        support.credentialsForAccessDelegation("vended-credentials");
+        support.credentialsForAccessDelegation(table, "vended-credentials");
 
     assertEquals(1, credentials.size());
-    assertEquals("pref/*", credentials.get(0).prefix());
+    assertEquals("s3://warehouse/orders", credentials.get(0).prefix());
+    assertEquals("s3", credentials.get(0).config().get("type"));
     assertEquals("http://localhost:4566", credentials.get(0).config().get("s3.endpoint"));
-    assertEquals("us-east-1", credentials.get(0).config().get("s3.region"));
+    assertEquals("true", credentials.get(0).config().get("s3.path-style-access"));
+    assertEquals("akid", credentials.get(0).config().get("s3.access-key-id"));
+    assertEquals("secret", credentials.get(0).config().get("s3.secret-access-key"));
+    assertEquals("session", credentials.get(0).config().get("s3.session-token"));
+    verify(storageCredentialAuthority).resolveForTable(table, true);
+  }
+
+  @Test
+  void defaultTableConfigIncludesAuthorityClientSafeConfig() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build())
+            .putProperties("location", "s3://warehouse/orders")
+            .build();
+    when(storageCredentialAuthority.clientSafeConfig(table))
+        .thenReturn(Map.of("s3.endpoint", "http://localhost:4566", "s3.path-style-access", "true"));
+
+    Map<String, String> config = support.defaultTableConfig(table);
+
+    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
+    assertEquals("true", config.get("s3.path-style-access"));
+  }
+
+  @Test
+  void defaultFileIoPropertiesIncludesTableScopedClientSafeStorageConfig() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build())
+            .putProperties("location", "s3://warehouse/orders")
+            .build();
+    when(storageCredentialAuthority.clientSafeConfig(table))
+        .thenReturn(Map.of("s3.endpoint", "http://localhost:4566", "s3.path-style-access", "true"));
+
+    Map<String, String> config = support.defaultFileIoProperties(table);
+
+    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
+    assertEquals("true", config.get("s3.path-style-access"));
+  }
+
+  @Test
+  void serverSideFileIoPropertiesIncludeAuthorityBackedCredentials() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build())
+            .putProperties("location", "s3://warehouse/orders")
+            .putProperties("s3.endpoint", "http://table-override:4566")
+            .build();
+    when(storageCredentialAuthority.clientSafeConfig(table))
+        .thenReturn(Map.of("s3.path-style-access", "true"));
+    when(storageCredentialAuthority.resolveFileIoConfigForLocation("s3://warehouse/orders", false))
+        .thenReturn(
+            Map.of(
+                "s3.access-key-id", "akid",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "session",
+                "s3.region", "us-east-1"));
+
+    Map<String, String> config = support.serverSideFileIoProperties(table);
+
+    assertEquals("http://table-override:4566", config.get("s3.endpoint"));
+    assertEquals("true", config.get("s3.path-style-access"));
+    assertEquals("akid", config.get("s3.access-key-id"));
+    assertEquals("secret", config.get("s3.secret-access-key"));
+    assertEquals("session", config.get("s3.session-token"));
+    assertEquals("us-east-1", config.get("s3.region"));
+    verify(storageCredentialAuthority, never())
+        .resolveFileIoConfigForLocation(any(ResourceId.class), any(), anyBoolean());
   }
 
   @Test

@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.types.Hashing;
@@ -65,6 +66,23 @@ public final class Schemas {
               v -> {
                 var sha = Hashing.sha256Hex(v.toByteArray());
                 return new CatalogKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
+
+  public static final ResourceSchema<StorageAuthority, StorageAuthorityKey> STORAGE_AUTHORITY =
+      ResourceSchema.<StorageAuthority, StorageAuthorityKey>of(
+              "storage-authority",
+              key -> Keys.storageAuthorityPointerById(key.accountId(), key.authorityId()),
+              key -> Keys.storageAuthorityBlobUri(key.accountId(), key.authorityId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.storageAuthorityPointerByName(
+                          v.getResourceId().getAccountId(), v.getDisplayName())),
+              v -> {
+                var sha = Hashing.sha256Hex(v.toByteArray());
+                return new StorageAuthorityKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs();
