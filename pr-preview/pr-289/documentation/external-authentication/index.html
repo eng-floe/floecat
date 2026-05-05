@@ -1,0 +1,1970 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/external-authentication/">
+      
+      
+        <link rel="prev" href="../secrets-manager/">
+      
+      
+        <link rel="next" href="../fixed-roles/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>External Authentication - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#external-authentication" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              External Authentication
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#external-session-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      External Session Header
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-keycloak-dev" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local Keycloak (dev)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#oidc-quickstart-local-shell-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      OIDC Quickstart (Local + Shell CLI)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dev-vs-production-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dev vs Production Configuration
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dev vs Production Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#development-local" class="md-nav__link">
+    <span class="md-ellipsis">
+      Development (local)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production" class="md-nav__link">
+    <span class="md-ellipsis">
+      Production
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direct-oidc-authorization-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      Direct OIDC Authorization Header
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#external-session-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      External Session Header
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-keycloak-dev" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local Keycloak (dev)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#oidc-quickstart-local-shell-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      OIDC Quickstart (Local + Shell CLI)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dev-vs-production-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dev vs Production Configuration
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dev vs Production Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#development-local" class="md-nav__link">
+    <span class="md-ellipsis">
+      Development (local)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production" class="md-nav__link">
+    <span class="md-ellipsis">
+      Production
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direct-oidc-authorization-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      Direct OIDC Authorization Header
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mc-connector-jobs-output/docs/external-authentication.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="external-authentication">External Authentication<a class="headerlink" href="#external-authentication" title="Permanent link">&para;</a></h1>
+<h2 id="external-session-header">External Session Header<a class="headerlink" href="#external-session-header" title="Permanent link">&para;</a></h2>
+<p>The <code>floecat</code> service can accept an external session header carrying a JWT. This is validated by
+Quarkus OIDC and used to authenticate gRPC calls.</p>
+<p>Auth modes:
+- <code>floecat.auth.mode=oidc</code>: require session or authorization header.
+- <code>floecat.auth.mode=dev</code>: require dev context (for local-only use).
+Default is <code>oidc</code>; dev mode must be explicitly configured.</p>
+<p>Account management is authorized via a global IdP role (see below). Floecat does not auto-create
+an admin account on startup.</p>
+<h2 id="local-keycloak-dev">Local Keycloak (dev)<a class="headerlink" href="#local-keycloak-dev" title="Permanent link">&para;</a></h2>
+<p>For local testing you can run Keycloak with a pre-seeded realm that issues <code>account_id</code> and <code>roles</code>
+claims compatible with Floecat.</p>
+<p>Start Keycloak:
+<div class="highlight"><pre><span></span><code>KEYCLOAK_PORT=12221 docker compose --profile keycloak up
+</code></pre></div></p>
+<p>The realm import defines:
+- realm: <code>floecat</code>
+- client: <code>floecat-client</code>
+- user: <code>floecat-admin</code> / password <code>floecat-admin</code>
+- roles: <code>administrator</code>, <code>platform-admin</code>
+- hardcoded claim: <code>account_id=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2</code> (seed account <code>t-0001</code>)</p>
+<p>Role intent:
+- <code>platform-admin</code> grants platform account management (<code>account.write</code>, <code>account.delete</code>) and is
+  intended for platform operators.
+- <code>administrator</code> grants full tenant‑scoped access (catalogs/namespaces/tables/connectors) but does
+  not grant account creation/update. It does include <code>account.delete</code>.
+- <code>delete-account</code> is an internal service role, not an IdP-facing operator role. It grants only
+  <code>account.delete</code>, and floecat performs the implied catalog/namespace/table/connector cleanup
+  internally.</p>
+<p>See <a href="../fixed-roles/"><code>docs/fixed-roles.md</code></a>.</p>
+<p>Note: the realm config uses a service-account client (<code>client_credentials</code> flow). Password grant is
+disabled.</p>
+<p>Important: if you change the seed account ID, update
+<code>docker/keycloak/realm-floecat.json</code> so the <code>account_id</code> claim matches.</p>
+<p>Example service config (dev, running service on the host):
+<div class="highlight"><pre><span></span><code>floecat.auth.mode=oidc
+floecat.interceptor.authorization.header=authorization
+quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat
+quarkus.oidc.token.audience=floecat-client
+</code></pre></div></p>
+<p>If the service runs in Docker, set the issuer to the Keycloak service name on the Docker network:
+<div class="highlight"><pre><span></span><code>quarkus.oidc.auth-server-url=http://keycloak:8080/realms/floecat
+</code></pre></div>
+If you run the service on the host, keep the host issuer:
+<div class="highlight"><pre><span></span><code>quarkus.oidc.auth-server-url=http://host.docker.internal:8080/realms/floecat  # or KEYCLOAK_PORT override
+</code></pre></div></p>
+<p>Example token request:
+<div class="highlight"><pre><span></span><code>curl -s \
+  -d &quot;client_id=floecat-client&quot; \
+  -d &quot;client_secret=floecat-secret&quot; \
+  -d &quot;grant_type=client_credentials&quot; \
+  http://127.0.0.1:12221/realms/floecat/protocol/openid-connect/token
+</code></pre></div></p>
+<h2 id="oidc-quickstart-local-shell-cli">OIDC Quickstart (Local + Shell CLI)<a class="headerlink" href="#oidc-quickstart-local-shell-cli" title="Permanent link">&para;</a></h2>
+<p>1) Enable local OIDC in <code>docker/env.localstack-oidc</code>:
+<div class="highlight"><pre><span></span><code>FLOECAT_AUTH_MODE=oidc
+FLOECAT_AUTH_PLATFORM_ADMIN_ROLE=platform-admin
+FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER=authorization
+FLOECAT_SEED_OIDC_ISSUER=http://keycloak:8080/realms/floecat
+FLOECAT_SEED_OIDC_CLIENT_ID=floecat-client
+FLOECAT_SEED_OIDC_CLIENT_SECRET=floecat-secret
+QUARKUS_OIDC_TENANT_ENABLED=true
+QUARKUS_OIDC_AUTH_SERVER_URL=http://keycloak:8080/realms/floecat
+QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client
+</code></pre></div></p>
+<p>2) Start Keycloak + service:
+<div class="highlight"><pre><span></span><code>make oidc-up
+</code></pre></div></p>
+<p>3) Fetch a token on the host (issuer must be <code>http://host.docker.internal:8080/...</code> unless you
+   override <code>KEYCLOAK_PORT</code>):
+<div class="highlight"><pre><span></span><code>TOKEN=$(curl -s \
+  -d &quot;client_id=floecat-client&quot; \
+  -d &quot;client_secret=floecat-secret&quot; \
+  -d &quot;grant_type=client_credentials&quot; \
+  http://host.docker.internal:8080/realms/floecat/protocol/openid-connect/token \
+  | jq -r .access_token)
+</code></pre></div></p>
+<p>4) Run the Shell CLI in Docker (interactive):
+<div class="highlight"><pre><span></span><code>FLOECAT_ACCOUNT=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2 \
+make cli-docker
+</code></pre></div>
+Note: <code>make cli-docker</code> obtains tokens using <code>FLOECAT_OIDC_*</code> settings in
+<code>docker/env.localstack-oidc</code> and refreshes them automatically before expiry.</p>
+<p>Inside the shell:
+<div class="highlight"><pre><span></span><code>account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
+account list
+</code></pre></div></p>
+<p>Configuration (service <code>application.properties</code>):
+- <code>quarkus.oidc.tenant-enabled=true</code> to opt into OIDC validation.
+- <code>floecat.auth.platform-admin.role=platform-admin</code> to authorize platform account management.
+- <code>floecat.interceptor.session.header=x-floe-session</code> to enable the header.
+Seed fixture sync in OIDC mode (optional):
+- <code>floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat</code> (when running in Docker)
+- <code>floecat.seed.oidc.client-id=floecat-client</code>
+- <code>floecat.seed.oidc.client-secret=floecat-secret</code>
+- <code>floecat.interceptor.validate.account=false</code> to skip account lookup when the caller supplies a
+  trusted account id.
+- <code>quarkus.oidc.token.audience=...</code> to set the <code>aud</code> claim value expected.</p>
+<p>One of:
+- <code>quarkus.oidc.auth-server-url=...</code> to validate with an issuer URL.
+       or
+- <code>quarkus.oidc.public-key=...</code> to validate locally with a public key (tests/dev).</p>
+<p>Environment equivalents:
+- QUARKUS_OIDC_TENANT_ENABLED
+- FLOECAT_AUTH_MODE
+- FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
+- FLOECAT_INTERCEPTOR_SESSION_HEADER
+- FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_SEED_OIDC_ISSUER
+- FLOECAT_SEED_OIDC_CLIENT_ID
+- FLOECAT_SEED_OIDC_CLIENT_SECRET
+- QUARKUS_OIDC_TOKEN_AUDIENCE
+- QUARKUS_OIDC_AUTH_SERVER_URL
+- QUARKUS_OIDC_PUBLIC_KEY</p>
+<p>Further documentation on integration to external OpenID Connect IDPs can be found here:
+<a href="https://quarkus.io/guides/security-oidc-configuration-properties-reference">Quarkus OIDC configuration reference</a></p>
+<h2 id="dev-vs-production-configuration">Dev vs Production Configuration<a class="headerlink" href="#dev-vs-production-configuration" title="Permanent link">&para;</a></h2>
+<h3 id="development-local">Development (local)<a class="headerlink" href="#development-local" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Use <code>docker/env.inmem</code> with <code>docker/docker-compose.yml</code> (via <code>env_file</code>) for local defaults.</li>
+<li>For OIDC + Keycloak, use <code>docker/env.localstack-oidc</code> by setting
+  <code>FLOECAT_ENV_FILE=./env.localstack-oidc</code> (or run <code>make oidc-up</code>).</li>
+<li><code>floecat.auth.mode=oidc</code> (or <code>dev</code> for fully local use).</li>
+<li>Use Keycloak dev realm or another local IdP.</li>
+<li><code>quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat</code></li>
+<li><code>quarkus.oidc.token.audience=floecat-client</code> (or <code>floecat-client,trino-client</code> if using Trino).</li>
+<li>Use the IdP role <code>platform-admin</code> for platform account management.</li>
+<li><code>floecat.interceptor.authorization.header=authorization</code> (or <code>floecat.interceptor.session.header</code>)</li>
+<li>Consider <code>floecat.interceptor.validate.account=false</code> if account ids are trusted in dev.</li>
+</ul>
+<h3 id="production">Production<a class="headerlink" href="#production" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Use <code>docker/env.aws</code> (or your own env file) and pass the values to the container.</li>
+<li><code>floecat.auth.mode=oidc</code></li>
+<li><code>quarkus.oidc.tenant-enabled=true</code></li>
+<li>Configure exactly one of:</li>
+<li><code>quarkus.oidc.auth-server-url=https://&lt;issuer&gt;/realms/&lt;realm&gt;</code></li>
+<li><code>quarkus.oidc.public-key=...</code> (offline JWT validation)</li>
+<li><code>quarkus.oidc.token.audience=&lt;audience&gt;</code></li>
+<li>Use the IdP role <code>platform-admin</code> for platform account management.</li>
+<li><code>floecat.interceptor.authorization.header=authorization</code> (or <code>floecat.interceptor.session.header</code>)</li>
+<li><code>floecat.interceptor.validate.account=true</code> (recommended in prod)</li>
+<li>Ensure transport security (TLS) at the edge and IdP issuer URLs use HTTPS.</li>
+</ul>
+<h2 id="direct-oidc-authorization-header">Direct OIDC Authorization Header<a class="headerlink" href="#direct-oidc-authorization-header" title="Permanent link">&para;</a></h2>
+<p>Floecat can also validate a standard <code>authorization: Bearer &lt;jwt&gt;</code> header using the same Quarkus
+OIDC provider configuration. This is useful when clients authenticate directly with an IdP instead
+of via an upstream engine session token.</p>
+<p>Configuration (service <code>application.properties</code>):
+- <code>quarkus.oidc.tenant-enabled=true</code> to opt into OIDC validation.
+- <code>floecat.auth.platform-admin.role=platform-admin</code> to authorize platform account management.
+- <code>floecat.interceptor.authorization.header=authorization</code> to enable the header.
+Seed fixture sync in OIDC mode (optional):
+- <code>floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat</code> (when running in Docker)
+- <code>floecat.seed.oidc.client-id=floecat-client</code>
+- <code>floecat.seed.oidc.client-secret=floecat-secret</code>
+- <code>floecat.interceptor.validate.account=false</code> to skip account lookup when the caller supplies a
+  trusted account id.
+- <code>quarkus.oidc.token.audience=...</code> to set the <code>aud</code> claim value expected.</p>
+<p>One of:
+- <code>quarkus.oidc.auth-server-url=...</code> to validate with an issuer URL.
+       or
+- <code>quarkus.oidc.public-key=...</code> to validate locally with a public key (tests/dev).</p>
+<p>Environment equivalents:
+- QUARKUS_OIDC_TENANT_ENABLED
+- FLOECAT_AUTH_MODE
+- FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
+- FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER
+- FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_SEED_OIDC_ISSUER
+- FLOECAT_SEED_OIDC_CLIENT_ID
+- FLOECAT_SEED_OIDC_CLIENT_SECRET
+- QUARKUS_OIDC_TOKEN_AUDIENCE
+- QUARKUS_OIDC_AUTH_SERVER_URL
+- QUARKUS_OIDC_PUBLIC_KEY</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
