@@ -82,4 +82,4 @@ and how to add pbtxt tooling to a new extension.
 
 This project is licensed under the Apache License, Version 2.0.
 
-By submitting a pull request, you represent that you have the right to license your contribution to Yellowbrick Data, Inc. and the Apache Software Foundation, and you agree that your contribution will be licensed under the Apache License, Version 2.0.
+By submitting a pull request, you agree that your contribution will be licensed under the Apache License, Version 2.0.
