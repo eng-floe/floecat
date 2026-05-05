@@ -141,20 +141,19 @@ wait_for_connector_job() {
 
   for attempt in $(seq 1 "$max_attempts"); do
     out=$(run_cli_script "$compose_cmd" "account t-0001
-connector job $job_id
+connector job $job_id --json
 quit")
     cleaned_out=$(printf "%s\n" "$out" | tr -d '\r' | sed -E 's/^floecat>[[:space:]]*//')
     state=$(
       printf "%s\n" "$cleaned_out" \
         | sed -n \
-            -e '/job_id=/s/.* state=\([A-Za-z_]*\).*/\1/p' \
-            -e 's/^[[:space:]]*state:[[:space:]]*//p' \
+            -e 's/^[[:space:]]*"state":[[:space:]]*"\([A-Za-z_]*\)".*/\1/p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
     )
     message=$(
       printf "%s\n" "$cleaned_out" \
-        | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' \
+        | sed -n 's/^[[:space:]]*"message":[[:space:]]*"\(.*\)".*/\1/p' \
         | head -n1 \
         | tr '[:upper:]' '[:lower:]'
     )

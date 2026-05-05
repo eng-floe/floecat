@@ -78,11 +78,10 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
-`connector job <id>` and `connector jobs` show split-job metadata when present:
-
-- `kind=plan_connector` or `kind=exec_table`
-- routing context such as `parent=<job-id>` and `executor=<executor-id>`
-- table-task detail for child execution jobs (`table=<source-ns>.<source-table>-><dest-table>`)
+`connector jobs` shows a parent-job summary table by default. Use
+`connector jobs --child <parent-job-id>` to render the descendant job tree rooted at that job.
+Both commands support `--json` for machine-readable output, while `connector job <id>` remains a
+detailed human-readable view and also supports `--json`.
 
 ## Configuration & Extensibility
 

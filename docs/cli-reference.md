@@ -93,7 +93,9 @@ connector trigger <display_name|id> [--full]
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
     [--snapshot <id>|--current] [--columns c1,#id2,...]
-connector job <jobId>
+connector job <jobId> [--json]
+connector jobs [--connector <id|name>] [--state queued,running,...] [--json]
+connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,running,...] [--json]
 
 Credential types (`--cred-type`):
 - `bearer` – required: `token` (use this for personal access tokens).
