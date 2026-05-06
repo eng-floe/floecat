@@ -1827,12 +1827,10 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 </code></pre></div>
 <p>Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via <code>connector job &lt;id&gt;</code>.</p>
-<p><code>connector job &lt;id&gt;</code> and <code>connector jobs</code> show split-job metadata when present:</p>
-<ul>
-<li><code>kind=plan_connector</code> or <code>kind=exec_table</code></li>
-<li>routing context such as <code>parent=&lt;job-id&gt;</code> and <code>executor=&lt;executor-id&gt;</code></li>
-<li>table-task detail for child execution jobs (<code>table=&lt;source-ns&gt;.&lt;source-table&gt;-&gt;&lt;dest-table&gt;</code>)</li>
-</ul>
+<p><code>connector jobs</code> shows a parent-job summary table by default. Use
+<code>connector jobs --child &lt;parent-job-id&gt;</code> to render the descendant job tree rooted at that job.
+Both commands support <code>--json</code> for machine-readable output, while <code>connector job &lt;id&gt;</code> remains a
+detailed human-readable view and also supports <code>--json</code>.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Build via <code>make cli</code>. Run with <code>make cli-run</code> (build + run) or <code>make cli-start</code> (run only, no

@@ -2309,7 +2309,13 @@ no marker file/state is required.</p>
   view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
   <code>COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke</code>, which starts the service in
   <code>reconciler-control</code> mode and enables the remote <code>executor</code> profile. The Trino block creates and
-  replaces an Iceberg view via SQL and verifies both definitions are queryable.</li>
+  replaces an Iceberg view via SQL and verifies both definitions are queryable.
+  To exercise upstream Polaris Iceberg REST credential vending, run
+  <code>COMPOSE_SMOKE_MODES=localstack-polaris-vended-creds make compose-smoke</code>.
+  That dedicated mode uses the remote executor profile, disables seed-sync background noise, blanks
+  executor ambient AWS S3 credentials, and directly verifies that Polaris <code>loadTable</code> returns
+  non-empty <code>storage-credentials</code> when sent
+  <code>X-Iceberg-Access-Delegation: vended-credentials</code>.</li>
 </ul>
 <hr />
 <h2 id="operational-notes-current-limitations">Operational Notes &amp; Current Limitations<a class="headerlink" href="#operational-notes-current-limitations" title="Permanent link">&para;</a></h2>

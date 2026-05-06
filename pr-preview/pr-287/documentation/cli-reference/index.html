@@ -1642,7 +1642,9 @@ connector trigger &lt;display_name|id&gt; [--full]
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns &lt;a.b[.c]&gt;] [--dest-table &lt;name&gt;] [--dest-view &lt;name&gt;]
     [--snapshot &lt;id&gt;|--current] [--columns c1,#id2,...]
-connector job &lt;jobId&gt;
+connector job &lt;jobId&gt; [--json]
+connector jobs [--connector &lt;id|name&gt;] [--state queued,running,...] [--json]
+connector jobs --child &lt;parentJobId&gt; [--connector &lt;id|name&gt;] [--state queued,running,...] [--json]
 
 storage-authorities
 storage-authority list [--page-size &lt;N&gt;]
