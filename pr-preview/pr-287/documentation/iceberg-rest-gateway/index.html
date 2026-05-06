@@ -2339,9 +2339,9 @@ no marker file/state is required.</p>
   than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
   table record’s <code>location</code> and <code>metadata-location</code> remain the source of truth for Iceberg clients.</li>
 <li><strong>Credentials:</strong> <code>/tables/{table}/credentials</code>, table load responses, and plan responses return
-  vended credentials only when access delegation requests them and a matching storage authority is
-  configured for the resolved storage prefix. Floecat does not vend static long-lived credentials;
-  storage authorities are expected to resolve or mint temporary credentials.</li>
+  vended credentials only when access delegation explicitly requests them and a matching storage
+  authority is configured for the resolved storage prefix. Floecat does not vend static long-lived
+  credentials; storage authorities are expected to resolve or mint temporary credentials.</li>
 <li><strong>Client-safe config:</strong> table load responses may include non-secret storage settings such as
   endpoint, region, and path-style access. Those values come from storage-authority client-safe
   config rather than from the upstream connector definition.</li>

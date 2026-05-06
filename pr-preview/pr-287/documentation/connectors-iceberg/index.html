@@ -1865,10 +1865,9 @@ For Iceberg, the relevant types are <code>bearer</code>, <code>client</code>, <c
 <span class="w">  </span>--props<span class="w"> </span>iceberg.source<span class="o">=</span>rest<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--props<span class="w"> </span><span class="nv">warehouse</span><span class="o">=</span>s3://warehouse
 </code></pre></div>
-  For <code>iceberg.source=rest</code>, Floecat requests delegated storage access by default by sending
-  <code>X-Iceberg-Access-Delegation: vended-credentials</code> unless the caller explicitly sets a different
-  access-delegation header. This is intended for REST catalogs such as Polaris that support
-  returning <code>storage-credentials</code> on <code>loadTable</code>.
+  For <code>iceberg.source=rest</code>, Floecat only requests delegated storage access when the caller
+  explicitly sets <code>X-Iceberg-Access-Delegation</code>. This is intended for REST catalogs such as
+  Polaris that support returning <code>storage-credentials</code> on <code>loadTable</code>.
   If the upstream REST catalog ignores that header, normal REST behavior still applies and success
   depends on some other valid storage credential path. If the upstream catalog rejects delegated
   access requests, connector planning or table load will fail on the REST call.</li>
