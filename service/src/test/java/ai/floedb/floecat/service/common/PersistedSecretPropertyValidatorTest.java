@@ -54,7 +54,7 @@ class PersistedSecretPropertyValidatorTest {
     assertFalse(
         PersistedSecretPropertyValidator.isForbiddenGeneralMetadataSecretKey("partition_key"));
     assertFalse(
-        PersistedSecretPropertyValidator.isForbiddenGeneralMetadataSecretKey("token_endpoint"));
+        PersistedSecretPropertyValidator.isForbiddenGeneralMetadataSecretKey("oauth2-server-uri"));
   }
 
   @Test

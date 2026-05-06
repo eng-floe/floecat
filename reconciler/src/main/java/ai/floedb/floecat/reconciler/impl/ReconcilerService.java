@@ -993,6 +993,7 @@ public class ReconcilerService {
       throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    ConnectorConfig resolved = resolveCredentials(config, connector.getAuth(), connectorId);
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1000,7 +1001,7 @@ public class ReconcilerService {
             ? connector.getDestination()
             : DestinationTarget.getDefaultInstance(),
         config,
-        resolveCredentials(config, connector.getAuth(), connectorId));
+        resolved);
   }
 
   ActiveConnector activeConnectorForResult(ReconcileContext ctx, ResourceId connectorId) {

@@ -88,7 +88,7 @@ public final class CredentialResolverSupport {
           "gcp.service_account_private_key_id",
           "jwt_lifetime_seconds");
   private static final Set<String> CLIENT_CREDENTIALS_RESERVED =
-      Set.of("grant_type", "endpoint", "client_id", "client_secret", "scope", "token_endpoint");
+      Set.of("grant_type", "endpoint", "client_id", "client_secret", "scope");
 
   private CredentialResolverSupport() {}
 
@@ -111,13 +111,10 @@ public final class CredentialResolverSupport {
       case CLIENT -> {
         var client = credential.getClient();
         String tokenEndpoint =
-            firstNonBlank(
-                client.getEndpoint(),
-                firstNonBlank(
-                    credential.getPropertiesMap().get("token_endpoint"),
-                    authProps.get("token_endpoint")));
+            firstNonBlank(client.getEndpoint(), authProps.get("oauth2-server-uri"));
 
         if (!isBlank(tokenEndpoint)) {
+          putIfNotBlank(authProps, "oauth2-server-uri", tokenEndpoint);
           String scope =
               firstNonBlank(credential.getPropertiesMap().get("scope"), authProps.get("scope"));
           String token =
@@ -193,7 +190,6 @@ public final class CredentialResolverSupport {
     }
 
     var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
-
     return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
   }
 

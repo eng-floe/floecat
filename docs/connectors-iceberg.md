@@ -134,6 +134,13 @@ To extend behavior:
     --props iceberg.source=rest \
     --props warehouse=s3://warehouse
   ```
+  For `iceberg.source=rest`, Floecat requests delegated storage access by default by sending
+  `X-Iceberg-Access-Delegation: vended-credentials` unless the caller explicitly sets a different
+  access-delegation header. This is intended for REST catalogs such as Polaris that support
+  returning `storage-credentials` on `loadTable`.
+  If the upstream REST catalog ignores that header, normal REST behavior still applies and success
+  depends on some other valid storage credential path. If the upstream catalog rejects delegated
+  access requests, connector planning or table load will fail on the REST call.
 - **Filesystem (single table)** – CLI example using the metadata JSON as the connector URI:
   ```bash
   connector create "Filesystem Iceberg" ICEBERG \

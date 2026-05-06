@@ -110,7 +110,7 @@ class PersistedSecretPropertiesIT {
                     CatalogSpec.newBuilder()
                         .setDisplayName("metadata-cat")
                         .putProperties("primary_key", "id")
-                        .putProperties("token_endpoint", "https://issuer.example/token"))
+                        .putProperties("oauth2-server-uri", "https://issuer.example/token"))
                 .build());
 
     var fetched =
@@ -122,7 +122,7 @@ class PersistedSecretPropertiesIT {
     assertEquals("id", fetched.getCatalog().getPropertiesMap().get("primary_key"));
     assertEquals(
         "https://issuer.example/token",
-        fetched.getCatalog().getPropertiesMap().get("token_endpoint"));
+        fetched.getCatalog().getPropertiesMap().get("oauth2-server-uri"));
   }
 
   @Test
@@ -137,7 +137,7 @@ class PersistedSecretPropertiesIT {
                         .setDisplayName("ns")
                         .addAllPath(List.of("db"))
                         .putProperties("primary_key", "id")
-                        .putProperties("token_endpoint", "https://issuer.example/token"))
+                        .putProperties("oauth2-server-uri", "https://issuer.example/token"))
                 .build());
 
     var fetched =
@@ -149,7 +149,7 @@ class PersistedSecretPropertiesIT {
     assertEquals("id", fetched.getNamespace().getPropertiesMap().get("primary_key"));
     assertEquals(
         "https://issuer.example/token",
-        fetched.getNamespace().getPropertiesMap().get("token_endpoint"));
+        fetched.getNamespace().getPropertiesMap().get("oauth2-server-uri"));
   }
 
   @Test

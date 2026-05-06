@@ -17,7 +17,7 @@
 package ai.floedb.floecat.storage.aws.secrets;
 
 import ai.floedb.floecat.storage.secrets.SecretsManager;
-import io.quarkus.arc.profile.IfBuildProfile;
+import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -39,7 +39,7 @@ import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
 
 @ApplicationScoped
-@IfBuildProfile("prod")
+@IfBuildProperty(name = "floecat.secrets", stringValue = "aws")
 public class ProdSecretsManager implements SecretsManager {
   private static final String ACCOUNT_ID_TAG = "AccountId";
   private static final int MAX_ROLE_SESSION_LENGTH = 64;

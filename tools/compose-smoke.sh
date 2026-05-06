@@ -477,16 +477,17 @@ run_mode() {
   local compose_profiles_override="${7:-}"
   local mode_env_extra="${8:-}"
   local executor_scale="${9:-}"
+  local smoke_scope="${10:-full}"
 
   local compose_project="floecat-smoke-$label"
   local compose_profiles="${compose_profiles_override:-$profile}"
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
     compose_profiles="${compose_profiles},polaris"
   fi
-  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     compose_profiles="${compose_profiles},unity"
   fi
-  if { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
+  if [ "$smoke_scope" = "full" ] && { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
     compose_profiles="${compose_profiles},trino"
   fi
   local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$compose_profiles COMPOSE_PROJECT_NAME=$compose_project"
@@ -555,7 +556,7 @@ run_mode() {
       pre_services="$pre_services polaris-db polaris-bootstrap polaris"
     fi
   fi
-  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     if [ -z "$pre_services" ]; then
       pre_services="localstack unity"
     elif [[ ",$pre_services," != *",unity,"* ]]; then
@@ -581,7 +582,7 @@ run_mode() {
     local polaris_mgmt_port="${FLOECAT_POLARIS_MGMT_HOST_PORT:-8282}"
     wait_for_url "http://localhost:${polaris_mgmt_port}/q/health" 180 "Polaris health"
   fi
-  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     local unity_host_port="${FLOECAT_UNITY_HOST_PORT:-8083}"
     wait_for_url "http://localhost:${unity_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" 180 "Unity Catalog health"
   fi
@@ -636,37 +637,39 @@ run_mode() {
     sleep 1
   done
 
-  local out_iceberg
-  out_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
+  if [ "$smoke_scope" = "full" ]; then
+    local out_iceberg
+    out_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
 resolve table examples.iceberg.trino_types
 quit")
-  echo "$out_iceberg"
-  assert_contains "$label cli resolve iceberg account" "$out_iceberg" "account set:"
-  assert_contains "$label cli resolve iceberg table" "$out_iceberg" "table id:"
+    echo "$out_iceberg"
+    assert_contains "$label cli resolve iceberg account" "$out_iceberg" "account set:"
+    assert_contains "$label cli resolve iceberg table" "$out_iceberg" "table id:"
 
-  local out_delta
-  out_delta=$(run_cli_script "$compose_cmd" "account t-0001
+    local out_delta
+    out_delta=$(run_cli_script "$compose_cmd" "account t-0001
 resolve table examples.delta.call_center
 quit")
-  echo "$out_delta"
-  assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
-  assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
+    echo "$out_delta"
+    assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
+    assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
 
-  local out_delta_local
-  out_delta_local=$(run_cli_script "$compose_cmd" "account t-0001
+    local out_delta_local
+    out_delta_local=$(run_cli_script "$compose_cmd" "account t-0001
 resolve table examples.delta.my_local_delta_table
 quit")
-  echo "$out_delta_local"
-  assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
-  assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
+    echo "$out_delta_local"
+    assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
+    assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
 
-  local out_delta_dv
-  out_delta_dv=$(run_cli_script "$compose_cmd" "account t-0001
+    local out_delta_dv
+    out_delta_dv=$(run_cli_script "$compose_cmd" "account t-0001
 resolve table examples.delta.dv_demo_delta
 quit")
-  echo "$out_delta_dv"
-  assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
-  assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
+    echo "$out_delta_dv"
+    assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
+    assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
+  fi
 
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
     echo "==> [SMOKE] upstream iceberg rest import check"
@@ -720,6 +723,40 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
       -d "{\"catalog\":{\"name\":\"$warehouse\",\"type\":\"INTERNAL\",\"readOnly\":false,\"properties\":{\"default-base-location\":\"$bucket_root_uri\"},\"storageConfigInfo\":{\"storageType\":\"S3\",\"allowedLocations\":[\"$bucket_root_uri\",\"$metadata_dir_uri\"],\"pathStyleAccess\":true,\"roleArn\":\"arn:aws:iam::000000000000:role/polaris\"}}}" \
       >/dev/null 2>&1 || true
 
+    local polaris_principal_role
+    polaris_principal_role="smoke-upstream-iceberg-role"
+    local polaris_catalog_role
+    polaris_catalog_role="smoke-upstream-iceberg-catalog-role"
+    local polaris_grant_specs
+    polaris_grant_specs=$(
+      cat <<EOF
+POST|http://polaris:8181/api/management/v1/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
+POST|http://polaris:8181/api/management/v1/catalogs/$warehouse/catalog-roles|{"catalogRole":{"name":"$polaris_catalog_role"}}
+PUT|http://polaris:8181/api/management/v1/catalogs/$warehouse/catalog-roles/$polaris_catalog_role/grants|{"grant":{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}}
+PUT|http://polaris:8181/api/management/v1/principal-roles/$polaris_principal_role/catalog-roles/$warehouse|{"catalogRole":{"name":"$polaris_catalog_role"}}
+PUT|http://polaris:8181/api/management/v1/principals/root/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
+EOF
+    )
+    while IFS='|' read -r method url body; do
+      [ -n "$method" ] || continue
+      local polaris_resp
+      polaris_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+        -w "\n%{http_code}\n" \
+        -X "$method" "$url" \
+        -H "Authorization: Bearer $polaris_token" \
+        -H "Content-Type: application/json" \
+        -d "$body")
+      local polaris_code
+      polaris_code=$(printf "%s\n" "$polaris_resp" | tail -n1)
+      if [ "$polaris_code" != "200" ] && [ "$polaris_code" != "201" ] && [ "$polaris_code" != "409" ]; then
+        echo "[FAIL] $label upstream iceberg Polaris RBAC setup failed (http=$polaris_code method=$method url=$url)"
+        echo "$polaris_resp"
+        return 1
+      fi
+    done <<EOF
+$polaris_grant_specs
+EOF
+
     docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces" \
       -H "Authorization: Bearer $polaris_token" \
@@ -740,6 +777,28 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
       echo "[FAIL] $label upstream iceberg register failed (http=$register_code)"
       echo "$register_resp"
       return 1
+    fi
+
+    if [ "$smoke_scope" = "polaris-vended-creds" ]; then
+      local load_table_resp
+      load_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+        -X GET "http://polaris:8181/api/catalog/v1/$warehouse/namespaces/$source_namespace/tables/$source_table?snapshots=all" \
+        -H "Authorization: Bearer $polaris_token" \
+        -H "X-Iceberg-Access-Delegation: vended-credentials")
+      if ! python3 - "$load_table_resp" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+creds = payload.get("storage-credentials")
+if not isinstance(creds, list) or not creds:
+    sys.exit(1)
+PY
+      then
+        echo "[FAIL] $label upstream iceberg Polaris loadTable did not return storage-credentials"
+        echo "$load_table_resp"
+        return 1
+      fi
     fi
 
     local storage_authority_name
@@ -786,7 +845,7 @@ quit")
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
   fi
 
-  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     echo "==> [SMOKE] upstream delta unity import check"
 
     local unity_catalog="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS%%.*}"
@@ -876,16 +935,16 @@ quit")
       "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
       "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
       "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
-  elif [ "$profile" = "localstack" ]; then
+  elif [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
   fi
 
-  if [ "$profile" = "localstack" ] && should_run_client trino; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client trino; then
     local trino_host_port="${FLOECAT_TRINO_HOST_PORT:-8081}"
     wait_for_url "http://localhost:${trino_host_port}/v1/info" 180 "Trino health"
   fi
 
-  if [ "$profile" = "localstack" ] && should_run_client duckdb; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client duckdb; then
     local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta)"
     $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,400p' || true
@@ -1041,7 +1100,7 @@ EOF
     fi
   fi
 
-  if [ "$profile" = "localstack" ] && should_run_client trino; then
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client trino; then
     echo "==> [SMOKE] trino federation check (localstack)"
     local trino_out
     if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
@@ -1413,7 +1472,7 @@ PY
     fi
   fi
 
-  if [ "$label" = "localstack-remote" ]; then
+  if [ "$smoke_scope" = "full" ] && [ "$label" = "localstack-remote" ]; then
     assert_remote_file_group_worker_activity "$compose_cmd" "$label"
   fi
 
@@ -1445,6 +1504,19 @@ for raw_mode in "${mode_list[@]}"; do
         "localstack,reconciler-executor" \
         "QUARKUS_PROFILE_SERVICE=reconciler-control" \
         "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
+      ;;
+    localstack-polaris-vended-creds)
+      run_mode \
+        ./env.localstack \
+        localstack \
+        localstack-polaris-vended-creds \
+        "localstack" \
+        "" \
+        "" \
+        "localstack,reconciler-executor" \
+        "FLOECAT_SECRETS=kv FLOECAT_RECONCILER_WORKER_MODE=remote FLOECAT_RECONCILER_MAX_PARALLELISM=0 FLOECAT_RECONCILER_AUTO_ENABLED=false FLOECAT_SEED_MODE=iceberg FLOECAT_SEED_SYNC_ENABLED=false FLOECAT_EXECUTOR_AWS_ACCESS_KEY_ID= FLOECAT_EXECUTOR_AWS_SECRET_ACCESS_KEY= FLOECAT_EXECUTOR_AWS_SESSION_TOKEN= FLOECAT_EXECUTOR_AWS_REGION=us-east-1 FLOECAT_EXECUTOR_AWS_DEFAULT_REGION=us-east-1 FLOECAT_EXECUTOR_AWS_ENDPOINT_URL=http://localstack:4566 FLOECAT_EXECUTOR_AWS_ENDPOINT_URL_S3=http://localstack:4566 FLOECAT_EXECUTOR_AWS_PROFILE= FLOECAT_EXECUTOR_AWS_SDK_LOAD_CONFIG=0" \
+        "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}" \
+        "polaris-vended-creds"
       ;;
     localstack-oidc)
       run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"

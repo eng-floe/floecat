@@ -19,7 +19,6 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.AwsProfileSupport;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.types.Hashing;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
@@ -36,6 +35,8 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
 
 final class IcebergConnectorFactory {
+  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
+  private static final String VENDED_CREDENTIALS_MODE = "vended-credentials";
 
   private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
   private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
@@ -105,6 +106,7 @@ final class IcebergConnectorFactory {
         if (headerHints != null) {
           headerHints.forEach((k, v) -> props.put("header." + k, v));
         }
+        applyAccessDelegation(props, source);
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
@@ -168,8 +170,9 @@ final class IcebergConnectorFactory {
                   existing.retire();
                 }
                 RESTCatalog created = new RESTCatalog();
-                created.initialize(
-                    "floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
+                Map<String, String> catalogProps =
+                    Collections.unmodifiableMap(new HashMap<>(props));
+                created.initialize("floecat-iceberg", catalogProps);
                 return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
               });
       CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
@@ -220,6 +223,15 @@ final class IcebergConnectorFactory {
     return props;
   }
 
+  static void applyAccessDelegation(Map<String, String> props, IcebergSource source) {
+    if (source != IcebergSource.REST
+        || props == null
+        || hasHeader(props, ACCESS_DELEGATION_HEADER)) {
+      return;
+    }
+    props.put("header." + ACCESS_DELEGATION_HEADER, VENDED_CREDENTIALS_MODE);
+  }
+
   static Map<String, String> buildStorageProperties(
       Map<String, String> baseProps, String authScheme, Map<String, String> authProps) {
     Map<String, String> props = new HashMap<>();
@@ -251,7 +263,12 @@ final class IcebergConnectorFactory {
         String token =
             Objects.requireNonNull(
                 safeAuthProps.get("token"), "authProps.token required for oauth2");
+        props.put("rest.auth.type", "oauth2");
         props.put("token", token);
+        String oauth2ServerUri = safeAuthProps.get("oauth2-server-uri");
+        if (!isBlank(oauth2ServerUri)) {
+          props.put("oauth2-server-uri", oauth2ServerUri);
+        }
       }
 
       case "none" -> {}
@@ -356,6 +373,23 @@ final class IcebergConnectorFactory {
     };
   }
 
+  private static boolean hasHeader(Map<String, String> props, String headerName) {
+    if (props == null || props.isEmpty() || headerName == null || headerName.isBlank()) {
+      return false;
+    }
+    String expected = "header." + headerName;
+    for (String key : props.keySet()) {
+      if (key != null && key.equalsIgnoreCase(expected)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
+  }
+
   private record CatalogCacheKey(Map<String, String> props) {
     static CatalogCacheKey of(Map<String, String> props) {
       if (props == null || props.isEmpty()) {
@@ -395,7 +429,9 @@ final class IcebergConnectorFactory {
 
   private static String fingerprintValue(String value) {
     String safe = value == null ? "" : value;
-    return "sha256:" + Hashing.sha256Hex(safe.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    return "sha256:"
+        + ai.floedb.floecat.types.Hashing.sha256Hex(
+            safe.getBytes(java.nio.charset.StandardCharsets.UTF_8));
   }
 
   private static final class CatalogCacheEntry {

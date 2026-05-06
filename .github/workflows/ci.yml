@@ -174,11 +174,11 @@ jobs:
       matrix:
         include:
           - label: localstack
-            mode: localstack
-          - label: localstack-remote
-            mode: localstack-remote
+            modes: localstack
+          - label: localstack-remote+polaris
+            modes: localstack-remote,localstack-polaris-vended-creds
     concurrency:
-      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-${{ matrix.mode }}
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-${{ matrix.label }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -196,12 +196,12 @@ jobs:
         run: |
           set -euo pipefail
           DEBUG_DIR=target/ci-debug
-          SMOKE_LOG="$DEBUG_DIR/docker-smoke-${{ matrix.mode }}.log"
+          SMOKE_LOG="$DEBUG_DIR/docker-smoke-${{ matrix.label }}.log"
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
-          COMPOSE_SMOKE_MODES=${{ matrix.mode }} \
+          COMPOSE_SMOKE_MODES=${{ matrix.modes }} \
           COMPOSE_SMOKE_DUCKDB_IMAGE=duckdb/duckdb:1.4.4 \
-          COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs/${{ matrix.mode }}" \
+          COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs/${{ matrix.label }}" \
           FLOECAT_REST_LOG_COMMIT_TRAFFIC=true \
           make compose-smoke 2>&1 | tee "$SMOKE_LOG"
 
@@ -209,12 +209,12 @@ jobs:
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: docker-smoke-artifacts-${{ matrix.mode }}
+          name: docker-smoke-artifacts-${{ matrix.label }}
           if-no-files-found: warn
           retention-days: 14
           path: |
-            target/ci-debug/docker-smoke-${{ matrix.mode }}.log
-            target/ci-debug/compose-logs/${{ matrix.mode }}/**
+            target/ci-debug/docker-smoke-${{ matrix.label }}.log
+            target/ci-debug/compose-logs/${{ matrix.label }}/**
 
   publish-images:
     name: publish-images

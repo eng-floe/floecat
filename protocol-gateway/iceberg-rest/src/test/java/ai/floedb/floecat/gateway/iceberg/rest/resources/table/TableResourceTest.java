@@ -900,7 +900,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         Map.of(
             "metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json",
             "s3.access-key-id", "temp-key",
-            "token_endpoint", "https://issuer.example/token",
+            "access_token", "temporary-token",
             "warehouse", "s3://warehouse/db/orders"));
     payload.put("stage-create", true);
 
@@ -921,7 +921,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         persisted.get("metadata-location"));
     assertEquals("s3://warehouse/db/orders", persisted.get("warehouse"));
     assertFalse(persisted.containsKey("s3.access-key-id"));
-    assertFalse(persisted.containsKey("token_endpoint"));
+    assertFalse(persisted.containsKey("access_token"));
   }
 
   @Test

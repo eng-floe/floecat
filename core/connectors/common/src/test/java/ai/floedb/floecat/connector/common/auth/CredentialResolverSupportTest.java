@@ -121,6 +121,7 @@ class CredentialResolverSupportTest {
             new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
 
     assertEquals("exchanged", applied.auth().props().get("token"));
+    assertNull(applied.auth().props().get("oauth2-server-uri"));
 
     CapturedRequest req = captured.get();
     assertNotNull(req);
