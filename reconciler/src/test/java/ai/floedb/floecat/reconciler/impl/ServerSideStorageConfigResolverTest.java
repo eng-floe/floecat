@@ -40,7 +40,8 @@ class ServerSideStorageConfigResolverTest {
                 "s3.endpoint", "http://minio:9000"),
             new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
-    assertEquals("s3://warehouse/", ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+    assertEquals(
+        "s3://warehouse/", ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
   }
 
   @Test

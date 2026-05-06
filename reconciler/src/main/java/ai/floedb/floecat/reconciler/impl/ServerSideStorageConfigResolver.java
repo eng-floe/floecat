@@ -48,7 +48,8 @@ public class ServerSideStorageConfigResolver {
 
   public ServerSideStorageConfigResolver(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token") Optional<String> staticToken) {
+      @ConfigProperty(name = "floecat.reconciler.authorization.token")
+          Optional<String> staticToken) {
     this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
     this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
   }
@@ -85,18 +86,22 @@ public class ServerSideStorageConfigResolver {
     if (merged.equals(config.options())) {
       return config;
     }
-    return new ConnectorConfig(config.kind(), config.displayName(), config.uri(), merged, config.auth());
+    return new ConnectorConfig(
+        config.kind(), config.displayName(), config.uri(), merged, config.auth());
   }
 
   static Map<String, String> mergeResolvedStorageConfig(
       Map<String, String> options, ResolveStorageAuthorityResponse response) {
     Map<String, String> base = options == null ? Map.of() : options;
     if (response == null
-        || (response.getClientSafeConfigCount() == 0 && response.getStorageCredentialsCount() == 0)) {
+        || (response.getClientSafeConfigCount() == 0
+            && response.getStorageCredentialsCount() == 0)) {
       return base;
     }
     LinkedHashMap<String, String> merged = new LinkedHashMap<>(base);
-    response.getClientSafeConfigMap().forEach((key, value) -> putStorageProperty(merged, key, value));
+    response
+        .getClientSafeConfigMap()
+        .forEach((key, value) -> putStorageProperty(merged, key, value));
     if (response.getStorageCredentialsCount() > 0) {
       response
           .getStorageCredentials(0)
@@ -142,7 +147,10 @@ public class ServerSideStorageConfigResolver {
     if (normalized != null) {
       return normalized;
     }
-    if (!allowBareWarehouse || warehouse == null || warehouse.isBlank() || warehouse.contains("://")) {
+    if (!allowBareWarehouse
+        || warehouse == null
+        || warehouse.isBlank()
+        || warehouse.contains("://")) {
       return null;
     }
     return "s3://" + trimTrailingSlash(warehouse) + "/";
@@ -183,12 +191,14 @@ public class ServerSideStorageConfigResolver {
 
   private Metadata metadataForContext(Optional<ReconcileContext> ctx) {
     Metadata metadata = new Metadata();
-    ctx.map(ReconcileContext::correlationId).ifPresent(value -> metadata.put(CORRELATION_ID, value));
+    ctx.map(ReconcileContext::correlationId)
+        .ifPresent(value -> metadata.put(CORRELATION_ID, value));
     Optional<String> token = ctx.flatMap(ReconcileContext::authorizationToken);
     if (token.isEmpty()) {
       token = staticToken;
     }
-    token.ifPresent(value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
+    token.ifPresent(
+        value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
     return metadata;
   }
 

@@ -269,5 +269,4 @@ class IcebergConnectorFactoryTest {
     assertEquals("oauth-token", props.get("token"));
     assertEquals("http://polaris:8181/api/catalog/v1/oauth/tokens", props.get("oauth2-server-uri"));
   }
-
 }

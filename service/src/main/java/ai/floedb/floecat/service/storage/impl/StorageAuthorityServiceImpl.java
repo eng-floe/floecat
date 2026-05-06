@@ -339,7 +339,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
               String accountId = trimToNull(request.getAccountId());
               if (accountId == null) {
-                throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "account_id"));
+                throw GrpcErrors.invalidArgument(
+                    correlationId(), null, Map.of("field", "account_id"));
               }
               String locationPrefix =
                   request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
