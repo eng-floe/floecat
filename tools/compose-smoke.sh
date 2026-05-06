@@ -175,6 +175,113 @@ quit")
   return 1
 }
 
+run_connector_trigger_and_wait() {
+  local compose_cmd="$1"
+  local label="$2"
+  local trigger_script="$3"
+  local max_attempts="${4:-120}"
+  local sleep_seconds="${5:-2}"
+  local trigger_out
+  local job_id
+
+  trigger_out=$(run_cli_script "$compose_cmd" "$trigger_script")
+  job_id=$(extract_cli_job_id "$trigger_out")
+  wait_for_connector_job "$compose_cmd" "$label" "$job_id" "$max_attempts" "$sleep_seconds"
+}
+
+list_connector_job_states_for_table() {
+  local compose_cmd="$1"
+  local table_ref="$2"
+  local out
+
+  out=$(run_cli_script "$compose_cmd" "account t-0001
+connector jobs --page-size 200
+quit")
+  printf "%s\n" "$out" | awk -v table_ref="$table_ref" '
+    /^job_id=/ {
+      job_id = ""
+      state = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^job_id=/) {
+          job_id = $i
+          sub(/^job_id=/, "", job_id)
+        } else if ($i ~ /^state=/) {
+          state = $i
+          sub(/^state=/, "", state)
+        }
+      }
+      next
+    }
+    /^routing:[[:space:]]/ {
+      if (job_id != "" && index($0, "table=" table_ref) > 0) {
+        print job_id " " state
+      }
+      job_id = ""
+      state = ""
+    }
+  '
+}
+
+wait_for_table_reconcile_jobs() {
+  local compose_cmd="$1"
+  local label="$2"
+  local table_ref="$3"
+  local baseline_job_ids="${4:-}"
+  local expected_min_jobs="${5:-1}"
+  local max_attempts="${6:-90}"
+  local sleep_seconds="${7:-2}"
+  local attempt
+  local states
+  local line
+  local job_id
+  local state
+  local new_job_count
+  local terminal_success_count
+  local nonterminal_count
+
+  echo "==> [SMOKE] waiting for reconcile jobs for $table_ref (retries=$max_attempts sleep=${sleep_seconds}s)"
+  for attempt in $(seq 1 "$max_attempts"); do
+    states=$(list_connector_job_states_for_table "$compose_cmd" "$table_ref")
+    new_job_count=0
+    terminal_success_count=0
+    nonterminal_count=0
+
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      job_id=${line%% *}
+      state=${line#* }
+      if printf "%s\n" "$baseline_job_ids" | grep -Fqx "$job_id"; then
+        continue
+      fi
+      new_job_count=$((new_job_count + 1))
+      case "$state" in
+        JS_SUCCEEDED|SUCCEEDED)
+          terminal_success_count=$((terminal_success_count + 1))
+          ;;
+        JS_FAILED|FAILED|JS_CANCELLED|CANCELLED)
+          echo "$states"
+          echo "[FAIL] $label reconcile job terminal state=$state for $table_ref ($job_id)"
+          return 1
+          ;;
+        *)
+          nonterminal_count=$((nonterminal_count + 1))
+          ;;
+      esac
+    done <<< "$states"
+
+    if [ "$new_job_count" -ge "$expected_min_jobs" ] && [ "$nonterminal_count" -eq 0 ] && [ "$terminal_success_count" -eq "$new_job_count" ]; then
+      echo "[PASS] $label reconcile jobs settled for $table_ref ($new_job_count jobs)"
+      return 0
+    fi
+
+    sleep "$sleep_seconds"
+  done
+
+  echo "$states"
+  echo "[FAIL] $label reconcile jobs did not settle for $table_ref"
+  return 1
+}
+
 extract_cli_job_id() {
   local cli_output="$1"
   printf "%s\n" "$cli_output" \
@@ -490,19 +597,32 @@ run_mode() {
   if [ "$smoke_scope" = "full" ] && { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
     compose_profiles="${compose_profiles},trino"
   fi
-  local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$compose_profiles COMPOSE_PROJECT_NAME=$compose_project"
+  local -a mode_env_args=(
+    "FLOECAT_ENV_FILE=$env_file"
+    "COMPOSE_PROFILES=$compose_profiles"
+    "COMPOSE_PROJECT_NAME=$compose_project"
+  )
 
   if [ -n "$kc_host" ]; then
-    mode_env="$mode_env KC_HOSTNAME=$kc_host"
+    mode_env_args+=("KC_HOSTNAME=$kc_host")
   fi
   if [ -n "$kc_port" ]; then
-    mode_env="$mode_env KC_HOSTNAME_PORT=$kc_port"
+    mode_env_args+=("KC_HOSTNAME_PORT=$kc_port")
   fi
   if [ -n "$mode_env_extra" ]; then
-    mode_env="$mode_env $mode_env_extra"
+    local extra_kv
+    for extra_kv in $mode_env_extra; do
+      mode_env_args+=("$extra_kv")
+    done
   fi
 
-  local compose_cmd="$mode_env $DOCKER_COMPOSE_MAIN"
+  local mode_env=""
+  local mode_env_kv
+  for mode_env_kv in "${mode_env_args[@]}"; do
+    printf -v mode_env '%s%q ' "$mode_env" "$mode_env_kv"
+  done
+
+  local compose_cmd="${mode_env}${DOCKER_COMPOSE_MAIN}"
   on_mode_error() {
     echo "==> [SMOKE][FAIL] mode=$label"
     eval "$compose_cmd ps" || true
@@ -813,13 +933,14 @@ quit")
     assert_contains "$label upstream iceberg storage authority setup" "$rest_setup_out" "$storage_authority_name"
     assert_contains "$label upstream iceberg connector setup" "$rest_setup_out" "smoke-upstream-iceberg"
 
-    local trigger_rest_out
-    trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
+    run_connector_trigger_and_wait \
+      "$compose_cmd" \
+      "$label upstream iceberg connector" \
+      "account t-0001
 connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats,index
-quit")
-    local rest_job_id
-    rest_job_id=$(extract_cli_job_id "$trigger_rest_out")
-    wait_for_connector_job "$compose_cmd" "$label upstream iceberg connector" "$rest_job_id" 120 2
+quit" \
+      120 \
+      2
 
     local out_upstream_iceberg
     out_upstream_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
@@ -907,13 +1028,14 @@ quit")
     echo "$unity_setup_out"
     assert_contains "$label upstream delta unity connector setup" "$unity_setup_out" "smoke-upstream-delta-unity"
 
-    local trigger_unity_out
-    trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
+    run_connector_trigger_and_wait \
+      "$compose_cmd" \
+      "$label upstream delta unity connector" \
+      "account t-0001
 connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats,index
-quit")
-    local unity_job_id
-    unity_job_id=$(extract_cli_job_id "$trigger_unity_out")
-    wait_for_connector_job "$compose_cmd" "$label upstream delta unity connector" "$unity_job_id" 120 2
+quit" \
+      120 \
+      2
 
     local out_upstream_delta_unity
     out_upstream_delta_unity=$(run_cli_script "$compose_cmd" "account t-0001
@@ -1103,6 +1225,8 @@ EOF
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client trino; then
     echo "==> [SMOKE] trino federation check (localstack)"
     local trino_out
+    local trino_mutation_baseline_jobs=""
+    trino_mutation_baseline_jobs=$(list_connector_job_states_for_table "$compose_cmd" "iceberg.trino_mutation_smoke" | awk '{print $1}')
     if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
 import sys
@@ -1322,7 +1446,6 @@ print(
         f"FROM iceberg.trino_mutation_smoke FOR VERSION AS OF {update_snapshot_id}"
     )
 )
-run_sql("DROP TABLE iceberg.trino_mutation_smoke")
 PY
 ); then
       echo "$trino_out"
@@ -1353,6 +1476,47 @@ PY
     assert_contains "$label trino time travel insert snapshot" "$trino_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label trino time travel delete snapshot" "$trino_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label trino time travel update snapshot" "$trino_out" "mut_tt_after_update=2,4,a,c2"
+    wait_for_table_reconcile_jobs \
+      "$compose_cmd" \
+      "$label trino mutation" \
+      "iceberg.trino_mutation_smoke" \
+      "$trino_mutation_baseline_jobs" \
+      4 \
+      120 \
+      2
+    local trino_drop_out
+    trino_drop_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
+import json
+import urllib.request
+
+TRINO_URL = "http://trino:8080/v1/statement"
+HEADERS = {
+    "X-Trino-User": "smoke",
+    "X-Trino-Source": "compose-smoke",
+    "X-Trino-Catalog": "floecat",
+    "X-Trino-Schema": "iceberg",
+}
+
+req = urllib.request.Request(
+    TRINO_URL,
+    data=b"DROP TABLE iceberg.trino_mutation_smoke",
+    headers={**HEADERS, "Content-Type": "text/plain; charset=utf-8"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=60) as resp:
+    payload = json.loads(resp.read().decode("utf-8"))
+while payload.get("nextUri"):
+    next_req = urllib.request.Request(payload["nextUri"], headers=HEADERS, method="GET")
+    with urllib.request.urlopen(next_req, timeout=60) as next_resp:
+        payload = json.loads(next_resp.read().decode("utf-8"))
+    if payload.get("error"):
+        err = payload["error"]
+        raise RuntimeError(f"{err.get('errorName')}: {err.get('message')}")
+print("trino_mutation_drop_ok=1")
+PY
+)
+    echo "$trino_drop_out"
+    assert_contains "$label trino mutation drop" "$trino_drop_out" "trino_mutation_drop_ok=1"
 
     if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] trino iceberg format-version matrix (v1,v2)"
