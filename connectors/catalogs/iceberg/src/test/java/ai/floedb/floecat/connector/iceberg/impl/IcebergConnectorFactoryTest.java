@@ -215,13 +215,10 @@ class IcebergConnectorFactoryTest {
 
     IcebergConnectorFactory.applyCatalogAuth(props, "oauth2", Map.of("token", "oauth-token"));
     IcebergConnectorFactory.applyStorageAuth(props, "oauth2", Map.of("token", "oauth-token"));
-    IcebergConnectorFactory.applyAccessDelegation(
-        props, IcebergConnectorFactory.IcebergSource.REST);
-
     assertEquals("oauth2", props.get("rest.auth.type"));
     assertEquals("oauth-token", props.get("token"));
     assertNull(props.get("oauth2-server-uri"));
-    assertEquals("vended-credentials", props.get("header.X-Iceberg-Access-Delegation"));
+    assertNull(props.get("header.X-Iceberg-Access-Delegation"));
     assertEquals("polaris", props.get("rest.flavor"));
     assertEquals("quickstart_catalog", props.get("warehouse"));
     assertEquals("http://localstack:4566", props.get("s3.endpoint"));
@@ -234,20 +231,20 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void restAccessDelegationDoesNotOverrideExplicitHeader() {
+  void restCatalogPropsPreserveExplicitAccessDelegationHeader() {
     Map<String, String> props =
         new HashMap<>(
             IcebergConnectorFactory.buildCatalogProperties(
                 "http://polaris:8181/api/catalog",
                 IcebergConnectorFactory.buildBaseIcebergProperties(
-                    Map.of("iceberg.source", "rest", "warehouse", "quickstart_catalog"))));
+                    Map.of(
+                        "iceberg.source", "rest",
+                        "warehouse", "quickstart_catalog",
+                        "header.X-Iceberg-Access-Delegation", "remote-signing"))));
     props.put("header.x-iceberg-access-delegation", "remote-signing");
 
-    IcebergConnectorFactory.applyAccessDelegation(
-        props, IcebergConnectorFactory.IcebergSource.REST);
-
     assertEquals("remote-signing", props.get("header.x-iceberg-access-delegation"));
-    assertNull(props.get("header.X-Iceberg-Access-Delegation"));
+    assertEquals("remote-signing", props.get("header.X-Iceberg-Access-Delegation"));
   }
 
   @Test
@@ -273,18 +270,4 @@ class IcebergConnectorFactoryTest {
     assertEquals("http://polaris:8181/api/catalog/v1/oauth/tokens", props.get("oauth2-server-uri"));
   }
 
-  @Test
-  void glueCatalogDoesNotRequestVendedCredentials() {
-    Map<String, String> props =
-        new HashMap<>(
-            IcebergConnectorFactory.buildCatalogProperties(
-                "https://glue.us-east-1.amazonaws.com/iceberg",
-                IcebergConnectorFactory.buildBaseIcebergProperties(
-                    Map.of("iceberg.source", "glue", "warehouse", "ignored"))));
-
-    IcebergConnectorFactory.applyAccessDelegation(
-        props, IcebergConnectorFactory.IcebergSource.GLUE);
-
-    assertNull(props.get("header.X-Iceberg-Access-Delegation"));
-  }
 }

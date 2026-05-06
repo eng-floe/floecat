@@ -72,6 +72,7 @@ public class ReconcilerService {
 
   @Inject ReconcilerBackend backend;
   @Inject CredentialResolver credentialResolver;
+  @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
 
   /** Opens a connector from a resolved configuration. */
   @FunctionalInterface
@@ -988,12 +989,15 @@ public class ReconcilerService {
     return List.copyOf(segments);
   }
 
-  private ActiveConnector activeConnector(Connector connector, ResourceId connectorId) {
+  private ActiveConnector activeConnector(
+      ReconcileContext ctx, Connector connector, ResourceId connectorId) {
     if (connector.getState() != ConnectorState.CS_ACTIVE) {
       throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
-    ConnectorConfig resolved = resolveCredentials(config, connector.getAuth(), connectorId);
+    ConnectorConfig resolved =
+        resolveServerSideStorage(
+            ctx, connector, resolveCredentials(config, connector.getAuth(), connectorId));
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1014,7 +1018,7 @@ public class ReconcilerService {
           "getConnector failed: " + connectorId.getId(),
           e);
     }
-    return activeConnector(connector, connectorId);
+    return activeConnector(ctx, connector, connectorId);
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
@@ -1174,6 +1178,14 @@ public class ReconcilerService {
     return credential
         .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
         .orElse(base);
+  }
+
+  private ConnectorConfig resolveServerSideStorage(
+      ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+    if (serverSideStorageConfigResolver == null) {
+      return config;
+    }
+    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
   }
 
   record ActiveConnector(

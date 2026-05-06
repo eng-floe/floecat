@@ -136,6 +136,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   ConnectorOpener connectorOpener = ConnectorFactory::create;
   @Inject CaptureEngineRegistry captureEngineRegistry;
   @Inject CredentialResolver credentialResolver;
+  @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
 
   public GrpcReconcilerBackend(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
@@ -1413,8 +1414,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
     ResourceId connectorId = sourceContext.get().connectorId();
     ConnectorConfig config =
-        resolveCredentials(
-            ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId);
+        resolveServerSideStorage(
+            ctx,
+            connector,
+            resolveCredentials(
+                ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId));
     try (FloecatConnector source = connectorOpener.open(config)) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
@@ -1451,6 +1455,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .resolve(connectorId.getAccountId(), connectorId.getId())
         .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
         .orElse(base);
+  }
+
+  private ConnectorConfig resolveServerSideStorage(
+      ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+    if (serverSideStorageConfigResolver == null) {
+      return config;
+    }
+    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

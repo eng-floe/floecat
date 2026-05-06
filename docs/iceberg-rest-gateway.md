@@ -263,9 +263,9 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
   table record’s `location` and `metadata-location` remain the source of truth for Iceberg clients.
 - **Credentials:** `/tables/{table}/credentials`, table load responses, and plan responses return
-  vended credentials only when access delegation requests them and a matching storage authority is
-  configured for the resolved storage prefix. Floecat does not vend static long-lived credentials;
-  storage authorities are expected to resolve or mint temporary credentials.
+  vended credentials only when access delegation explicitly requests them and a matching storage
+  authority is configured for the resolved storage prefix. Floecat does not vend static long-lived
+  credentials; storage authorities are expected to resolve or mint temporary credentials.
 - **Client-safe config:** table load responses may include non-secret storage settings such as
   endpoint, region, and path-style access. Those values come from storage-authority client-safe
   config rather than from the upstream connector definition.

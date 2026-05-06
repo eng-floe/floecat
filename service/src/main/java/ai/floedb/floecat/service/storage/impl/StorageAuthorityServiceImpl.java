@@ -41,6 +41,7 @@ import ai.floedb.floecat.storage.rpc.GetStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.GetStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesResponse;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForAccountLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -321,6 +322,39 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   authority,
                   locationPrefix,
                   principal.getAccountId(),
+                  request.getIncludeCredentials(),
+                  request.getRequired(),
+                  true);
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<ResolveStorageAuthorityResponse> resolveStorageAuthorityForAccountLocation(
+      ResolveStorageAuthorityForAccountLocationRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              PrincipalContext principal = principalProvider.get();
+              authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+              String accountId = trimToNull(request.getAccountId());
+              if (accountId == null) {
+                throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "account_id"));
+              }
+              String locationPrefix =
+                  request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
+              if (locationPrefix == null && request.getRequired()) {
+                throw new IllegalArgumentException(
+                    "Credential vending was requested but no concrete storage location is available for this table");
+              }
+              List<StorageAuthority> authorities =
+                  repo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder());
+              StorageAuthority authority =
+                  StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
+              return resolver.buildResponse(
+                  authority,
+                  locationPrefix,
+                  accountId,
                   request.getIncludeCredentials(),
                   request.getRequired(),
                   true);

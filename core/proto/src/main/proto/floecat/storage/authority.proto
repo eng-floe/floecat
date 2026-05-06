@@ -125,6 +125,13 @@ message ResolveStorageAuthorityForLocationRequest {
   bool required = 3;
 }
 
+message ResolveStorageAuthorityForAccountLocationRequest {
+  string account_id = 1;
+  optional string location_prefix = 2;
+  bool include_credentials = 3;
+  bool required = 4;
+}
+
 message ResolveStorageAuthorityResponse {
   optional ai.floedb.floecat.common.ResourceId authority_id = 1;
   map<string,string> client_safe_config = 2;
@@ -146,5 +153,7 @@ service StorageAuthorities {
   rpc ResolveStorageAuthority(ResolveStorageAuthorityRequest)
       returns (ResolveStorageAuthorityResponse);
   rpc ResolveStorageAuthorityForLocation(ResolveStorageAuthorityForLocationRequest)
+      returns (ResolveStorageAuthorityResponse);
+  rpc ResolveStorageAuthorityForAccountLocation(ResolveStorageAuthorityForAccountLocationRequest)
       returns (ResolveStorageAuthorityResponse);
 }

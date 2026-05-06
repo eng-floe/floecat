@@ -35,9 +35,6 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
 
 final class IcebergConnectorFactory {
-  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
-  private static final String VENDED_CREDENTIALS_MODE = "vended-credentials";
-
   private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
   private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
       new ConcurrentHashMap<>();
@@ -106,7 +103,6 @@ final class IcebergConnectorFactory {
         if (headerHints != null) {
           headerHints.forEach((k, v) -> props.put("header." + k, v));
         }
-        applyAccessDelegation(props, source);
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
@@ -221,15 +217,6 @@ final class IcebergConnectorFactory {
       props.putAll(baseProps);
     }
     return props;
-  }
-
-  static void applyAccessDelegation(Map<String, String> props, IcebergSource source) {
-    if (source != IcebergSource.REST
-        || props == null
-        || hasHeader(props, ACCESS_DELEGATION_HEADER)) {
-      return;
-    }
-    props.put("header." + ACCESS_DELEGATION_HEADER, VENDED_CREDENTIALS_MODE);
   }
 
   static Map<String, String> buildStorageProperties(
@@ -371,19 +358,6 @@ final class IcebergConnectorFactory {
       case "none", "aws", "aws-assume-role", "aws-web-identity", "aws-sigv4" -> true;
       default -> false;
     };
-  }
-
-  private static boolean hasHeader(Map<String, String> props, String headerName) {
-    if (props == null || props.isEmpty() || headerName == null || headerName.isBlank()) {
-      return false;
-    }
-    String expected = "header." + headerName;
-    for (String key : props.keySet()) {
-      if (key != null && key.equalsIgnoreCase(expected)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private static boolean isBlank(String value) {
