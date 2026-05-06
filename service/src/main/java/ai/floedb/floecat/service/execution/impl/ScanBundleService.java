@@ -83,7 +83,7 @@ public class ScanBundleService {
 
     FloecatConnector.ScanBundle bundle = buildFromStats(table, snapshotId);
 
-    TableInfo info = buildTableInfo(table, snapshot);
+    TableInfo info = buildTableInfo(table, snapshot, snapshotId);
     return new ScanBundleWithInfo(bundle, info);
   }
 
@@ -147,8 +147,9 @@ public class ScanBundleService {
     return new FloecatConnector.ScanBundle(linkedData, deletes);
   }
 
-  private TableInfo buildTableInfo(Table table, Snapshot snapshot) {
-    TableInfo.Builder builder = TableInfo.newBuilder().setTableId(table.getResourceId());
+  private TableInfo buildTableInfo(Table table, Snapshot snapshot, long snapshotId) {
+    TableInfo.Builder builder =
+        TableInfo.newBuilder().setTableId(table.getResourceId()).setSnapshotId(snapshotId);
 
     String schemaJson = snapshot.getSchemaJson();
     if (schemaJson == null || schemaJson.isBlank()) {

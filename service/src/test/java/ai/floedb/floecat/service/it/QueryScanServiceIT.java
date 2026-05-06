@@ -220,6 +220,7 @@ class QueryScanServiceIT {
     assertEquals(metadataLocation, info.getMetadataLocation());
     assertEquals(1, info.getPropertiesCount());
     assertEquals(metadataLocation, info.getPropertiesMap().get("metadata-location"));
+    assertEquals(snap.getSnapshotId(), info.getSnapshotId());
   }
 
   /** Ensures FetchScanBundle rejects unpinned tables. */
