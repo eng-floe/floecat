@@ -51,6 +51,7 @@ import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityRespon
 import software.amazon.awssdk.services.sts.model.Credentials;
 
 public final class CredentialResolverSupport {
+  private static final String TOKEN_ENDPOINT_DOMAIN_WILDCARD = "*";
   private static final ObjectMapper M = new ObjectMapper();
   private static final String DEFAULT_SUBJECT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt";
   private static final String AZURE_OBO_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -630,6 +631,9 @@ public final class CredentialResolverSupport {
     List<String> allowedDomains = configuredTokenEndpointDomains();
     if (allowedDomains.isEmpty()) {
       return allowUnrestrictedTokenEndpointsForDevOnly(host);
+    }
+    if (allowedDomains.contains(TOKEN_ENDPOINT_DOMAIN_WILDCARD)) {
+      return true;
     }
     String normalizedHost = host == null ? "" : host.trim().toLowerCase(Locale.ROOT);
     if (normalizedHost.isBlank()) {

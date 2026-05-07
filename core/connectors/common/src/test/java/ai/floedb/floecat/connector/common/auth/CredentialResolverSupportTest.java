@@ -465,6 +465,67 @@ class CredentialResolverSupportTest {
   }
 
   @Test
+  void tokenExchangeWildcardAllowlistAllowsAnyHostSubjectToOtherGuards() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "*");
+    System.setProperty("floecat.security.allow-private-token-endpoints-for-allowed-hosts", "true");
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://127.0.0.1:1/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    RuntimeException ex =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token exchange request failed", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeWildcardAllowlistStillBlocksPrivateHttpsWithoutExplicitOverride() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "*");
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://localhost/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not allowed", ex.getMessage());
+  }
+
+  @Test
   void tokenExchangeRejectsAllowlistedPrivateHttpsEndpointWithoutExplicitOverride() {
     var exchange =
         AuthCredentials.TokenExchange.newBuilder()
