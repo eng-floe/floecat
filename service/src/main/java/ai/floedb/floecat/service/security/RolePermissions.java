@@ -48,8 +48,7 @@ public final class RolePermissions {
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
-  private static final List<String> SYSTEM_OBJECTS_PERMS =
-      List.of("system-objects.read", STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+  private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
           "account.read",

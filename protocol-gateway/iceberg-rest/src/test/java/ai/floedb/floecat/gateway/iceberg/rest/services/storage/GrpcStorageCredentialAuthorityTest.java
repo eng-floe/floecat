@@ -19,8 +19,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.storage;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -28,9 +30,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
@@ -97,63 +97,8 @@ class GrpcStorageCredentialAuthorityTest {
   }
 
   @Test
-  void resolveFileIoConfigForLocationUsesStorageAuthorityLookup() {
-    GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
-    when(grpcClient.resolveStorageAuthorityForLocation(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .putClientSafeConfig("s3.endpoint", "http://localhost:4566")
-                .putClientSafeConfig("s3.path-style-access", "true")
-                .addStorageCredentials(
-                    VendedStorageCredential.newBuilder()
-                        .setPrefix("s3://warehouse/orders")
-                        .putConfig("s3.access-key-id", "key")
-                        .putConfig("s3.secret-access-key", "secret")
-                        .build())
-                .build());
-
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
-
-    Map<String, String> config =
-        authority.resolveFileIoConfigForLocation(
-            "s3://warehouse/orders/metadata/00001.metadata.json", false);
-
-    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
-    assertEquals("true", config.get("s3.path-style-access"));
-    assertEquals("key", config.get("s3.access-key-id"));
-    assertEquals("secret", config.get("s3.secret-access-key"));
-
-    ArgumentCaptor<ResolveStorageAuthorityForLocationRequest> requestCaptor =
-        ArgumentCaptor.forClass(ResolveStorageAuthorityForLocationRequest.class);
-    verify(grpcClient).resolveStorageAuthorityForLocation(requestCaptor.capture());
-    ResolveStorageAuthorityForLocationRequest request = requestCaptor.getValue();
-    assertEquals("s3://warehouse/orders/metadata/00001.metadata.json", request.getLocationPrefix());
-    assertEquals(true, request.getIncludeCredentials());
-  }
-
-  @Test
-  void resolveFileIoConfigForLocationSkipsLookupWithoutAccountContext() {
-    GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
-
-    assertEquals(
-        Map.of(),
-        authority.resolveFileIoConfigForLocation(
-            "s3://warehouse/orders/metadata/00001.metadata.json", false));
-    org.mockito.Mockito.verify(grpcClient, org.mockito.Mockito.never())
-        .resolveStorageAuthorityForLocation(any());
-  }
-
-  @Test
   void resolveServerSideFileIoConfigForTableUsesServerSideAuthorityLookup() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
     when(grpcClient.resolveStorageAuthority(any()))
         .thenReturn(
             ResolveStorageAuthorityResponse.newBuilder()
@@ -166,12 +111,11 @@ class GrpcStorageCredentialAuthorityTest {
                         .build())
                 .build());
 
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder()
             .setResourceId(
-                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                ResourceId.newBuilder()
                     .setAccountId("acct-1")
                     .setKind(ResourceKind.RK_TABLE)
                     .setId("tbl-1")
@@ -198,7 +142,6 @@ class GrpcStorageCredentialAuthorityTest {
   @Test
   void resolveServerSideFileIoConfigForDeltaTableUsesStorageLocationForAuthorityLookup() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
     when(grpcClient.resolveStorageAuthority(any()))
         .thenReturn(
             ResolveStorageAuthorityResponse.newBuilder()
@@ -212,12 +155,11 @@ class GrpcStorageCredentialAuthorityTest {
                         .build())
                 .build());
 
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder()
             .setResourceId(
-                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                ResourceId.newBuilder()
                     .setAccountId("acct-1")
                     .setKind(ResourceKind.RK_TABLE)
                     .setId("tbl-1")
@@ -241,39 +183,25 @@ class GrpcStorageCredentialAuthorityTest {
   }
 
   @Test
-  void clientSafeConfigUsesScopedLookupWhenStageCreateTableHasNoResourceId() {
+  void clientSafeConfigReturnsEmptyWhenStageCreateTableHasNoResourceId() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
-
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder().putProperties("location", "s3://warehouse/stage-create/orders").build();
 
     Map<String, String> config = authority.clientSafeConfig(table);
 
     assertEquals(Map.of(), config);
-    org.mockito.Mockito.verify(grpcClient, org.mockito.Mockito.never())
-        .resolveStorageAuthority(any());
+    verify(grpcClient, never()).resolveStorageAuthority(any());
   }
 
   @Test
-  void clientSafeConfigFallsBackToLocationRpcWhenReservedTableIdIsNotPersisted() {
+  void clientSafeConfigReturnsEmptyWhenPersistedTableIsNotFound() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
     when(grpcClient.resolveStorageAuthority(any()))
         .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
-    when(grpcClient.resolveStorageAuthorityForLocation(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .putClientSafeConfig("s3.endpoint", "http://localhost:4566")
-                .putClientSafeConfig("s3.path-style-access", "true")
-                .build());
 
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -287,94 +215,28 @@ class GrpcStorageCredentialAuthorityTest {
 
     Map<String, String> config = authority.clientSafeConfig(table);
 
-    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
-    assertEquals("true", config.get("s3.path-style-access"));
+    assertEquals(Map.of(), config);
     verify(grpcClient).resolveStorageAuthority(any());
-    verify(grpcClient).resolveStorageAuthorityForLocation(any());
   }
 
   @Test
   void resolveForTableRejectsStageCreateTableWithoutPersistedIdWhenRequired() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder().putProperties("location", "s3://warehouse/stage-create/orders").build();
 
     IllegalArgumentException ex =
-        org.junit.jupiter.api.Assertions.assertThrows(
-            IllegalArgumentException.class, () -> authority.resolveForTable(table, true));
+        assertThrows(IllegalArgumentException.class, () -> authority.resolveForTable(table, true));
 
     assertEquals("Credential vending requires a persisted table resource", ex.getMessage());
-    org.mockito.Mockito.verify(grpcClient, org.mockito.Mockito.never())
-        .resolveStorageAuthority(any());
+    verify(grpcClient, never()).resolveStorageAuthority(any());
   }
 
   @Test
-  void resolveFileIoConfigForLocationUsesLocationRpcWhenTableIdIsProvided() {
+  void resolveServerSideFileIoConfigForUnpersistedTableReturnsEmptyWhenNotRequired() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
-    when(grpcClient.resolveStorageAuthorityForLocation(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .putClientSafeConfig("s3.endpoint", "http://localhost:4566")
-                .putClientSafeConfig("s3.path-style-access", "true")
-                .addStorageCredentials(
-                    VendedStorageCredential.newBuilder()
-                        .setPrefix("s3://floecat-delta/call_center")
-                        .putConfig("s3.access-key-id", "key")
-                        .putConfig("s3.secret-access-key", "secret")
-                        .build())
-                .build());
-
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct-1")
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("tbl-1")
-            .build();
-
-    Map<String, String> config =
-        authority.resolveFileIoConfigForLocation(
-            tableId, "s3://floecat-delta/call_center/metadata", false);
-
-    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
-    assertEquals("true", config.get("s3.path-style-access"));
-    assertEquals("key", config.get("s3.access-key-id"));
-    assertEquals("secret", config.get("s3.secret-access-key"));
-
-    ArgumentCaptor<ResolveStorageAuthorityForLocationRequest> requestCaptor =
-        ArgumentCaptor.forClass(ResolveStorageAuthorityForLocationRequest.class);
-    verify(grpcClient).resolveStorageAuthorityForLocation(requestCaptor.capture());
-    ResolveStorageAuthorityForLocationRequest request = requestCaptor.getValue();
-    assertEquals("s3://floecat-delta/call_center/metadata", request.getLocationPrefix());
-    assertEquals(true, request.getIncludeCredentials());
-  }
-
-  @Test
-  void resolveServerSideFileIoConfigForUnpersistedTableUsesLocationRpc() {
-    GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
-    when(grpcClient.resolveStorageAuthorityForLocation(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .putClientSafeConfig("s3.endpoint", "http://localhost:4566")
-                .addStorageCredentials(
-                    VendedStorageCredential.newBuilder()
-                        .setPrefix("s3://warehouse/orders")
-                        .putConfig("s3.access-key-id", "key")
-                        .putConfig("s3.secret-access-key", "secret")
-                        .build())
-                .build());
-
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder()
             .putProperties("location", "s3://warehouse/orders/metadata/00001.metadata.json")
@@ -382,41 +244,35 @@ class GrpcStorageCredentialAuthorityTest {
 
     Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
 
-    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
-    assertEquals("key", config.get("s3.access-key-id"));
-    assertEquals("secret", config.get("s3.secret-access-key"));
-
-    ArgumentCaptor<ResolveStorageAuthorityForLocationRequest> requestCaptor =
-        ArgumentCaptor.forClass(ResolveStorageAuthorityForLocationRequest.class);
-    verify(grpcClient).resolveStorageAuthorityForLocation(requestCaptor.capture());
-    assertEquals(
-        "s3://warehouse/orders/metadata/00001.metadata.json",
-        requestCaptor.getValue().getLocationPrefix());
-    org.mockito.Mockito.verify(grpcClient, org.mockito.Mockito.never())
-        .resolveStorageAuthority(any());
+    assertEquals(Map.of(), config);
+    verify(grpcClient, never()).resolveStorageAuthority(any());
   }
 
   @Test
-  void resolveServerSideFileIoConfigFallsBackToLocationRpcWhenReservedTableIdIsNotPersisted() {
+  void resolveServerSideFileIoConfigRejectsUnpersistedTableWhenRequired() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-    AccountContext accountContext = new AccountContext();
-    accountContext.setAccountId("acct-1");
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
+    Table table =
+        Table.newBuilder()
+            .putProperties("location", "s3://warehouse/orders/metadata/00001.metadata.json")
+            .build();
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> authority.resolveServerSideFileIoConfig(table, true));
+
+    assertEquals("Credential vending requires a persisted table resource", ex.getMessage());
+    verify(grpcClient, never()).resolveStorageAuthority(any());
+  }
+
+  @Test
+  void resolveServerSideFileIoConfigReturnsEmptyWhenPersistedTableIsNotFound() {
+    GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
     when(grpcClient.resolveStorageAuthority(any()))
         .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
-    when(grpcClient.resolveStorageAuthorityForLocation(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .putClientSafeConfig("s3.endpoint", "http://localhost:4566")
-                .addStorageCredentials(
-                    VendedStorageCredential.newBuilder()
-                        .setPrefix("s3://warehouse/orders")
-                        .putConfig("s3.access-key-id", "key")
-                        .putConfig("s3.secret-access-key", "secret")
-                        .build())
-                .build());
 
-    GrpcStorageCredentialAuthority authority =
-        new GrpcStorageCredentialAuthority(grpcClient, accountContext);
+    GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -430,10 +286,7 @@ class GrpcStorageCredentialAuthorityTest {
 
     Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
 
-    assertEquals("http://localhost:4566", config.get("s3.endpoint"));
-    assertEquals("key", config.get("s3.access-key-id"));
-    assertEquals("secret", config.get("s3.secret-access-key"));
+    assertEquals(Map.of(), config);
     verify(grpcClient).resolveStorageAuthority(any());
-    verify(grpcClient).resolveStorageAuthorityForLocation(any());
   }
 }

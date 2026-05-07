@@ -178,7 +178,7 @@ jobs:
             smoke_modes: localstack
           - label: localstack-remote
             mode: localstack-remote
-            smoke_modes: localstack-remote,localstack-polaris-vended-creds
+            smoke_modes: localstack-remote
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-${{ matrix.mode }}
       cancel-in-progress: true

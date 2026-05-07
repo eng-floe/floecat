@@ -61,6 +61,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.planning.PlanTaskManager;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -85,6 +86,7 @@ import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -100,6 +102,7 @@ class TableResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
 
+  @Inject PlanTaskManager planTaskManager;
   @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
@@ -1585,10 +1588,34 @@ class TableResourceTest extends AbstractRestResourceTest {
                         "s3.secret-access-key", "test-secret",
                         "s3.session-token", "test-session"),
                     Instant.parse("2026-05-02T18:00:00Z"))));
+    when(queryStub.beginQuery(any()))
+        .thenReturn(
+            BeginQueryResponse.newBuilder()
+                .setQuery(QueryDescriptor.newBuilder().setQueryId("plan-1"))
+                .build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(
+            GetQueryResponse.newBuilder()
+                .setQuery(QueryDescriptor.newBuilder().setQueryId("plan-1"))
+                .build());
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(
+            FetchScanBundleResponse.newBuilder()
+                .setBundle(ScanBundle.getDefaultInstance())
+                .build());
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .header("X-Iceberg-Access-Delegation", "vended-credentials")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
 
     given()
         .when()
-        .get("/v1/foo/namespaces/db/tables/orders/credentials")
+        .get("/v1/foo/namespaces/db/tables/orders/credentials?planId=plan-1")
         .then()
         .statusCode(200)
         .body("'storage-credentials'.size()", equalTo(1))
@@ -1600,6 +1627,54 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
         .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"))
         .body("'storage-credentials'[0].config.'s3.session-token'", equalTo("test-session"));
+  }
+
+  @Test
+  void loadCredentialsRequiresPlanId() {
+    ResourceId tableId =
+        ResourceId.newBuilder().setAccountId(TEST_ACCOUNT_ID).setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/credentials")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+  }
+
+  @Test
+  void loadCredentialsRejectsSubmittedPlan() {
+    ResourceId tableId =
+        ResourceId.newBuilder().setAccountId(TEST_ACCOUNT_ID).setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    planTaskManager.registerSubmittedPlan("plan-1", tableId, "db", "orders");
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/credentials?planId=plan-1")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
+  }
+
+  @Test
+  void loadCredentialsRejectsCancelledPlan() {
+    ResourceId tableId =
+        ResourceId.newBuilder().setAccountId(TEST_ACCOUNT_ID).setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    planTaskManager.registerSubmittedPlan("plan-1", tableId, "db", "orders");
+    planTaskManager.cancelPlan("plan-1", tableId);
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/credentials?planId=plan-1")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
   }
 
   @Test

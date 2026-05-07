@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.storage.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -113,6 +114,7 @@ class StorageAuthorityServiceImplTest {
             .addPermissions("connector.read")
             .addPermissions("table.read")
             .addPermissions("catalog.read")
+            .addPermissions(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL)
             .build();
     when(principalProvider.get()).thenReturn(principal);
 
@@ -228,12 +230,6 @@ class StorageAuthorityServiceImplTest {
 
   @Test
   void resolveForLocationAllowsInternalLookupWithoutTableLoad() {
-    PrincipalContext internalPrincipal =
-        PrincipalContext.newBuilder(principalProvider.get())
-            .addPermissions(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL)
-            .build();
-    when(principalProvider.get()).thenReturn(internalPrincipal);
-
     ResolveStorageAuthorityResponse response =
         service
             .resolveStorageAuthorityForLocation(
@@ -245,6 +241,9 @@ class StorageAuthorityServiceImplTest {
 
     verify(repo).list(eq("acct"), anyInt(), any(), any());
     verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+    verify(authz)
+        .require(
+            any(PrincipalContext.class), eq(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL));
     assertEquals(AUTHORITY_ID, response.getAuthorityId());
   }
 
@@ -273,6 +272,29 @@ class StorageAuthorityServiceImplTest {
     assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verify(repo, org.mockito.Mockito.never()).list(eq("acct"), anyInt(), any(), any());
     verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+  }
+
+  @Test
+  void clientSideCredentialVendingRejectsUnscopedTemporaryAuthorityCredentials() {
+    StorageAuthorityResolver resolver = new StorageAuthorityResolver();
+    var authority = currentAuthority().toBuilder().clearAssumeRoleArn().build();
+    var temporaryCredentials =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret")
+                    .setSessionToken("session"))
+            .build();
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                resolver.mintTemporaryCredentials(
+                    authority, temporaryCredentials, "s3://warehouse/orders"));
+
+    assertTrue(ex.getMessage().contains("scoped temporary storage credentials"));
   }
 
   @Test

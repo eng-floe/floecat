@@ -193,8 +193,8 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
-    resourceResolver.table(prefix, namespace, table);
-    return tablePlanOrchestrationService.fetchPlan(planId);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
+    return tablePlanOrchestrationService.fetchPlan(tableContext, planId);
   }
 
   @Path("/tables/{table}/plan/{plan-id}")
@@ -204,8 +204,8 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
-    resourceResolver.table(prefix, namespace, table);
-    return tablePlanOrchestrationService.cancelPlan(planId);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
+    return tablePlanOrchestrationService.cancelPlan(tableContext, planId);
   }
 
   @Path("/tables/{table}/tasks")
@@ -230,7 +230,7 @@ public class TableResource {
       @PathParam("table") String table,
       @QueryParam("planId") String planId) {
     TableRef tableContext = resourceResolver.table(prefix, namespace, table);
-    return tableCredentialService.load(tableContext, planId, tableSupport);
+    return tableCredentialService.load(tableContext, planId);
   }
 
   @Path("/tables/{table}/metrics")

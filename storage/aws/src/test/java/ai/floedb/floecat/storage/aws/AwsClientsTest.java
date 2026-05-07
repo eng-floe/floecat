@@ -32,6 +32,8 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.sts.StsClient;
 
 public class AwsClientsTest {
 
@@ -143,6 +145,34 @@ public class AwsClientsTest {
     }
   }
 
+  @Test
+  void secrets_manager_endpoint_override_applied_when_config_present() {
+    AwsClients clients = baseClients();
+    clients.accessKey = Optional.of("access");
+    clients.secretKey = Optional.of("secret");
+    clients.secretsManagerEndpoint = Optional.of(URI.create("http://localhost:4566"));
+
+    try (SecretsManagerClient client = clients.secretsManagerClient()) {
+      assertEquals(
+          URI.create("http://localhost:4566"),
+          client.serviceClientConfiguration().endpointOverride().orElseThrow());
+    }
+  }
+
+  @Test
+  void sts_endpoint_override_applied_when_config_present() {
+    AwsClients clients = baseClients();
+    clients.accessKey = Optional.of("access");
+    clients.secretKey = Optional.of("secret");
+    clients.stsEndpoint = Optional.of(URI.create("http://localhost:4566"));
+
+    try (StsClient client = clients.stsClient()) {
+      assertEquals(
+          URI.create("http://localhost:4566"),
+          client.serviceClientConfiguration().endpointOverride().orElseThrow());
+    }
+  }
+
   private static AwsClients baseClients() {
     AwsClients clients = new AwsClients();
     clients.region = Region.US_EAST_1;
@@ -151,6 +181,8 @@ public class AwsClientsTest {
     clients.sessionToken = Optional.empty();
     clients.dynamoEndpoint = Optional.empty();
     clients.s3Endpoint = Optional.empty();
+    clients.secretsManagerEndpoint = Optional.empty();
+    clients.stsEndpoint = Optional.empty();
     clients.forcePathStyle = false;
     return clients;
   }

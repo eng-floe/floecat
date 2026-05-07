@@ -72,8 +72,8 @@ public class StorageAuthorityResolver {
                         "Credential vending was requested but no storage credential authority is configured for this table"));
     ResolvedStorageCredentials resolved =
         serverSide
-            ? resolveServerSideCredentials(authority, authoritySecret)
-            : mintTemporaryCredentials(authority, authoritySecret);
+            ? resolveServerSideCredentials(authority, authoritySecret, locationPrefix)
+            : mintTemporaryCredentials(authority, authoritySecret, locationPrefix);
     if (!serverSide && !resolved.isTemporary()) {
       throw new IllegalArgumentException(
           "Credential vending requires temporary storage credentials");
@@ -112,28 +112,30 @@ public class StorageAuthorityResolver {
   }
 
   ResolvedStorageCredentials mintTemporaryCredentials(
-      StorageAuthority authority, AuthCredentials authoritySecret) {
+      StorageAuthority authority, AuthCredentials authoritySecret, String locationPrefix) {
     Optional<ResolvedStorageCredentials> resolved =
         CredentialResolverSupport.resolveStorageCredentials(authoritySecret);
-    if (resolved.isPresent() && resolved.get().isTemporary()) {
-      return resolved.get();
-    }
     if (authoritySecret != null
         && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS
         && authority.hasAssumeRoleArn()
         && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleFromStaticSource(authority, authoritySecret.getAws());
+      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), locationPrefix);
     }
-    throw new IllegalArgumentException("Credential vending requires temporary storage credentials");
+    if (resolved.isPresent() && resolved.get().isTemporary()) {
+      throw new IllegalArgumentException(
+          "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+    }
+    throw new IllegalArgumentException(
+        "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
   }
 
   ResolvedStorageCredentials resolveServerSideCredentials(
-      StorageAuthority authority, AuthCredentials authoritySecret) {
+      StorageAuthority authority, AuthCredentials authoritySecret, String locationPrefix) {
     if (authoritySecret != null
         && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS
         && authority.hasAssumeRoleArn()
         && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleFromStaticSource(authority, authoritySecret.getAws());
+      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), locationPrefix);
     }
     return CredentialResolverSupport.resolveStorageCredentials(authoritySecret)
         .orElseThrow(
@@ -158,7 +160,7 @@ public class StorageAuthorityResolver {
   }
 
   private ResolvedStorageCredentials assumeRoleFromStaticSource(
-      StorageAuthority authority, AuthCredentials.AwsCredentials source) {
+      StorageAuthority authority, AuthCredentials.AwsCredentials source, String locationPrefix) {
     AwsCredentialsProvider provider =
         source.getSessionToken() == null || source.getSessionToken().isBlank()
             ? StaticCredentialsProvider.create(
@@ -186,6 +188,7 @@ public class StorageAuthorityResolver {
                     "floecat-storage-authority"))
             .externalId(
                 authority.hasAssumeRoleExternalId() ? authority.getAssumeRoleExternalId() : null)
+            .policy(scopedSessionPolicy(locationPrefix))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
@@ -196,6 +199,89 @@ public class StorageAuthorityResolver {
           credentials.secretAccessKey(),
           credentials.sessionToken(),
           credentials.expiration());
+    }
+  }
+
+  private static String scopedSessionPolicy(String locationPrefix) {
+    S3Location scope = S3Location.parse(locationPrefix);
+    if (scope == null) {
+      return null;
+    }
+    String bucket = jsonEscape(scope.bucket());
+    String objectArn = jsonEscape(scope.objectArn());
+    String listPrefix = jsonEscape(scope.listPrefix());
+    return """
+        {
+          "Version":"2012-10-17",
+          "Statement":[
+            {
+              "Effect":"Allow",
+              "Action":["s3:ListBucket","s3:GetBucketLocation"],
+              "Resource":["arn:aws:s3:::%s"],
+              "Condition":{"StringLike":{"s3:prefix":["%s","%s/*"]}}
+            },
+            {
+              "Effect":"Allow",
+              "Action":[
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts"
+              ],
+              "Resource":["%s","%s/*"]
+            }
+          ]
+        }
+        """
+        .formatted(bucket, listPrefix, listPrefix, objectArn, objectArn)
+        .replace('\n', ' ')
+        .replaceAll("\\s+", " ")
+        .trim();
+  }
+
+  private static String jsonEscape(String value) {
+    if (value == null) {
+      return "";
+    }
+    return value.replace("\\", "\\\\").replace("\"", "\\\"");
+  }
+
+  private record S3Location(String bucket, String keyPrefix) {
+    static S3Location parse(String locationPrefix) {
+      if (locationPrefix == null || locationPrefix.isBlank()) {
+        return null;
+      }
+      String trimmed = locationPrefix.trim();
+      String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+      String normalized;
+      if (lower.startsWith("s3://")) {
+        normalized = trimmed.substring(5);
+      } else if (lower.startsWith("s3a://") || lower.startsWith("s3n://")) {
+        normalized = trimmed.substring(trimmed.indexOf("://") + 3);
+      } else {
+        return null;
+      }
+      int slash = normalized.indexOf('/');
+      String bucket = slash < 0 ? normalized : normalized.substring(0, slash);
+      if (bucket.isBlank()) {
+        return null;
+      }
+      String prefix = slash < 0 ? "" : normalized.substring(slash + 1);
+      while (prefix.endsWith("/")) {
+        prefix = prefix.substring(0, prefix.length() - 1);
+      }
+      return new S3Location(bucket, prefix);
+    }
+
+    String objectArn() {
+      return keyPrefix.isBlank()
+          ? "arn:aws:s3:::%s".formatted(bucket)
+          : "arn:aws:s3:::%s/%s".formatted(bucket, keyPrefix);
+    }
+
+    String listPrefix() {
+      return keyPrefix;
     }
   }
 

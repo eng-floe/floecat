@@ -23,13 +23,15 @@ services:
     environment:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
-      FLOECAT_SECRETS: ${FLOECAT_SECRETS:-aws}
+      FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS: ${FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS:-}
+      FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS: ${FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS:-false}
+      FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS: ${FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS:-false}
       FLOECAT_SEED_MODE: ${FLOECAT_SEED_MODE:-iceberg}
       FLOECAT_SEED_SYNC_ENABLED: ${FLOECAT_SEED_SYNC_ENABLED:-true}
       FLOECAT_RECONCILER_WORKER_MODE: ${FLOECAT_RECONCILER_WORKER_MODE:-local}
       FLOECAT_RECONCILER_MAX_PARALLELISM: ${FLOECAT_RECONCILER_MAX_PARALLELISM:-1}
       FLOECAT_RECONCILER_AUTO_ENABLED: ${FLOECAT_RECONCILER_AUTO_ENABLED:-true}
-      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"
+      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
     healthcheck:
       test:
         - CMD-SHELL
@@ -44,6 +46,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
+      - ./polaris:/opt/floecat-certs:ro
   executor:
     image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
     pull_policy: ${FLOECAT_PULL_POLICY:-never}
@@ -51,8 +54,10 @@ services:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     environment:
       QUARKUS_PROFILE: ${QUARKUS_PROFILE_EXECUTOR:-reconciler-executor}
+      FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS: ${FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS:-}
+      FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS: ${FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS:-false}
+      FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS: ${FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS:-false}
       FLOECAT_SEED_ENABLED: "false"
-      FLOECAT_SECRETS: ${FLOECAT_SECRETS:-aws}
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_RECONCILER_SCHEDULER_ENABLED: "false"
@@ -62,7 +67,7 @@ services:
       FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED: "true"
       FLOECAT_RECONCILER_BACKEND: "remote"
       FLOECAT_RECONCILER_AUTO_ENABLED: "false"
-      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"
+      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
       AWS_REGION: ${FLOECAT_EXECUTOR_AWS_REGION-${AWS_REGION:-us-east-1}}
       AWS_DEFAULT_REGION: ${FLOECAT_EXECUTOR_AWS_DEFAULT_REGION-${AWS_DEFAULT_REGION:-us-east-1}}
       AWS_ACCESS_KEY_ID: ${FLOECAT_EXECUTOR_AWS_ACCESS_KEY_ID-${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-test}}}
@@ -82,6 +87,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
+      - ./polaris:/opt/floecat-certs:ro
 
   iceberg-rest:
     image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
@@ -93,6 +99,9 @@ services:
     environment:
       FLOECAT_REST_HOST: "0.0.0.0"
       FLOECAT_REST_PORT: "9200"
+      FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS: ${FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS:-}
+      FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS: ${FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS:-false}
+      FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS: ${FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS:-false}
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_UPSTREAM_TARGET: "service:9100"
@@ -170,6 +179,7 @@ services:
     ports:
       - "${FLOECAT_POLARIS_HOST_PORT:-8281}:8181"
       - "${FLOECAT_POLARIS_MGMT_HOST_PORT:-8282}:8182"
+      - "${FLOECAT_POLARIS_HTTPS_HOST_PORT:-8443}:8443"
     environment:
       POLARIS_PERSISTENCE_TYPE: relational-jdbc
       POLARIS_PERSISTENCE_RELATIONAL_JDBC_MAX_RETRIES: "5"
@@ -190,6 +200,10 @@ services:
       AWS_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-test}
       AWS_ENDPOINT_URL: http://localstack:4566
       AWS_ENDPOINT_URL_S3: http://localstack:4566
+      QUARKUS_HTTP_SSL_CERTIFICATE_FILES: /etc/polaris/tls/server.crt
+      QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES: /etc/polaris/tls/server.key
+      QUARKUS_HTTP_SSL_PORT: "8443"
+      QUARKUS_HTTP_INSECURE_REQUESTS: "enabled"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8182/q/health"]
       interval: 5s
@@ -200,6 +214,8 @@ services:
       - polaris
     networks:
       - floecat
+    volumes:
+      - ./polaris:/etc/polaris/tls:ro
 
   polaris-db:
     image: postgres:18.2

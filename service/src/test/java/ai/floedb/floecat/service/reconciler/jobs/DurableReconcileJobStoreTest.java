@@ -883,6 +883,43 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void tryAcquireLaneLeaseRejectsDuplicateClaimForQueuedBlob() throws Exception {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
+        assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonicalPointer.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+
+    Method tryAcquireLaneLease =
+        DurableReconcileJobStore.class.getDeclaredMethod(
+            "tryAcquireLaneLease",
+            DurableReconcileJobStore.StoredReconcileJob.class,
+            String.class,
+            long.class);
+    tryAcquireLaneLease.setAccessible(true);
+
+    boolean firstClaim =
+        (boolean)
+            tryAcquireLaneLease.invoke(
+                store, queuedRecord, canonicalPointer.getBlobUri(), System.currentTimeMillis());
+    boolean secondClaim =
+        (boolean)
+            tryAcquireLaneLease.invoke(
+                store, queuedRecord, canonicalPointer.getBlobUri(), System.currentTimeMillis());
+
+    assertTrue(firstClaim);
+    assertFalse(secondClaim);
+  }
+
+  @Test
   void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");

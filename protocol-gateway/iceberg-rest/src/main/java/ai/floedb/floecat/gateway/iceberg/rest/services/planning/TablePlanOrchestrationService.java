@@ -87,7 +87,7 @@ public class TablePlanOrchestrationService {
               request.minRowsRequested());
       planId = handle.queryId();
       planTaskManager.registerSubmittedPlan(
-          planId, tableContext.namespaceName(), tableContext.table());
+          planId, tableContext.tableId(), tableContext.namespaceName(), tableContext.table());
       TablePlanResponseDto planned =
           tablePlanService.fetchPlan(
               planId,
@@ -95,6 +95,7 @@ public class TablePlanOrchestrationService {
       PlanTaskManager.PlanDescriptor descriptor =
           planTaskManager.registerCompletedPlan(
               planId,
+              tableContext.tableId(),
               tableContext.namespaceName(),
               tableContext.table(),
               copyOfOrEmpty(planned.fileScanTasks()),
@@ -106,7 +107,7 @@ public class TablePlanOrchestrationService {
     } catch (RuntimeException ex) {
       if (planId != null) {
         try {
-          planTaskManager.cancelPlan(planId);
+          planTaskManager.cancelPlan(planId, tableContext.tableId());
           tablePlanService.cancelPlan(planId);
         } catch (RuntimeException ignored) {
           // Cancellation is best-effort; errors are surfaced via the original failure.
@@ -120,9 +121,9 @@ public class TablePlanOrchestrationService {
     }
   }
 
-  public Response fetchPlan(String planId) {
+  public Response fetchPlan(TableRef tableContext, String planId) {
     return planTaskManager
-        .findPlan(planId)
+        .findPlan(planId, tableContext.tableId())
         .map(
             descriptor -> {
               if ("failed".equals(descriptor.status().value())) {
@@ -134,19 +135,19 @@ public class TablePlanOrchestrationService {
         .orElseGet(() -> IcebergErrorResponses.noSuchPlanId("plan " + planId + " not found"));
   }
 
-  public Response cancelPlan(String planId) {
-    var plan = planTaskManager.findPlan(planId);
+  public Response cancelPlan(TableRef tableContext, String planId) {
+    var plan = planTaskManager.findPlan(planId, tableContext.tableId());
     if (plan.isEmpty()) {
       return IcebergErrorResponses.noSuchPlanId("plan " + planId + " not found");
     }
-    planTaskManager.cancelPlan(planId);
+    planTaskManager.cancelPlan(planId, tableContext.tableId());
     tablePlanService.cancelPlan(planId);
     return Response.noContent().build();
   }
 
   public Response consumeTask(TableRef tableContext, String planTaskId) {
     return planTaskManager
-        .consumeTask(tableContext.namespaceName(), tableContext.table(), planTaskId)
+        .consumeTask(tableContext.tableId(), planTaskId)
         .map(response -> Response.ok(response).build())
         .orElseGet(() -> IcebergErrorResponses.noSuchPlanTask("plan-task not found"));
   }

@@ -221,10 +221,6 @@ public abstract class AbstractRestResourceTest {
             storageCredentialAuthority.resolveServerSideFileIoConfig(
                 Mockito.any(), Mockito.anyBoolean()))
         .thenReturn(Map.of());
-    Mockito.when(
-            storageCredentialAuthority.resolveFileIoConfigForLocation(
-                Mockito.anyString(), Mockito.anyBoolean()))
-        .thenReturn(Map.of());
     Mockito.when(transactionsStub.beginTransaction(Mockito.any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()

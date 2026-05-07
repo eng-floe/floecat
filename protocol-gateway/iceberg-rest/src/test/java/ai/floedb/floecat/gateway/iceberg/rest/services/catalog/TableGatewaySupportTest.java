@@ -219,7 +219,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void serverSideFileIoPropertiesUseLocationScopedAuthorityForSyntheticTableIds() {
+  void serverSideFileIoPropertiesUseTableScopedAuthorityForSyntheticTableIds() {
     ResourceId syntheticTableId =
         ResourceId.newBuilder().setAccountId("acct").setId("tbl-synthetic").build();
     Table table =
@@ -227,16 +227,13 @@ class TableGatewaySupportTest {
             .setResourceId(syntheticTableId)
             .putProperties("location", "s3://warehouse/orders")
             .build();
-    when(storageCredentialAuthority.resolveFileIoConfigForLocation("s3://warehouse/orders", false))
+    when(storageCredentialAuthority.resolveServerSideFileIoConfig(table, false))
         .thenReturn(Map.of("s3.endpoint", "http://localstack:4566"));
 
     Map<String, String> resolved = support.serverSideFileIoProperties(table);
 
     assertEquals("http://localstack:4566", resolved.get("s3.endpoint"));
-    verify(storageCredentialAuthority)
-        .resolveFileIoConfigForLocation("s3://warehouse/orders", false);
-    verify(storageCredentialAuthority, never())
-        .resolveFileIoConfigForLocation(any(ResourceId.class), any(), anyBoolean());
+    verify(storageCredentialAuthority).resolveServerSideFileIoConfig(table, false);
   }
 
   @Test
@@ -470,7 +467,7 @@ class TableGatewaySupportTest {
             .build();
     when(storageCredentialAuthority.clientSafeConfig(table))
         .thenReturn(Map.of("s3.path-style-access", "true"));
-    when(storageCredentialAuthority.resolveFileIoConfigForLocation("s3://warehouse/orders", false))
+    when(storageCredentialAuthority.resolveServerSideFileIoConfig(table, false))
         .thenReturn(
             Map.of(
                 "s3.access-key-id", "akid",
@@ -486,8 +483,7 @@ class TableGatewaySupportTest {
     assertEquals("secret", config.get("s3.secret-access-key"));
     assertEquals("session", config.get("s3.session-token"));
     assertEquals("us-east-1", config.get("s3.region"));
-    verify(storageCredentialAuthority, never())
-        .resolveFileIoConfigForLocation(any(ResourceId.class), any(), anyBoolean());
+    verify(storageCredentialAuthority).resolveServerSideFileIoConfig(table, false);
   }
 
   @Test

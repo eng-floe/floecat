@@ -20,9 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
-import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import io.grpc.Status;
@@ -36,13 +34,10 @@ import java.util.Map;
 @ApplicationScoped
 public class GrpcStorageCredentialAuthority implements StorageCredentialAuthority {
   private final GrpcServiceFacade grpcClient;
-  private final AccountContext accountContext;
 
   @Inject
-  public GrpcStorageCredentialAuthority(
-      GrpcServiceFacade grpcClient, AccountContext accountContext) {
+  public GrpcStorageCredentialAuthority(GrpcServiceFacade grpcClient) {
     this.grpcClient = grpcClient;
-    this.accountContext = accountContext;
   }
 
   @Override
@@ -98,11 +93,7 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
         throw e;
       }
     }
-    var response = resolveStorageAuthorityForLocation(locationPrefix, false, false);
-    if (response == null || response.getClientSafeConfigCount() == 0) {
-      return Map.of();
-    }
-    return response.getClientSafeConfigMap();
+    return Map.of();
   }
 
   @Override
@@ -112,39 +103,25 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
       return Map.of();
     }
     ResourceId tableId = resolvePersistedTableId(table);
-    if (tableId != null) {
-      try {
-        return serverSideFileIoConfig(
-            resolveStorageAuthority(tableId, locationPrefix, true, required, true));
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-          throw e;
-        }
+    if (tableId == null) {
+      if (required) {
+        throw new IllegalArgumentException(
+            "Credential vending requires a persisted table resource");
+      }
+      return Map.of();
+    }
+    try {
+      return serverSideFileIoConfig(
+          resolveStorageAuthority(tableId, locationPrefix, true, required, true));
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
       }
     }
-    return serverSideFileIoConfig(
-        resolveStorageAuthorityForLocation(locationPrefix, true, required));
-  }
-
-  @Override
-  public Map<String, String> resolveFileIoConfigForLocation(String location, boolean required) {
-    String locationPrefix = resolveRequiredLocationPrefix(location, required);
-    if (locationPrefix == null) {
-      return Map.of();
+    if (required) {
+      throw new IllegalArgumentException("Credential vending requires a persisted table resource");
     }
-    return serverSideFileIoConfig(
-        resolveStorageAuthorityForLocation(locationPrefix, true, required));
-  }
-
-  @Override
-  public Map<String, String> resolveFileIoConfigForLocation(
-      ResourceId tableId, String location, boolean required) {
-    String locationPrefix = resolveRequiredLocationPrefix(location, required);
-    if (locationPrefix == null || tableId == null) {
-      return Map.of();
-    }
-    return serverSideFileIoConfig(
-        resolveStorageAuthorityForLocation(locationPrefix, true, required));
+    return Map.of();
   }
 
   private ResolveStorageAuthorityResponse resolveStorageAuthority(
@@ -163,24 +140,6 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
             .build());
   }
 
-  private ResolveStorageAuthorityResponse resolveStorageAuthorityForLocation(
-      String locationPrefix, boolean includeCredentials, boolean required) {
-    String accountId = accountContext != null ? accountContext.getAccountId() : null;
-    if (!isNonBlank(accountId)) {
-      if (required) {
-        throw new IllegalArgumentException(
-            "Storage authority resolution was requested but no account context is available");
-      }
-      return null;
-    }
-    return grpcClient.resolveStorageAuthorityForLocation(
-        ResolveStorageAuthorityForLocationRequest.newBuilder()
-            .setLocationPrefix(locationPrefix)
-            .setIncludeCredentials(includeCredentials)
-            .setRequired(required)
-            .build());
-  }
-
   private static String resolveRequiredLocationPrefix(Table table, boolean required) {
     String location = resolveLocationPrefix(table);
     if (location != null) {
@@ -193,24 +152,8 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
     return null;
   }
 
-  private static String resolveRequiredLocationPrefix(String location, boolean required) {
-    String resolved = resolveLocationPrefix(location);
-    if (resolved != null) {
-      return resolved;
-    }
-    if (required) {
-      throw new IllegalArgumentException(
-          "Credential vending was requested but no concrete storage location is available for this table");
-    }
-    return null;
-  }
-
   static String resolveLocationPrefix(Table table) {
     return StorageLocationResolver.resolveLocationPrefix(table);
-  }
-
-  static String resolveLocationPrefix(String location) {
-    return StorageLocationResolver.resolveLocationPrefix(location);
   }
 
   private static Map<String, String> serverSideFileIoConfig(
@@ -226,10 +169,6 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
       merged.putAll(response.getStorageCredentials(0).getConfigMap());
     }
     return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
-  }
-
-  private static boolean isNonBlank(String value) {
-    return value != null && !value.isBlank();
   }
 
   private ResourceId resolvePersistedTableId(Table table) {

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.storage.aws;
 
+import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
@@ -29,12 +30,15 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.sts.StsClient;
 
 @ApplicationScoped
 public class AwsClients {
@@ -56,6 +60,12 @@ public class AwsClients {
 
   @ConfigProperty(name = "floecat.storage.aws.s3.endpoint")
   Optional<URI> s3Endpoint;
+
+  @ConfigProperty(name = "floecat.storage.aws.secretsmanager.endpoint-override")
+  Optional<URI> secretsManagerEndpoint;
+
+  @ConfigProperty(name = "floecat.storage.aws.sts.endpoint-override")
+  Optional<URI> stsEndpoint;
 
   @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "false")
   boolean forcePathStyle;
@@ -98,6 +108,48 @@ public class AwsClients {
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     s3Endpoint.ifPresent(builder::endpointOverride);
     return builder.build();
+  }
+
+  @Produces
+  @Singleton
+  public SecretsManagerClient secretsManagerClient() {
+    return secretsManagerClient(resolveCredentials());
+  }
+
+  @Produces
+  @Singleton
+  public StsClient stsClient() {
+    return stsClient(resolveCredentials());
+  }
+
+  public SecretsManagerClient secretsManagerClient(AwsCredentialsProvider credentialsProvider) {
+    var builder =
+        SecretsManagerClient.builder()
+            .region(region)
+            .httpClient(UrlConnectionHttpClient.create())
+            .credentialsProvider(credentialsProvider)
+            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+    secretsManagerEndpoint.ifPresent(builder::endpointOverride);
+    return builder.build();
+  }
+
+  public StsClient stsClient(AwsCredentialsProvider credentialsProvider) {
+    var builder =
+        StsClient.builder()
+            .region(region)
+            .httpClient(UrlConnectionHttpClient.create())
+            .credentialsProvider(credentialsProvider)
+            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+    stsEndpoint.ifPresent(builder::endpointOverride);
+    return builder.build();
+  }
+
+  public void ensureCredentialsAvailable() {
+    try {
+      resolveCredentials().resolveCredentials();
+    } catch (SdkClientException e) {
+      throw new AwsCredentialsUnavailableException("AWS credentials are unavailable", e);
+    }
   }
 
   AwsCredentialsProvider resolveCredentials() {

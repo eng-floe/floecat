@@ -19,14 +19,14 @@ package ai.floedb.floecat.storage.common.secrets;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
-import io.quarkus.arc.properties.IfBuildProperty;
+import io.quarkus.arc.profile.UnlessBuildProfile;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
 import java.util.Optional;
 
 @ApplicationScoped
-@IfBuildProperty(name = "floecat.secrets", stringValue = "kv")
+@UnlessBuildProfile("prod")
 public class NotProdSecretsManager implements SecretsManager {
   private static final String KIND = "Secret";
   private static final String PARTITION_KEY = "secrets";

@@ -17,8 +17,10 @@
 package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -49,6 +51,9 @@ class CredentialResolverSupportTest {
 
   @AfterEach
   void stopServer() {
+    System.clearProperty("floecat.security.allow-loopback-token-endpoints");
+    System.clearProperty("floecat.security.allowed-token-endpoint-domains");
+    System.clearProperty("floecat.security.allow-private-token-endpoints-for-allowed-hosts");
     if (server != null) {
       server.stop(0);
     }
@@ -67,6 +72,7 @@ class CredentialResolverSupportTest {
 
   @Test
   void tokenExchangeRfc8693ExchangesToken() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
     AtomicReference<CapturedRequest> captured = new AtomicReference<>();
     server = createServer();
     server.createContext(
@@ -104,7 +110,6 @@ class CredentialResolverSupportTest {
             .setRfc8693TokenExchange(rfc)
             .putProperties("custom", "value")
             .putHeaders("X-Test", "yes")
-            .putHeaders("Authorization", "Bearer override")
             .build();
     var base =
         new ConnectorConfig(
@@ -133,7 +138,7 @@ class CredentialResolverSupportTest {
     assertEquals("example-audience", form.get("audience"));
     assertEquals("scope-a scope-b", form.get("scope"));
     assertEquals("value", form.get("custom"));
-    assertEquals("yes", req.headers.getFirst("X-Test"));
+    assertNull(req.headers.getFirst("X-Test"));
     String expectedBasic =
         "Basic "
             + Base64.getEncoder()
@@ -143,6 +148,7 @@ class CredentialResolverSupportTest {
 
   @Test
   void tokenExchangeAzureOboExchangesToken() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
     AtomicReference<CapturedRequest> captured = new AtomicReference<>();
     server = createServer();
     server.createContext(
@@ -201,6 +207,7 @@ class CredentialResolverSupportTest {
 
   @Test
   void tokenExchangeGcpDwdExchangesToken() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
     AtomicReference<CapturedRequest> captured = new AtomicReference<>();
     server = createServer();
     server.createContext(
@@ -285,6 +292,7 @@ class CredentialResolverSupportTest {
 
   @Test
   void clientCredentialsExchangeToken() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
     AtomicReference<CapturedRequest> captured = new AtomicReference<>();
     server = createServer();
     server.createContext(
@@ -312,6 +320,7 @@ class CredentialResolverSupportTest {
                     .setClientId("client-id")
                     .setClientSecret("client-secret"))
             .putProperties("extra", "value")
+            .putHeaders("X-Test", "yes")
             .build();
     var cfg =
         new ConnectorConfig(
@@ -333,6 +342,289 @@ class CredentialResolverSupportTest {
     assertEquals("client-secret", form.get("client_secret"));
     assertEquals("scope-x", form.get("scope"));
     assertEquals("value", form.get("extra"));
+    assertNull(req.headers.getFirst("X-Test"));
+  }
+
+  @Test
+  void tokenExchangeRejectsLoopbackWithoutExplicitOverride() {
+    String endpoint = "http://127.0.0.1/token";
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint(endpoint)
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not in the allowed domain list", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeRejectsEndpointsOutsideAllowedDomains() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "login.example.com");
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://oauth.other.example/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not in the allowed domain list", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeRejectsPublicHttpsEndpointWhenAllowlistUnset() {
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://login.example.com/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not in the allowed domain list", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeExactAllowlistDoesNotImplicitlyMatchSubdomains() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "example.com");
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://login.example.com/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not in the allowed domain list", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeRejectsAllowlistedPrivateHttpsEndpointWithoutExplicitOverride() {
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://localhost/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "localhost");
+
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token endpoint host is not allowed", ex.getMessage());
+  }
+
+  @Test
+  void tokenExchangeAllowsAllowlistedPrivateHttpsEndpointWithExplicitOverride() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "localhost");
+    System.setProperty("floecat.security.allow-private-token-endpoints-for-allowed-hosts", "true");
+    var exchange =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint("https://localhost:1/token")
+            .setScope("scope-a")
+            .build();
+    var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(exchange).build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    RuntimeException ex =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                CredentialResolverSupport.apply(
+                    cfg,
+                    creds,
+                    new ai.floedb.floecat.connector.spi.AuthResolutionContext(
+                        "subject-token", "")));
+    assertEquals("Token exchange request failed", ex.getMessage());
+  }
+
+  @Test
+  void sensitiveBootstrapSecretsAreNotPropagatedAfterExchange() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
+    server = createServer();
+    server.createContext(
+        "/token",
+        exchange -> {
+          byte[] response =
+              "{\"access_token\":\"gcp-token\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+                  .getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+
+    String endpoint = "http://localhost:" + server.getAddress().getPort() + "/token";
+    String pem = generatePkcs8Pem();
+    var base =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint(endpoint)
+            .setScope("https://www.googleapis.com/auth/cloud-platform")
+            .build();
+    var gcp = AuthCredentials.GcpTokenExchange.newBuilder().setBase(base).build();
+    var creds =
+        AuthCredentials.newBuilder()
+            .setGcpTokenExchange(gcp)
+            .putProperties("gcp.service_account_email", "svc@example.com")
+            .putProperties("gcp.delegated_user", "user@example.com")
+            .putProperties("gcp.service_account_private_key_pem", pem)
+            .putHeaders("Authorization", "Bearer secret")
+            .build();
+
+    ConnectorConfig applied =
+        CredentialResolverSupport.apply(
+            new ConnectorConfig(
+                ConnectorConfig.Kind.DELTA,
+                "name",
+                "uri",
+                Map.of(),
+                new ConnectorConfig.Auth("oauth2", Map.of(), Map.of())),
+            creds,
+            new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
+
+    assertEquals("gcp-token", applied.auth().props().get("token"));
+    assertEquals(1, applied.auth().props().size());
+    assertFalse(applied.auth().props().containsKey("gcp.service_account_private_key_pem"));
+    assertFalse(applied.auth().props().containsKey("gcp.service_account_email"));
+    assertFalse(applied.auth().props().containsKey("gcp.delegated_user"));
+    assertFalse(applied.auth().headerHints().containsKey("Authorization"));
+    assertEquals(Map.of(), applied.auth().headerHints());
+  }
+
+  @Test
+  void tokenExchangeGcpDwdHandlesNullExtraParamsWhenProtoFieldsProvided() throws Exception {
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
+    server = createServer();
+    server.createContext(
+        "/token",
+        exchange -> {
+          byte[] response =
+              "{\"access_token\":\"gcp-token\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+                  .getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+
+    String endpoint = "http://localhost:" + server.getAddress().getPort() + "/token";
+    String pem = generatePkcs8Pem();
+    var base =
+        AuthCredentials.TokenExchange.newBuilder()
+            .setEndpoint(endpoint)
+            .setScope("https://www.googleapis.com/auth/cloud-platform")
+            .build();
+    var creds =
+        AuthCredentials.newBuilder()
+            .setGcpTokenExchange(
+                AuthCredentials.GcpTokenExchange.newBuilder()
+                    .setBase(base)
+                    .setServiceAccountEmail("svc@example.com")
+                    .setDelegatedUser("user@example.com")
+                    .setServiceAccountPrivateKeyPem(pem))
+            .build();
+
+    ConnectorConfig applied =
+        CredentialResolverSupport.apply(
+            new ConnectorConfig(
+                ConnectorConfig.Kind.DELTA,
+                "name",
+                "uri",
+                Map.of(),
+                new ConnectorConfig.Auth("oauth2", Map.of(), Map.of())),
+            creds,
+            new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
+
+    assertEquals("gcp-token", applied.auth().props().get("token"));
   }
 
   @Test

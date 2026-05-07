@@ -23,6 +23,7 @@ import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForAccountLocationRe
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import io.grpc.Metadata;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
@@ -32,9 +33,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ServerSideStorageConfigResolver {
+  private static final Logger LOG = Logger.getLogger(ServerSideStorageConfigResolver.class);
+  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
+  private static final String VENDED_CREDENTIALS_MODE = "vended-credentials";
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -70,39 +75,64 @@ public class ServerSideStorageConfigResolver {
     if (locationPrefix == null) {
       return config;
     }
-    ResolveStorageAuthorityResponse response =
-        withHeaders(storageAuthorities, ctx)
-            .resolveStorageAuthorityForAccountLocation(
-                ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
-                    .setAccountId(connector.getResourceId().getAccountId())
-                    .setLocationPrefix(locationPrefix)
-                    .setIncludeCredentials(true)
-                    .setRequired(false)
-                    .build());
+    ResolveStorageAuthorityResponse response;
+    try {
+      response =
+          withHeaders(storageAuthorities, ctx)
+              .resolveStorageAuthorityForAccountLocation(
+                  ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
+                      .setAccountId(connector.getResourceId().getAccountId())
+                      .setLocationPrefix(locationPrefix)
+                      .setIncludeCredentials(true)
+                      .setRequired(false)
+                      .build());
+    } catch (StatusRuntimeException e) {
+      if (!shouldFallbackToVendedCredentials(connector, config, null)) {
+        throw e;
+      }
+      LOG.infof(
+          "storage authority lookup failed for iceberg rest connector=%s warehouse=%s; falling"
+              + " back to vended credentials: %s",
+          connector.getResourceId().getId(), config.options().get("warehouse"), e.getStatus());
+      return maybeEnableVendedCredentials(connector, config, null);
+    }
     if (response == null) {
-      return config;
+      return maybeEnableVendedCredentials(connector, config, null);
     }
-    Map<String, String> merged = mergeResolvedStorageConfig(config.options(), response);
-    if (merged.equals(config.options())) {
-      return config;
+    boolean preferVendedCredentials = hasAccessDelegationHeader(config.auth().headerHints());
+    Map<String, String> merged =
+        mergeResolvedStorageConfig(config.options(), response, !preferVendedCredentials);
+    ConnectorConfig resolved =
+        merged.equals(config.options())
+            ? config
+            : new ConnectorConfig(
+                config.kind(), config.displayName(), config.uri(), merged, config.auth());
+    if (preferVendedCredentials || response.getStorageCredentialsCount() == 0) {
+      return maybeEnableVendedCredentials(connector, resolved, response);
     }
-    return new ConnectorConfig(
-        config.kind(), config.displayName(), config.uri(), merged, config.auth());
+    return resolved;
   }
 
   static Map<String, String> mergeResolvedStorageConfig(
       Map<String, String> options, ResolveStorageAuthorityResponse response) {
+    return mergeResolvedStorageConfig(options, response, true);
+  }
+
+  static Map<String, String> mergeResolvedStorageConfig(
+      Map<String, String> options,
+      ResolveStorageAuthorityResponse response,
+      boolean includeStorageCredentials) {
     Map<String, String> base = options == null ? Map.of() : options;
     if (response == null
         || (response.getClientSafeConfigCount() == 0
-            && response.getStorageCredentialsCount() == 0)) {
+            && (response.getStorageCredentialsCount() == 0 || !includeStorageCredentials))) {
       return base;
     }
     LinkedHashMap<String, String> merged = new LinkedHashMap<>(base);
     response
         .getClientSafeConfigMap()
         .forEach((key, value) -> putStorageProperty(merged, key, value));
-    if (response.getStorageCredentialsCount() > 0) {
+    if (includeStorageCredentials && response.getStorageCredentialsCount() > 0) {
       response
           .getStorageCredentials(0)
           .getConfigMap()
@@ -182,6 +212,53 @@ public class ServerSideStorageConfigResolver {
 
   private static boolean isNonBlank(String value) {
     return value != null && !value.isBlank();
+  }
+
+  private static ConnectorConfig maybeEnableVendedCredentials(
+      Connector connector, ConnectorConfig config, ResolveStorageAuthorityResponse response) {
+    if (!shouldFallbackToVendedCredentials(connector, config, response)) {
+      return config;
+    }
+    Map<String, String> headerHints = new LinkedHashMap<>(config.auth().headerHints());
+    if (hasAccessDelegationHeader(headerHints)) {
+      return config;
+    }
+    headerHints.put(ACCESS_DELEGATION_HEADER, VENDED_CREDENTIALS_MODE);
+    LOG.infof(
+        "enabling vended credential fallback connector=%s source=%s warehouse=%s existingHeaders=%s",
+        connector.getResourceId().getId(),
+        config.options().get("iceberg.source"),
+        config.options().get("warehouse"),
+        config.auth().headerHints().keySet());
+    return new ConnectorConfig(
+        config.kind(),
+        config.displayName(),
+        config.uri(),
+        config.options(),
+        new ConnectorConfig.Auth(config.auth().scheme(), config.auth().props(), headerHints));
+  }
+
+  private static boolean shouldFallbackToVendedCredentials(
+      Connector connector, ConnectorConfig config, ResolveStorageAuthorityResponse response) {
+    if (connector == null || config == null || config.kind() != ConnectorConfig.Kind.ICEBERG) {
+      return false;
+    }
+    if (!"rest".equals(normalize(config.options().get("iceberg.source")))) {
+      return false;
+    }
+    return hasAccessDelegationHeader(config.auth().headerHints())
+        || response == null
+        || response.getStorageCredentialsCount() == 0;
+  }
+
+  private static boolean hasAccessDelegationHeader(Map<String, String> headerHints) {
+    if (headerHints == null || headerHints.isEmpty()) {
+      return false;
+    }
+    return headerHints.keySet().stream()
+        .filter(ServerSideStorageConfigResolver::isNonBlank)
+        .map(value -> value.trim().toLowerCase(Locale.ROOT))
+        .anyMatch("x-iceberg-access-delegation"::equals);
   }
 
   private <T extends AbstractStub<T>> T withHeaders(T stub, Optional<ReconcileContext> ctx) {

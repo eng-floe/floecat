@@ -88,8 +88,8 @@ class RolePermissionsTest {
 
     assertThat(permissions)
         .contains("system-objects.read")
-        .contains(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL)
         .doesNotContain(
+            RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
             "catalog.write",
             "namespace.write",
             "account.write",

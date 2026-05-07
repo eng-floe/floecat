@@ -16,13 +16,11 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CredentialsResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableRef;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.planning.PlanTaskManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -30,16 +28,24 @@ import java.util.List;
 
 @ApplicationScoped
 public class TableCredentialService {
-  @Inject TableLifecycleService tableLifecycleService;
+  @Inject PlanTaskManager planTaskManager;
 
-  public Response load(TableRef tableContext, String planId, TableGatewaySupport tableSupport) {
-    Table tableRecord = tableLifecycleService.getTable(tableContext.tableId());
-    List<StorageCredentialDto> credentials;
-    try {
-      credentials = tableSupport.credentialsForAccessDelegation(tableRecord, "vended-credentials");
-    } catch (IllegalArgumentException e) {
-      return IcebergErrorResponses.validation(e.getMessage());
+  public Response load(TableRef tableContext, String planId) {
+    if (planId == null || planId.isBlank()) {
+      return IcebergErrorResponses.validation("planId is required");
     }
-    return Response.ok(new CredentialsResponseDto(credentials)).build();
+    var plan = planTaskManager.findPlan(planId.trim(), tableContext.tableId());
+    if (plan.isEmpty()) {
+      return IcebergErrorResponses.noSuchPlanId("plan " + planId.trim() + " not found");
+    }
+    PlanTaskManager.PlanDescriptor descriptor = plan.get();
+    if (descriptor.status() != PlanTaskManager.PlanStatus.COMPLETED) {
+      return IcebergErrorResponses.noSuchPlanId("plan " + planId.trim() + " not available");
+    }
+    List<StorageCredentialDto> plannedCredentials = descriptor.credentials();
+    if (plannedCredentials == null || plannedCredentials.isEmpty()) {
+      return IcebergErrorResponses.noSuchPlanId("plan " + planId.trim() + " not available");
+    }
+    return Response.ok(new CredentialsResponseDto(plannedCredentials)).build();
   }
 }

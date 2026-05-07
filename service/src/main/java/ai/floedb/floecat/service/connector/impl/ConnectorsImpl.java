@@ -739,7 +739,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   } catch (Exception e) {
                     return ValidateConnectorResponse.newBuilder()
                         .setOk(false)
-                        .setSummary("Validation failed: " + e.getMessage())
+                        .setSummary("Validation failed")
                         .build();
                   }
                 }),

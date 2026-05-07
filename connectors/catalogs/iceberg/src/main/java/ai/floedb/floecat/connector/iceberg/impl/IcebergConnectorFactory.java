@@ -33,8 +33,10 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.jboss.logging.Logger;
 
 final class IcebergConnectorFactory {
+  private static final Logger LOG = Logger.getLogger(IcebergConnectorFactory.class);
   private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
   private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
       new ConcurrentHashMap<>();
@@ -102,6 +104,17 @@ final class IcebergConnectorFactory {
 
         if (headerHints != null) {
           headerHints.forEach((k, v) -> props.put("header." + k, v));
+        }
+
+        if (source == IcebergSource.REST) {
+          LOG.infof(
+              "creating iceberg rest connector uri=%s warehouse=%s accessDelegationHeader=%s"
+                  + " headerKeys=%s storageKeyPresent=%s",
+              uri,
+              cleanOpts.get("warehouse"),
+              props.get("header.X-Iceberg-Access-Delegation"),
+              headerHints == null ? java.util.Set.of() : headerHints.keySet(),
+              props.containsKey("s3.access-key-id"));
         }
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");

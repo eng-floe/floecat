@@ -16,10 +16,12 @@
 
 package ai.floedb.floecat.storage.aws.secrets;
 
+import ai.floedb.floecat.storage.aws.AwsClients;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
-import io.quarkus.arc.properties.IfBuildProperty;
+import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,28 +41,37 @@ import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
 
 @ApplicationScoped
-@IfBuildProperty(name = "floecat.secrets", stringValue = "aws")
+@IfBuildProfile("prod")
 public class ProdSecretsManager implements SecretsManager {
   private static final String ACCOUNT_ID_TAG = "AccountId";
   private static final int MAX_ROLE_SESSION_LENGTH = 64;
   private static final String ROLE_SESSION_PREFIX = "floecat-";
 
   @ConfigProperty(name = "floecat.secrets.aws.role-arn")
-  Optional<String> roleArn;
+  Optional<String> roleArn = Optional.empty();
 
   private final SecretsManagerClient secretsClient;
   private final StsClient stsClient;
   private final ConcurrentMap<String, SecretsManagerClient> perAccountClients =
       new ConcurrentHashMap<>();
 
-  public ProdSecretsManager() {
-    this(SecretsManagerClient.builder().build(), StsClient.builder().build());
+  @Inject
+  public ProdSecretsManager(AwsClients awsClients) {
+    this(awsClients, awsClients.secretsManagerClient(), awsClients.stsClient());
   }
 
   ProdSecretsManager(SecretsManagerClient secretsClient, StsClient stsClient) {
+    this(null, secretsClient, stsClient);
+  }
+
+  ProdSecretsManager(
+      AwsClients awsClients, SecretsManagerClient secretsClient, StsClient stsClient) {
+    this.awsClients = awsClients;
     this.secretsClient = secretsClient;
     this.stsClient = stsClient;
   }
+
+  private final AwsClients awsClients;
 
   @PreDestroy
   void shutdown() {
@@ -74,6 +85,7 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
+    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     SdkBytes sdkBytes = SdkBytes.fromByteArray(payload == null ? new byte[0] : payload);
     List<Tag> tags = buildTags(accountId, secretName);
@@ -95,6 +107,7 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
       var response =
@@ -111,6 +124,7 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void update(String accountId, String secretType, String secretId, byte[] payload) {
+    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     SdkBytes sdkBytes = SdkBytes.fromByteArray(payload == null ? new byte[0] : payload);
     List<Tag> tags = buildTags(accountId, secretName);
@@ -132,6 +146,7 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void delete(String accountId, String secretType, String secretId) {
+    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
       clientForAccount(accountId)
@@ -175,6 +190,9 @@ public class ProdSecretsManager implements SecretsManager {
                                       .value(id)
                                       .build()))
                   .build();
+          if (awsClients != null) {
+            return awsClients.secretsManagerClient(creds);
+          }
           return SecretsManagerClient.builder().credentialsProvider(creds).build();
         });
   }
@@ -185,5 +203,12 @@ public class ProdSecretsManager implements SecretsManager {
       return raw;
     }
     return raw.substring(0, MAX_ROLE_SESSION_LENGTH);
+  }
+
+  private void ensureAwsCredentialsAvailable() {
+    if (awsClients == null) {
+      return;
+    }
+    awsClients.ensureCredentialsAvailable();
   }
 }

@@ -25,7 +25,8 @@ COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
 COMPOSE_SMOKE_DUCKDB_IMAGE=${COMPOSE_SMOKE_DUCKDB_IMAGE:-duckdb/duckdb:1.4.4}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
-COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
+COMPOSE_SMOKE_POLARIS_BASE_URI=${COMPOSE_SMOKE_POLARIS_BASE_URI:-https://polaris:8443}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS:-sales}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG:-polaris_import}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE:-polaris_import.sales.trino_types}
@@ -100,10 +101,16 @@ should_run_client() {
 run_cli_script() {
   local compose_cmd="$1"
   local script="$2"
+  local cli_timeout_seconds="${3:-}"
   local out
   local out_file
+  local cmd
   out_file=$(mktemp)
-  if ! printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli" >"$out_file" 2>&1; then
+  cmd="$compose_cmd run --rm -T cli"
+  if [ -n "$cli_timeout_seconds" ]; then
+    cmd="timeout ${cli_timeout_seconds}s $cmd"
+  fi
+  if ! printf "%s\n" "$script" | eval "$cmd" >"$out_file" 2>&1; then
     out=$(tr -d '\000' <"$out_file")
     rm -f "$out_file"
     printf "%s\n" "$out" \
@@ -187,99 +194,6 @@ run_connector_trigger_and_wait() {
   trigger_out=$(run_cli_script "$compose_cmd" "$trigger_script")
   job_id=$(extract_cli_job_id "$trigger_out")
   wait_for_connector_job "$compose_cmd" "$label" "$job_id" "$max_attempts" "$sleep_seconds"
-}
-
-list_connector_job_states_for_table() {
-  local compose_cmd="$1"
-  local table_ref="$2"
-  local out
-
-  out=$(run_cli_script "$compose_cmd" "account t-0001
-connector jobs --page-size 200
-quit")
-  printf "%s\n" "$out" | awk -v table_ref="$table_ref" '
-    /^job_id=/ {
-      job_id = ""
-      state = ""
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^job_id=/) {
-          job_id = $i
-          sub(/^job_id=/, "", job_id)
-        } else if ($i ~ /^state=/) {
-          state = $i
-          sub(/^state=/, "", state)
-        }
-      }
-      next
-    }
-    /^routing:[[:space:]]/ {
-      if (job_id != "" && index($0, "table=" table_ref) > 0) {
-        print job_id " " state
-      }
-      job_id = ""
-      state = ""
-    }
-  '
-}
-
-wait_for_table_reconcile_jobs() {
-  local compose_cmd="$1"
-  local label="$2"
-  local table_ref="$3"
-  local baseline_job_ids="${4:-}"
-  local expected_min_jobs="${5:-1}"
-  local max_attempts="${6:-90}"
-  local sleep_seconds="${7:-2}"
-  local attempt
-  local states
-  local line
-  local job_id
-  local state
-  local new_job_count
-  local terminal_success_count
-  local nonterminal_count
-
-  echo "==> [SMOKE] waiting for reconcile jobs for $table_ref (retries=$max_attempts sleep=${sleep_seconds}s)"
-  for attempt in $(seq 1 "$max_attempts"); do
-    states=$(list_connector_job_states_for_table "$compose_cmd" "$table_ref")
-    new_job_count=0
-    terminal_success_count=0
-    nonterminal_count=0
-
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      job_id=${line%% *}
-      state=${line#* }
-      if printf "%s\n" "$baseline_job_ids" | grep -Fqx "$job_id"; then
-        continue
-      fi
-      new_job_count=$((new_job_count + 1))
-      case "$state" in
-        JS_SUCCEEDED|SUCCEEDED)
-          terminal_success_count=$((terminal_success_count + 1))
-          ;;
-        JS_FAILED|FAILED|JS_CANCELLED|CANCELLED)
-          echo "$states"
-          echo "[FAIL] $label reconcile job terminal state=$state for $table_ref ($job_id)"
-          return 1
-          ;;
-        *)
-          nonterminal_count=$((nonterminal_count + 1))
-          ;;
-      esac
-    done <<< "$states"
-
-    if [ "$new_job_count" -ge "$expected_min_jobs" ] && [ "$nonterminal_count" -eq 0 ] && [ "$terminal_success_count" -eq "$new_job_count" ]; then
-      echo "[PASS] $label reconcile jobs settled for $table_ref ($new_job_count jobs)"
-      return 0
-    fi
-
-    sleep "$sleep_seconds"
-  done
-
-  echo "$states"
-  echo "[FAIL] $label reconcile jobs did not settle for $table_ref"
-  return 1
 }
 
 extract_cli_job_id() {
@@ -826,8 +740,8 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
     metadata_dir_uri="s3://floecat/$(dirname "$metadata_key")/"
 
     local polaris_token
-    polaris_token=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
-      -X POST "http://polaris:8181/api/catalog/v1/oauth/tokens" \
+    polaris_token=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
+      -X POST "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/oauth/tokens" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       --data "grant_type=client_credentials&client_id=root&client_secret=s3cr3t&scope=PRINCIPAL_ROLE:ALL" \
       | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
@@ -836,8 +750,8 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
       return 1
     fi
 
-    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
-      -X POST "http://polaris:8181/api/management/v1/catalogs" \
+    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
+      -X POST "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/catalogs" \
       -H "Authorization: Bearer $polaris_token" \
       -H "Content-Type: application/json" \
       -d "{\"catalog\":{\"name\":\"$warehouse\",\"type\":\"INTERNAL\",\"readOnly\":false,\"properties\":{\"default-base-location\":\"$bucket_root_uri\"},\"storageConfigInfo\":{\"storageType\":\"S3\",\"allowedLocations\":[\"$bucket_root_uri\",\"$metadata_dir_uri\"],\"pathStyleAccess\":true,\"roleArn\":\"arn:aws:iam::000000000000:role/polaris\"}}}" \
@@ -850,17 +764,17 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
     local polaris_grant_specs
     polaris_grant_specs=$(
       cat <<EOF
-POST|http://polaris:8181/api/management/v1/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
-POST|http://polaris:8181/api/management/v1/catalogs/$warehouse/catalog-roles|{"catalogRole":{"name":"$polaris_catalog_role"}}
-PUT|http://polaris:8181/api/management/v1/catalogs/$warehouse/catalog-roles/$polaris_catalog_role/grants|{"grant":{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}}
-PUT|http://polaris:8181/api/management/v1/principal-roles/$polaris_principal_role/catalog-roles/$warehouse|{"catalogRole":{"name":"$polaris_catalog_role"}}
-PUT|http://polaris:8181/api/management/v1/principals/root/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
+POST|${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
+POST|${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/catalogs/$warehouse/catalog-roles|{"catalogRole":{"name":"$polaris_catalog_role"}}
+PUT|${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/catalogs/$warehouse/catalog-roles/$polaris_catalog_role/grants|{"grant":{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}}
+PUT|${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/principal-roles/$polaris_principal_role/catalog-roles/$warehouse|{"catalogRole":{"name":"$polaris_catalog_role"}}
+PUT|${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/management/v1/principals/root/principal-roles|{"principalRole":{"name":"$polaris_principal_role"}}
 EOF
     )
     while IFS='|' read -r method url body; do
       [ -n "$method" ] || continue
       local polaris_resp
-      polaris_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      polaris_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
         -w "\n%{http_code}\n" \
         -X "$method" "$url" \
         -H "Authorization: Bearer $polaris_token" \
@@ -877,17 +791,17 @@ EOF
 $polaris_grant_specs
 EOF
 
-    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
-      -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces" \
+    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
+      -X POST "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/$warehouse/namespaces" \
       -H "Authorization: Bearer $polaris_token" \
       -H "Content-Type: application/json" \
       -d "{\"namespace\":[\"$source_namespace\"]}" \
       >/dev/null 2>&1 || true
 
     local register_resp
-    register_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    register_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
       -w "\n%{http_code}\n" \
-      -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces/$source_namespace/register" \
+      -X POST "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/$warehouse/namespaces/$source_namespace/register" \
       -H "Authorization: Bearer $polaris_token" \
       -H "Content-Type: application/json" \
       -d "{\"name\":\"$source_table\",\"metadata-location\":\"$metadata_uri\"}")
@@ -899,13 +813,24 @@ EOF
       return 1
     fi
 
-    if [ "$smoke_scope" = "polaris-vended-creds" ]; then
-      local load_table_resp
-      load_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
-        -X GET "http://polaris:8181/api/catalog/v1/$warehouse/namespaces/$source_namespace/tables/$source_table?snapshots=all" \
-        -H "Authorization: Bearer $polaris_token" \
-        -H "X-Iceberg-Access-Delegation: vended-credentials")
-      if ! python3 - "$load_table_resp" <<'PY'
+    run_upstream_iceberg_scenario() {
+      local scenario_key="$1"
+      local scenario_suffix="$2"
+      local access_delegation_header="$3"
+      local expect_vended_creds="$4"
+      local scenario_storage_authority_name="smoke-upstream-iceberg-storage${scenario_suffix}"
+      local scenario_connector_name="smoke-upstream-iceberg${scenario_suffix}"
+      local scenario_catalog_name="${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG}${scenario_suffix}"
+      local scenario_expected_table="${scenario_catalog_name}.${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE#*.}"
+      local access_delegation_arg=""
+
+      if [ "$expect_vended_creds" = "true" ]; then
+        local load_table_resp
+        load_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
+          -X GET "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/$warehouse/namespaces/$source_namespace/tables/$source_table?snapshots=all" \
+          -H "Authorization: Bearer $polaris_token" \
+          -H "X-Iceberg-Access-Delegation: ${access_delegation_header}")
+        if ! python3 - "$load_table_resp" <<'PY'
 import json
 import sys
 
@@ -914,54 +839,59 @@ creds = payload.get("storage-credentials")
 if not isinstance(creds, list) or not creds:
     sys.exit(1)
 PY
-      then
-        echo "[FAIL] $label upstream iceberg Polaris loadTable did not return storage-credentials"
-        echo "$load_table_resp"
-        return 1
+        then
+          echo "[FAIL] $label upstream iceberg ${scenario_key} Polaris loadTable did not return storage-credentials"
+          echo "$load_table_resp"
+          return 1
+        fi
+        access_delegation_arg=" --head X-Iceberg-Access-Delegation=${access_delegation_header}"
       fi
-    fi
 
-    local storage_authority_name
-    storage_authority_name="smoke-upstream-iceberg-storage"
-    local rest_setup_out
-    rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
-catalog create $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --desc compose-smoke-upstream-iceberg
-storage-authority create $storage_authority_name --location-prefix s3://floecat/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
-connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --cred-type client --cred endpoint=http://polaris:8181/api/catalog/v1/oauth/tokens --cred client_id=root --cred client_secret=s3cr3t --cred scope=PRINCIPAL_ROLE:ALL --props iceberg.source=rest --props rest.flavor=polaris --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1
+      local rest_setup_out
+      rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $scenario_catalog_name --desc compose-smoke-upstream-iceberg${scenario_suffix}
+storage-authority create $scenario_storage_authority_name --location-prefix s3://floecat/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
+connector create $scenario_connector_name ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $scenario_catalog_name --auth-scheme oauth2 --cred-type client --cred endpoint=${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/oauth/tokens --cred client_id=root --cred client_secret=s3cr3t --cred scope=PRINCIPAL_ROLE:ALL${access_delegation_arg} --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1
 quit")
-    echo "$rest_setup_out"
-    assert_contains "$label upstream iceberg storage authority setup" "$rest_setup_out" "$storage_authority_name"
-    assert_contains "$label upstream iceberg connector setup" "$rest_setup_out" "smoke-upstream-iceberg"
+      echo "$rest_setup_out"
+      assert_contains "$label upstream iceberg ${scenario_key} storage authority setup" "$rest_setup_out" "$scenario_storage_authority_name"
+      assert_contains "$label upstream iceberg ${scenario_key} connector setup" "$rest_setup_out" "$scenario_connector_name"
 
-    run_connector_trigger_and_wait \
-      "$compose_cmd" \
-      "$label upstream iceberg connector" \
-      "account t-0001
-connector trigger smoke-upstream-iceberg --full --mode metadata-and-capture --capture stats,index
+      run_connector_trigger_and_wait \
+        "$compose_cmd" \
+        "$label upstream iceberg ${scenario_key} connector" \
+        "account t-0001
+connector trigger $scenario_connector_name --full --mode metadata-and-capture --capture stats,index
 quit" \
-      120 \
-      2
+        120 \
+        2
 
-    local out_upstream_iceberg
-    out_upstream_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
-resolve table $COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE
+      local out_upstream_iceberg
+      out_upstream_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $scenario_expected_table
 quit")
-    echo "$out_upstream_iceberg"
-    assert_contains "$label upstream iceberg imported account" "$out_upstream_iceberg" "account set:"
-    assert_contains "$label upstream iceberg imported table" "$out_upstream_iceberg" "table id:"
+      echo "$out_upstream_iceberg"
+      assert_contains "$label upstream iceberg ${scenario_key} imported account" "$out_upstream_iceberg" "account set:"
+      assert_contains "$label upstream iceberg ${scenario_key} imported table" "$out_upstream_iceberg" "table id:"
 
-    assert_table_stats_available \
-      "$compose_cmd" \
-      "$label upstream iceberg file stats" \
-      "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE" \
-      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
-      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
-    assert_table_indexes_available \
-      "$compose_cmd" \
-      "$label upstream iceberg page indexes" \
-      "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE" \
-      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
-      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+      assert_table_stats_available \
+        "$compose_cmd" \
+        "$label upstream iceberg ${scenario_key} file stats" \
+        "$scenario_expected_table" \
+        "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+        "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+      assert_table_indexes_available \
+        "$compose_cmd" \
+        "$label upstream iceberg ${scenario_key} page indexes" \
+        "$scenario_expected_table" \
+        "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+        "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+    }
+
+    run_upstream_iceberg_scenario "storage-authority" "" "" "false"
+    if [ "$label" = "localstack-remote" ]; then
+      run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
+    fi
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
   fi
@@ -1225,8 +1155,6 @@ EOF
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client trino; then
     echo "==> [SMOKE] trino federation check (localstack)"
     local trino_out
-    local trino_mutation_baseline_jobs=""
-    trino_mutation_baseline_jobs=$(list_connector_job_states_for_table "$compose_cmd" "iceberg.trino_mutation_smoke" | awk '{print $1}')
     if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
 import sys
@@ -1476,14 +1404,6 @@ PY
     assert_contains "$label trino time travel insert snapshot" "$trino_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label trino time travel delete snapshot" "$trino_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label trino time travel update snapshot" "$trino_out" "mut_tt_after_update=2,4,a,c2"
-    wait_for_table_reconcile_jobs \
-      "$compose_cmd" \
-      "$label trino mutation" \
-      "iceberg.trino_mutation_smoke" \
-      "$trino_mutation_baseline_jobs" \
-      4 \
-      120 \
-      2
     local trino_drop_out
     trino_drop_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
@@ -1645,6 +1565,8 @@ PY
 }
 
 SMOKE_MODES=${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc}
+SMOKE_TOKEN_ENDPOINT_ALLOWLIST=${COMPOSE_SMOKE_ALLOWED_TOKEN_ENDPOINT_DOMAINS:-polaris}
+SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS=${COMPOSE_SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS:-true}
 echo "==> [COMPOSE] smoke modes=$SMOKE_MODES"
 
 IFS=',' read -r -a mode_list <<< "$SMOKE_MODES"
@@ -1655,7 +1577,15 @@ for raw_mode in "${mode_list[@]}"; do
       run_mode ./env.inmem "" inmem ""
       ;;
     localstack)
-      run_mode ./env.localstack localstack localstack "localstack"
+      run_mode \
+        ./env.localstack \
+        localstack \
+        localstack \
+        "localstack" \
+        "" \
+        "" \
+        "" \
+        "FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS"
       ;;
     localstack-remote)
       run_mode \
@@ -1666,21 +1596,8 @@ for raw_mode in "${mode_list[@]}"; do
         "" \
         "" \
         "localstack,reconciler-executor" \
-        "QUARKUS_PROFILE_SERVICE=reconciler-control" \
+        "QUARKUS_PROFILE_SERVICE=reconciler-control FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS" \
         "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
-      ;;
-    localstack-polaris-vended-creds)
-      run_mode \
-        ./env.localstack \
-        localstack \
-        localstack-polaris-vended-creds \
-        "localstack" \
-        "" \
-        "" \
-        "localstack,reconciler-executor" \
-        "FLOECAT_SECRETS=kv FLOECAT_RECONCILER_WORKER_MODE=remote FLOECAT_RECONCILER_MAX_PARALLELISM=0 FLOECAT_RECONCILER_AUTO_ENABLED=false FLOECAT_SEED_MODE=iceberg FLOECAT_SEED_SYNC_ENABLED=false FLOECAT_EXECUTOR_AWS_ACCESS_KEY_ID= FLOECAT_EXECUTOR_AWS_SECRET_ACCESS_KEY= FLOECAT_EXECUTOR_AWS_SESSION_TOKEN= FLOECAT_EXECUTOR_AWS_REGION=us-east-1 FLOECAT_EXECUTOR_AWS_DEFAULT_REGION=us-east-1 FLOECAT_EXECUTOR_AWS_ENDPOINT_URL=http://localstack:4566 FLOECAT_EXECUTOR_AWS_ENDPOINT_URL_S3=http://localstack:4566 FLOECAT_EXECUTOR_AWS_PROFILE= FLOECAT_EXECUTOR_AWS_SDK_LOAD_CONFIG=0" \
-        "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}" \
-        "polaris-vended-creds"
       ;;
     localstack-oidc)
       run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"

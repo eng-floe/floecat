@@ -371,10 +371,6 @@ public class TableGatewaySupport {
   }
 
   private Map<String, String> resolveAuthorityFileIoProperties(Table table, String location) {
-    String resolvedLocation = StorageLocationResolver.resolveLocationPrefix(location);
-    if (resolvedLocation != null) {
-      return storageCredentialAuthority.resolveFileIoConfigForLocation(resolvedLocation, false);
-    }
     if (table == null) {
       return Map.of();
     }

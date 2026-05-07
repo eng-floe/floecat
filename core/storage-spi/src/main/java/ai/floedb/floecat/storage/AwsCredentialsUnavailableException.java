@@ -14,17 +14,10 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.services.storage;
+package ai.floedb.floecat.storage;
 
-import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
-import java.util.List;
-import java.util.Map;
-
-public interface StorageCredentialAuthority {
-  List<StorageCredentialDto> resolveForTable(Table table, boolean required);
-
-  Map<String, String> clientSafeConfig(Table table);
-
-  Map<String, String> resolveServerSideFileIoConfig(Table table, boolean required);
+public class AwsCredentialsUnavailableException extends RuntimeException {
+  public AwsCredentialsUnavailableException(String message, Throwable cause) {
+    super(message, cause);
+  }
 }

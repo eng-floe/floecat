@@ -465,9 +465,6 @@ class ViewResourceTest extends AbstractRestResourceTest {
                     List.of())),
             Map.of("comment", "registered"));
     writeMetadataFile(root, metadataLocation, metadata);
-    when(storageCredentialAuthority.resolveFileIoConfigForLocation(metadataLocation, false))
-        .thenReturn(storageAuthorityIoPropsForFixture());
-
     when(viewStub.createView(any()))
         .thenAnswer(
             inv -> {

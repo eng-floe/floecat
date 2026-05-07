@@ -91,7 +91,6 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
@@ -280,11 +279,6 @@ public class GrpcServiceFacade {
   public ResolveStorageAuthorityResponse resolveStorageAuthority(
       ResolveStorageAuthorityRequest request) {
     return storageAuthorityStub().resolveStorageAuthority(request);
-  }
-
-  public ResolveStorageAuthorityResponse resolveStorageAuthorityForLocation(
-      ResolveStorageAuthorityForLocationRequest request) {
-    return storageAuthorityStub().resolveStorageAuthorityForLocation(request);
   }
 
   public QueryServiceGrpc.QueryServiceBlockingStub queryStub() {
