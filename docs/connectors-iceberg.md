@@ -97,6 +97,9 @@ Connector options (part of `ConnectorSpec.properties`):
 Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
 For Iceberg, the relevant types are `bearer`, `client`, `cli` (provider=aws), `token-exchange`,
 `token-exchange-entra`, `token-exchange-gcp`, `aws`, `aws-web-identity`, and `aws-assume-role`.
+When `iceberg.source=rest` uses service-side client credentials or token exchange, the shared
+outbound token endpoint allowlist and private/loopback guards described in
+[`docs/operations.md`](operations.md) apply.
 
 To extend behavior:
 - Provide a custom NDV provider by plugging into `GenericStatsEngine`.

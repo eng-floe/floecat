@@ -55,6 +55,30 @@ Flags:
 
 ## Observability & Operations
 
+### Outbound token endpoint allowlist
+
+Floecat validates outbound token endpoint hosts before performing client credentials or token
+exchange flows on behalf of connectors or internal workers. This is an SSRF guard on the shared
+auth resolution path, not a connector-specific feature.
+
+The relevant settings are:
+
+- `FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS` – comma-separated host/domain allowlist for
+  outbound token endpoints. Exact hosts match exactly; `*.example.com` matches subdomains only.
+  `*` allows any token endpoint host.
+- `FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true` – permits allowlisted
+  HTTPS hosts that resolve to private or loopback addresses.
+- `FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true` – permits loopback-only HTTP token
+  endpoints for local development.
+
+Important behavior:
+
+- These settings restrict token endpoint hosts, not upstream catalog hosts in general.
+- `FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=*` only bypasses the host allowlist check. It
+  does not disable the private-address or loopback HTTP guards.
+- The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
+  flow that performs service-side token acquisition.
+
 ### Reconciler deployment modes
 
 The reconciler runs in three shapes from the same artifact:

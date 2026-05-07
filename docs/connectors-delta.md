@@ -119,11 +119,15 @@ Important connector properties:
   `auth.properties` profile settings and set `auth.scheme=aws-sigv4` or `none`.
 
 Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
-For Delta, the relevant types are `bearer`, `client` (SP), `cli`, `token-exchange` (WIF),
-`token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only work if the Databricks
-workspace is configured to trust those IdPs.
-Use the Databricks workspace host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`);
-token exchange endpoints use `https://<workspace-host>/oidc/v1/token`.
+For `delta.source=unity`, the relevant types are `bearer`, `client` (SP), `cli`,
+`token-exchange` (WIF), `token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only
+work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
+host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`); for Databricks
+Unity Catalog, token exchange endpoints typically use `https://<workspace-host>/oidc/v1/token`.
+
+For `delta.source=glue` and `delta.source=filesystem`, this Databricks OIDC token endpoint pattern
+does not apply. Shared outbound token endpoint validation behavior is documented in
+[`docs/operations.md`](operations.md).
 
 Extensibility points:
 
@@ -155,8 +159,9 @@ Extensibility points:
   ```
 
 - **CLI examples**
-  - **Service principal (SP)** – Use `client` credentials. Resolve via client credentials exchange
-    (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+  - **Service principal (SP)** – For `delta.source=unity`, use `client` credentials. Resolve via
+    client credentials exchange (service layer), connector sees a bearer token. Token endpoint is
+    the workspace OIDC URL:
     `https://<workspace-host>/oidc/v1/token`.
 
     ```bash
@@ -170,8 +175,9 @@ Extensibility points:
       --auth scope=all-apis
     ```
 
-  - **WIF (token exchange)** – Use `token-exchange`. Resolve via RFC 8693 exchange (service layer),
-    connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+  - **WIF (token exchange)** – For `delta.source=unity`, use `token-exchange`. Resolve via RFC 8693
+    exchange (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC
+    URL:
     `https://<workspace-host>/oidc/v1/token`.
 
     ```bash
