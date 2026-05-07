@@ -270,7 +270,7 @@ services:
       - floecat
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.5.2
+    image: keycloak/keycloak:26.5.2
     pull_policy: if_not_present
     ports:
       - "${KEYCLOAK_PORT:-8080}:8080"
