@@ -491,6 +491,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#outbound-token-endpoint-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outbound token endpoint allowlist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1682,6 +1691,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#outbound-token-endpoint-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outbound token endpoint allowlist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1783,6 +1801,28 @@ make<span class="w"> </span>integration-test
 <li><code>--strict</code> – fail the run when warnings are present (warnings are currently reserved for future checks).</li>
 </ul>
 <h2 id="observability-operations">Observability &amp; Operations<a class="headerlink" href="#observability-operations" title="Permanent link">&para;</a></h2>
+<h3 id="outbound-token-endpoint-allowlist">Outbound token endpoint allowlist<a class="headerlink" href="#outbound-token-endpoint-allowlist" title="Permanent link">&para;</a></h3>
+<p>Floecat validates outbound token endpoint hosts before performing client credentials or token
+exchange flows on behalf of connectors or internal workers. This is an SSRF guard on the shared
+auth resolution path, not a connector-specific feature.</p>
+<p>The relevant settings are:</p>
+<ul>
+<li><code>FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS</code> – comma-separated host/domain allowlist for
+  outbound token endpoints. Exact hosts match exactly; <code>*.example.com</code> matches subdomains only.
+  <code>*</code> allows any token endpoint host.</li>
+<li><code>FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true</code> – permits allowlisted
+  HTTPS hosts that resolve to private or loopback addresses.</li>
+<li><code>FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true</code> – permits loopback-only HTTP token
+  endpoints for local development.</li>
+</ul>
+<p>Important behavior:</p>
+<ul>
+<li>These settings restrict token endpoint hosts, not upstream catalog hosts in general.</li>
+<li><code>FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=*</code> only bypasses the host allowlist check. It
+  does not disable the private-address or loopback HTTP guards.</li>
+<li>The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
+  flow that performs service-side token acquisition.</li>
+</ul>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
 <p>The reconciler runs in three shapes from the same artifact:</p>
 <ul>

@@ -1831,7 +1831,10 @@ Resources (RESTCatalog, GlueClient) are closed when the connector is closed.</p>
   file. <code>external.namespace</code> and <code>external.table-name</code> remain optional logical-name overrides.</p>
 <p>Auth credential types (<code>--cred-type</code>) are documented in <a href="../cli-reference/"><code>docs/cli-reference.md</code></a>.
 For Iceberg, the relevant types are <code>bearer</code>, <code>client</code>, <code>cli</code> (provider=aws), <code>token-exchange</code>,
-<code>token-exchange-entra</code>, <code>token-exchange-gcp</code>, <code>aws</code>, <code>aws-web-identity</code>, and <code>aws-assume-role</code>.</p>
+<code>token-exchange-entra</code>, <code>token-exchange-gcp</code>, <code>aws</code>, <code>aws-web-identity</code>, and <code>aws-assume-role</code>.
+When <code>iceberg.source=rest</code> uses service-side client credentials or token exchange, the shared
+outbound token endpoint allowlist and private/loopback guards described in
+<a href="../operations/"><code>docs/operations.md</code></a> apply.</p>
 <p>To extend behavior:
 - Provide a custom NDV provider by plugging into <code>GenericStatsEngine</code>.
 - Wrap alternative auth schemes by implementing <code>AuthProvider</code> and mapping new <code>auth.scheme</code> values.

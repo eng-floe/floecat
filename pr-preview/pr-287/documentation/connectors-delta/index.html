@@ -1849,11 +1849,14 @@ Databricks SQL execution, and custom file readers for S3.</p>
   <code>auth.properties</code> profile settings and set <code>auth.scheme=aws-sigv4</code> or <code>none</code>.</li>
 </ul>
 <p>Auth credential types (<code>--cred-type</code>) are documented in <a href="../cli-reference/"><code>docs/cli-reference.md</code></a>.
-For Delta, the relevant types are <code>bearer</code>, <code>client</code> (SP), <code>cli</code>, <code>token-exchange</code> (WIF),
-<code>token-exchange-entra</code>, and <code>token-exchange-gcp</code>. Entra/GCP exchanges only work if the Databricks
-workspace is configured to trust those IdPs.
-Use the Databricks workspace host for <code>uri</code> (for example <code>https://dbc-&lt;workspace-id&gt;.cloud.databricks.com</code>);
-token exchange endpoints use <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
+For <code>delta.source=unity</code>, the relevant types are <code>bearer</code>, <code>client</code> (SP), <code>cli</code>,
+<code>token-exchange</code> (WIF), <code>token-exchange-entra</code>, and <code>token-exchange-gcp</code>. Entra/GCP exchanges only
+work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
+host for <code>uri</code> (for example <code>https://dbc-&lt;workspace-id&gt;.cloud.databricks.com</code>); for Databricks
+Unity Catalog, token exchange endpoints typically use <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
+<p>For <code>delta.source=glue</code> and <code>delta.source=filesystem</code>, this Databricks OIDC token endpoint pattern
+does not apply. Shared outbound token endpoint validation behavior is documented in
+<a href="../operations/"><code>docs/operations.md</code></a>.</p>
 <p>Extensibility points:</p>
 <ul>
 <li>Implement new auth schemes by extending <code>AuthProvider</code> and wiring them in the connector provider.</li>
@@ -1884,8 +1887,9 @@ token exchange endpoints use <code>https://&lt;workspace-host&gt;/oidc/v1/token<
 <ul>
 <li><strong>CLI examples</strong></li>
 <li>
-<p><strong>Service principal (SP)</strong> – Use <code>client</code> credentials. Resolve via client credentials exchange
-    (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+<p><strong>Service principal (SP)</strong> – For <code>delta.source=unity</code>, use <code>client</code> credentials. Resolve via
+    client credentials exchange (service layer), connector sees a bearer token. Token endpoint is
+    the workspace OIDC URL:
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta SP&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
@@ -1898,8 +1902,9 @@ token exchange endpoints use <code>https://&lt;workspace-host&gt;/oidc/v1/token<
 </code></pre></div>
 </li>
 <li>
-<p><strong>WIF (token exchange)</strong> – Use <code>token-exchange</code>. Resolve via RFC 8693 exchange (service layer),
-    connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+<p><strong>WIF (token exchange)</strong> – For <code>delta.source=unity</code>, use <code>token-exchange</code>. Resolve via RFC 8693
+    exchange (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC
+    URL:
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta WIF&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
