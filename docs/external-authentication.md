@@ -80,12 +80,15 @@ curl -s \
 FLOECAT_AUTH_MODE=oidc
 FLOECAT_AUTH_PLATFORM_ADMIN_ROLE=platform-admin
 FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER=authorization
+FLOECAT_RECONCILER_OIDC_ISSUER=http://keycloak:8080/realms/floecat
+FLOECAT_RECONCILER_OIDC_CLIENT_ID=floecat-reconciler-worker
+FLOECAT_RECONCILER_OIDC_CLIENT_SECRET=floecat-reconciler-worker-secret
 FLOECAT_SEED_OIDC_ISSUER=http://keycloak:8080/realms/floecat
 FLOECAT_SEED_OIDC_CLIENT_ID=floecat-client
 FLOECAT_SEED_OIDC_CLIENT_SECRET=floecat-secret
 QUARKUS_OIDC_TENANT_ENABLED=true
 QUARKUS_OIDC_AUTH_SERVER_URL=http://keycloak:8080/realms/floecat
-QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client
+QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client,floecat-reconciler-worker
 ```
 
 2) Start Keycloak + service:
@@ -122,6 +125,14 @@ Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
 - `floecat.auth.platform-admin.role=platform-admin` to authorize platform account management.
 - `floecat.interceptor.session.header=x-floe-session` to enable the header.
+- Reconciler machine auth in OIDC mode:
+  - `floecat.reconciler.oidc.issuer=http://keycloak:8080/realms/floecat`
+  - `floecat.reconciler.oidc.client-id=floecat-reconciler-worker`
+  - `floecat.reconciler.oidc.client-secret=floecat-reconciler-worker-secret`
+  - `floecat.reconciler.oidc.token-refresh-skew-seconds=30`
+  - `floecat.reconciler.oidc.connect-timeout=10s`
+- Worker-to-control-plane precedence is propagated request auth first, then the reconciler
+  machine token. Shared static reconcile tokens are no longer the primary or fallback path.
 Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
 - `floecat.seed.oidc.client-id=floecat-client`
@@ -141,6 +152,11 @@ Environment equivalents:
 - FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_SESSION_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_RECONCILER_OIDC_ISSUER
+- FLOECAT_RECONCILER_OIDC_CLIENT_ID
+- FLOECAT_RECONCILER_OIDC_CLIENT_SECRET
+- FLOECAT_RECONCILER_OIDC_TOKEN_REFRESH_SKEW_SECONDS
+- FLOECAT_RECONCILER_OIDC_CONNECT_TIMEOUT
 - FLOECAT_SEED_OIDC_ISSUER
 - FLOECAT_SEED_OIDC_CLIENT_ID
 - FLOECAT_SEED_OIDC_CLIENT_SECRET
@@ -160,9 +176,14 @@ Further documentation on integration to external OpenID Connect IDPs can be foun
 - `floecat.auth.mode=oidc` (or `dev` for fully local use).
 - Use Keycloak dev realm or another local IdP.
 - `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`
-- `quarkus.oidc.token.audience=floecat-client` (or `floecat-client,trino-client` if using Trino).
+- `quarkus.oidc.token.audience=floecat-client` (or `floecat-client,trino-client,floecat-reconciler-worker` if using Trino plus remote/local reconcile workers in OIDC mode).
 - Use the IdP role `platform-admin` for platform account management.
+- Use the IdP role `reconcile-worker` for the dedicated reconciler service principal.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
+- `floecat.reconciler.oidc.issuer=http://127.0.0.1:12221/realms/floecat` for host-run workers, or `http://keycloak:8080/realms/floecat` for Docker-network workers.
+- `floecat.reconciler.oidc.client-id=floecat-reconciler-worker`
+- `floecat.reconciler.oidc.client-secret=...`
+- Optional: `floecat.reconciler.oidc.token-refresh-skew-seconds=30` and `floecat.reconciler.oidc.connect-timeout=10s`
 - Consider `floecat.interceptor.validate.account=false` if account ids are trusted in dev.
 
 ### Production
@@ -174,7 +195,12 @@ Further documentation on integration to external OpenID Connect IDPs can be foun
   - `quarkus.oidc.public-key=...` (offline JWT validation)
 - `quarkus.oidc.token.audience=<audience>`
 - Use the IdP role `platform-admin` for platform account management.
+- Use a dedicated reconciler service principal with the `reconcile-worker` role for worker gRPC.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
+- `floecat.reconciler.oidc.issuer=https://<issuer>/realms/<realm>`
+- `floecat.reconciler.oidc.client-id=<reconcile-worker-client-id>`
+- `floecat.reconciler.oidc.client-secret=<reconcile-worker-client-secret>`
+- Optional: `floecat.reconciler.oidc.token-refresh-skew-seconds` and `floecat.reconciler.oidc.connect-timeout`
 - `floecat.interceptor.validate.account=true` (recommended in prod)
 - Ensure transport security (TLS) at the edge and IdP issuer URLs use HTTPS.
 
@@ -188,6 +214,12 @@ Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
 - `floecat.auth.platform-admin.role=platform-admin` to authorize platform account management.
 - `floecat.interceptor.authorization.header=authorization` to enable the header.
+- Reconciler machine auth in OIDC mode:
+  - `floecat.reconciler.oidc.issuer=http://keycloak:8080/realms/floecat`
+  - `floecat.reconciler.oidc.client-id=floecat-reconciler-worker`
+  - `floecat.reconciler.oidc.client-secret=floecat-reconciler-worker-secret`
+  - `floecat.reconciler.oidc.token-refresh-skew-seconds=30`
+  - `floecat.reconciler.oidc.connect-timeout=10s`
 Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
 - `floecat.seed.oidc.client-id=floecat-client`
@@ -207,6 +239,11 @@ Environment equivalents:
 - FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_RECONCILER_OIDC_ISSUER
+- FLOECAT_RECONCILER_OIDC_CLIENT_ID
+- FLOECAT_RECONCILER_OIDC_CLIENT_SECRET
+- FLOECAT_RECONCILER_OIDC_TOKEN_REFRESH_SKEW_SECONDS
+- FLOECAT_RECONCILER_OIDC_CONNECT_TIMEOUT
 - FLOECAT_SEED_OIDC_ISSUER
 - FLOECAT_SEED_OIDC_CLIENT_ID
 - FLOECAT_SEED_OIDC_CLIENT_SECRET

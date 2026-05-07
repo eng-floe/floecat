@@ -85,6 +85,15 @@ COMPOSE_PROFILES=localstack,reconciler-executor \
 docker compose -f docker/docker-compose.yml up -d --scale executor=3
 ```
 
+Run the same split deployment in local OIDC mode:
+
+```bash
+QUARKUS_PROFILE_SERVICE=reconciler-control \
+FLOECAT_ENV_FILE=./env.localstack-oidc \
+COMPOSE_PROFILES=localstack-oidc,reconciler-executor \
+docker compose -f docker/docker-compose.yml up -d --scale executor=1
+```
+
 Notes:
 
 - For a true split deployment, run `service` as the control plane by setting
@@ -101,7 +110,10 @@ Notes:
   connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.
 - Both services must share the same blob/kv backend configuration.
-- If your control plane requires an authorization token for remote reconciler calls, set `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN` in the env file or shell before `docker compose up`.
+- In OIDC mode, configure the reconciler worker service principal with
+  `FLOECAT_RECONCILER_OIDC_ISSUER`, `FLOECAT_RECONCILER_OIDC_CLIENT_ID`, and
+  `FLOECAT_RECONCILER_OIDC_CLIENT_SECRET`. Executors then authenticate to
+  `ReconcileExecutorControl` automatically with cached client-credentials tokens.
 
 In Kubernetes or another orchestrator, the equivalent shape is:
 
@@ -178,7 +190,8 @@ Common configuration knobs:
   `FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED`,
-  `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN`,
+  `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_OIDC_ISSUER`,
+  `FLOECAT_RECONCILER_OIDC_CLIENT_ID`, `FLOECAT_RECONCILER_OIDC_CLIENT_SECRET`,
   `QUARKUS_PROFILE_SERVICE`, `QUARKUS_PROFILE_EXECUTOR`.
 
 Where variables are consumed (all `FLOECAT_*`):
@@ -225,7 +238,8 @@ storage prefix, region, endpoint, path-style flag, and source credentials suppli
 - Clients running on the **host** (or external containers not on the `docker_floecat` network)
   must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
 - If you use Trino with the REST catalog, ensure the gateway audience list includes both
-  `floecat-client` and `trino-client` (see `docker/env.localstack-oidc`).
+  `floecat-client` and `trino-client`, and ensure the service audience list also includes the
+  reconciler worker client (see `docker/env.localstack-oidc`).
 
 ### OIDC Token for Shell
 

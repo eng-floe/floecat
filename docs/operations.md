@@ -73,7 +73,11 @@ floecat.reconciler.executor.remote-default.enabled
 floecat.reconciler.executor.remote-snapshot-planner.enabled
 floecat.reconciler.executor.remote-file-group.enabled
 floecat.reconciler.authorization.header
-floecat.reconciler.authorization.token
+floecat.reconciler.oidc.issuer
+floecat.reconciler.oidc.client-id
+floecat.reconciler.oidc.client-secret
+floecat.reconciler.oidc.token-refresh-skew-seconds
+floecat.reconciler.oidc.connect-timeout
 floecat.reconciler.auto.execution-class
 floecat.reconciler.auto.execution-lane
 ```
@@ -82,7 +86,7 @@ Recommended split deployment:
 
 - Control plane: `QUARKUS_PROFILE=reconciler-control`
 - Executor plane: `QUARKUS_PROFILE=reconciler-executor`
-- Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
+- Shared settings: same blob/kv backend, same reconciler OIDC worker principal configuration, executor nodes pointed at the control-plane gRPC host/port
 - Control-plane-specific setting: `reconciler.max-parallelism=0`
 - Executor-plane-specific setting: `floecat.reconciler.worker.mode=remote`
 

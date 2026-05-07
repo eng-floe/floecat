@@ -51,6 +51,21 @@ class RolePermissionsTest {
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
+  private static final List<String> RECONCILE_WORKER_PERMS =
+      List.of(
+          "account.read",
+          "catalog.read",
+          "catalog.write",
+          "namespace.read",
+          "namespace.write",
+          "table.read",
+          "table.write",
+          "view.read",
+          "view.write",
+          "connector.manage",
+          "system-objects.read",
+          RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
+          RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
   @Test
   void defaultRoleGrantsReadPermissions() {
@@ -120,5 +135,13 @@ class RolePermissionsTest {
     var permissions = RolePermissions.permissionsForRoles(List.of(), true);
 
     assertThat(permissions).contains(RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+  }
+
+  @Test
+  void reconcileWorkerRoleGrantsDedicatedWorkerPermissions() {
+    var permissions =
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.RECONCILE_WORKER_ROLE), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(RECONCILE_WORKER_PERMS);
   }
 }

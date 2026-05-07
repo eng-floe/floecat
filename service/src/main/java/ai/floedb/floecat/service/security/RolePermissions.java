@@ -28,8 +28,11 @@ public final class RolePermissions {
   public static final String INIT_ACCOUNT_ROLE = "init-account";
   public static final String DELETE_ACCOUNT_ROLE = "delete-account";
   public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
+  public static final String RECONCILE_WORKER_ROLE = "reconcile-worker";
   public static final String STORAGE_AUTHORITY_RESOLVE_INTERNAL =
       "storage-authority.resolve-internal";
+  public static final String RECONCILE_EXECUTOR_CONTROL_INTERNAL =
+      "reconcile-executor-control.internal";
   private static final List<String> READ_PERMS =
       List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
   private static final List<String> FULL_PERMS =
@@ -59,6 +62,21 @@ public final class RolePermissions {
           "namespace.write",
           "connector.create");
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
+  private static final List<String> RECONCILE_WORKER_PERMS =
+      List.of(
+          "account.read",
+          "catalog.read",
+          "catalog.write",
+          "namespace.read",
+          "namespace.write",
+          "table.read",
+          "table.write",
+          "view.read",
+          "view.write",
+          "connector.manage",
+          "system-objects.read",
+          STORAGE_AUTHORITY_RESOLVE_INTERNAL,
+          RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
   private RolePermissions() {}
 
@@ -91,6 +109,9 @@ public final class RolePermissions {
           break;
         case DELETE_ACCOUNT_ROLE:
           perms.addAll(DELETE_ACCOUNT_PERMS);
+          break;
+        case RECONCILE_WORKER_ROLE:
+          perms.addAll(RECONCILE_WORKER_PERMS);
           break;
         default:
           break;

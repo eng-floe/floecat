@@ -50,6 +50,7 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-smoke          # sequential docker smoke (default: localstack + localstack-oidc)
 #   COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke
+#   COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #

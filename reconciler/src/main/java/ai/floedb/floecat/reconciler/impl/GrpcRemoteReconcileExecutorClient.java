@@ -59,7 +59,6 @@ import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.Optional;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -69,21 +68,8 @@ class GrpcRemoteReconcileExecutorClient
         RemoteFileGroupWorkerClient {
   private static final Logger LOG = Logger.getLogger(GrpcRemoteReconcileExecutorClient.class);
 
-  private static final Metadata.Key<String> AUTHORIZATION =
-      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
-
-  private final Optional<String> headerName;
-  private final Optional<String> staticToken;
-
-  GrpcRemoteReconcileExecutorClient(
-      @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token")
-          Optional<String> staticToken) {
-    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
-  }
 
   @GrpcClient("floecat")
   ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub executorControl;
@@ -1044,22 +1030,7 @@ class GrpcRemoteReconcileExecutorClient
   private Metadata metadata(String correlationId) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, correlationId == null ? "" : correlationId);
-    staticToken.ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
     return metadata;
-  }
-
-  private Metadata.Key<String> authHeaderKey() {
-    if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
-      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
-    }
-    return AUTHORIZATION;
-  }
-
-  private static String withBearerPrefix(String token) {
-    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
-      return token;
-    }
-    return "Bearer " + token;
   }
 
   private static String correlationId(RemoteLeasedJob lease) {

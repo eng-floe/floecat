@@ -236,7 +236,9 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   `localstack-remote` smoke run also exercises upstream Polaris Iceberg REST credential vending by
   verifying that Polaris `loadTable` returns non-empty `storage-credentials` when sent
   `X-Iceberg-Access-Delegation: vended-credentials`, then importing the upstream table through that
-  vended-credentials path in the same stack.
+  vended-credentials path in the same stack. For the OIDC split deployment, run
+  `COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke`, which adds Keycloak and
+  exercises remote executor worker machine auth as well as user-propagated OIDC auth.
 
 ---
 

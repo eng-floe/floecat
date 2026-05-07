@@ -55,12 +55,16 @@ Relevant shared settings:
 ```properties
 floecat.reconciler.job-store=durable
 floecat.reconciler.authorization.header=authorization
-floecat.reconciler.authorization.token=<shared-token>
+floecat.reconciler.oidc.issuer=https://<issuer>/realms/<realm>
+floecat.reconciler.oidc.client-id=<reconcile-worker-client-id>
+floecat.reconciler.oidc.client-secret=<reconcile-worker-client-secret>
+floecat.reconciler.oidc.token-refresh-skew-seconds=30
 floecat.reconciler.job-store.lease-ms=30000
 ```
 
-The Rust worker should target the control-plane gRPC endpoint and send the same authorization
-header/token pair configured on the service.
+The Rust worker should target the control-plane gRPC endpoint and acquire bearer tokens for the
+configured reconciler service principal via client credentials. Per-request propagated auth still
+takes precedence when the worker is acting on behalf of an inbound user request.
 
 ## Worker Identity and Leasing
 The lease request supports:

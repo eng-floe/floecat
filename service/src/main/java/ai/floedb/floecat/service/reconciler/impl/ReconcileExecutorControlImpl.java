@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
@@ -72,6 +73,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -83,6 +85,8 @@ import java.util.Set;
 @GrpcService
 public class ReconcileExecutorControlImpl extends BaseServiceImpl
     implements ReconcileExecutorControl {
+  static final java.util.List<String> EXECUTOR_CONTROL_PERMISSIONS =
+      java.util.List.of("connector.manage", RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
@@ -97,7 +101,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               Set<String> executorIds;
               if (request == null) {
@@ -139,7 +143,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -159,7 +163,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -177,7 +181,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -210,7 +214,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -408,7 +412,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               return GetReconcileCancellationResponse.newBuilder()
@@ -425,7 +429,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -456,7 +460,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -510,7 +514,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -540,7 +544,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -587,7 +591,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -615,7 +619,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -666,7 +670,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -697,7 +701,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -744,7 +748,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -799,7 +803,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         run(
             () -> {
               var principalContext = principalProvider.get();
-              authz.require(principalContext, "connector.manage");
+              requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
@@ -1276,5 +1280,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
+  }
+
+  private void requireExecutorControl(PrincipalContext principalContext) {
+    authz.require(principalContext, EXECUTOR_CONTROL_PERMISSIONS);
   }
 }

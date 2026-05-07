@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
+import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import java.io.ByteArrayInputStream;
@@ -41,7 +42,19 @@ final class OutboundContextClientInterceptorTest {
   @Test
   void doesNotEmitEmptyEngineHeadersWhenContextMissing() {
     OutboundContextClientInterceptor interceptor =
-        new OutboundContextClientInterceptor(Optional.empty(), Optional.empty());
+        new OutboundContextClientInterceptor(
+            Optional.empty(),
+            Optional.empty(),
+            new ReconcilerMachineAuthTokenProvider(
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                30,
+                java.time.Duration.ofSeconds(10),
+                java.time.Clock.systemUTC(),
+                (endpoint, requestBody, connectTimeout) -> {
+                  throw new AssertionError("machine auth should not be used");
+                }));
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
     MethodDescriptor<String, String> method =
@@ -59,6 +72,78 @@ final class OutboundContextClientInterceptorTest {
     Metadata headers = captured.get();
     assertThat(headers.get(ENGINE_KIND_KEY)).isNull();
     assertThat(headers.get(ENGINE_VERSION_KEY)).isNull();
+  }
+
+  @Test
+  void propagatedAuthorizationHeaderTakesPrecedenceOverMachineToken() {
+    OutboundContextClientInterceptor interceptor =
+        new OutboundContextClientInterceptor(
+            Optional.empty(),
+            Optional.of("authorization"),
+            new ReconcilerMachineAuthTokenProvider(
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                30,
+                java.time.Duration.ofSeconds(10),
+                java.time.Clock.systemUTC(),
+                (endpoint, requestBody, connectTimeout) -> {
+                  throw new AssertionError("machine auth should not be used");
+                }));
+    AtomicReference<Metadata> captured = new AtomicReference<>();
+
+    Context context =
+        Context.current()
+            .withValue(
+                InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY, "Bearer propagated");
+
+    context.run(
+        () -> {
+          ClientCall<String, String> call =
+              interceptor.interceptCall(
+                  testMethod("test/propagated"), CallOptions.DEFAULT, new TestChannel(captured));
+          call.start(new ClientCall.Listener<>() {}, new Metadata());
+        });
+
+    Metadata.Key<String> authKey =
+        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    assertThat(captured.get().get(authKey)).isEqualTo("Bearer propagated");
+  }
+
+  @Test
+  void machineTokenIsUsedWhenNoRequestContextExists() {
+    OutboundContextClientInterceptor interceptor =
+        new OutboundContextClientInterceptor(
+            Optional.empty(),
+            Optional.of("authorization"),
+            new ReconcilerMachineAuthTokenProvider(
+                Optional.of("http://issuer"),
+                Optional.of("worker-client"),
+                Optional.of("worker-secret"),
+                30,
+                java.time.Duration.ofSeconds(10),
+                java.time.Clock.systemUTC(),
+                (endpoint, requestBody, connectTimeout) ->
+                    new ReconcilerMachineAuthTokenProvider.TokenResponse("machine-token", 60)));
+    AtomicReference<Metadata> captured = new AtomicReference<>();
+
+    ClientCall<String, String> call =
+        interceptor.interceptCall(
+            testMethod("test/machine"), CallOptions.DEFAULT, new TestChannel(captured));
+    call.start(new ClientCall.Listener<>() {}, new Metadata());
+
+    Metadata.Key<String> authKey =
+        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    assertThat(captured.get().get(authKey)).isEqualTo("Bearer machine-token");
+  }
+
+  private static MethodDescriptor<String, String> testMethod(String fullMethodName) {
+    return MethodDescriptor.<String, String>newBuilder()
+        .setType(MethodDescriptor.MethodType.UNARY)
+        .setFullMethodName(fullMethodName)
+        .setRequestMarshaller(new StringMarshaller())
+        .setResponseMarshaller(new StringMarshaller())
+        .build();
   }
 
   private static final class TestChannel extends Channel {

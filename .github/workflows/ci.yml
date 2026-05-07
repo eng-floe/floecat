@@ -176,9 +176,15 @@ jobs:
           - label: localstack
             mode: localstack
             smoke_modes: localstack
+          - label: localstack-oidc
+            mode: localstack-oidc
+            smoke_modes: localstack-oidc
           - label: localstack-remote
             mode: localstack-remote
             smoke_modes: localstack-remote
+          - label: localstack-oidc-remote
+            mode: localstack-oidc-remote
+            smoke_modes: localstack-oidc-remote
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-${{ matrix.mode }}
       cancel-in-progress: true

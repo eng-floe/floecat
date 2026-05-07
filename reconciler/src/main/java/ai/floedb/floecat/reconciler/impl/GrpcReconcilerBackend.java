@@ -131,20 +131,25 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Duration DEFAULT_STATS_TIMEOUT = Duration.ofMinutes(1);
 
   private final Optional<String> headerName;
-  private final Optional<String> staticToken;
   private final Duration statsTimeout;
   ConnectorOpener connectorOpener = ConnectorFactory::create;
   @Inject CaptureEngineRegistry captureEngineRegistry;
   @Inject CredentialResolver credentialResolver;
   @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
 
+  @Inject
   public GrpcReconcilerBackend(
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token") Optional<String> staticToken,
       @ConfigProperty(name = "floecat.reconciler.stats.timeout") Optional<Duration> statsTimeout) {
     this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
     this.statsTimeout = statsTimeout.orElse(DEFAULT_STATS_TIMEOUT);
+  }
+
+  GrpcReconcilerBackend(
+      Optional<String> headerName,
+      Optional<String> ignoredStaticToken,
+      Optional<Duration> statsTimeout) {
+    this(headerName, statsTimeout);
   }
 
   @GrpcClient("floecat")
@@ -1223,11 +1228,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   Metadata metadataForContext(ReconcileContext ctx) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, ctx.correlationId());
-    Optional<String> token = ctx.authorizationToken();
-    if (token.isEmpty()) {
-      token = staticToken;
-    }
-    token.ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
+    ctx.authorizationToken()
+        .ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
     return metadata;
   }
 

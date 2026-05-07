@@ -15,6 +15,7 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 | `init-account` | Bootstrap role used to initialize account + initial resources. | `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.create` |
 | `delete-account` | Narrow internal role used to trigger account teardown. Floecat performs the implied cleanup internally. | `account.delete` |
 | `system-objects` | Minimal role for SystemObjects/GetSystemObjects access. | `system-objects.read` |
+| `reconcile-worker` | Dedicated machine principal for reconciler background gRPC work. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `system-objects.read`, `storage-authority.resolve-internal`, `reconcile-executor-control.internal` |
 
 ## Behavior Notes
 

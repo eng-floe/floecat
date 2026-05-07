@@ -43,13 +43,16 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
   private final Optional<String> sessionHeader;
   private final Optional<String> authorizationHeader;
+  private final ReconcilerMachineAuthTokenProvider reconcilerMachineAuthTokenProvider;
 
   public OutboundContextClientInterceptor(
       @ConfigProperty(name = "floecat.interceptor.session.header") Optional<String> sessionHeader,
       @ConfigProperty(name = "floecat.interceptor.authorization.header")
-          Optional<String> authorizationHeader) {
+          Optional<String> authorizationHeader,
+      ReconcilerMachineAuthTokenProvider reconcilerMachineAuthTokenProvider) {
     this.sessionHeader = sessionHeader.filter(header -> !header.isBlank());
     this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
+    this.reconcilerMachineAuthTokenProvider = reconcilerMachineAuthTokenProvider;
   }
 
   @Override
@@ -100,6 +103,14 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
           Metadata.Key<String> key =
               Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
           headers.put(key, authorizationHeaderValue);
+        } else if (authorizationHeader.isPresent()
+            && sessionHeaderValue == null
+            && !hasAuthorizationHeader(headers)) {
+          Metadata.Key<String> key =
+              Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+          reconcilerMachineAuthTokenProvider
+              .authorizationHeader()
+              .ifPresent(value -> headers.put(key, value));
         }
 
         putIfNonBlank(headers, QUERY_ID, queryId);
@@ -124,5 +135,14 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       }
     }
     return null;
+  }
+
+  private boolean hasAuthorizationHeader(Metadata headers) {
+    if (authorizationHeader.isEmpty()) {
+      return false;
+    }
+    Metadata.Key<String> key =
+        Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+    return headers.containsKey(key);
   }
 }

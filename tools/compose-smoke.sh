@@ -889,7 +889,7 @@ quit")
     }
 
     run_upstream_iceberg_scenario "storage-authority" "" "" "false"
-    if [ "$label" = "localstack-remote" ]; then
+    if [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; then
       run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
     fi
   elif [ "$profile" = "localstack" ]; then
@@ -1556,7 +1556,7 @@ PY
     fi
   fi
 
-  if [ "$smoke_scope" = "full" ] && [ "$label" = "localstack-remote" ]; then
+  if [ "$smoke_scope" = "full" ] && { [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; }; then
     assert_remote_file_group_worker_activity "$compose_cmd" "$label"
   fi
 
@@ -1597,6 +1597,18 @@ for raw_mode in "${mode_list[@]}"; do
         "" \
         "localstack,reconciler-executor" \
         "QUARKUS_PROFILE_SERVICE=reconciler-control FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS" \
+        "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
+      ;;
+    localstack-oidc-remote)
+      run_mode \
+        ./env.localstack-oidc \
+        localstack-oidc \
+        localstack-oidc-remote \
+        "localstack keycloak" \
+        "keycloak" \
+        "8080" \
+        "localstack-oidc,reconciler-executor" \
+        "QUARKUS_PROFILE_SERVICE=reconciler-control" \
         "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
       ;;
     localstack-oidc)

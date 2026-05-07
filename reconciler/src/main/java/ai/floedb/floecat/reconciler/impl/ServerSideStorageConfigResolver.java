@@ -28,6 +28,7 @@ import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -46,17 +47,20 @@ public class ServerSideStorageConfigResolver {
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   private final Optional<String> headerName;
-  private final Optional<String> staticToken;
 
   @GrpcClient("floecat")
   StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities;
 
+  @Inject
   public ServerSideStorageConfigResolver(
-      @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token")
-          Optional<String> staticToken) {
+      @ConfigProperty(name = "floecat.reconciler.authorization.header")
+          Optional<String> headerName) {
     this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
+  }
+
+  ServerSideStorageConfigResolver(
+      Optional<String> headerName, Optional<String> ignoredStaticToken) {
+    this(headerName);
   }
 
   public ConnectorConfig resolve(Connector connector, ConnectorConfig config) {
@@ -270,12 +274,9 @@ public class ServerSideStorageConfigResolver {
     Metadata metadata = new Metadata();
     ctx.map(ReconcileContext::correlationId)
         .ifPresent(value -> metadata.put(CORRELATION_ID, value));
-    Optional<String> token = ctx.flatMap(ReconcileContext::authorizationToken);
-    if (token.isEmpty()) {
-      token = staticToken;
-    }
-    token.ifPresent(
-        value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
+    ctx.flatMap(ReconcileContext::authorizationToken)
+        .ifPresent(
+            value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
     return metadata;
   }
 
