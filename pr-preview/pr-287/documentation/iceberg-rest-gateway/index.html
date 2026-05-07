@@ -2313,7 +2313,9 @@ no marker file/state is required.</p>
   <code>localstack-remote</code> smoke run also exercises upstream Polaris Iceberg REST credential vending by
   verifying that Polaris <code>loadTable</code> returns non-empty <code>storage-credentials</code> when sent
   <code>X-Iceberg-Access-Delegation: vended-credentials</code>, then importing the upstream table through that
-  vended-credentials path in the same stack.</li>
+  vended-credentials path in the same stack. For the OIDC split deployment, run
+  <code>COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke</code>, which adds Keycloak and
+  exercises remote executor worker machine auth as well as user-propagated OIDC auth.</li>
 </ul>
 <hr />
 <h2 id="operational-notes-current-limitations">Operational Notes &amp; Current Limitations<a class="headerlink" href="#operational-notes-current-limitations" title="Permanent link">&para;</a></h2>

@@ -1903,9 +1903,17 @@ reconcile control RPCs:</p>
 <ul>
 <li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
   payload/result exchange.</li>
-<li><code>floecat.reconciler.authorization.header</code> / <code>token</code> configure the authorization header used on
-  worker-to-control-plane calls. Per-request tokens supplied via <code>ReconcileContext</code> override the
-  static token, so the precedence is request-scoped token, then configured token, then no header.</li>
+<li><code>floecat.reconciler.authorization.header</code> configures the outbound header name used for bearer
+  auth on worker gRPC calls.</li>
+<li>In OIDC mode, background workers obtain a machine token via client credentials using
+  <code>floecat.reconciler.oidc.issuer</code>, <code>client-id</code>, <code>client-secret</code>,
+  <code>token-refresh-skew-seconds</code>, and <code>connect-timeout</code>.</li>
+<li>Precedence is explicit:</li>
+<li>request-scoped propagated auth header when present</li>
+<li>reconciler machine OIDC token</li>
+<li>no auth header</li>
+<li><code>ReconcileExecutorControl</code> accepts either normal propagated user auth (<code>connector.manage</code>) or
+  the dedicated internal worker permission carried by the reconciler service principal.</li>
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector StartCapture / CaptureNow

@@ -1810,6 +1810,12 @@ docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> 
 <span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack,reconciler-executor<span class="w"> </span><span class="se">\</span>
 docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker/docker-compose.yml<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--scale<span class="w"> </span><span class="nv">executor</span><span class="o">=</span><span class="m">3</span>
 </code></pre></div>
+<p>Run the same split deployment in local OIDC mode:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">QUARKUS_PROFILE_SERVICE</span><span class="o">=</span>reconciler-control<span class="w"> </span><span class="se">\</span>
+<span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack-oidc<span class="w"> </span><span class="se">\</span>
+<span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack-oidc,reconciler-executor<span class="w"> </span><span class="se">\</span>
+docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker/docker-compose.yml<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--scale<span class="w"> </span><span class="nv">executor</span><span class="o">=</span><span class="m">1</span>
+</code></pre></div>
 <p>Notes:</p>
 <ul>
 <li>For a true split deployment, run <code>service</code> as the control plane by setting
@@ -1826,7 +1832,10 @@ docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> 
   connects to <code>service:9100</code>, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.</li>
 <li>Both services must share the same blob/kv backend configuration.</li>
-<li>If your control plane requires an authorization token for remote reconciler calls, set <code>FLOECAT_RECONCILER_AUTHORIZATION_TOKEN</code> in the env file or shell before <code>docker compose up</code>.</li>
+<li>In OIDC mode, configure the reconciler worker service principal with
+  <code>FLOECAT_RECONCILER_OIDC_ISSUER</code>, <code>FLOECAT_RECONCILER_OIDC_CLIENT_ID</code>, and
+  <code>FLOECAT_RECONCILER_OIDC_CLIENT_SECRET</code>. Executors then authenticate to
+  <code>ReconcileExecutorControl</code> automatically with cached client-credentials tokens.</li>
 </ul>
 <p>In Kubernetes or another orchestrator, the equivalent shape is:</p>
 <ul>
@@ -1880,7 +1889,8 @@ in <code>docker/docker-compose.yml</code>, and per-mode overrides live in <code>
   <code>FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED</code>,
   <code>FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED</code>,
   <code>FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED</code>,
-  <code>FLOECAT_RECONCILER_AUTHORIZATION_HEADER</code>, <code>FLOECAT_RECONCILER_AUTHORIZATION_TOKEN</code>,
+  <code>FLOECAT_RECONCILER_AUTHORIZATION_HEADER</code>, <code>FLOECAT_RECONCILER_OIDC_ISSUER</code>,
+  <code>FLOECAT_RECONCILER_OIDC_CLIENT_ID</code>, <code>FLOECAT_RECONCILER_OIDC_CLIENT_SECRET</code>,
   <code>QUARKUS_PROFILE_SERVICE</code>, <code>QUARKUS_PROFILE_EXECUTOR</code>.</li>
 </ul>
 <p>Where variables are consumed (all <code>FLOECAT_*</code>):</p>
@@ -1916,7 +1926,8 @@ storage prefix, region, endpoint, path-style flag, and source credentials suppli
 <li>Clients running on the <strong>host</strong> (or external containers not on the <code>docker_floecat</code> network)
   must use <code>http://host.docker.internal:8080/realms/floecat</code> (or <code>KEYCLOAK_PORT</code> if overridden).</li>
 <li>If you use Trino with the REST catalog, ensure the gateway audience list includes both
-  <code>floecat-client</code> and <code>trino-client</code> (see <code>docker/env.localstack-oidc</code>).</li>
+  <code>floecat-client</code> and <code>trino-client</code>, and ensure the service audience list also includes the
+  reconciler worker client (see <code>docker/env.localstack-oidc</code>).</li>
 </ul>
 <h3 id="oidc-token-for-shell">OIDC Token for Shell<a class="headerlink" href="#oidc-token-for-shell" title="Permanent link">&para;</a></h3>
 <p>When the stack is running with <code>docker/env.localstack-oidc</code>, the CLI must send a bearer token.

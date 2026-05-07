@@ -1798,7 +1798,11 @@ make<span class="w"> </span>integration-test
 <span class="na">floecat.reconciler.executor.remote-snapshot-planner.enabled</span>
 <span class="na">floecat.reconciler.executor.remote-file-group.enabled</span>
 <span class="na">floecat.reconciler.authorization.header</span>
-<span class="na">floecat.reconciler.authorization.token</span>
+<span class="na">floecat.reconciler.oidc.issuer</span>
+<span class="na">floecat.reconciler.oidc.client-id</span>
+<span class="na">floecat.reconciler.oidc.client-secret</span>
+<span class="na">floecat.reconciler.oidc.token-refresh-skew-seconds</span>
+<span class="na">floecat.reconciler.oidc.connect-timeout</span>
 <span class="na">floecat.reconciler.auto.execution-class</span>
 <span class="na">floecat.reconciler.auto.execution-lane</span>
 </code></pre></div>
@@ -1806,7 +1810,7 @@ make<span class="w"> </span>integration-test
 <ul>
 <li>Control plane: <code>QUARKUS_PROFILE=reconciler-control</code></li>
 <li>Executor plane: <code>QUARKUS_PROFILE=reconciler-executor</code></li>
-<li>Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port</li>
+<li>Shared settings: same blob/kv backend, same reconciler OIDC worker principal configuration, executor nodes pointed at the control-plane gRPC host/port</li>
 <li>Control-plane-specific setting: <code>reconciler.max-parallelism=0</code></li>
 <li>Executor-plane-specific setting: <code>floecat.reconciler.worker.mode=remote</code></li>
 </ul>

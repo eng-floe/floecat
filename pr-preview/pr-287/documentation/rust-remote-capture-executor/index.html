@@ -2009,11 +2009,15 @@ implementation of the current worker contract, not like a new public API.</p>
 <p>Relevant shared settings:</p>
 <div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.job-store</span><span class="o">=</span><span class="s">durable</span>
 <span class="na">floecat.reconciler.authorization.header</span><span class="o">=</span><span class="s">authorization</span>
-<span class="na">floecat.reconciler.authorization.token</span><span class="o">=</span><span class="s">&lt;shared-token&gt;</span>
+<span class="na">floecat.reconciler.oidc.issuer</span><span class="o">=</span><span class="s">https://&lt;issuer&gt;/realms/&lt;realm&gt;</span>
+<span class="na">floecat.reconciler.oidc.client-id</span><span class="o">=</span><span class="s">&lt;reconcile-worker-client-id&gt;</span>
+<span class="na">floecat.reconciler.oidc.client-secret</span><span class="o">=</span><span class="s">&lt;reconcile-worker-client-secret&gt;</span>
+<span class="na">floecat.reconciler.oidc.token-refresh-skew-seconds</span><span class="o">=</span><span class="s">30</span>
 <span class="na">floecat.reconciler.job-store.lease-ms</span><span class="o">=</span><span class="s">30000</span>
 </code></pre></div>
-<p>The Rust worker should target the control-plane gRPC endpoint and send the same authorization
-header/token pair configured on the service.</p>
+<p>The Rust worker should target the control-plane gRPC endpoint and acquire bearer tokens for the
+configured reconciler service principal via client credentials. Per-request propagated auth still
+takes precedence when the worker is acting on behalf of an inbound user request.</p>
 <h2 id="worker-identity-and-leasing">Worker Identity and Leasing<a class="headerlink" href="#worker-identity-and-leasing" title="Permanent link">&para;</a></h2>
 <p>The lease request supports:</p>
 <ul>
