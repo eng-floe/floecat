@@ -58,7 +58,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     "floecat.blob",
     "floecat.blob.s3.bucket",
     "floecat.fixtures.use-aws-s3",
-    "floecat.interceptor.validate.account"
+    "floecat.interceptor.validate.account",
+    "floecat.reconciler.worker.auth.required"
   };
   private static final String[] FORWARDED_PROP_PREFIXES = {
     "floecat.fixture.aws.", "floecat.storage.aws."
@@ -85,6 +86,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
   private static final String CHECKSUM_REQUEST_PROP = "aws.requestChecksumCalculation";
   private static final String CHECKSUM_RESPONSE_PROP = "aws.responseChecksumValidation";
   private static final String CHECKSUM_DEFAULT = "when_required";
+  private static final String RECONCILER_WORKER_AUTH_REQUIRED_PROP =
+      "floecat.reconciler.worker.auth.required";
   private static final Map<String, String> DEFAULT_SERVICE_PROPS =
       Map.of("floecat.kv", "memory", "floecat.blob", "memory");
   private static final String BUILD_PROPS_FILE = ".real-service-build.properties";
@@ -137,6 +140,11 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add("-Dquarkus.management.port=" + managementPort);
       command.add("-Dfloecat.seed.mode=fake");
       command.add("-Dquarkus.profile=test");
+      command.add(
+          "-D"
+              + RECONCILER_WORKER_AUTH_REQUIRED_PROP
+              + "="
+              + System.getProperty(RECONCILER_WORKER_AUTH_REQUIRED_PROP, "false"));
       command.add("--add-opens");
       command.add("java.base/java.lang=ALL-UNNAMED");
       command.add("--add-opens");

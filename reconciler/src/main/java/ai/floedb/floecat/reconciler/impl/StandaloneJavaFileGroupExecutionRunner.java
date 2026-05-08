@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
@@ -27,6 +28,7 @@ import java.util.List;
 @ApplicationScoped
 public class StandaloneJavaFileGroupExecutionRunner {
   @Inject CaptureEngineRegistry captureEngineRegistry;
+  @Inject ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
 
   public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
     if (payload == null
@@ -52,7 +54,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.indexColumns(),
                 FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
                 payload.capturePageIndex(),
-                java.util.Optional.empty()));
+                reconcileWorkerAuthProvider.authorizationHeader()));
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }

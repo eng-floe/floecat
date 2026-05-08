@@ -97,6 +97,7 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 
 DOCKER_COMPOSE ?= docker compose
 DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
@@ -349,6 +350,7 @@ test: $(PROTO_JAR) keycloak-up
 	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -364,7 +366,7 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  $(MVN) $(MVN_TESTALL) install -N; \
 	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
 	  $(LOCALSTACK_ENV) \
-	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
+	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -399,6 +401,7 @@ unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
 	  -Dfloecat.fixtures.use-aws-s3=false \
+	  $(TEST_RECONCILER_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  -DskipITs=true \
 	  test
@@ -410,6 +413,7 @@ integration-test: keycloak-up
 	  echo "==> [TEST] integration tests (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    -DskipUTs=true -DfailIfNoTests=false \
 	    verify'
@@ -421,6 +425,7 @@ verify: keycloak-up
 	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
