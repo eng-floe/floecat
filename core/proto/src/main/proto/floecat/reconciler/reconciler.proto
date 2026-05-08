@@ -626,6 +626,7 @@ message LeasedFileGroupExecution {
   string group_id = 10;
   repeated string file_paths = 11;
   CapturePolicy capture_policy = 12;
+  string metadata_location = 13;
 }
 
 message GetLeasedFileGroupExecutionResponse {

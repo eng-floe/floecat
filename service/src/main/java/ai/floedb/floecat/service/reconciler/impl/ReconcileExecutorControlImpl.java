@@ -755,6 +755,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setJobId(payload.jobId())
                       .setLeaseEpoch(payload.leaseEpoch())
                       .setParentJobId(payload.parentJobId())
+                      .setMetadataLocation(payload.metadataLocation())
                       .setSourceNamespace(payload.sourceNamespace())
                       .setSourceTable(payload.sourceTable())
                       .setSnapshotId(payload.snapshotId())

@@ -101,6 +101,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .getById(tableId)
             .orElseThrow(
                 () -> GrpcErrors.notFound(corr, TABLE, Map.of("table_id", tableId.getId())));
+    String metadataLocation = table.getPropertiesMap().getOrDefault("metadata-location", "").trim();
+    if (metadataLocation.isBlank()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("table metadata-location property is required for file-group execution")
+          .asRuntimeException();
+    }
     if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
       throw Status.FAILED_PRECONDITION
           .withDescription("table upstream connector metadata is required for file-group execution")
@@ -120,6 +126,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         lease.leaseEpoch,
         lease.parentJobId,
         resolvedConnector,
+        metadataLocation,
         String.join(".", table.getUpstream().getNamespacePathList()),
         table.getUpstream().getTableDisplayName(),
         tableId,

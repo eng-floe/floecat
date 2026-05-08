@@ -27,6 +27,7 @@ public record StandaloneFileGroupExecutionPayload(
     String leaseEpoch,
     String parentJobId,
     Connector sourceConnector,
+    String metadataLocation,
     String sourceNamespace,
     String sourceTable,
     ResourceId tableId,
@@ -40,6 +41,7 @@ public record StandaloneFileGroupExecutionPayload(
     leaseEpoch = leaseEpoch == null ? "" : leaseEpoch.trim();
     parentJobId = parentJobId == null ? "" : parentJobId.trim();
     sourceConnector = sourceConnector == null ? Connector.getDefaultInstance() : sourceConnector;
+    metadataLocation = metadataLocation == null ? "" : metadataLocation.trim();
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
     planId = planId == null ? "" : planId.trim();

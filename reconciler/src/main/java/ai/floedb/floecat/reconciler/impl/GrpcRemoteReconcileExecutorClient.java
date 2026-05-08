@@ -514,6 +514,7 @@ class GrpcRemoteReconcileExecutorClient
         execution.hasSourceConnector()
             ? execution.getSourceConnector()
             : Connector.getDefaultInstance(),
+        execution.getMetadataLocation(),
         execution.getSourceNamespace(),
         execution.getSourceTable(),
         execution.hasTableId() ? execution.getTableId() : null,
