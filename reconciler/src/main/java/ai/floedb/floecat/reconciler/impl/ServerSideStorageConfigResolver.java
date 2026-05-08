@@ -53,14 +53,12 @@ public class ServerSideStorageConfigResolver {
 
   @Inject
   public ServerSideStorageConfigResolver(
+      @ConfigProperty(name = "floecat.interceptor.session.header")
+          Optional<String> sessionHeaderName,
       @ConfigProperty(name = "floecat.reconciler.authorization.header")
           Optional<String> headerName) {
-    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-  }
-
-  ServerSideStorageConfigResolver(
-      Optional<String> headerName, Optional<String> ignoredStaticToken) {
-    this(headerName);
+    this.headerName =
+        ReconcileRpcAuthHeaderSupport.resolveHeaderName(sessionHeaderName, headerName);
   }
 
   public ConnectorConfig resolve(Connector connector, ConnectorConfig config) {
@@ -282,7 +280,7 @@ public class ServerSideStorageConfigResolver {
 
   private Metadata.Key<String> authHeaderKey() {
     if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
-      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
+      return ReconcileRpcAuthHeaderSupport.headerKey(headerName.get());
     }
     return AUTHORIZATION;
   }
