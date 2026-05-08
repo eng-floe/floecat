@@ -1,6 +1,6 @@
 # Telemetry Hub Contract
 
-This lists all metrics available in the repository right now:
+This lists all metrics currently available in the repository:
 
 <!-- METRICS:START -->
 ## Core Metrics

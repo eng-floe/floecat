@@ -81,7 +81,8 @@ class TableLoadServiceTest {
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompat));
     when(deltaCompat.enabled()).thenReturn(true);
     when(tableSupport.defaultTableConfig()).thenReturn(Map.of());
-    when(tableSupport.credentialsForAccessDelegation(any())).thenReturn(null);
+    when(tableSupport.defaultTableConfig(any(Table.class))).thenReturn(Map.of());
+    when(tableSupport.credentialsForAccessDelegation(any(Table.class), any())).thenReturn(null);
   }
 
   @Test
@@ -177,7 +178,7 @@ class TableLoadServiceTest {
             IcebergMetadata.newBuilder()
                 .setMetadataLocation("s3://old/metadata/00002.metadata.json")
                 .build());
-    when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
+    when(tableSupport.defaultFileIoProperties(table)).thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
@@ -228,7 +229,7 @@ class TableLoadServiceTest {
                         .setSchemaId(0)
                         .build())
                 .build());
-    when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
+    when(tableSupport.defaultFileIoProperties(table)).thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(

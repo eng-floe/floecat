@@ -47,6 +47,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -264,6 +265,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var fingerprint = canonicalFingerprint(request.getSpec());
 
                   var spec = request.getSpec();
+                  PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getSummaryMap(), corr, "spec.summary");
                   var snapBuilder =
                       Snapshot.newBuilder()
                           .setTableId(tableId)
@@ -468,14 +471,18 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       || spec.getSnapshotId() < 0L) {
                     throw GrpcErrors.invalidArgument(corr, SPEC_MISSING_IDS, Map.of());
                   }
-
-                  var tableId = spec.getTableId();
-                  long snapshotId = spec.getSnapshotId();
-                  ensureTableVisible(tableId, corr);
-
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
+
+                  var tableId = spec.getTableId();
+                  long snapshotId = spec.getSnapshotId();
+                  var mask = normalizeMask(request.getUpdateMask());
+                  if (maskTargets(mask, "summary")) {
+                    PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        spec.getSummaryMap(), corr, "spec.summary");
+                  }
+                  ensureTableVisible(tableId, corr);
 
                   var meta = snapshotRepo.metaFor(tableId, snapshotId);
                   enforcePreconditions(corr, meta, request.getPrecondition());
@@ -492,9 +499,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                           "table_id", tableId.getId(),
                                           "snapshot_id", Long.toString(snapshotId))));
 
-                  var desired =
-                      applySnapshotSpecPatch(
-                          existing, spec, normalizeMask(request.getUpdateMask()), corr);
+                  var desired = applySnapshotSpecPatch(existing, spec, mask, corr);
 
                   if (desired.equals(existing)) {
                     var noopMeta = snapshotRepo.metaFor(tableId, snapshotId);

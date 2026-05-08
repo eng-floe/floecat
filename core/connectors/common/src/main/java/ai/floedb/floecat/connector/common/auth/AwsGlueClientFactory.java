@@ -17,6 +17,12 @@
 package ai.floedb.floecat.connector.common.auth;
 
 import java.util.Map;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.glue.GlueClient;
 
@@ -25,8 +31,10 @@ public final class AwsGlueClientFactory {
 
   public static GlueClient create(Map<String, String> options, Map<String, String> authProps) {
     String region = resolveRegion(options, "us-east-1");
-    var builder = GlueClient.builder().region(Region.of(region));
-    AwsProfileSupport.resolveProfileProvider(authProps).ifPresent(builder::credentialsProvider);
+    var builder =
+        GlueClient.builder()
+            .region(Region.of(region))
+            .credentialsProvider(resolveCredentials(options, authProps));
     return builder.build();
   }
 
@@ -50,5 +58,22 @@ public final class AwsGlueClientFactory {
       return null;
     }
     return value;
+  }
+
+  private static AwsCredentialsProvider resolveCredentials(
+      Map<String, String> options, Map<String, String> authProps) {
+    String access = option(options, "s3.access-key-id");
+    String secret = option(options, "s3.secret-access-key");
+    String token = option(options, "s3.session-token");
+    if (access != null && secret != null) {
+      AwsCredentials credentials =
+          token == null
+              ? AwsBasicCredentials.create(access, secret)
+              : AwsSessionCredentials.create(access, secret, token);
+      return StaticCredentialsProvider.create(credentials);
+    }
+    return AwsProfileSupport.resolveProfileProvider(authProps)
+        .<AwsCredentialsProvider>map(provider -> provider)
+        .orElseGet(DefaultCredentialsProvider::create);
   }
 }

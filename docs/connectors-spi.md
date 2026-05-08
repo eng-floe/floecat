@@ -102,7 +102,7 @@ interface FloecatConnector extends Closeable {
   List<TargetStatsRecord> captureSnapshotTargetStats(...);
 }
 ```
-For incremental reconcile, the runtime now passes the set of already-ingested destination snapshot ids
+For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them

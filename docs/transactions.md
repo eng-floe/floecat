@@ -125,7 +125,7 @@ The Iceberg REST gateway uses this gRPC flow as follows:
    - `TS_APPLY_FAILED_CONFLICT` => returns HTTP 409 immediately.
 3. For `TS_OPEN` transactions, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.
    - For `TS_PREPARED`, `TS_APPLYING`, and `TS_APPLY_FAILED_RETRYABLE`, the gateway verifies the persisted request hash matches and then skips fresh planning/materialization, driving commit/confirmation from the already-persisted intents.
-4. During prepare, each table change now includes `precondition.expected_version` sourced from table `MutationMeta.pointer_version` fetched at planning time.
+4. During prepare, each table change includes `precondition.expected_version` sourced from table `MutationMeta.pointer_version` fetched at planning time.
 5. REST returns 204 only when backend is `TS_APPLIED`; deterministic failures map to 409.
    Unknown commit state maps are:
    - 503 for unavailable/retryable unknown state

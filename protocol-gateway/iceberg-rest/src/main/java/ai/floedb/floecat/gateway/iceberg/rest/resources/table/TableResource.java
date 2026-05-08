@@ -147,11 +147,11 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
     String path = String.format("/v1/%s/namespaces/%s/tables/%s", prefix, namespace, table);
-    commitTrafficLogger.logRequest("POST", path, req);
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     Response response =
         tableCommitService.commit(
@@ -166,6 +166,7 @@ public class TableResource {
                 idempotencyKey,
                 null,
                 transactionId,
+                accessDelegationMode,
                 req,
                 tableSupport));
     commitTrafficLogger.logResponse("POST", path, response.getStatus(), response.getEntity());
@@ -178,9 +179,11 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       PlanRequests.Plan rawRequest) {
     TableRef tableContext = resourceResolver.table(prefix, namespace, table);
-    return tablePlanOrchestrationService.plan(tableContext, rawRequest, tableSupport);
+    return tablePlanOrchestrationService.plan(
+        tableContext, rawRequest, accessDelegationMode, tableSupport);
   }
 
   @Path("/tables/{table}/plan/{plan-id}")
@@ -190,8 +193,8 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
-    resourceResolver.table(prefix, namespace, table);
-    return tablePlanOrchestrationService.fetchPlan(planId);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
+    return tablePlanOrchestrationService.fetchPlan(tableContext, planId);
   }
 
   @Path("/tables/{table}/plan/{plan-id}")
@@ -201,8 +204,8 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
-    resourceResolver.table(prefix, namespace, table);
-    return tablePlanOrchestrationService.cancelPlan(planId);
+    TableRef tableContext = resourceResolver.table(prefix, namespace, table);
+    return tablePlanOrchestrationService.cancelPlan(tableContext, planId);
   }
 
   @Path("/tables/{table}/tasks")
@@ -227,7 +230,7 @@ public class TableResource {
       @PathParam("table") String table,
       @QueryParam("planId") String planId) {
     TableRef tableContext = resourceResolver.table(prefix, namespace, table);
-    return tableCredentialService.load(tableContext, planId, tableSupport);
+    return tableCredentialService.load(tableContext, planId);
   }
 
   @Path("/tables/{table}/metrics")

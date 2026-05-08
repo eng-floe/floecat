@@ -121,6 +121,14 @@ message GetTransactionResponse {
   Transaction transaction = 1;
 }
 
+message ReserveTransactionTableIdRequest {
+  string tx_id = 1;
+  string table_fq = 2;
+}
+message ReserveTransactionTableIdResponse {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+}
+
 message TransactionIntent {
   string tx_id = 1;
   string account_id = 2;
@@ -143,4 +151,6 @@ service Transactions {
   rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
   rpc AbortTransaction(AbortTransactionRequest) returns (AbortTransactionResponse);
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+  rpc ReserveTransactionTableId(ReserveTransactionTableIdRequest)
+      returns (ReserveTransactionTableIdResponse);
 }

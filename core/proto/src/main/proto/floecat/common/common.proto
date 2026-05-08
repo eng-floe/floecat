@@ -41,6 +41,7 @@ enum ResourceKind {
   RK_COLLATION = 13;
   RK_AGGREGATE = 14;
   RK_TRANSACTION = 15;
+  RK_STORAGE_AUTHORITY = 16;
 }
 
 message ResourceId {

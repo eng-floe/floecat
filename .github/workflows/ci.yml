@@ -175,8 +175,16 @@ jobs:
         include:
           - label: localstack
             mode: localstack
+            smoke_modes: localstack
+          - label: localstack-oidc
+            mode: localstack-oidc
+            smoke_modes: localstack-oidc
           - label: localstack-remote
             mode: localstack-remote
+            smoke_modes: localstack-remote
+          - label: localstack-oidc-remote
+            mode: localstack-oidc-remote
+            smoke_modes: localstack-oidc-remote
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-${{ matrix.mode }}
       cancel-in-progress: true
@@ -199,7 +207,7 @@ jobs:
           SMOKE_LOG="$DEBUG_DIR/docker-smoke-${{ matrix.mode }}.log"
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
-          COMPOSE_SMOKE_MODES=${{ matrix.mode }} \
+          COMPOSE_SMOKE_MODES=${{ matrix.smoke_modes }} \
           COMPOSE_SMOKE_DUCKDB_IMAGE=duckdb/duckdb:1.4.4 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs/${{ matrix.mode }}" \
           FLOECAT_REST_LOG_COMMIT_TRAFFIC=true \

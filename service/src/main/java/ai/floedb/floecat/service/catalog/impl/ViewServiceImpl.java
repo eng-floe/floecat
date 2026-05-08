@@ -46,6 +46,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -253,6 +254,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     throw GrpcErrors.invalidArgument(corr, VIEW_MISSING_SPEC, Map.of());
                   }
                   var spec = request.getSpec();
+                  PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), corr, "spec.properties");
 
                   if (!spec.hasCatalogId()) {
                     throw GrpcErrors.invalidArgument(corr, VIEW_MISSING_CATALOG_ID, Map.of());
@@ -418,6 +421,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var spec = request.getSpec();
                   var mask = normalizeMask(request.getUpdateMask());
+                  if (maskTargets(mask, "properties")) {
+                    PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        spec.getPropertiesMap(), corr, "spec.properties");
+                  }
 
                   var meta = viewRepo.metaFor(viewId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(

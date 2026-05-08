@@ -59,6 +59,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
@@ -919,6 +920,78 @@ class TransactionsServiceImplTest {
     assertTrue(error.getMessage().contains("connector_uri"));
   }
 
+  @Test
+  void reserveTransactionTableIdPersistsAndReusesReservedId() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+
+    inject(service, "txRepo", txRepo);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableFq = "cat.db.orders";
+    Transaction openTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    AtomicReference<Transaction> txnRef = new AtomicReference<>(openTxn);
+
+    when(txRepo.getById(accountId, txId)).thenAnswer(invocation -> Optional.of(txnRef.get()));
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(txRepo.update(any(Transaction.class), anyLong()))
+        .thenAnswer(
+            invocation -> {
+              txnRef.set(invocation.getArgument(0, Transaction.class));
+              return true;
+            });
+
+    ResourceId first =
+        invokeReserveTransactionTableId(
+            service, accountId, txId, tableFq, Timestamps.fromMillis(10));
+    ResourceId second =
+        invokeReserveTransactionTableId(
+            service, accountId, txId, tableFq, Timestamps.fromMillis(11));
+
+    assertFalse(first.getId().isBlank());
+    assertEquals(ResourceKind.RK_TABLE, first.getKind());
+    assertEquals(first, second);
+    verify(txRepo).update(any(Transaction.class), anyLong());
+  }
+
+  @Test
+  void reserveTransactionTableIdRejectsNonOpenTransactionWithoutReservation() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+
+    inject(service, "txRepo", txRepo);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    Transaction preparedTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_PREPARED)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(preparedTxn));
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                invokeReserveTransactionTableId(
+                    service, accountId, txId, "cat.db.orders", Timestamps.fromMillis(10)));
+
+    assertTrue(error.getMessage().contains("open transaction"));
+    verify(txRepo, never()).update(any(Transaction.class), anyLong());
+  }
+
   private static Transaction invokeCommitPrivate(
       TransactionsServiceImpl service,
       String accountId,
@@ -979,6 +1052,31 @@ class TransactionsServiceImplTest {
     m.setAccessible(true);
     try {
       return (Connector) m.invoke(service, accountId, txId, table, provisioning, null);
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof Exception ex) {
+        throw ex;
+      }
+      throw e;
+    }
+  }
+
+  private static ResourceId invokeReserveTransactionTableId(
+      TransactionsServiceImpl service,
+      String accountId,
+      String txId,
+      String tableFq,
+      com.google.protobuf.Timestamp now)
+      throws Exception {
+    Method m =
+        TransactionsServiceImpl.class.getDeclaredMethod(
+            "reserveTransactionTableId",
+            String.class,
+            String.class,
+            String.class,
+            com.google.protobuf.Timestamp.class);
+    m.setAccessible(true);
+    try {
+      return (ResourceId) m.invoke(service, accountId, txId, tableFq, now);
     } catch (InvocationTargetException e) {
       if (e.getCause() instanceof Exception ex) {
         throw ex;

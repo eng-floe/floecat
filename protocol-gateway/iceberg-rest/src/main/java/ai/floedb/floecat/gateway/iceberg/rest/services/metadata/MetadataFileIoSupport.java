@@ -16,8 +16,11 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
@@ -38,14 +41,22 @@ public class MetadataFileIoSupport {
 
   FileIO newMaterializationFileIo(Map<String, String> metadataProperties) {
     return FileIoFactory.createFileIo(
-        materializationIoProperties(metadataProperties), config, true);
+        materializationIoProperties(null, metadataProperties), config, true);
   }
 
-  Map<String, String> materializationIoProperties(Map<String, String> metadataProperties) {
-    Map<String, String> props = new LinkedHashMap<>();
-    if (tableGatewaySupport != null) {
-      props.putAll(tableGatewaySupport.defaultFileIoProperties());
-    }
+  FileIO newMaterializationFileIo(Table table, Map<String, String> metadataProperties) {
+    return FileIoFactory.createFileIo(
+        materializationIoProperties(table, metadataProperties), config, true);
+  }
+
+  Map<String, String> materializationIoProperties(
+      Table table, Map<String, String> metadataProperties) {
+    Map<String, String> props =
+        new LinkedHashMap<>(
+            tableGatewaySupport == null
+                ? Map.of()
+                : tableGatewaySupport.serverSideFileIoPropertiesForLocation(
+                    table, resolveMaterializationLocation(table, metadataProperties)));
     if (metadataProperties != null && !metadataProperties.isEmpty()) {
       metadataProperties.forEach(
           (key, value) -> {
@@ -55,6 +66,38 @@ public class MetadataFileIoSupport {
           });
     }
     return props;
+  }
+
+  private String resolveMaterializationLocation(
+      Table table, Map<String, String> metadataProperties) {
+    if (metadataProperties != null && !metadataProperties.isEmpty()) {
+      String metadataLocation = MetadataLocationUtil.metadataLocation(metadataProperties);
+      if (StorageLocationResolver.isStorageUri(metadataLocation)) {
+        return metadataLocation;
+      }
+      String explicitLocation =
+          StorageLocationResolver.resolveLocationPrefix(metadataProperties.get("location"));
+      if (explicitLocation != null) {
+        return explicitLocation;
+      }
+      String storageLocation =
+          StorageLocationResolver.resolveLocationPrefix(metadataProperties.get("storage_location"));
+      if (storageLocation != null) {
+        return storageLocation;
+      }
+      String deltaTableRoot =
+          StorageLocationResolver.resolveLocationPrefix(metadataProperties.get("delta.table-root"));
+      if (deltaTableRoot != null) {
+        return deltaTableRoot;
+      }
+      String externalLocation =
+          StorageLocationResolver.resolveLocationPrefix(
+              metadataProperties.get("external.location"));
+      if (externalLocation != null) {
+        return externalLocation;
+      }
+    }
+    return StorageLocationResolver.resolveLocationPrefix(table);
   }
 
   void closeQuietly(FileIO fileIO) {

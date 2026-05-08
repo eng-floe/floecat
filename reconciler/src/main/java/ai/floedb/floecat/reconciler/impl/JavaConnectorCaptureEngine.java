@@ -45,6 +45,7 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
 
   final JavaConnectorFileGroupCaptureAdapter adapter = new JavaConnectorFileGroupCaptureAdapter();
   @Inject CredentialResolver credentialResolver;
+  @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
 
   ConnectorOpener connectorOpener = ConnectorFactory::create;
 
@@ -95,21 +96,27 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
   private ConnectorConfig resolveCredentials(Connector connector) {
     ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
     AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
+    ConnectorConfig resolved;
     if (auth.hasCredentials()
         && auth.getCredentials().getCredentialCase()
             != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
-      return CredentialResolverSupport.apply(base, auth.getCredentials());
-    }
-    if (connector == null
+      resolved = CredentialResolverSupport.apply(base, auth.getCredentials());
+    } else if (connector == null
         || !connector.hasResourceId()
         || auth.getScheme().isBlank()
         || "none".equalsIgnoreCase(auth.getScheme())) {
-      return base;
+      resolved = base;
+    } else {
+      resolved =
+          credentialResolver
+              .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+              .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+              .orElse(base);
     }
-    return credentialResolver
-        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
-        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
-        .orElse(base);
+    if (serverSideStorageConfigResolver == null) {
+      return resolved;
+    }
+    return serverSideStorageConfigResolver.resolve(connector, resolved);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

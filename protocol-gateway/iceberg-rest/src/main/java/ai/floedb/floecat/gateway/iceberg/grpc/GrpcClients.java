@@ -29,6 +29,7 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -51,6 +52,7 @@ public class GrpcClients implements AutoCloseable {
   private final ConnectorsGrpc.ConnectorsBlockingStub connectors;
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
   private final TransactionsGrpc.TransactionsBlockingStub transactions;
+  private final StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities;
 
   public GrpcClients(IcebergGatewayConfig config) {
     ManagedChannelBuilder<?> builder = ManagedChannelBuilder.forTarget(config.upstreamTarget());
@@ -71,6 +73,7 @@ public class GrpcClients implements AutoCloseable {
     this.connectors = ConnectorsGrpc.newBlockingStub(channel);
     this.reconcileControl = ReconcileControlGrpc.newBlockingStub(channel);
     this.transactions = TransactionsGrpc.newBlockingStub(channel);
+    this.storageAuthorities = StorageAuthoritiesGrpc.newBlockingStub(channel);
   }
 
   public CatalogServiceGrpc.CatalogServiceBlockingStub catalog() {
@@ -123,6 +126,10 @@ public class GrpcClients implements AutoCloseable {
 
   public TransactionsGrpc.TransactionsBlockingStub transactions() {
     return transactions;
+  }
+
+  public StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities() {
+    return storageAuthorities;
   }
 
   @PreDestroy

@@ -62,7 +62,8 @@ public class StageCommitProcessor {
       String accountId,
       List<String> namespacePath,
       String tableName,
-      String stageId) {
+      String stageId,
+      String accessDelegationMode) {
     if (accountId == null || accountId.isBlank()) {
       throw StageCommitException.validation("account context is required");
     }
@@ -127,7 +128,8 @@ public class StageCommitProcessor {
               .getTable(GetTableRequest.newBuilder().setTableId(createdId).build())
               .getTable();
     }
-    LoadTableResultDto loadResult = toLoadResult(tableName, entry, tableRecord);
+    LoadTableResultDto loadResult =
+        toLoadResult(tableName, entry, tableRecord, accessDelegationMode);
     LOG.infof(
         "Stage commit load result stageId=%s metadataLocation=%s tableId=%s",
         stageId,
@@ -140,10 +142,11 @@ public class StageCommitProcessor {
   }
 
   private LoadTableResultDto toLoadResult(
-      String tableName, StagedTableEntry entry, Table tableRecord) {
+      String tableName, StagedTableEntry entry, Table tableRecord, String accessDelegationMode) {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
-    Map<String, String> tableConfig = tableSupport.defaultTableConfig();
-    List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
+    Map<String, String> tableConfig = tableSupport.defaultTableConfig(tableRecord);
+    List<StorageCredentialDto> credentials =
+        tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     List<Snapshot> snapshots = loadSnapshots(tableRecord.getResourceId());
     if (metadata == null) {
       return TableResponseMapper.toLoadResultFromCreate(

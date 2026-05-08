@@ -33,18 +33,21 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorRespo
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.jboss.logging.Logger;
 
@@ -58,7 +61,6 @@ public class TableCreateSupport {
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
-  @Inject ObjectMapper mapper;
 
   TableRequests.Create applyDefaultLocationIfMissing(
       NamespaceRef namespaceContext, String tableName, TableRequests.Create request) {
@@ -95,11 +97,14 @@ public class TableCreateSupport {
     }
     if (request.location() == null || request.location().isBlank()) {
       LOG.warnf(
-          "Stage-create request missing location prefix=%s namespace=%s table=%s payload=%s",
-          namespaceContext.prefix(),
+          "Stage-create request missing location namespace=%s table=%s stageId=%s"
+              + " locationPresent=%s propertyKeyCount=%d propertyKeys=%s",
           namespaceContext.namespacePath(),
           tableName,
-          safeSerializeCreate(request));
+          resolveStageId(transactionId, idempotencyKey),
+          false,
+          propertyKeyCount(request),
+          safePropertyKeys(request));
     }
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
@@ -108,14 +113,14 @@ public class TableCreateSupport {
     String stageId = resolveStageId(transactionId, idempotencyKey);
     try {
       LOG.infof(
-          "Stage-create request payload prefix=%s namespace=%s table=%s stageId=%s location=%s"
-              + " properties=%s",
-          namespaceContext.prefix(),
+          "Stage-create request namespace=%s table=%s stageId=%s locationPresent=%s"
+              + " propertyKeyCount=%d propertyKeys=%s",
           namespaceContext.namespacePath(),
           tableName,
           stageId,
-          request.location(),
-          request.properties());
+          request.location() != null && !request.location().isBlank(),
+          propertyKeyCount(request),
+          safePropertyKeys(request));
       TableSpec spec =
           tableSupport
               .buildCreateSpec(
@@ -132,7 +137,7 @@ public class TableCreateSupport {
                       stageId),
                   namespaceContext.catalogId(),
                   namespaceContext.namespaceId(),
-                  request,
+                  sanitizeStageRequest(request),
                   spec,
                   STAGE_CREATE_REQUIREMENTS,
                   StageState.STAGED,
@@ -148,17 +153,16 @@ public class TableCreateSupport {
           tableName,
           stored.key().stageId(),
           transactionId);
-      Table stubTable =
-          Table.newBuilder()
-              .setCatalogId(namespaceContext.catalogId())
-              .setNamespaceId(namespaceContext.namespaceId())
-              .setDisplayName(tableName)
-              .build();
+      Table stubTable = stageCreateTable(spec);
       List<StorageCredentialDto> credentials =
-          tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+          tableSupport.credentialsForAccessDelegation(stubTable, accessDelegationMode);
       LoadTableResultDto loadResult =
           TableResponseMapper.toLoadResultFromCreate(
-              tableName, stubTable, request, tableSupport.defaultTableConfig(), credentials);
+              tableName,
+              stubTable,
+              request,
+              tableSupport.defaultTableConfig(stubTable),
+              credentials);
       LOG.infof(
           "Stage-create metadata resolved stageId=%s location=%s",
           stored.key().stageId(), loadResult.metadataLocation());
@@ -169,6 +173,22 @@ public class TableCreateSupport {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
+  }
+
+  private static Table stageCreateTable(TableSpec spec) {
+    if (spec == null) {
+      return Table.getDefaultInstance();
+    }
+    Table.Builder table =
+        Table.newBuilder()
+            .setCatalogId(spec.getCatalogId())
+            .setNamespaceId(spec.getNamespaceId())
+            .setDisplayName(spec.getDisplayName())
+            .putAllProperties(spec.getPropertiesMap());
+    if (spec.hasUpstream()) {
+      table.setUpstream(spec.getUpstream());
+    }
+    return table.build();
   }
 
   private String resolveStageId(String transactionId, String idempotencyKey) {
@@ -251,14 +271,63 @@ public class TableCreateSupport {
     return normalized + "/" + suffix;
   }
 
-  private String safeSerializeCreate(TableRequests.Create request) {
+  private static int propertyKeyCount(TableRequests.Create request) {
+    return request == null || request.properties() == null ? 0 : request.properties().size();
+  }
+
+  private static Set<String> safePropertyKeys(TableRequests.Create request) {
+    Map<String, String> properties = sanitizedStageProperties(request);
+    if (properties.isEmpty()) {
+      return Set.of();
+    }
+    Set<String> keys = new LinkedHashSet<>(properties.keySet());
+    return keys.isEmpty() ? Set.of() : Set.copyOf(keys);
+  }
+
+  private static TableRequests.Create sanitizeStageRequest(TableRequests.Create request) {
     if (request == null) {
-      return "<null>";
+      return null;
     }
-    try {
-      return mapper.writeValueAsString(request);
-    } catch (JsonProcessingException e) {
-      return String.valueOf(request);
+    return new TableRequests.Create(
+        request.name(),
+        request.schema(),
+        request.location(),
+        sanitizedStageProperties(request),
+        request.partitionSpec(),
+        request.writeOrder(),
+        request.stageCreate());
+  }
+
+  private static Map<String, String> sanitizedStageProperties(TableRequests.Create request) {
+    if (request == null || request.properties() == null || request.properties().isEmpty()) {
+      return Map.of();
     }
+    java.util.LinkedHashMap<String, String> sanitized = new java.util.LinkedHashMap<>();
+    request
+        .properties()
+        .forEach(
+            (key, value) -> {
+              if (key == null || isSensitivePropertyKey(key)) {
+                return;
+              }
+              sanitized.put(key, value);
+            });
+    return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
+  }
+
+  private static boolean isSensitivePropertyKey(String key) {
+    String normalized = key == null ? "" : key.trim().toLowerCase(Locale.ROOT);
+    if (normalized.isEmpty()) {
+      return true;
+    }
+    if (FileIoFactory.isFileIoProperty(normalized)) {
+      return true;
+    }
+    return normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized.contains("password")
+        || normalized.contains("credential")
+        || normalized.contains("access-key")
+        || normalized.contains("secret-key");
   }
 }

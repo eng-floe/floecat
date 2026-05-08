@@ -1,0 +1,159 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.storage;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.storage.rpc";
+
+import "floecat/common/common.proto";
+import "floecat/connector/connector.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+
+message StorageAuthority {
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  optional string description = 3;
+  bool enabled = 4;
+  string type = 5;
+  string location_prefix = 6;
+  optional string region = 7;
+  optional string endpoint = 8;
+  optional bool path_style_access = 9;
+  optional string assume_role_arn = 10;
+  optional string assume_role_external_id = 11;
+  optional string assume_role_session_name = 12;
+  optional int32 duration_seconds = 13;
+  google.protobuf.Timestamp created_at = 40;
+  google.protobuf.Timestamp updated_at = 41;
+}
+
+message StorageAuthoritySpec {
+  string display_name = 1;
+  optional string description = 2;
+  bool enabled = 3;
+  optional string type = 4;
+  string location_prefix = 5;
+  optional string region = 6;
+  optional string endpoint = 7;
+  optional bool path_style_access = 8;
+  optional string assume_role_arn = 9;
+  optional string assume_role_external_id = 10;
+  optional string assume_role_session_name = 11;
+  optional int32 duration_seconds = 12;
+  ai.floedb.floecat.connector.AuthCredentials credentials = 20;
+}
+
+message ListStorageAuthoritiesRequest {
+  ai.floedb.floecat.common.PageRequest page = 1;
+}
+
+message ListStorageAuthoritiesResponse {
+  repeated StorageAuthority authorities = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message GetStorageAuthorityRequest {
+  ai.floedb.floecat.common.ResourceId authority_id = 1;
+}
+
+message GetStorageAuthorityResponse {
+  StorageAuthority authority = 1;
+}
+
+message CreateStorageAuthorityRequest {
+  StorageAuthoritySpec spec = 1;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
+}
+
+message CreateStorageAuthorityResponse {
+  StorageAuthority authority = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message UpdateStorageAuthorityRequest {
+  ai.floedb.floecat.common.ResourceId authority_id = 1;
+  StorageAuthoritySpec spec = 2;
+  ai.floedb.floecat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
+}
+
+message UpdateStorageAuthorityResponse {
+  StorageAuthority authority = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message DeleteStorageAuthorityRequest {
+  ai.floedb.floecat.common.ResourceId authority_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 2;
+}
+
+message DeleteStorageAuthorityResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+}
+
+message VendedStorageCredential {
+  string prefix = 1;
+  map<string,string> config = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ResolveStorageAuthorityRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  optional string location_prefix = 2;
+  bool include_credentials = 3;
+  bool required = 4;
+  bool server_side = 5;
+}
+
+message ResolveStorageAuthorityForLocationRequest {
+  optional string location_prefix = 1;
+  bool include_credentials = 2;
+  bool required = 3;
+}
+
+message ResolveStorageAuthorityForAccountLocationRequest {
+  string account_id = 1;
+  optional string location_prefix = 2;
+  bool include_credentials = 3;
+  bool required = 4;
+}
+
+message ResolveStorageAuthorityResponse {
+  optional ai.floedb.floecat.common.ResourceId authority_id = 1;
+  map<string,string> client_safe_config = 2;
+  repeated VendedStorageCredential storage_credentials = 3;
+}
+
+service StorageAuthorities {
+  rpc ListStorageAuthorities(ListStorageAuthoritiesRequest)
+      returns (ListStorageAuthoritiesResponse);
+  rpc GetStorageAuthority(GetStorageAuthorityRequest)
+      returns (GetStorageAuthorityResponse);
+  rpc CreateStorageAuthority(CreateStorageAuthorityRequest)
+      returns (CreateStorageAuthorityResponse);
+  rpc UpdateStorageAuthority(UpdateStorageAuthorityRequest)
+      returns (UpdateStorageAuthorityResponse);
+  rpc DeleteStorageAuthority(DeleteStorageAuthorityRequest)
+      returns (DeleteStorageAuthorityResponse);
+
+  rpc ResolveStorageAuthority(ResolveStorageAuthorityRequest)
+      returns (ResolveStorageAuthorityResponse);
+  rpc ResolveStorageAuthorityForLocation(ResolveStorageAuthorityForLocationRequest)
+      returns (ResolveStorageAuthorityResponse);
+  rpc ResolveStorageAuthorityForAccountLocation(ResolveStorageAuthorityForAccountLocationRequest)
+      returns (ResolveStorageAuthorityResponse);
+}

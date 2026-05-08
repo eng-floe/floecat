@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -88,7 +89,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       Map.of("floecat.kv", "memory", "floecat.blob", "memory");
   private static final String BUILD_PROPS_FILE = ".real-service-build.properties";
   private static final String[] BUILD_PROP_NAMES = {
-    "floecat.kv", "floecat.blob", "floecat.kv.auto-create"
+    "quarkus.profile", "floecat.kv", "floecat.blob", "floecat.kv.auto-create"
   };
 
   @Override
@@ -172,11 +173,6 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     Map<String, String> testConfig = new LinkedHashMap<>();
     testConfig.put("floecat.gateway.upstream-target", LOOPBACK_HOST + ":" + httpPort);
     testConfig.put("floecat.gateway.upstream-plaintext", "true");
-    String configuredEndpoint = System.getProperty("floecat.fixture.aws.s3.endpoint");
-    if (configuredEndpoint == null || configuredEndpoint.isBlank()) {
-      configuredEndpoint = "http://localhost:4566";
-    }
-    testConfig.put("floecat.connector.integration.storage-credential.properties.s3.endpoint", configuredEndpoint);
     String connectorIntegration =
         System.getProperty("floecat.connector.integration.enabled");
     if (connectorIntegration != null && !connectorIntegration.isBlank()) {
@@ -350,7 +346,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
   private static void ensureServiceBuilt() {
     Map<String, String> desiredProps = collectBuildProperties();
-    if (Files.exists(serviceRunnerJar()) && buildPropsMatch(desiredProps)) {
+    if (!requiresServiceRebuild(serviceRunnerJar(), desiredProps)) {
       return;
     }
     List<String> command = new ArrayList<>();
@@ -360,6 +356,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     command.add("-am");
     command.add("package");
     command.add("-DskipTests");
+    command.add("-Dquarkus.profile=test");
     for (var entry : desiredProps.entrySet()) {
       command.add("-D" + entry.getKey() + "=" + entry.getValue());
     }
@@ -379,6 +376,62 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       Thread.currentThread().interrupt();
       throw new RuntimeException("Unable to build service module", e);
     }
+  }
+
+  private static boolean requiresServiceRebuild(Path runnerJar, Map<String, String> desiredProps) {
+    if (!Files.exists(runnerJar)) {
+      return true;
+    }
+    if (!buildPropsMatch(desiredProps)) {
+      return true;
+    }
+    try {
+      FileTime runnerModified = Files.getLastModifiedTime(runnerJar);
+      for (Path input : serviceBuildInputs()) {
+        if (latestModifiedTime(input).compareTo(runnerModified) > 0) {
+          System.out.printf(
+              "RealServiceTestResource rebuilding service runner because %s is newer than %s%n",
+              input, runnerJar);
+          return true;
+        }
+      }
+      return false;
+    } catch (IOException e) {
+      System.err.printf(
+          "RealServiceTestResource failed to inspect service build inputs: %s%n", e.getMessage());
+      return true;
+    }
+  }
+
+  private static List<Path> serviceBuildInputs() {
+    Path root = repoRoot();
+    return List.of(
+        root.resolve("service").resolve("pom.xml"),
+        root.resolve("service").resolve("src"),
+        root.resolve("core").resolve("proto").resolve("pom.xml"),
+        root.resolve("core").resolve("proto").resolve("src").resolve("main").resolve("proto"));
+  }
+
+  private static FileTime latestModifiedTime(Path path) throws IOException {
+    if (!Files.exists(path)) {
+      return FileTime.fromMillis(0);
+    }
+    if (!Files.isDirectory(path)) {
+      return Files.getLastModifiedTime(path);
+    }
+    FileTime latest = Files.getLastModifiedTime(path);
+    try (var stream = Files.walk(path)) {
+      for (Path candidate : (Iterable<Path>) stream::iterator) {
+        if (!Files.isRegularFile(candidate)) {
+          continue;
+        }
+        FileTime candidateTime = Files.getLastModifiedTime(candidate);
+        if (candidateTime.compareTo(latest) > 0) {
+          latest = candidateTime;
+        }
+      }
+    }
+    return latest;
   }
 
   private void waitForPortOpen(Duration timeout) {
@@ -524,7 +577,11 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
   private static Map<String, String> collectBuildProperties() {
     Map<String, String> props = new LinkedHashMap<>();
+    props.put("quarkus.profile", "test");
     for (String name : BUILD_PROP_NAMES) {
+      if ("quarkus.profile".equals(name)) {
+        continue;
+      }
       String value = System.getProperty(name);
       if (value != null && !value.isBlank()) {
         props.put(name, value);

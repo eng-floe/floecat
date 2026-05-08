@@ -81,7 +81,7 @@ builtins/
     …
 ```
 
-The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger` (which now merges builder→builder to avoid extra allocations). The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
+The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger`, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
 
 The loader always applies `floecat_internal` first, then overlays the engine-specific catalog (for instance, `floedb`), and finally allows scanner-provided overlays from `SystemObjectScannerProvider` implementations when the request carried engine headers. Overrides happen deterministically because each stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
 
@@ -92,11 +92,11 @@ The loader always applies `floecat_internal` first, then overlays the engine-spe
 3. When engine headers are present and the normalized kind is not `floecat_internal`, each `SystemObjectScannerProvider` that supports that kind can overlay definitions for the specific `(engineKind, engineVersion)` tuple.
 4. Within each stage, later fragments override earlier ones (controlled by `_index.txt` ordering); identical canonical names always respect the last writer.
 
-When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal`, so the overlay steps beyond the base layer are skipped and only the shared relations remain available.
+When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal`, so only the shared base relations are loaded.
 
 ### System table backend contract
 
-`SystemTableDef` now records a `TableBackendKind` (proto `TABLE_BACKEND_KIND_*`) plus backend-specific metadata:  
+`SystemTableDef` records a `TableBackendKind` (proto `TABLE_BACKEND_KIND_*`) plus backend-specific metadata:  
 | Backend | Description | Required field | Scanner policy |
 | --- | --- | --- | --- |
 | `FLOECAT` | Rows produced by Floecat scanners (information_schema, system tables, plugin metadata tables). | `scannerId` (non-blank) | `SystemScannerResolver` accepts only `FloeCatSystemTableNode` instances, so only FLOECAT tables can be scanned through `SystemScannerResolver`. |
@@ -185,7 +185,7 @@ public interface SystemCatalogProvider {
 
 ### EngineContext & header semantics
 
-Every `SystemCatalogProvider` receives an `EngineContext` (engine kind + version) derived from request headers. `EngineContext.effectiveEngineKind()` folds missing or blank headers to `floecat_internal` (which is also the registered `FloeCatInternalProvider`), so the base catalog is always available even when no headers are sent. When headers are present the normalized engine kind identifies the plugin whose catalog is cached in `SystemDefinitionRegistry`; the normalized version is used later by `SystemNodeRegistry` for version filtering. `SystemNodeRegistry` seeds every catalog build with the floecat_internal definitions, overlays the plugin snapshot (if one exists), and only applies `SystemObjectScannerProvider` overlays when `EngineContext.enginePluginOverlaysEnabled()` is true (i.e., headers were present and the normalized kind is not `floecat_internal`). Headers that mention an unknown engine kind still fall back to `floecat_internal`: the provider returns the fallback catalog, `SystemDefinitionRegistry` caches it under the requested kind, and `SystemNodeRegistry` treats it as `floecat_internal` so provider overlays are skipped while `information_schema` remains visible.
+Every `SystemCatalogProvider` receives an `EngineContext` (engine kind + version) derived from request headers. `EngineContext.effectiveEngineKind()` folds missing or blank headers to `floecat_internal` (which is also the registered `FloeCatInternalProvider`), so the base catalog is always available even when no headers are sent. When headers are present the normalized engine kind identifies the plugin whose catalog is cached in `SystemDefinitionRegistry`; the normalized version is used later by `SystemNodeRegistry` for version filtering. `SystemNodeRegistry` seeds every catalog build with the floecat_internal definitions, overlays the plugin snapshot when one exists, and only applies `SystemObjectScannerProvider` overlays when `EngineContext.enginePluginOverlaysEnabled()` is true (that is, headers were present and the normalized kind is not `floecat_internal`). Unknown engine kinds resolve to `floecat_internal`, so the shared base catalog remains available and provider overlays are not applied.
 
 ### Caching Architecture
 
@@ -293,7 +293,7 @@ com.example.MyEngineCatalogExtension
 All caches are case-normalized and thread-safe:
 * `SystemDefinitionRegistry` keeps one `SystemEngineCatalog` per engine kind in a `ConcurrentHashMap`. Loading once per kind is enough because `SystemEngineCatalog` references a parsed `SystemCatalogData` snapshot that contains every supported version.
 * `SystemNodeRegistry` caches `BuiltinNodes` per `VersionKey(engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered `SystemCatalogData`.  
-  `SystemNodeRegistry.resourceId` now derives a deterministic UUID (engine kind + resource kind + object signature) instead of concatenating readable `engine:suffix` strings, so every owner of a system node should call the helper rather than inventing their own IDs.
+  `SystemNodeRegistry.resourceId` derives a deterministic UUID (engine kind + resource kind + object signature) instead of concatenating readable `engine:suffix` strings, so every owner of a system node should call the helper rather than inventing their own IDs.
 * `SystemGraph` keeps a synchronized, access-ordered `LinkedHashMap` of `GraphSnapshot`s per version. Each snapshot already groups namespace relations and indexes every `GraphNode` so that `_system` list/lookups take constant time.
 
 ## Version Matching

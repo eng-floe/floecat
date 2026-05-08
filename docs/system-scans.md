@@ -25,8 +25,8 @@ Regardless of transport:
 3. Build an `ArrowScanPlan` and stream batches through `ArrowBatchSerializer`.
 4. Enforce allocator limits and close native resources on completion/cancel/error.
 
-The row-compatibility path remains available for gRPC callers that request `ROWS`, but Arrow is the
-default/primary path.
+gRPC callers can request either `ARROW_IPC` or `ROWS`. Arrow is the primary transport format, and
+`ROWS` is a row-stream response mode on the same execution pipeline.
 
 Scanner resolution is shared across transports and uses the same engine-context-aware path. When an
 engine-specific table ID is presented, resolver translation (`translateToDefault`) can remap to the

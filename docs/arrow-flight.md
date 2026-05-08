@@ -162,7 +162,7 @@ The configured `floecat.flight.advertised-host` is published in catalog bundles 
 `FlightEndpointRef`. `floecat.flight.advertised-port` controls the advertised external port
 separately from the actual shared gRPC listener. In non-dev/test profiles, avoid loopback values
 (`localhost` / `127.0.0.1`) for distributed clients.
-Flight now runs on Quarkus's shared gRPC server instead of a separate standalone listener, but the
+Flight runs on Quarkus's shared gRPC server instead of a separate standalone listener, but the
 advertised host/port can still be overridden to match an ingress or load balancer.
 
 ## Scanner and engine-context resolution

@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
@@ -57,6 +58,7 @@ import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -74,15 +76,35 @@ class GrpcRemoteReconcileExecutorClient
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
-  private final Optional<String> headerName;
-  private final Optional<String> staticToken;
+  private final Optional<String> authorizationHeaderName;
+  private final String authMode;
+  private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
+
+  @Inject
+  GrpcRemoteReconcileExecutorClient(
+      @ConfigProperty(name = "floecat.interceptor.authorization.header")
+          Optional<String> authorizationHeaderName,
+      @ConfigProperty(name = "floecat.auth.mode", defaultValue = "dev") String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(authorizationHeaderName, authMode, reconcileWorkerAuthProvider, true);
+  }
 
   GrpcRemoteReconcileExecutorClient(
-      @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token")
-          Optional<String> staticToken) {
-    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
+      String authorizationHeaderName,
+      String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(Optional.ofNullable(authorizationHeaderName), authMode, reconcileWorkerAuthProvider, true);
+  }
+
+  private GrpcRemoteReconcileExecutorClient(
+      Optional<String> authorizationHeaderName,
+      String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      boolean ignored) {
+    this.authorizationHeaderName =
+        authorizationHeaderName.map(String::trim).filter(value -> !value.isBlank());
+    this.authMode = authMode == null ? "dev" : authMode.trim().toLowerCase(java.util.Locale.ROOT);
+    this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
   }
 
   @GrpcClient("floecat")
@@ -1041,25 +1063,33 @@ class GrpcRemoteReconcileExecutorClient
         MetadataUtils.newAttachHeadersInterceptor(metadata(correlationId)));
   }
 
-  private Metadata metadata(String correlationId) {
+  Metadata metadata(String correlationId) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, correlationId == null ? "" : correlationId);
-    staticToken.ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
+    attachWorkerAuthorization(metadata);
     return metadata;
   }
 
-  private Metadata.Key<String> authHeaderKey() {
-    if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
-      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
+  private void attachWorkerAuthorization(Metadata metadata) {
+    if (authorizationHeaderName.isEmpty()) {
+      return;
     }
-    return AUTHORIZATION;
+    Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader();
+    if (authorization.isPresent()) {
+      metadata.put(headerKey(authorizationHeaderName.orElseThrow()), authorization.orElseThrow());
+      return;
+    }
+    if (!"dev".equals(authMode)) {
+      throw new IllegalStateException(
+          "Reconcile worker authorization header is required but no worker auth configuration is available");
+    }
   }
 
-  private static String withBearerPrefix(String token) {
-    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
-      return token;
+  private static Metadata.Key<String> headerKey(String headerName) {
+    if ("authorization".equalsIgnoreCase(headerName)) {
+      return AUTHORIZATION;
     }
-    return "Bearer " + token;
+    return Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
   }
 
   private static String correlationId(RemoteLeasedJob lease) {

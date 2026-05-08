@@ -124,6 +124,9 @@ public class SeedRunner {
   @ConfigProperty(name = "floecat.seed.mode", defaultValue = "iceberg")
   String seedMode;
 
+  @ConfigProperty(name = "floecat.seed.sync.enabled", defaultValue = "true")
+  boolean seedSyncEnabled;
+
   @ConfigProperty(name = "floecat.seed.oidc.token")
   java.util.Optional<String> seedOidcToken;
 
@@ -714,6 +717,11 @@ public class SeedRunner {
       ResourceId connectorId,
       String tableName,
       List<String> destinationNamespace) {
+    if (!seedSyncEnabled) {
+      LOG.infov(
+          "Skipping seed sync for fixture table {0} (floecat.seed.sync.enabled=false)", tableName);
+      return;
+    }
     var namespace =
         namespaces
             .getByPath(accountId.getId(), catalogId.getId(), destinationNamespace)

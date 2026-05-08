@@ -50,6 +50,7 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-smoke          # sequential docker smoke (default: localstack + localstack-oidc)
 #   COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke
+#   COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -240,14 +241,7 @@ FIXTURE_LOCALSTACK_PROPS := \
 	$(LOCALSTACK_FIXTURE_AWS_PROPS)
 
 REST_LOCALSTACK_IO_PROPS := \
-	-Dfloecat.connector.integration.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO \
-	-Dfloecat.connector.integration.storage-credential.scope=* \
-	-Dfloecat.connector.integration.storage-credential.properties.type=s3 \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.region=$(LOCALSTACK_REGION) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.path-style-access=true
+	-Dfloecat.connector.integration.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO
 
 CATALOG_REAL_AWS_PROPS := \
 	-Dfloecat.kv=dynamodb \
@@ -556,7 +550,7 @@ run-rest:
 
 .PHONY: run-rest-localstack
 run-rest-localstack: localstack-up $(PROTO_JAR)
-	@echo "==> [DEV] quarkus:dev REST gateway (LocalStack-style storage credentials)"
+	@echo "==> [DEV] quarkus:dev REST gateway (LocalStack metadata FileIO only; storage authorities must be created through Floecat)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
 	  $(REST_LOCALSTACK_IO_PROPS) \

@@ -20,12 +20,16 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +42,8 @@ public class ConnectorProvisioningService {
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
   private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
   private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
+
+  @Inject GrpcServiceFacade grpcClient;
 
   public record ProvisionResult(
       ai.floedb.floecat.catalog.rpc.Table table,
@@ -57,8 +63,7 @@ public class ConnectorProvisioningService {
     String tableLocation = tableLocation(tableSupport, table);
     ResourceId existing = resolveConnectorId(table);
     if (existing != null) {
-      var existingConnector = tableSupport.getConnector(existing);
-      if (existingConnector.isEmpty()) {
+      if (!connectorExists(existing)) {
         LOG.warnf(
             "Connector %s referenced by table %s was not found", existing.getId(), tableId.getId());
         return new ProvisionResult(
@@ -168,6 +173,20 @@ public class ConnectorProvisioningService {
     return null;
   }
 
+  private boolean connectorExists(ResourceId connectorId) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return false;
+    }
+    try {
+      var response =
+          grpcClient.getConnector(
+              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      return response != null && response.hasConnector();
+    } catch (StatusRuntimeException e) {
+      return false;
+    }
+  }
+
   private String displayName(
       String prefix,
       List<String> namespacePath,
@@ -194,7 +213,7 @@ public class ConnectorProvisioningService {
       properties.putAll(template.properties());
     }
     if (tableSupport != null) {
-      properties.putAll(tableSupport.defaultFileIoProperties());
+      properties.putAll(tableSupport.defaultFileIoProperties(table));
     }
     if (table != null && !table.getPropertiesMap().isEmpty()) {
       table

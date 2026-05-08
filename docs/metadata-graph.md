@@ -174,7 +174,7 @@ consistent NameRef → ResourceId translations without depending on a secondary 
 ### Fully Qualified (ResolveFQ*) Semantics
 `resolveTables/resolveViews` mirror the `ResolveFQ*` RPCs. The helpers accept either a list selector
 or a namespace prefix, apply input validation, paginate using Directory-compatible tokens, and
-return canonical `NameRef` + `ResourceId` pairs. DirectoryService now delegates to these helpers so
+return canonical `NameRef` + `ResourceId` pairs. DirectoryService delegates to these helpers so
 the graph defines the single source of truth for list/prefix resolution.
 
 ## Usage Guidelines
@@ -189,7 +189,7 @@ the graph defines the single source of truth for list/prefix resolution.
   and versioned so planners/executors can safely down-level or up-level between releases.
 
 ## Query Catalog Service
-`UserObjectsService.GetUserObjects` now streams `UserObjectsBundleChunk`s directly from the metadata
+`UserObjectsService.GetUserObjects` streams `UserObjectsBundleChunk`s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same `QueryContext` as the other query RPCs and relies on `CatalogOverlay.resolve`,

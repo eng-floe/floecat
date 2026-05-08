@@ -25,7 +25,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 
@@ -38,8 +37,11 @@ public class ViewMetadataFileSupport {
   public ViewMetadataView loadMetadata(String metadataLocation) {
     FileIO fileIO = null;
     try {
-      Map<String, String> ioProps = tableGatewaySupport.defaultFileIoProperties();
-      fileIO = FileIoFactory.createFileIo(ioProps, config, true);
+      fileIO =
+          FileIoFactory.createFileIo(
+              tableGatewaySupport.serverSideFileIoPropertiesForLocation(metadataLocation),
+              config,
+              true);
       InputFile input = fileIO.newInputFile(metadataLocation);
       try (InputStream stream = input.newStream()) {
         String payload = new String(stream.readAllBytes(), StandardCharsets.UTF_8);

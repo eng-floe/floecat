@@ -114,7 +114,7 @@ engine release.
   `failure.details.reason` preserving the distinction.
   For CHECK masking to work correctly, connector constraint payloads should populate
   `ConstraintDefinition.columns` with referenced local column IDs.
-- **FOREIGN KEY metadata model** – `ConstraintDefinition` now carries ANSI-style FK behavior
+- **FOREIGN KEY metadata model** – `ConstraintDefinition` carries ANSI-style FK behavior
   fields (`referenced_constraint_name`, `match_option`, `update_rule`, `delete_rule`) so
   `information_schema.referential_constraints` can be populated without connector-specific
   interpretation. Writers may omit these fields; scanners default unspecified rules to
@@ -124,7 +124,7 @@ engine release.
   when retrying.
 - **Query Lifecycle** – `QueryDescriptor.query_status` moves through `SUBMITTED → COMPLETED/FAILED`
   depending on connector planning success. Lease expirations are surfaced via `expires_at`.
-- **AuthConfig** – Connector auth now carries structured `credentials` (for example `bearer`, `cli`,
+- **AuthConfig** – Connector auth carries structured `credentials` (for example `bearer`, `cli`,
   `client`, `token-exchange-*`) plus free-form properties; the service resolves secrets and exchanges
   before connectors consume them.
 
@@ -140,7 +140,7 @@ engine release.
    `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
    `EndQuery` once execution is complete.
 
-   * BeginQuery now allows clients to provide an optional `query_id` (duplicates are rejected) and
+   * BeginQuery allows clients to provide an optional `query_id` (duplicates are rejected) and
      a list of `common.QueryInput` records so the lifecycle service can pin snapshots and expansions
      at creation time for deterministic replay. Schema resolution and planning still occur in the
      downstream services.

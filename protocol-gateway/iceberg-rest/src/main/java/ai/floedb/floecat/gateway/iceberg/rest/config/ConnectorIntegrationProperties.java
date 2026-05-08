@@ -18,51 +18,25 @@ package ai.floedb.floecat.gateway.iceberg.rest.config;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.Predicate;
 
 public final class ConnectorIntegrationProperties {
   private ConnectorIntegrationProperties() {}
 
-  public static Map<String, String> credentialProperties(ConnectorIntegrationConfig config) {
-    if (config == null) {
-      return Map.of();
-    }
-    LinkedHashMap<String, String> props = new LinkedHashMap<>();
-    config
-        .storageCredential()
-        .ifPresent(
-            credential ->
-                credential
-                    .properties()
-                    .forEach(
-                        (key, value) -> {
-                          if (isUsableValue(value) && key != null && !key.isBlank()) {
-                            props.put(key, value.trim());
-                          }
-                        }));
-    return props.isEmpty() ? Map.of() : Map.copyOf(props);
-  }
-
-  public static Optional<String> credentialScope(ConnectorIntegrationConfig config) {
-    if (config == null) {
-      return Optional.empty();
-    }
-    return config
-        .storageCredential()
-        .flatMap(ConnectorIntegrationConfig.StorageCredentialConfig::scope);
-  }
-
-  public static Map<String, String> defaultTableConfig(ConnectorIntegrationConfig config) {
+  public static Map<String, String> defaultTableConfig(
+      ConnectorIntegrationConfig config, StorageAwsConfig storageAwsConfig) {
     LinkedHashMap<String, String> computed = new LinkedHashMap<>();
     if (config == null) {
-      return Map.of();
+      return storageConfig(storageAwsConfig);
+    }
+    Map<String, String> storageCredentialDefaults = config.storageCredentialProperties();
+    if (storageCredentialDefaults != null && !storageCredentialDefaults.isEmpty()) {
+      computed.putAll(clientSafeStorageConfig(storageCredentialDefaults));
     }
     config.metadataFileIo().ifPresent(ioImpl -> computed.putIfAbsent("io-impl", ioImpl));
     config
         .metadataFileIoRoot()
         .ifPresent(root -> computed.putIfAbsent("fs.floecat.test-root", root));
-    credentialProperties(config).forEach((key, value) -> addClientSafeConfig(computed, key, value));
     config
         .defaultRegion()
         .filter(region -> region != null && !region.isBlank())
@@ -72,20 +46,16 @@ public final class ConnectorIntegrationProperties {
               computed.putIfAbsent("region", region);
               computed.putIfAbsent("client.region", region);
             });
+    storageConfig(storageAwsConfig).forEach(computed::put);
     return computed.isEmpty() ? Map.of() : Map.copyOf(computed);
   }
 
   public static Map<String, String> defaultFileIoProperties(
-      ConnectorIntegrationConfig config, Predicate<String> fileIoPropertyFilter) {
+      ConnectorIntegrationConfig config,
+      StorageAwsConfig storageAwsConfig,
+      Predicate<String> fileIoPropertyFilter) {
     LinkedHashMap<String, String> merged = new LinkedHashMap<>();
-    credentialProperties(config)
-        .forEach(
-            (key, value) -> {
-              if (isFileIoProperty(fileIoPropertyFilter, key)) {
-                merged.put(key, value);
-              }
-            });
-    defaultTableConfig(config)
+    defaultTableConfig(config, storageAwsConfig)
         .forEach(
             (key, value) -> {
               if (isFileIoProperty(fileIoPropertyFilter, key)) {
@@ -95,16 +65,21 @@ public final class ConnectorIntegrationProperties {
     return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
   }
 
-  public static boolean hasConfiguredCredentials(ConnectorIntegrationConfig config) {
-    return !credentialProperties(config).isEmpty();
-  }
-
   public static boolean isUsableValue(String value) {
     if (value == null) {
       return false;
     }
     String trimmed = value.trim();
     return !trimmed.isEmpty() && !(trimmed.startsWith("<") && trimmed.endsWith(">"));
+  }
+
+  public static Map<String, String> clientSafeStorageConfig(Map<String, String> source) {
+    if (source == null || source.isEmpty()) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> computed = new LinkedHashMap<>();
+    source.forEach((key, value) -> addClientSafeConfig(computed, key, value));
+    return computed.isEmpty() ? Map.of() : Map.copyOf(computed);
   }
 
   private static void addClientSafeConfig(Map<String, String> target, String key, String value) {
@@ -129,5 +104,32 @@ public final class ConnectorIntegrationProperties {
 
   private static boolean isFileIoProperty(Predicate<String> fileIoPropertyFilter, String key) {
     return fileIoPropertyFilter != null && key != null && fileIoPropertyFilter.test(key);
+  }
+
+  private static Map<String, String> storageConfig(StorageAwsConfig storageAwsConfig) {
+    if (storageAwsConfig == null) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> computed = new LinkedHashMap<>();
+    storageAwsConfig
+        .region()
+        .filter(ConnectorIntegrationProperties::isUsableValue)
+        .map(String::trim)
+        .ifPresent(
+            region -> {
+              computed.put("s3.region", region);
+              computed.put("region", region);
+              computed.put("client.region", region);
+            });
+    storageAwsConfig
+        .s3()
+        .endpoint()
+        .filter(ConnectorIntegrationProperties::isUsableValue)
+        .map(String::trim)
+        .ifPresent(endpoint -> computed.put("s3.endpoint", endpoint));
+    if (storageAwsConfig.s3().pathStyleAccess()) {
+      computed.put("s3.path-style-access", "true");
+    }
+    return computed.isEmpty() ? Map.of() : Map.copyOf(computed);
   }
 }

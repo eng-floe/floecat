@@ -221,6 +221,7 @@ class TableUpdatePlannerTest {
         "idem",
         null,
         "txn",
+        null,
         commit,
         tableSupport);
   }

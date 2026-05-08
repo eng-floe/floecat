@@ -70,8 +70,8 @@ public class TableDropCleanupService {
       return;
     }
     Map<String, String> ioProps =
-        new LinkedHashMap<>(tableGatewaySupport.defaultFileIoProperties());
-    ioProps.putAll(FileIoFactory.filterIoProperties(props));
+        new LinkedHashMap<>(
+            tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, metadataLocation));
     LOG.infof(
         "Purging Iceberg data namespace=%s table=%s metadata=%s ioProps=%s",
         namespace, tableName, metadataLocation, ioProps);

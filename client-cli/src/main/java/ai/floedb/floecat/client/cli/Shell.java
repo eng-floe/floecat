@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -194,6 +195,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorities;
+
+  @Inject
+  @GrpcClient("floecat")
   io.grpc.Channel floecatChannel;
 
   private ManagedChannel overrideChannel;
@@ -235,6 +240,7 @@ public class Shell implements Runnable {
               .queries(queries)
               .queryScan(queryScan)
               .querySchema(querySchema)
+              .storageAuthorities(storageAuthorities)
               .getAccountId(() -> currentAccountId)
               .setAccountId(id -> currentAccountId = id)
               .getCatalog(() -> currentCatalog)
@@ -265,6 +271,8 @@ public class Shell implements Runnable {
               "constraints",
               "analyze",
               "query",
+              "storage-authorities",
+              "storage-authority",
               "account",
               "help",
               "quit",
@@ -561,6 +569,23 @@ public class Shell implements Runnable {
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
+         storage-authorities
+         storage-authority list [--page-size <N>]
+         storage-authority get <display_name|id>
+         storage-authority create <display_name> --location-prefix <uri-prefix>
+             [--desc <text>] [--enabled true|false] [--type <type>]
+             [--region <region>] [--endpoint <uri>] [--path-style-access true|false]
+             [--assume-role-arn <arn>] [--assume-role-external-id <id>]
+             [--assume-role-session-name <name>] [--duration-seconds <n>]
+             [--cred-type aws|aws-assume-role|aws-web-identity] [--cred k=v ...] [--cred-head k=v ...]
+         storage-authority update <display_name|id>
+             [--display <name>] [--location-prefix <uri-prefix>] [--desc <text>]
+             [--enabled true|false] [--type <type>] [--region <region>] [--endpoint <uri>]
+             [--path-style-access true|false] [--assume-role-arn <arn>]
+             [--assume-role-external-id <id>] [--assume-role-session-name <name>]
+             [--duration-seconds <n>] [--cred-type aws|aws-assume-role|aws-web-identity]
+             [--cred k=v ...] [--cred-head k=v ...] [--etag <etag>]
+         storage-authority delete <display_name|id> [--etag <etag>]
          help
          quit
 """);

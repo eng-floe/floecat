@@ -27,6 +27,7 @@ public class ProfilingPolicyTestProfile implements QuarkusTestProfile {
         Map.entry("quarkus.profile", "telemetry-prof"),
         Map.entry("floecat.profiling.enabled", "true"),
         Map.entry("floecat.profiling.endpoints-enabled", "true"),
+        Map.entry("floecat.profiling.artifact-dir", ProfilingTestPaths.artifactDir("policy")),
         Map.entry("floecat.profiling.capture-duration", "100MS"),
         Map.entry("floecat.profiling.max-capture-bytes", "1048576"),
         Map.entry("floecat.profiling.rate-limit", "10"),
