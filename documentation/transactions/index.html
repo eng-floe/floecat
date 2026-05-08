@@ -1959,7 +1959,7 @@ It is the backend used by both:
 <li><code>TS_APPLY_FAILED_CONFLICT</code> =&gt; returns HTTP 409 immediately.</li>
 <li>For <code>TS_OPEN</code> transactions, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.</li>
 <li>For <code>TS_PREPARED</code>, <code>TS_APPLYING</code>, and <code>TS_APPLY_FAILED_RETRYABLE</code>, the gateway verifies the persisted request hash matches and then skips fresh planning/materialization, driving commit/confirmation from the already-persisted intents.</li>
-<li>During prepare, each table change now includes <code>precondition.expected_version</code> sourced from table <code>MutationMeta.pointer_version</code> fetched at planning time.</li>
+<li>During prepare, each table change includes <code>precondition.expected_version</code> sourced from table <code>MutationMeta.pointer_version</code> fetched at planning time.</li>
 <li>REST returns 204 only when backend is <code>TS_APPLIED</code>; deterministic failures map to 409.
    Unknown commit state maps are:</li>
 <li>503 for unavailable/retryable unknown state</li>

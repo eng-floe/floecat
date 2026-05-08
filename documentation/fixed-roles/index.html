@@ -1674,6 +1674,11 @@
 <td>Minimal role for SystemObjects/GetSystemObjects access.</td>
 <td><code>system-objects.read</code></td>
 </tr>
+<tr>
+<td><code>reconcile-worker</code></td>
+<td>Dedicated machine principal for reconciler background gRPC work.</td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
+</tr>
 </tbody>
 </table>
 <h2 id="behavior-notes">Behavior Notes<a class="headerlink" href="#behavior-notes" title="Permanent link">&para;</a></h2>

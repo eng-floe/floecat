@@ -1797,7 +1797,7 @@ make<span class="w"> </span>compose-up<span class="w"> </span><span class="nv">C
 make<span class="w"> </span>compose-down<span class="w"> </span><span class="nv">COMPOSE_ENV_FILE</span><span class="o">=</span>./env.localstack-oidc<span class="w"> </span><span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack-oidc
 </code></pre></div>
 <h3 id="split-reconciler-mode">Split reconciler mode<a class="headerlink" href="#split-reconciler-mode" title="Permanent link">&para;</a></h3>
-<p>The same service image can now run as a control-plane node or as a remote executor node.</p>
+<p>The same service image can run as a control-plane node or as a remote executor node.</p>
 <p>Run a control plane plus one executor node:</p>
 <div class="highlight"><pre><span></span><code><span class="nv">QUARKUS_PROFILE_SERVICE</span><span class="o">=</span>reconciler-control<span class="w"> </span><span class="se">\</span>
 <span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack<span class="w"> </span><span class="se">\</span>
@@ -1809,6 +1809,12 @@ docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> 
 <span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack<span class="w"> </span><span class="se">\</span>
 <span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack,reconciler-executor<span class="w"> </span><span class="se">\</span>
 docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker/docker-compose.yml<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--scale<span class="w"> </span><span class="nv">executor</span><span class="o">=</span><span class="m">3</span>
+</code></pre></div>
+<p>Run the same split deployment in local OIDC mode:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">QUARKUS_PROFILE_SERVICE</span><span class="o">=</span>reconciler-control<span class="w"> </span><span class="se">\</span>
+<span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack-oidc<span class="w"> </span><span class="se">\</span>
+<span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack-oidc,reconciler-executor<span class="w"> </span><span class="se">\</span>
+docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker/docker-compose.yml<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--scale<span class="w"> </span><span class="nv">executor</span><span class="o">=</span><span class="m">1</span>
 </code></pre></div>
 <p>Notes:</p>
 <ul>
@@ -1826,7 +1832,10 @@ docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> 
   connects to <code>service:9100</code>, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.</li>
 <li>Both services must share the same blob/kv backend configuration.</li>
-<li>If your control plane requires an authorization token for remote reconciler calls, set <code>FLOECAT_RECONCILER_AUTHORIZATION_TOKEN</code> in the env file or shell before <code>docker compose up</code>.</li>
+<li>In OIDC mode, configure the reconciler worker service principal with
+  <code>FLOECAT_RECONCILER_OIDC_ISSUER</code>, <code>FLOECAT_RECONCILER_OIDC_CLIENT_ID</code>, and
+  <code>FLOECAT_RECONCILER_OIDC_CLIENT_SECRET</code>. Executors then authenticate to
+  <code>ReconcileExecutorControl</code> automatically with cached client-credentials tokens.</li>
 </ul>
 <p>In Kubernetes or another orchestrator, the equivalent shape is:</p>
 <ul>
@@ -1869,10 +1878,10 @@ in <code>docker/docker-compose.yml</code>, and per-mode overrides live in <code>
 <li><strong>AWS wiring</strong>: <code>FLOECAT_STORAGE_AWS_REGION</code>, <code>FLOECAT_STORAGE_AWS_S3_ENDPOINT</code>,
   <code>FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT</code>, <code>FLOECAT_STORAGE_AWS_ACCESS_KEY_ID</code>,
   <code>FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY</code>, <code>FLOECAT_STORAGE_AWS_S3_PATH_STYLE</code>.</li>
-<li><strong>Gateway storage credentials</strong>: <code>ICEBERG_STORAGE_SCOPE</code>, <code>ICEBERG_STORAGE_TYPE</code>,
-  <code>ICEBERG_STORAGE_KEY_ID</code>, <code>ICEBERG_STORAGE_SECRET</code>, <code>ICEBERG_STORAGE_REGION</code>,
-  plus <code>FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT</code> and
-  <code>FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS</code> for non-default endpoints.</li>
+<li><strong>Gateway client-safe storage defaults</strong>:
+  <code>FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT</code> and
+  <code>FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS</code> for
+  non-default endpoints. Temporary vended credentials come from storage authorities.</li>
 <li><strong>Seed/fixtures</strong>: <code>FLOECAT_SEED_ENABLED</code>, <code>FLOECAT_SEED_MODE</code>, <code>FLOECAT_FIXTURES_USE_AWS_S3</code>.</li>
 <li><strong>Reconciler split deployment</strong>:
   <code>FLOECAT_RECONCILER_WORKER_MODE</code>, <code>FLOECAT_RECONCILER_MAX_PARALLELISM</code>,
@@ -1880,7 +1889,8 @@ in <code>docker/docker-compose.yml</code>, and per-mode overrides live in <code>
   <code>FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED</code>,
   <code>FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED</code>,
   <code>FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED</code>,
-  <code>FLOECAT_RECONCILER_AUTHORIZATION_HEADER</code>, <code>FLOECAT_RECONCILER_AUTHORIZATION_TOKEN</code>,
+  <code>FLOECAT_RECONCILER_AUTHORIZATION_HEADER</code>, <code>FLOECAT_RECONCILER_OIDC_ISSUER</code>,
+  <code>FLOECAT_RECONCILER_OIDC_CLIENT_ID</code>, <code>FLOECAT_RECONCILER_OIDC_CLIENT_SECRET</code>,
   <code>QUARKUS_PROFILE_SERVICE</code>, <code>QUARKUS_PROFILE_EXECUTOR</code>.</li>
 </ul>
 <p>Where variables are consumed (all <code>FLOECAT_*</code>):</p>
@@ -1901,6 +1911,10 @@ mounted. This lets SSO or named profiles work without exporting short-lived keys
 <p>If <code>AWS_PROFILE</code> is unset, the SDK falls back to env vars or the instance/container role.</p>
 <p>If your images run as a non-root user, mount <code>~/.aws</code> into that user’s home in
 <code>docker/docker-compose.yml</code>.</p>
+<p>For Iceberg REST credential vending, define a storage authority after the stack starts instead of
+injecting static gateway credentials. In LocalStack-style setups, the authority typically carries a
+storage prefix, region, endpoint, path-style flag, and source credentials supplied with
+<code>storage-authority create ... --cred-type aws ...</code>.</p>
 <h2 id="oidc-notes">OIDC Notes<a class="headerlink" href="#oidc-notes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>docker/env.inmem</code> explicitly uses DEV auth (<code>FLOECAT_AUTH_MODE=dev</code>,
@@ -1912,7 +1926,8 @@ mounted. This lets SSO or named profiles work without exporting short-lived keys
 <li>Clients running on the <strong>host</strong> (or external containers not on the <code>docker_floecat</code> network)
   must use <code>http://host.docker.internal:8080/realms/floecat</code> (or <code>KEYCLOAK_PORT</code> if overridden).</li>
 <li>If you use Trino with the REST catalog, ensure the gateway audience list includes both
-  <code>floecat-client</code> and <code>trino-client</code> (see <code>docker/env.localstack-oidc</code>).</li>
+  <code>floecat-client</code> and <code>trino-client</code>, and ensure the service audience list also includes the
+  reconciler worker client (see <code>docker/env.localstack-oidc</code>).</li>
 </ul>
 <h3 id="oidc-token-for-shell">OIDC Token for Shell<a class="headerlink" href="#oidc-token-for-shell" title="Permanent link">&para;</a></h3>
 <p>When the stack is running with <code>docker/env.localstack-oidc</code>, the CLI must send a bearer token.

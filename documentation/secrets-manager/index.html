@@ -1738,9 +1738,12 @@
 <li><code>AccountId</code> = the account id passed by Floecat</li>
 </ul>
 <p>These tags support ABAC-style policies.</p>
-<p>Connector AuthCredentials are written to Secrets Manager and removed from connector records before
-they are persisted to the pointer store. Responses from the Connectors service mask any sensitive
-auth fields so callers never see raw tokens, keys, or client secrets.</p>
+<p>Connector AuthCredentials and storage-authority source credentials are written to Secrets Manager
+and removed from the corresponding persisted resource records. Connector responses mask sensitive
+auth fields, and storage-authority resolution only returns client-safe config plus any temporary
+credentials minted for a specific table/location match.</p>
+<p>Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
+secrets are the only credential source used for client credential vending.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <p>Optional role assumption:</p>
 <ul>
@@ -1778,8 +1781,8 @@ auth fields so callers never see raw tokens, keys, or client secrets.</p>
 policy above). The commands here are a quick validation of access and the expected key format.</p>
 <p>Set the identifiers and create a sample payload:</p>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">ACCOUNT_ID</span><span class="o">=</span>acct-123
-<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_TYPE</span><span class="o">=</span>connectors
-<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_ID</span><span class="o">=</span>conn-001
+<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_TYPE</span><span class="o">=</span>connectors<span class="w">   </span><span class="c1"># or storage-authorities</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_ID</span><span class="o">=</span>conn-001<span class="w">       </span><span class="c1"># or a storage authority id such as sa-001</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_NAME</span><span class="o">=</span><span class="s2">&quot;accounts/</span><span class="si">${</span><span class="nv">ACCOUNT_ID</span><span class="si">}</span><span class="s2">/</span><span class="si">${</span><span class="nv">SECRET_TYPE</span><span class="si">}</span><span class="s2">/</span><span class="si">${</span><span class="nv">SECRET_ID</span><span class="si">}</span><span class="s2">&quot;</span>
 
 <span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;example-secret-payload&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>payload.bin
@@ -1814,18 +1817,35 @@ policy above). The commands here are a quick validation of access and the expect
 <span class="w">  </span><span class="nt">&quot;Version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">&quot;Statement&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AllowAssumeRole&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;Principal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nt">&quot;AWS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;arn:aws:iam::123456789012:role/floecat-base&quot;</span>
 <span class="w">      </span><span class="p">},</span>
-<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sts:AssumeRole&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sts:AssumeRole&quot;</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AllowSessionTags&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;Principal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;AWS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;arn:aws:iam::123456789012:role/floecat-base&quot;</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sts:TagSession&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;Condition&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;StringEquals&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;sts:TagSession&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;true&quot;</span><span class="p">}</span>
+<span class="w">        </span><span class="nt">&quot;StringLike&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">          </span><span class="nt">&quot;aws:RequestTag/AccountId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">&quot;ForAllValues:StringEquals&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">          </span><span class="nt">&quot;aws:TagKeys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;AccountId&quot;</span><span class="p">]</span>
+<span class="w">        </span><span class="p">}</span>
 <span class="w">      </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
 <span class="p">}</span>
 </code></pre></div>
+<p>This follows the AWS STS session-tagging model: <code>sts:TagSession</code> is a permissions action in the
+trust policy, and tag constraints are expressed with condition keys such as <code>aws:RequestTag/...</code>
+and <code>aws:TagKeys</code>.</p>
 <h3 id="role-permissions-policy">Role permissions policy<a class="headerlink" href="#role-permissions-policy" title="Permanent link">&para;</a></h3>
 <p>Attach a policy that enforces tag alignment:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>

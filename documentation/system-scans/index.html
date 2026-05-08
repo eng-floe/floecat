@@ -1739,8 +1739,8 @@ pipeline. Transport differences are mostly protocol and framing.</p>
 <li>Build an <code>ArrowScanPlan</code> and stream batches through <code>ArrowBatchSerializer</code>.</li>
 <li>Enforce allocator limits and close native resources on completion/cancel/error.</li>
 </ol>
-<p>The row-compatibility path remains available for gRPC callers that request <code>ROWS</code>, but Arrow is the
-default/primary path.</p>
+<p>gRPC callers can request either <code>ARROW_IPC</code> or <code>ROWS</code>. Arrow is the primary transport format, and
+<code>ROWS</code> is a row-stream response mode on the same execution pipeline.</p>
 <p>Scanner resolution is shared across transports and uses the same engine-context-aware path. When an
 engine-specific table ID is presented, resolver translation (<code>translateToDefault</code>) can remap to the
 default FLOECAT catalog ID where applicable.</p>

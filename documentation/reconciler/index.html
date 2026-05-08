@@ -1903,9 +1903,17 @@ reconcile control RPCs:</p>
 <ul>
 <li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
   payload/result exchange.</li>
-<li><code>floecat.reconciler.authorization.header</code> / <code>token</code> configure the authorization header used on
-  worker-to-control-plane calls. Per-request tokens supplied via <code>ReconcileContext</code> override the
-  static token, so the precedence is request-scoped token, then configured token, then no header.</li>
+<li><code>floecat.reconciler.authorization.header</code> configures the outbound header name used for bearer
+  auth on worker gRPC calls.</li>
+<li>In OIDC mode, background workers obtain a machine token via client credentials using
+  <code>floecat.reconciler.oidc.issuer</code>, <code>client-id</code>, <code>client-secret</code>,
+  <code>token-refresh-skew-seconds</code>, and <code>connect-timeout</code>.</li>
+<li>Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
+  interceptor is not responsible for minting or attaching worker tokens.</li>
+<li><code>ReconcileExecutorControl</code> accepts only the dedicated internal worker permission carried by the
+  reconciler service principal.</li>
+<li>Other internal gRPC fanout paths may still propagate request-scoped user/session headers where
+  that is the actual call contract, but that is separate from reconcile worker auth.</li>
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector StartCapture / CaptureNow
@@ -1921,7 +1929,7 @@ reconcile control RPCs:</p>
           → enumerate snapshots via FloecatConnector
           → enqueue PLAN_SNAPSHOT children
       → if PLAN_VIEW:
-          → describeView (or listViewDescriptors fallback)
+          → describeView
           → ensure destination namespace exists
           → create or update the destination view
       → if PLAN_SNAPSHOT:

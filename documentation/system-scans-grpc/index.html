@@ -849,9 +849,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#row-compatibility-path" class="md-nav__link">
+  <a href="#row-output-path" class="md-nav__link">
     <span class="md-ellipsis">
-      Row compatibility path
+      Row output path
     </span>
   </a>
   
@@ -1730,9 +1730,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#row-compatibility-path" class="md-nav__link">
+  <a href="#row-output-path" class="md-nav__link">
     <span class="md-ellipsis">
-      Row compatibility path
+      Row output path
     </span>
   </a>
   
@@ -1840,9 +1840,9 @@
 <li>Close allocator/resources on completion/cancel/error.</li>
 </ol>
 <p>Arrow allocator cap is controlled by <code>ai.floedb.floecat.arrow.max-bytes</code> (default 1 GiB).</p>
-<h3 id="row-compatibility-path">Row compatibility path<a class="headerlink" href="#row-compatibility-path" title="Permanent link">&para;</a></h3>
+<h3 id="row-output-path">Row output path<a class="headerlink" href="#row-output-path" title="Permanent link">&para;</a></h3>
 <p>When <code>output_format = ROWS</code>, the service streams <code>SystemObjectRow</code> payloads directly after
-filtering/projecting rows. This mode is compatibility-only; Arrow remains the primary path.</p>
+filtering and projection. Arrow remains the primary columnar path.</p>
 <h2 id="predicateprojection-notes">Predicate/projection notes<a class="headerlink" href="#predicateprojection-notes" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Matching is case-insensitive for requested columns.</li>
@@ -1859,7 +1859,7 @@ filtering/projecting rows. This mode is compatibility-only; Arrow remains the pr
 <code>TableStatsView</code> / <code>ColumnStatsView</code> and is wired via <code>StatsProviderFactory</code> with per-query cache
 behavior.</p>
 <ul>
-<li>Stats are optional (<code>StatsProvider.NONE</code> fallback).</li>
+<li>Stats are optional (<code>StatsProvider.NONE</code> when none are available).</li>
 <li>Missing stats for system/unpinned objects are expected.</li>
 <li><code>ColumnStatsView</code> may include logical type, null/nan counts, canonical min/max, and NDV summary.</li>
 <li>Consumers must treat relation stats as advisory, not required.</li>

@@ -2017,7 +2017,7 @@ engine release.</p>
   <code>failure.details.reason</code> preserving the distinction.
   For CHECK masking to work correctly, connector constraint payloads should populate
   <code>ConstraintDefinition.columns</code> with referenced local column IDs.</li>
-<li><strong>FOREIGN KEY metadata model</strong> – <code>ConstraintDefinition</code> now carries ANSI-style FK behavior
+<li><strong>FOREIGN KEY metadata model</strong> – <code>ConstraintDefinition</code> carries ANSI-style FK behavior
   fields (<code>referenced_constraint_name</code>, <code>match_option</code>, <code>update_rule</code>, <code>delete_rule</code>) so
   <code>information_schema.referential_constraints</code> can be populated without connector-specific
   interpretation. Writers may omit these fields; scanners default unspecified rules to
@@ -2027,7 +2027,7 @@ engine release.</p>
   when retrying.</li>
 <li><strong>Query Lifecycle</strong> – <code>QueryDescriptor.query_status</code> moves through <code>SUBMITTED → COMPLETED/FAILED</code>
   depending on connector planning success. Lease expirations are surfaced via <code>expires_at</code>.</li>
-<li><strong>AuthConfig</strong> – Connector auth now carries structured <code>credentials</code> (for example <code>bearer</code>, <code>cli</code>,
+<li><strong>AuthConfig</strong> – Connector auth carries structured <code>credentials</code> (for example <code>bearer</code>, <code>cli</code>,
   <code>client</code>, <code>token-exchange-*</code>) plus free-form properties; the service resolves secrets and exchanges
   before connectors consume them.</li>
 </ul>
@@ -2046,7 +2046,7 @@ engine release.</p>
    <code>EndQuery</code> once execution is complete.</p>
 </li>
 <li>
-<p>BeginQuery now allows clients to provide an optional <code>query_id</code> (duplicates are rejected) and
+<p>BeginQuery allows clients to provide an optional <code>query_id</code> (duplicates are rejected) and
      a list of <code>common.QueryInput</code> records so the lifecycle service can pin snapshots and expansions
      at creation time for deterministic replay. Schema resolution and planning still occur in the
      downstream services.</p>

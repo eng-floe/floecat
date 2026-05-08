@@ -1776,12 +1776,12 @@ specializing discovery and catalog wiring.</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Authentication</strong> – The connector supports multiple schemes: <code>aws-sigv4</code> (default), OAuth2 token,
-  or none. SigV4 configuration controls signing names/regions, falls back to <code>s3.region</code> when
-  unspecified, and injects request headers via Iceberg REST properties.</li>
+  or none. SigV4 configuration controls signing names and regions, uses <code>s3.region</code> when
+  <code>rest.signing-region</code> is unset, and injects request headers via Iceberg REST properties.</li>
 <li><strong>NDV</strong> – NDV collection is optional. Controlled by <code>stats.ndv.enabled</code>, <code>stats.ndv.sample_fraction</code>,
   and <code>stats.ndv.max_files</code> connector options. NDV providers combine sampling, Puffin sketches, and
   Parquet footer data.</li>
-<li><strong>S3 IO</strong> – Falls back to <code>org.apache.iceberg.aws.s3.S3FileIO</code> unless <code>io-impl</code> is specified in
+<li><strong>S3 IO</strong> – Uses <code>org.apache.iceberg.aws.s3.S3FileIO</code> unless <code>io-impl</code> is specified in
   connector options. Header hints (<code>rest.header.*</code>) propagate custom headers to REST calls.</li>
 <li><strong>Metadata capture</strong> – <code>IcebergConnector</code> embeds the serialized <code>IcebergMetadata</code> protobuf in the
   <code>SnapshotBundle.metadata</code> map so the reconciler can persist schemas/specs/refs/logs without
@@ -1822,8 +1822,7 @@ specializing discovery and catalog wiring.</p>
 Resources (RESTCatalog, GlueClient) are closed when the connector is closed.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <p>Connector options (part of <code>ConnectorSpec.properties</code>):
-- <code>iceberg.source</code> – Selects discovery backend (<code>glue</code>, <code>rest</code>, <code>filesystem</code>). Defaults to <code>glue</code>
-  for backward compatibility.
+- <code>iceberg.source</code> – Selects discovery backend (<code>glue</code>, <code>rest</code>, <code>filesystem</code>). Defaults to <code>glue</code>.
 - <code>rest.signing-region</code>, <code>s3.region</code>, <code>rest.auth.type</code>, <code>rest.signing-name</code> – control SigV4.
 - <code>io-impl</code> – override Iceberg IO implementation.
 - <code>stats.ndv.*</code> – enable NDV estimation (boolean), sample fraction (0−1], max Parquet files to scan.
@@ -1832,7 +1831,10 @@ Resources (RESTCatalog, GlueClient) are closed when the connector is closed.</p>
   file. <code>external.namespace</code> and <code>external.table-name</code> remain optional logical-name overrides.</p>
 <p>Auth credential types (<code>--cred-type</code>) are documented in <a href="../cli-reference/"><code>docs/cli-reference.md</code></a>.
 For Iceberg, the relevant types are <code>bearer</code>, <code>client</code>, <code>cli</code> (provider=aws), <code>token-exchange</code>,
-<code>token-exchange-entra</code>, <code>token-exchange-gcp</code>, <code>aws</code>, <code>aws-web-identity</code>, and <code>aws-assume-role</code>.</p>
+<code>token-exchange-entra</code>, <code>token-exchange-gcp</code>, <code>aws</code>, <code>aws-web-identity</code>, and <code>aws-assume-role</code>.
+When <code>iceberg.source=rest</code> uses service-side client credentials or token exchange, the shared
+outbound token endpoint allowlist and private/loopback guards described in
+<a href="../operations/"><code>docs/operations.md</code></a> apply.</p>
 <p>To extend behavior:
 - Provide a custom NDV provider by plugging into <code>GenericStatsEngine</code>.
 - Wrap alternative auth schemes by implementing <code>AuthProvider</code> and mapping new <code>auth.scheme</code> values.
@@ -1865,7 +1867,13 @@ For Iceberg, the relevant types are <code>bearer</code>, <code>client</code>, <c
 <span class="w">  </span>--dest-ns<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--props<span class="w"> </span>iceberg.source<span class="o">=</span>rest<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--props<span class="w"> </span><span class="nv">warehouse</span><span class="o">=</span>s3://warehouse
-</code></pre></div></li>
+</code></pre></div>
+  For <code>iceberg.source=rest</code>, Floecat only requests delegated storage access when the caller
+  explicitly sets <code>X-Iceberg-Access-Delegation</code>. This is intended for REST catalogs such as
+  Polaris that support returning <code>storage-credentials</code> on <code>loadTable</code>.
+  If the upstream REST catalog ignores that header, normal REST behavior still applies and success
+  depends on some other valid storage credential path. If the upstream catalog rejects delegated
+  access requests, connector planning or table load will fail on the REST call.</li>
 <li><strong>Filesystem (single table)</strong> – CLI example using the metadata JSON as the connector URI:
   <div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Filesystem Iceberg&quot;</span><span class="w"> </span>ICEBERG<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">&quot;s3://warehouse/metadata/00001.metadata.json&quot;</span><span class="w"> </span><span class="se">\</span>

@@ -2009,11 +2009,16 @@ implementation of the current worker contract, not like a new public API.</p>
 <p>Relevant shared settings:</p>
 <div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.job-store</span><span class="o">=</span><span class="s">durable</span>
 <span class="na">floecat.reconciler.authorization.header</span><span class="o">=</span><span class="s">authorization</span>
-<span class="na">floecat.reconciler.authorization.token</span><span class="o">=</span><span class="s">&lt;shared-token&gt;</span>
+<span class="na">floecat.reconciler.oidc.issuer</span><span class="o">=</span><span class="s">https://&lt;issuer&gt;/realms/&lt;realm&gt;</span>
+<span class="na">floecat.reconciler.oidc.client-id</span><span class="o">=</span><span class="s">&lt;reconcile-worker-client-id&gt;</span>
+<span class="na">floecat.reconciler.oidc.client-secret</span><span class="o">=</span><span class="s">&lt;reconcile-worker-client-secret&gt;</span>
+<span class="na">floecat.reconciler.oidc.token-refresh-skew-seconds</span><span class="o">=</span><span class="s">30</span>
 <span class="na">floecat.reconciler.job-store.lease-ms</span><span class="o">=</span><span class="s">30000</span>
 </code></pre></div>
-<p>The Rust worker should target the control-plane gRPC endpoint and send the same authorization
-header/token pair configured on the service.</p>
+<p>The Rust worker should target the control-plane gRPC endpoint and acquire bearer tokens for the
+configured reconciler service principal via client credentials. Worker RPCs should attach that
+bearer token explicitly; they should not rely on propagated inbound user auth or global client
+interceptor behavior for correctness.</p>
 <h2 id="worker-identity-and-leasing">Worker Identity and Leasing<a class="headerlink" href="#worker-identity-and-leasing" title="Permanent link">&para;</a></h2>
 <p>The lease request supports:</p>
 <ul>
@@ -2079,7 +2084,7 @@ connector definition and auth material needed to read source files.</p>
 <li><code>success</code></li>
 <li><code>failure</code></li>
 </ul>
-<p>Both now require <code>result_id</code>.</p>
+<p>Both require <code>result_id</code>.</p>
 <p>Success carries:</p>
 <ul>
 <li><code>result_id</code></li>
@@ -2100,9 +2105,9 @@ the gRPC response and retries the same submission.</p>
 <div class="highlight"><pre><span></span><code>&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:success
 &lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:failure
 </code></pre></div>
-<p>That is the same stability rule the current Java file-group executor now follows when <code>plan_id</code>
+<p>That is the same stability rule the current Java file-group executor follows when <code>plan_id</code>
 and <code>group_id</code> are available.</p>
-<p>Do not reuse one <code>result_id</code> for different payloads. The control plane now rejects replay with the
+<p>Do not reuse one <code>result_id</code> for different payloads. The control plane rejects replay with the
 same <code>result_id</code> if the full request payload changes.</p>
 <h2 id="idempotency-and-retry-semantics">Idempotency and Retry Semantics<a class="headerlink" href="#idempotency-and-retry-semantics" title="Permanent link">&para;</a></h2>
 <p>The worker should assume the following:</p>

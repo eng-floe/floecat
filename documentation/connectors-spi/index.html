@@ -1877,7 +1877,7 @@ session-zone semantics, convert explicitly before encoding stats.</p>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">TargetStatsRecord</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">captureSnapshotTargetStats</span><span class="p">(...);</span>
 <span class="p">}</span>
 </code></pre></div>
-For incremental reconcile, the runtime now passes the set of already-ingested destination snapshot ids
+For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
 <code>TableDescriptor</code>, <code>SnapshotBundle</code>, and <code>ScanBundle</code> are immutable records; connectors populate them

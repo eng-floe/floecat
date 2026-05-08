@@ -2149,7 +2149,7 @@ consistent NameRef → ResourceId translations without depending on a secondary 
 <h3 id="fully-qualified-resolvefq-semantics">Fully Qualified (ResolveFQ*) Semantics<a class="headerlink" href="#fully-qualified-resolvefq-semantics" title="Permanent link">&para;</a></h3>
 <p><code>resolveTables/resolveViews</code> mirror the <code>ResolveFQ*</code> RPCs. The helpers accept either a list selector
 or a namespace prefix, apply input validation, paginate using Directory-compatible tokens, and
-return canonical <code>NameRef</code> + <code>ResourceId</code> pairs. DirectoryService now delegates to these helpers so
+return canonical <code>NameRef</code> + <code>ResourceId</code> pairs. DirectoryService delegates to these helpers so
 the graph defines the single source of truth for list/prefix resolution.</p>
 <h2 id="usage-guidelines">Usage Guidelines<a class="headerlink" href="#usage-guidelines" title="Permanent link">&para;</a></h2>
 <ul>
@@ -2164,7 +2164,7 @@ the graph defines the single source of truth for list/prefix resolution.</p>
   and versioned so planners/executors can safely down-level or up-level between releases.</li>
 </ul>
 <h2 id="query-catalog-service">Query Catalog Service<a class="headerlink" href="#query-catalog-service" title="Permanent link">&para;</a></h2>
-<p><code>UserObjectsService.GetUserObjects</code> now streams <code>UserObjectsBundleChunk</code>s directly from the metadata
+<p><code>UserObjectsService.GetUserObjects</code> streams <code>UserObjectsBundleChunk</code>s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (<code>RelationResolutions</code>) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogOverlay.resolve</code>,

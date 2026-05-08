@@ -2177,7 +2177,7 @@ stream ends or fails. Producer code should not close the parent allocator.</p>
 <code>FlightEndpointRef</code>. <code>floecat.flight.advertised-port</code> controls the advertised external port
 separately from the actual shared gRPC listener. In non-dev/test profiles, avoid loopback values
 (<code>localhost</code> / <code>127.0.0.1</code>) for distributed clients.
-Flight now runs on Quarkus's shared gRPC server instead of a separate standalone listener, but the
+Flight runs on Quarkus's shared gRPC server instead of a separate standalone listener, but the
 advertised host/port can still be overridden to match an ingress or load balancer.</p>
 <h2 id="scanner-and-engine-context-resolution">Scanner and engine-context resolution<a class="headerlink" href="#scanner-and-engine-context-resolution" title="Permanent link">&para;</a></h2>
 <p>Flight and gRPC share scanner resolution logic:</p>

@@ -2058,11 +2058,11 @@ orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transact
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. <code>SeedRunner</code>
 populates demo data when <code>floecat.seed.enabled=true</code>.</p>
-<p>For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
+<p>For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using <code>METADATA_AND_CAPTURE</code>.</p>
 <p>This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
-Follow-up payloads now use reconcile scoped stats requests
+Follow-up payloads use reconcile scoped stats requests
 (<code>table_id</code>, <code>snapshot_id</code>, <code>target_spec</code>, <code>column_selectors</code>) so background capture stays targeted
 without depending on separate unresolved snapshot-id and target lists.
 When a <code>CAPTURE_ONLY</code> batch captures only a subset of requested items, the reconcile result

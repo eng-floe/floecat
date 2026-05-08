@@ -491,6 +491,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#outbound-token-endpoint-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outbound token endpoint allowlist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1682,6 +1691,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#outbound-token-endpoint-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      Outbound token endpoint allowlist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1783,8 +1801,30 @@ make<span class="w"> </span>integration-test
 <li><code>--strict</code> – fail the run when warnings are present (warnings are currently reserved for future checks).</li>
 </ul>
 <h2 id="observability-operations">Observability &amp; Operations<a class="headerlink" href="#observability-operations" title="Permanent link">&para;</a></h2>
+<h3 id="outbound-token-endpoint-allowlist">Outbound token endpoint allowlist<a class="headerlink" href="#outbound-token-endpoint-allowlist" title="Permanent link">&para;</a></h3>
+<p>Floecat validates outbound token endpoint hosts before performing client credentials or token
+exchange flows on behalf of connectors or internal workers. This is an SSRF guard on the shared
+auth resolution path, not a connector-specific feature.</p>
+<p>The relevant settings are:</p>
+<ul>
+<li><code>FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS</code> – comma-separated host/domain allowlist for
+  outbound token endpoints. Exact hosts match exactly; <code>*.example.com</code> matches subdomains only.
+  <code>*</code> allows any token endpoint host.</li>
+<li><code>FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true</code> – permits allowlisted
+  HTTPS hosts that resolve to private or loopback addresses.</li>
+<li><code>FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true</code> – permits loopback-only HTTP token
+  endpoints for local development.</li>
+</ul>
+<p>Important behavior:</p>
+<ul>
+<li>These settings restrict token endpoint hosts, not upstream catalog hosts in general.</li>
+<li><code>FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=*</code> only bypasses the host allowlist check. It
+  does not disable the private-address or loopback HTTP guards.</li>
+<li>The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
+  flow that performs service-side token acquisition.</li>
+</ul>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
-<p>The reconciler can now run in three shapes from the same artifact:</p>
+<p>The reconciler runs in three shapes from the same artifact:</p>
 <ul>
 <li><strong>All-in-one</strong>: default profile; public APIs, durable queue ownership, and local executor polling stay in one runtime.</li>
 <li><strong>Control plane</strong>: <code>QUARKUS_PROFILE=reconciler-control</code>; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.</li>
@@ -1798,7 +1838,11 @@ make<span class="w"> </span>integration-test
 <span class="na">floecat.reconciler.executor.remote-snapshot-planner.enabled</span>
 <span class="na">floecat.reconciler.executor.remote-file-group.enabled</span>
 <span class="na">floecat.reconciler.authorization.header</span>
-<span class="na">floecat.reconciler.authorization.token</span>
+<span class="na">floecat.reconciler.oidc.issuer</span>
+<span class="na">floecat.reconciler.oidc.client-id</span>
+<span class="na">floecat.reconciler.oidc.client-secret</span>
+<span class="na">floecat.reconciler.oidc.token-refresh-skew-seconds</span>
+<span class="na">floecat.reconciler.oidc.connect-timeout</span>
 <span class="na">floecat.reconciler.auto.execution-class</span>
 <span class="na">floecat.reconciler.auto.execution-lane</span>
 </code></pre></div>
@@ -1806,15 +1850,22 @@ make<span class="w"> </span>integration-test
 <ul>
 <li>Control plane: <code>QUARKUS_PROFILE=reconciler-control</code></li>
 <li>Executor plane: <code>QUARKUS_PROFILE=reconciler-executor</code></li>
-<li>Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port</li>
+<li>Shared settings: same blob/kv backend, same reconciler OIDC worker principal configuration, executor nodes pointed at the control-plane gRPC host/port</li>
 <li>Control-plane-specific setting: <code>reconciler.max-parallelism=0</code></li>
 <li>Executor-plane-specific setting: <code>floecat.reconciler.worker.mode=remote</code></li>
 </ul>
+<p>Worker gRPC auth boundary:</p>
+<ul>
+<li>Remote reconcile workers authenticate to <code>ReconcileExecutorControl</code> with an explicit bearer
+  token attached by the worker client itself.</li>
+<li>In OIDC mode, that bearer token comes from the configured reconciler worker service principal.</li>
+<li>Internal user-context fanout still uses propagated request metadata where appropriate, but that
+  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.</li>
+</ul>
 <p>In the split model, the control plane owns top-level <code>PLAN_CONNECTOR</code> jobs and public reconcile
 APIs, while executor-plane nodes primarily run child <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, <code>PLAN_SNAPSHOT</code>,
-and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> follows the same plan-plus-child execution path rather
-than a legacy connector-wide execution mode. File-group workers submit results through
-<code>SubmitLeasedFileGroupExecutionResult</code>, which now requires <code>result_id</code> so the control plane can
+and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> uses the same plan-plus-child execution path. File-group workers submit results through
+<code>SubmitLeasedFileGroupExecutionResult</code>, which requires <code>result_id</code> so the control plane can
 enforce replay safety across worker retries.</p>
 <p>If <code>PLAN_CONNECTOR</code> jobs can be enqueued, at least one enabled executor must support that job kind.
 Planner jobs also need to remain leaseable under the configured execution lane semantics: planner
@@ -1832,7 +1883,7 @@ the concrete lane policy that remote or local workers enforce later.</p>
   for the full Prometheus + Tempo + Loki + Grafana demo stack.</li>
 </ul>
 <h3 id="telemetry-hub-configuration">Telemetry hub configuration<a class="headerlink" href="#telemetry-hub-configuration" title="Permanent link">&para;</a></h3>
-<p>The service now uses the telemetry hub core + Micrometer backend. The following flags are available in
+<p>The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 <code>service/src/main/resources/application.properties</code> (the <code>telemetry-otlp</code> profile toggles OTLP tracing/log exports):</p>
 <div class="highlight"><pre><span></span><code>telemetry.strict=false
 telemetry.exporters=prometheus

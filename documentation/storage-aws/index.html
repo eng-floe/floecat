@@ -1812,7 +1812,7 @@ CAS blob GC → S3BlobStore.list (ListObjectsV2) → deletePrefix
 <ul>
 <li><strong>Production deployment</strong> – Set <code>floecat.kv=dynamodb</code>, <code>floecat.blob=s3</code>, supply the DynamoDB table
   name and S3 bucket. On startup, <code>AwsClients</code> initialises AWS SDK clients and repositories begin
-  writing to DynamoDB/S3. Stats ingestion and scan bundles now persist durably.</li>
+  writing to DynamoDB/S3. Stats ingestion and scan bundles persist durably.</li>
 <li><strong>Disaster recovery</strong> – Because blobs are immutable and pointers encode versions, restoring a table
   involves rehydrating DynamoDB pointers (versions) and replaying snapshots stored in S3. GC settings
   control how long idempotency records and tombstones linger.</li>

@@ -2050,7 +2050,7 @@
 <li><strong>Single catalog focus:</strong> one Floecat catalog per REST prefix (multi-catalog ACID transactions remain out of scope).</li>
 <li><strong>Reusability:</strong> keep Iceberg-specific plumbing isolated, allowing additional protocols to reuse the same staging, metadata, and connector services.</li>
 </ul>
-<p>Non-goals for the current release:</p>
+<p>Out of scope:</p>
 <ul>
 <li>Serving manifests/files directly from the gateway.</li>
 <li>Async/streaming scan planning.</li>
@@ -2094,13 +2094,13 @@
 </tr>
 <tr>
 <td><code>/tables/{table}/credentials</code></td>
-<td><code>ConnectorClient</code> + gateway defaults</td>
-<td>Returns vended credentials based on access delegation mode (defaults to gateway config).</td>
+<td><code>StorageCredentialAuthority</code> + <code>StorageAuthorities</code> gRPC service</td>
+<td>Returns vended credentials for the resolved table storage prefix when access delegation requests them.</td>
 </tr>
 <tr>
 <td><code>/tables/{table}/metrics</code></td>
 <td>Logging only</td>
-<td>Validates payloads; wiring to <code>TableStatisticsService</code> is future work (spec has no stats surface).</td>
+<td>Validates payloads and logs them; the Iceberg REST contract does not map them into Floecat stats APIs.</td>
 </tr>
 <tr>
 <td><code>/tables/rename</code>, <code>/transactions/commit</code></td>
@@ -2160,11 +2160,11 @@
 <h2 id="runtime-architecture-overview">Runtime Architecture Overview<a class="headerlink" href="#runtime-architecture-overview" title="Permanent link">&para;</a></h2>
 <ol>
 <li><strong>Request entry:</strong> Quarkus REST controllers receive Iceberg REST requests. <code>AccountHeaderFilter</code> enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.</li>
-<li><strong>Context resolution:</strong> <code>ResourceResolver</code> builds the catalog/resource references used throughout the gateway (<code>CatalogRef</code>, <code>NamespaceRef</code>, <code>TableRef</code>, <code>ViewRef</code>). The older request-context factory/record layer has been removed.</li>
+<li><strong>Context resolution:</strong> <code>ResourceResolver</code> builds the catalog/resource references used throughout the gateway (<code>CatalogRef</code>, <code>NamespaceRef</code>, <code>TableRef</code>, <code>ViewRef</code>).</li>
 <li><strong>Service orchestration:</strong> Controllers delegate to <code>services.table/*</code>, <code>services.view/*</code>, <code>services.namespace/*</code>, etc. Table orchestration is further split by concern into <code>load</code>, <code>materialization</code>, <code>metadata</code>, and <code>transaction</code>.</li>
 <li><strong>gRPC translation:</strong> service orchestration flows use <code>GrpcServiceFacade</code> so backend calls inherit Floecat’s auth context and telemetry consistently.</li>
 <li><strong>Response mapping:</strong> <code>TableResponseMapper</code>, <code>ViewResponseMapper</code>, <code>NamespaceResponseMapper</code>, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., <code>write.metadata.path</code>, storage credentials).</li>
-<li><strong>Connectors &amp; credentials:</strong> registered Iceberg tables provision a Floecat-backed connector during commit, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.</li>
+<li><strong>Connectors &amp; credentials:</strong> registered Iceberg tables provision a Floecat-backed connector during commit. Storage authorities are the source of truth for client-safe storage config and temporary credential vending, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.</li>
 <li><strong>Plan/task caching:</strong> <code>PlanTaskManager</code> persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for <code>/tasks</code>.</li>
 </ol>
 <hr />
@@ -2183,7 +2183,10 @@
 <h3 id="stage-create-post-v1prefixnamespacesnamespacetables-with-stage-createtrue">Stage-create (<code>POST /v1/{prefix}/namespaces/{namespace}/tables</code> with <code>stage-create=true</code>)<a class="headerlink" href="#stage-create-post-v1prefixnamespacesnamespacetables-with-stage-createtrue" title="Permanent link">&para;</a></h3>
 <ol>
 <li>Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.</li>
-<li>Compute metadata location, connector configuration, and default storage credentials.</li>
+<li>Compute metadata location, connector configuration, and storage config/credentials. Storage
+   authority resolution prefers the concrete table <code>location</code>, then the metadata-location-derived
+   table root, and only falls back to <code>upstream.uri</code> when that URI is a real storage URI such as
+   <code>s3://...</code>.</li>
 <li>Persist a <code>StagedTableEntry</code> keyed by account + catalog + namespace + table + stage-id (provided via <code>Iceberg-Transaction-Id</code>/<code>Idempotency-Key</code> or generated). <code>StagedTableService</code> enforces TTL and idempotency.</li>
 <li>Return <code>StageCreateResponse</code> (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.</li>
 </ol>
@@ -2240,12 +2243,12 @@ short bounded confirmation poll before returning unknown-state errors. Poll beha
   SQL definitions, creation search path, and output columns.</li>
 <li>View commit updates keep the backend’s canonical SQL/search-path/output-column fields in sync
   with the Iceberg metadata payload when that information is present.</li>
-<li>Floecat’s backend view record remains current-state only. Iceberg-style version history is stored
+<li>Floecat’s backend view record is current-state only. Iceberg-style version history is stored
   in the metadata JSON property for REST compatibility, not as first-class backend view versions.</li>
 </ul>
 <hr />
 <h2 id="delta-compatibility-layer">Delta Compatibility Layer<a class="headerlink" href="#delta-compatibility-layer" title="Permanent link">&para;</a></h2>
-<p>The gateway now supports loading Floecat Delta tables through the Iceberg REST surface so engines
+<p>The gateway supports loading Floecat Delta tables through the Iceberg REST surface so engines
 like DuckDB can query <code>examples.delta.&lt;table&gt;</code> via the same REST attach used for native Iceberg
 tables.</p>
 <h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
@@ -2263,8 +2266,8 @@ tables.</p>
 <li>missing <code>snap-&lt;snapshot-id&gt;-compat.avro</code>: regenerate manifest + manifest-list from the
      original Delta snapshot state at read time</li>
 </ol>
-<p>This gives "refresh-on-read" behavior without requiring clients to know anything about Delta,
-and no marker file/state is required.</p>
+<p>This gives "refresh-on-read" behavior without requiring clients to know anything about Delta, and
+no marker file/state is required.</p>
 <p>Load responses follow Iceberg REST <code>snapshots</code> semantics:
 - <code>snapshots=all</code> returns all valid snapshots
 - <code>snapshots=refs</code> returns only snapshots currently referenced by branches/tags (empty if no refs)</p>
@@ -2292,8 +2295,8 @@ and no marker file/state is required.</p>
 <hr />
 <h2 id="commit-guarantees-current">Commit Guarantees (Current)<a class="headerlink" href="#commit-guarantees-current" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Single-table core state:</strong> synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.</li>
-<li><strong>Post-core side effects:</strong> none in the gateway commit path. Reconciliation happens later via the service scheduler.</li>
+<li><strong>Single-table core state:</strong> synchronous and strongly consistent within the request. Table and snapshot metadata needed for the next client commit or read is advanced in the core path.</li>
+<li><strong>Post-core side effects:</strong> none in the gateway commit path. Reconciliation is scheduled separately.</li>
 <li><strong>Multi-table <code>/transactions/commit</code>:</strong> atomic backend transaction across all table changes in one request.</li>
 </ul>
 <hr />
@@ -2306,34 +2309,47 @@ and no marker file/state is required.</p>
   view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
   <code>COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke</code>, which starts the service in
   <code>reconciler-control</code> mode and enables the remote <code>executor</code> profile. The Trino block creates and
-  replaces an Iceberg view via SQL and verifies both definitions are queryable.</li>
+  replaces an Iceberg view via SQL and verifies both definitions are queryable. The same
+  <code>localstack-remote</code> smoke run also exercises upstream Polaris Iceberg REST credential vending by
+  verifying that Polaris <code>loadTable</code> returns non-empty <code>storage-credentials</code> when sent
+  <code>X-Iceberg-Access-Delegation: vended-credentials</code>, then importing the upstream table through that
+  vended-credentials path in the same stack. For the OIDC split deployment, run
+  <code>COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke</code>, which adds Keycloak and
+  exercises remote executor worker machine auth as well as user-propagated OIDC auth.</li>
 </ul>
 <hr />
 <h2 id="operational-notes-current-limitations">Operational Notes &amp; Current Limitations<a class="headerlink" href="#operational-notes-current-limitations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Register IO scope:</strong> <code>POST /v1/{prefix}/namespaces/{namespace}/register</code> now treats
-  FileIO properties as request-scoped connector config. Runtime/global storage wiring
-  (<code>floecat.storage.aws.*</code>)
-  is no longer required for register flows. Use the register payload <code>properties</code> for
-  <code>io-impl</code>, <code>s3.endpoint</code>, <code>s3.region</code>, <code>s3.access-key-id</code>, <code>s3.secret-access-key</code>,
-  <code>s3.path-style-access</code>, etc. when non-default storage wiring is needed (for example LocalStack).
-  Request-supplied FileIO properties are merged over gateway defaults from
-  <code>floecat.connector.integration.storage-credential.properties.*</code>.</li>
+<li><strong>Register IO scope:</strong> <code>POST /v1/{prefix}/namespaces/{namespace}/register</code> treats
+  FileIO properties as request-scoped connector config. Use the register payload <code>properties</code> for
+  <code>io-impl</code>, <code>s3.endpoint</code>, <code>s3.region</code>, <code>s3.access-key-id</code>,
+  <code>s3.secret-access-key</code>, <code>s3.path-style-access</code>, etc. when non-default storage wiring is needed
+  (for example LocalStack). Request-supplied FileIO properties are merged over any non-secret
+  gateway defaults such as endpoint/path-style settings.
+  These are request-scoped import credentials for register-time server-side reads. They are not
+  persisted as storage-authority credentials and are not vended back to REST clients.</li>
 <li><strong>Register overwrite semantics:</strong> <code>POST /v1/{prefix}/namespaces/{namespace}/register</code> with
   <code>overwrite=true</code> is intended to preserve the existing Floecat table identity and imported
   snapshot lineage for an already-registered table. The overwrite path reuses the current table
   and snapshot IDs instead of treating register as a brand-new create flow.</li>
-<li><strong>Registered Iceberg connectors:</strong> tables registered or committed through the gateway are now
-  wired back to Floecat as gateway-managed REST connectors tagged with
+<li><strong>Registered Iceberg connectors:</strong> tables registered or committed through the gateway are wired
+  back to Floecat as gateway-managed REST connectors tagged with
   <code>floecat.connector.mode=capture-only</code>. The upstream source may still be modeled with
   <code>iceberg.source=rest</code>, but capture-only enforcement comes from the explicit mode property rather
   than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
   table record’s <code>location</code> and <code>metadata-location</code> remain the source of truth for Iceberg clients.</li>
-<li><strong>Credentials:</strong> <code>/tables/{table}/credentials</code> returns vended credentials based on access
-  delegation; per-request signing is not yet implemented. Auth resolution supports <code>aws.profile</code>
-  and <code>aws.profile_path</code> when clients expect AWS SDK profile-based access.</li>
+<li><strong>Credentials:</strong> <code>/tables/{table}/credentials</code>, table load responses, and plan responses return
+  vended credentials only when access delegation explicitly requests them and a matching storage
+  authority is configured for the resolved storage prefix. Floecat does not vend static long-lived
+  credentials; storage authorities are expected to resolve or mint temporary credentials.</li>
+<li><strong>Client-safe config:</strong> table load responses may include non-secret storage settings such as
+  endpoint, region, and path-style access. Those values come from storage-authority client-safe
+  config rather than from the upstream connector definition.</li>
+<li><strong>Credential source separation:</strong> connector secrets are never used for Iceberg REST client
+  credential vending. Storage-authority secrets are the only credential source used for client
+  vending.</li>
 <li><strong>Metrics persistence:</strong> <code>/tables/{table}/metrics</code> validates and logs payloads but does not persist them to <code>TableStatisticsService</code>.</li>
-<li><strong>Async planning:</strong> plans are synchronous/completed only; streaming manifests and async planning (<code>/plans/{id}</code>) are future work.</li>
+<li><strong>Async planning:</strong> plans are synchronous and completed inline; streaming manifests and async planning (<code>/plans/{id}</code>) are not supported.</li>
 <li><strong>Multi-table ACID scope:</strong> atomic within a single <code>/transactions/commit</code> backend transaction; request validation rejects duplicate table identifiers.</li>
 <li><strong>Reconciliation freshness:</strong> stats and other connector-derived state are eventually refreshed by scheduled reconciliation after the commit has already succeeded.</li>
 <li><strong>Manifest/file serving:</strong> the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.</li>
@@ -2341,6 +2357,7 @@ and no marker file/state is required.</p>
 <hr />
 <h2 id="client-quick-start">Client Quick Start<a class="headerlink" href="#client-quick-start" title="Permanent link">&para;</a></h2>
 <h3 id="duckdb">DuckDB<a class="headerlink" href="#duckdb" title="Permanent link">&para;</a></h3>
+<p>Client-managed credentials example (no delegation):</p>
 <div class="highlight"><pre><span></span><code><span class="n">INSTALL</span><span class="w"> </span><span class="n">httpfs</span><span class="p">;</span>
 <span class="k">LOAD</span><span class="w"> </span><span class="n">httpfs</span><span class="p">;</span>
 <span class="n">INSTALL</span><span class="w"> </span><span class="n">aws</span><span class="p">;</span>
@@ -2366,7 +2383,10 @@ and no marker file/state is required.</p>
 <span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">quark_events</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">2</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">3</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">4</span><span class="p">);</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">quark_events</span><span class="p">;</span>
 </code></pre></div>
+<p>This example is intentionally non-vended: DuckDB is configured with its own S3 secret and asks the
+gateway for <code>ACCESS_DELEGATION_MODE 'none'</code>.</p>
 <h3 id="trino">Trino<a class="headerlink" href="#trino" title="Permanent link">&para;</a></h3>
+<p>Client-managed credentials example (no delegation):</p>
 <p><code>etc/catalog/analytics_rest.properties</code>:</p>
 <div class="highlight"><pre><span></span><code>connector.name=iceberg
 iceberg.catalog.type=rest
@@ -2401,7 +2421,18 @@ the network, use <code>host.docker.internal</code>.</p>
 <span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">analytics</span><span class="p">.</span><span class="n">sales</span><span class="p">.</span><span class="n">stream_orders</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;east&#39;</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;west&#39;</span><span class="p">);</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">analytics</span><span class="p">.</span><span class="n">sales</span><span class="p">.</span><span class="n">stream_orders</span><span class="p">;</span>
 </code></pre></div>
-<p>Trino picks up the REST prefix/warehouse from the catalog properties, while the gateway injects consistent metadata paths and credentials.</p>
+<p>This example is also intentionally non-vended: Trino is configured with static object-store
+credentials. Use this mode when the client is expected to bring its own storage credentials.</p>
+<p>Preferred model: storage-authority-backed credential vending</p>
+<ul>
+<li>Configure upstream catalog access on the Floecat connector as needed for Polaris, Glue, Unity,
+  Delta, or other source systems.</li>
+<li>Configure storage authorities for the table prefixes you want Floecat to vend.</li>
+<li>Use client access delegation only on engines that support consuming Iceberg REST
+  <code>storage-credentials</code>.</li>
+</ul>
+<p>In that preferred model, Floecat vends temporary object-store credentials from storage authorities;
+the client does not need static S3 keys in its catalog config.</p>
 <hr />
 <h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
 <ul>
