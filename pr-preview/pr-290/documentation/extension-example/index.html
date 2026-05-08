@@ -1,0 +1,2585 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/extension-example/">
+      
+      
+        <link rel="prev" href="../connectors-spi/">
+      
+      
+        <link rel="next" href="../types/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Example Catalog Extension - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#example-catalog-extension" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Example Catalog Extension
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      Quick start
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loading-behaviour" class="md-nav__link">
+    <span class="md-ellipsis">
+      Loading behaviour
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Loading behaviour">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-loading-floecat_extension_builtins_dir-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      Filesystem loading (FLOECAT_EXTENSION_BUILTINS_DIR set)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#classpath-loading-default-no-directory-configured" class="md-nav__link">
+    <span class="md-ellipsis">
+      Classpath loading (default, no directory configured)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error handling
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pbtxt-format-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      PBtxt format reference
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PBtxt format reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#namespaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespaces
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#types" class="md-nav__link">
+    <span class="md-ellipsis">
+      Types
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Functions
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      Operators
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#casts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Casts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Collations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregates" class="md-nav__link">
+    <span class="md-ellipsis">
+      Aggregates
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine_specific-blocks" class="md-nav__link">
+    <span class="md-ellipsis">
+      engine_specific blocks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-vs-engine-kind" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace vs engine kind
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Further reading
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      Quick start
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loading-behaviour" class="md-nav__link">
+    <span class="md-ellipsis">
+      Loading behaviour
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Loading behaviour">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-loading-floecat_extension_builtins_dir-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      Filesystem loading (FLOECAT_EXTENSION_BUILTINS_DIR set)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#classpath-loading-default-no-directory-configured" class="md-nav__link">
+    <span class="md-ellipsis">
+      Classpath loading (default, no directory configured)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error handling
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pbtxt-format-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      PBtxt format reference
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PBtxt format reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#namespaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespaces
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#types" class="md-nav__link">
+    <span class="md-ellipsis">
+      Types
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Functions
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      Operators
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#casts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Casts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Collations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregates" class="md-nav__link">
+    <span class="md-ellipsis">
+      Aggregates
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine_specific-blocks" class="md-nav__link">
+    <span class="md-ellipsis">
+      engine_specific blocks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-vs-engine-kind" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace vs engine kind
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Further reading
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mc-cred-vending2/docs/extension-example.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="example-catalog-extension">Example Catalog Extension<a class="headerlink" href="#example-catalog-extension" title="Permanent link">&para;</a></h1>
+<p><code>floecat-extension-example</code> is a zero-code, file-based
+<code>EngineSystemCatalogExtension</code>
+that serves any engine's catalog from user-authored <code>.pbtxt</code> files — no Java required.</p>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>The extension reads one or more <code>.pbtxt</code> files that describe your engine's built-in types,
+functions, operators, casts, collations, and aggregates in protobuf text format.  Floecat parses
+and merges those files at startup, then serves the resulting catalog to planners that send a
+matching <code>x-engine-kind</code> header.</p>
+<p>The extension is discovered automatically via Java's <code>ServiceLoader</code> mechanism.  One extension
+instance handles exactly one engine kind per deployment.  Both the engine kind identifier and
+the source directory of <code>.pbtxt</code> files are configurable at runtime without recompiling.</p>
+<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<p><strong>1. Configure the extension.</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Engine identifier sent by planners in x-engine-kind (default: &quot;example&quot;)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">FLOECAT_EXTENSION_ENGINE_KIND</span><span class="o">=</span>my-engine
+
+<span class="c1"># Directory that contains your *.pbtxt catalog files</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">FLOECAT_EXTENSION_BUILTINS_DIR</span><span class="o">=</span>/path/to/my-engine/catalog
+</code></pre></div>
+<p><strong>2. Write your <code>.pbtxt</code> files.</strong></p>
+<p>Use the bundled format-reference files as templates:</p>
+<div class="highlight"><pre><span></span><code>extensions/example/src/main/resources/builtins/example/
+  00_namespaces.pbtxt   ← namespace / schema declaration
+  10_types.pbtxt        ← scalar and array types
+  20_functions.pbtxt    ← scalar, aggregate state/finalizer, and window functions
+  30_operators.pbtxt    ← infix operators
+  40_casts.pbtxt        ← explicit, assignment, and implicit casts
+  50_collations.pbtxt   ← text collations
+  60_aggregates.pbtxt   ← aggregate functions
+</code></pre></div>
+<p>Each file is heavily commented with field-by-field documentation.  Copy, rename, and replace the
+placeholder objects with your engine's actual catalog.</p>
+<p><strong>3. Start Floecat.</strong></p>
+<p>No code changes are required.  On startup Floecat loads <code>*.pbtxt</code> files from
+<code>FLOECAT_EXTENSION_BUILTINS_DIR</code>, builds the catalog, and registers it under <code>my-engine</code>.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Config key</th>
+<th>Env var</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>floecat.extension.engine-kind</code></td>
+<td><code>FLOECAT_EXTENSION_ENGINE_KIND</code></td>
+<td><code>example</code></td>
+<td>Engine identifier served by this extension.  Must match the <code>x-engine-kind</code> gRPC header that planners send.</td>
+</tr>
+<tr>
+<td><code>floecat.extension.builtins-dir</code></td>
+<td><code>FLOECAT_EXTENSION_BUILTINS_DIR</code></td>
+<td><em>(bundled classpath files)</em></td>
+<td>Path to a directory of <code>*.pbtxt</code> catalog files.  When absent, the bundled format-reference catalog is loaded from the classpath.</td>
+</tr>
+</tbody>
+</table>
+<p>Config is resolved via MicroProfile Config at startup, so any supported config source (env vars,
+system properties, <code>application.properties</code>) works.</p>
+<h2 id="loading-behaviour">Loading behaviour<a class="headerlink" href="#loading-behaviour" title="Permanent link">&para;</a></h2>
+<h3 id="filesystem-loading-floecat_extension_builtins_dir-set">Filesystem loading (<code>FLOECAT_EXTENSION_BUILTINS_DIR</code> set)<a class="headerlink" href="#filesystem-loading-floecat_extension_builtins_dir-set" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Globs <code>*.pbtxt</code> in the configured directory (non-recursive, single level).</li>
+<li>Files are merged in <strong>alphabetical filename order</strong> — use numeric prefixes (<code>00_</code>, <code>10_</code>, <code>20_</code>,
+  …) to control merge order across files.</li>
+<li>Only <code>*.pbtxt</code> files are read; any other extension (<code>.txt</code>, <code>.json</code>, …) is silently ignored.</li>
+<li>An empty directory is valid: Floecat starts with an empty catalog for this engine kind, which
+  is useful during development before any files are written.</li>
+</ul>
+<h3 id="classpath-loading-default-no-directory-configured">Classpath loading (default, no directory configured)<a class="headerlink" href="#classpath-loading-default-no-directory-configured" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Reads <code>_index.txt</code> from <code>/builtins/example/</code> on the classpath.</li>
+<li><code>_index.txt</code> lists filenames one per line in the desired merge order.
+  Lines that are blank or start with <code>#</code> are ignored; absolute paths are rejected with a warning.</li>
+<li>Files are loaded in the order they appear in <code>_index.txt</code>.</li>
+<li>The bundled files are <strong>format-reference examples only</strong> — they define placeholder objects
+  (<code>my_type</code>, <code>my_function</code>, etc.) for documentation purposes.
+  Replace them entirely via <code>FLOECAT_EXTENSION_BUILTINS_DIR</code>.</li>
+</ul>
+<h3 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h3>
+<p>All loading paths degrade gracefully; the service never fails to start due to catalog errors.</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Configured dir does not exist or is not a directory</td>
+<td><code>WARN</code> log; empty catalog served</td>
+</tr>
+<tr>
+<td>Dir exists but contains no <code>*.pbtxt</code> files</td>
+<td><code>DEBUG</code> log; empty catalog served</td>
+</tr>
+<tr>
+<td><code>_index.txt</code> not found on classpath</td>
+<td><code>WARN</code> log; empty catalog served</td>
+</tr>
+<tr>
+<td>File cannot be read (I/O error)</td>
+<td><code>WARN</code> log; file skipped; other files still load</td>
+</tr>
+<tr>
+<td>File fails to parse (invalid proto text)</td>
+<td><code>WARN</code> log; file skipped; other files still load</td>
+</tr>
+<tr>
+<td><code>engine_kind</code> inside an <code>engine_specific</code> block</td>
+<td>Silently stripped (see <a href="#engine_specific-blocks">engine_specific blocks</a>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pbtxt-format-reference">PBtxt format reference<a class="headerlink" href="#pbtxt-format-reference" title="Permanent link">&para;</a></h2>
+<p>Files must be valid <code>SystemObjectsRegistry</code> proto text format.  Each file may define one or more
+entries of any repeated field (<code>types</code>, <code>functions</code>, <code>operators</code>, <code>casts</code>, <code>collations</code>,
+<code>aggregates</code>, <code>system_namespaces</code>); entries across files are accumulated in load order.</p>
+<h3 id="namespaces">Namespaces<a class="headerlink" href="#namespaces" title="Permanent link">&para;</a></h3>
+<p>Declares the SQL schema (namespace) that groups built-in objects.  At least one namespace entry
+is required; every <code>name.path</code> value used in other files must reference a declared namespace name.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace identifier.  Used as the <code>path</code> in all other object <code>name</code> blocks.</td>
+</tr>
+<tr>
+<td><code>display_name</code></td>
+<td>string</td>
+<td>no</td>
+<td>Human-readable label shown in UI or error messages.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="n">system_namespaces</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">display_name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h3>
+<p>Defines the scalar and collection types your engine exposes.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Unqualified type identifier.</td>
+</tr>
+<tr>
+<td><code>name.path</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace (must match a declared <code>system_namespaces</code> entry).</td>
+</tr>
+<tr>
+<td><code>category</code></td>
+<td>string</td>
+<td>yes</td>
+<td>One of: <code>"N"</code> numeric, <code>"S"</code> string/character, <code>"B"</code> boolean, <code>"D"</code> date/time, <code>"A"</code> array/collection, <code>"U"</code> user-defined.</td>
+</tr>
+<tr>
+<td><code>is_array</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> for array / collection types.  Set <code>element_type</code> when <code>true</code>.</td>
+</tr>
+<tr>
+<td><code>element_type</code></td>
+<td>NameRef</td>
+<td>when <code>is_array</code></td>
+<td>Element type reference: <code>name</code> + <code>path</code>.</td>
+</tr>
+<tr>
+<td><code>engine_specific.properties</code></td>
+<td>map&lt;string,string&gt;</td>
+<td>no</td>
+<td>Free-form metadata for your runtime (type IDs, byte widths, storage layouts, etc.).</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="err">#</span><span class="w"> </span><span class="n">Scalar</span><span class="w"> </span><span class="n">type</span>
+<span class="n">types</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">category</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;N&quot;</span>
+<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;description&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;32-bit signed integer&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;size_bytes&quot;</span><span class="w">  </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;4&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="err">#</span><span class="w"> </span><span class="n">Array</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="err">—</span><span class="w"> </span><span class="n">demonstrates</span><span class="w"> </span><span class="n">is_array</span><span class="w"> </span><span class="n">and</span><span class="w"> </span><span class="n">element_type</span>
+<span class="n">types</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer_array&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">category</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;A&quot;</span>
+<span class="w">  </span><span class="n">is_array</span><span class="o">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">  </span><span class="n">element_type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="functions">Functions<a class="headerlink" href="#functions" title="Permanent link">&para;</a></h3>
+<p>Defines scalar functions, aggregate state-transition and finalizer functions, and window functions.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Function identifier.</td>
+</tr>
+<tr>
+<td><code>name.path</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace.</td>
+</tr>
+<tr>
+<td><code>argument_types</code></td>
+<td>repeated NameRef</td>
+<td>no</td>
+<td>Ordered parameter types.  Repeat the block once per argument.</td>
+</tr>
+<tr>
+<td><code>return_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Return type.</td>
+</tr>
+<tr>
+<td><code>is_aggregate</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> for aggregate state-transition and finalizer functions.</td>
+</tr>
+<tr>
+<td><code>is_window</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> for window functions.</td>
+</tr>
+<tr>
+<td><code>engine_specific.min_version</code></td>
+<td>string</td>
+<td>no</td>
+<td>Earliest engine version that supports this function (inclusive).</td>
+</tr>
+<tr>
+<td><code>engine_specific.max_version</code></td>
+<td>string</td>
+<td>no</td>
+<td>Latest engine version that supports this function (inclusive).</td>
+</tr>
+<tr>
+<td><code>engine_specific.properties</code></td>
+<td>map&lt;string,string&gt;</td>
+<td>no</td>
+<td>Free-form metadata (description, volatility, internal IDs, …).</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="err">#</span><span class="w"> </span><span class="n">Scalar</span><span class="w"> </span><span class="n">function</span><span class="w"> </span><span class="err">—</span><span class="w"> </span><span class="n">single</span><span class="w"> </span><span class="n">argument</span>
+<span class="n">functions</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_abs&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="err">#</span><span class="w"> </span><span class="n">Function</span><span class="w"> </span><span class="n">available</span><span class="w"> </span><span class="n">only</span><span class="w"> </span><span class="n">from</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="n">minimum</span><span class="w"> </span><span class="n">engine</span><span class="w"> </span><span class="n">version</span>
+<span class="n">functions</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_json_extract&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">min_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;2.0&quot;</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h3>
+<p>Defines infix operators.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Operator symbol (e.g., <code>"+"</code>, <code>"-"</code>, <code>"\|\|"</code>).</td>
+</tr>
+<tr>
+<td><code>left_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Left operand type.</td>
+</tr>
+<tr>
+<td><code>right_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Right operand type.</td>
+</tr>
+<tr>
+<td><code>return_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Result type.</td>
+</tr>
+<tr>
+<td><code>is_commutative</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> when <code>a OP b = b OP a</code>.</td>
+</tr>
+<tr>
+<td><code>is_associative</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> when <code>(a OP b) OP c = a OP (b OP c)</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="err">#</span><span class="w"> </span><span class="n">Commutative</span><span class="p">,</span><span class="w"> </span><span class="n">associative</span><span class="w"> </span><span class="n">addition</span>
+<span class="n">operators</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;+&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">left_type</span><span class="w">   </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">right_type</span><span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">return_type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">is_commutative</span><span class="o">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">  </span><span class="n">is_associative</span><span class="o">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="casts">Casts<a class="headerlink" href="#casts" title="Permanent link">&para;</a></h3>
+<p>Defines type conversion rules.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Cast identifier.</td>
+</tr>
+<tr>
+<td><code>name.path</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace.</td>
+</tr>
+<tr>
+<td><code>source_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Input type.</td>
+</tr>
+<tr>
+<td><code>target_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Output type.</td>
+</tr>
+<tr>
+<td><code>method</code></td>
+<td>string</td>
+<td>yes</td>
+<td>One of: <code>"implicit"</code> (automatic, no CAST expression needed), <code>"assignment"</code> (automatic on column assignment), <code>"explicit"</code> (requires <code>CAST(x AS target_type)</code>).</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="err">#</span><span class="w"> </span><span class="n">Explicit</span><span class="w"> </span><span class="n">cast</span><span class="o">:</span><span class="w"> </span><span class="n">requires</span><span class="w"> </span><span class="n">CAST</span><span class="p">(</span><span class="n">x</span><span class="w"> </span><span class="n">AS</span><span class="w"> </span><span class="n">my_integer</span><span class="p">)</span>
+<span class="n">casts</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text_to_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">source_type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">target_type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">method</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;explicit&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="collations">Collations<a class="headerlink" href="#collations" title="Permanent link">&para;</a></h3>
+<p>Defines text sort orders.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Collation identifier.</td>
+</tr>
+<tr>
+<td><code>name.path</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace.</td>
+</tr>
+<tr>
+<td><code>locale</code></td>
+<td>string</td>
+<td>yes</td>
+<td>BCP 47 locale tag (e.g., <code>"en_US"</code>, <code>"de_DE"</code>, <code>"C"</code>, <code>"POSIX"</code>).</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="n">collations</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;default&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">locale</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;en_US&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="aggregates">Aggregates<a class="headerlink" href="#aggregates" title="Permanent link">&para;</a></h3>
+<p>Defines aggregate functions (the public-facing aggregate, not the internal state/finalizer
+functions — those are defined as <code>functions</code> with <code>is_aggregate: true</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name.name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Aggregate identifier.</td>
+</tr>
+<tr>
+<td><code>name.path</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Namespace.</td>
+</tr>
+<tr>
+<td><code>argument_types</code></td>
+<td>repeated NameRef</td>
+<td>no</td>
+<td>Input column types.  Repeat once per argument.</td>
+</tr>
+<tr>
+<td><code>state_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Type of the running accumulator state.</td>
+</tr>
+<tr>
+<td><code>return_type</code></td>
+<td>NameRef</td>
+<td>yes</td>
+<td>Type returned after finalization.</td>
+</tr>
+<tr>
+<td><code>engine_specific.properties</code></td>
+<td>map&lt;string,string&gt;</td>
+<td>no</td>
+<td>Free-form metadata.  Conventionally used to reference state-transition and finalizer functions (<code>state_function</code>, <code>final_function</code>).</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="n">aggregates</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_sum&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">state_type</span><span class="w">     </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_bigint&quot;</span><span class="w">  </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_bigint&quot;</span><span class="w">  </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;state_function&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_sum_state&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;final_function&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_sum_final&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="engine_specific-blocks"><code>engine_specific</code> blocks<a class="headerlink" href="#engine_specific-blocks" title="Permanent link">&para;</a></h2>
+<p>Every catalog object type accepts an <code>engine_specific</code> block for version constraints and
+free-form metadata:</p>
+<div class="highlight"><pre><span></span><code><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">min_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;2.0&quot;</span><span class="w">          </span><span class="err">#</span><span class="w"> </span><span class="n">inclusive</span><span class="w"> </span><span class="n">lower</span><span class="w"> </span><span class="n">bound</span><span class="p">;</span><span class="w"> </span><span class="n">omit</span><span class="w"> </span><span class="n">if</span><span class="w"> </span><span class="n">no</span><span class="w"> </span><span class="n">minimum</span>
+<span class="w">  </span><span class="n">max_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;5.9&quot;</span><span class="w">          </span><span class="err">#</span><span class="w"> </span><span class="n">inclusive</span><span class="w"> </span><span class="n">upper</span><span class="w"> </span><span class="n">bound</span><span class="p">;</span><span class="w"> </span><span class="n">omit</span><span class="w"> </span><span class="n">if</span><span class="w"> </span><span class="n">no</span><span class="w"> </span><span class="n">maximum</span>
+<span class="w">  </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;description&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;any string metadata&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Version filtering.</strong>  <code>min_version</code> and <code>max_version</code> are compared against the engine version
+sent in the <code>x-engine-version</code> gRPC header.  <code>EngineSpecificMatcher</code> evaluates the comparison
+using lexicographic semver-style ordering.  Planners that send a version outside the declared
+range will not see the object.  Objects with no <code>engine_specific</code> block (or no version fields)
+are always included.</p>
+<p><strong><code>properties</code>.</strong>  A free-form <code>map&lt;string,string&gt;</code> for any metadata your engine needs at
+runtime — internal type or function IDs, byte widths, volatility, storage layout hints, etc.
+Floecat does not interpret property keys or values; they are passed through to the planner as-is.</p>
+<p><strong><code>engine_kind</code> is not supported.</strong>  If an <code>engine_kind</code> field appears inside an
+<code>engine_specific</code> block it is silently stripped before the catalog is served.  The catalog's
+configured engine kind (<code>FLOECAT_EXTENSION_ENGINE_KIND</code>) always applies uniformly — one
+extension instance serves exactly one engine kind, so a per-rule filter is unnecessary and would
+cause subtle scoping bugs if the engine kind is ever renamed.</p>
+<h2 id="namespace-vs-engine-kind">Namespace vs engine kind<a class="headerlink" href="#namespace-vs-engine-kind" title="Permanent link">&para;</a></h2>
+<p>These two concepts are independent and are frequently confused:</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Configured by</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Engine kind</strong></td>
+<td><code>FLOECAT_EXTENSION_ENGINE_KIND</code></td>
+<td>Identifies the extension to Floecat.  Planners send this value in the <code>x-engine-kind</code> gRPC header to request this catalog.</td>
+</tr>
+<tr>
+<td><strong>Namespace</strong></td>
+<td><code>name.path</code> in each PBtxt object</td>
+<td>The SQL schema that groups objects within the catalog (e.g., <code>pg_catalog</code>, <code>information_schema</code>, <code>my_schema</code>).  Purely a catalog-level grouping concept.</td>
+</tr>
+</tbody>
+</table>
+<p>You can keep <code>path: "example"</code> in your PBtxt files even when <code>FLOECAT_EXTENSION_ENGINE_KIND</code> is
+set to <code>my-db</code>.  Conversely, you can change the namespace to match your engine's schema without
+changing the engine kind.  The only requirement is consistency: every <code>name.path</code> value must
+reference a namespace declared in a <code>system_namespaces</code> block within the same catalog.</p>
+<h2 id="further-reading">Further reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../builtin-catalog/">Builtin catalog architecture</a> — SPI contracts, <code>ServiceLoader</code> discovery,
+  caching layers, version matching, and the full request flow from planner to gRPC response</li>
+<li><a href="https://github.com/eng-floe/floecat/blob/main/extensions/example/src/main/java/ai/floedb/floecat/extensions/example/ExampleCatalogExtension.java"><code>ExampleCatalogExtension.java</code></a> — config key constants and loading implementation</li>
+<li><a href="https://github.com/eng-floe/floecat/tree/main/extensions/example/src/main/resources/builtins/example">Bundled format-reference files</a> — annotated PBtxt templates for every object type</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
