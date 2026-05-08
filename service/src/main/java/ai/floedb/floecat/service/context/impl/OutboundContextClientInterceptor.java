@@ -43,16 +43,13 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
   private final Optional<String> sessionHeader;
   private final Optional<String> authorizationHeader;
-  private final ReconcilerMachineAuthTokenProvider reconcilerMachineAuthTokenProvider;
 
   public OutboundContextClientInterceptor(
       @ConfigProperty(name = "floecat.interceptor.session.header") Optional<String> sessionHeader,
       @ConfigProperty(name = "floecat.interceptor.authorization.header")
-          Optional<String> authorizationHeader,
-      ReconcilerMachineAuthTokenProvider reconcilerMachineAuthTokenProvider) {
+          Optional<String> authorizationHeader) {
     this.sessionHeader = sessionHeader.filter(header -> !header.isBlank());
     this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
-    this.reconcilerMachineAuthTokenProvider = reconcilerMachineAuthTokenProvider;
   }
 
   @Override
@@ -99,18 +96,12 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
               Metadata.Key.of(sessionHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
           headers.put(key, sessionHeaderValue);
         }
-        if (authorizationHeaderValue != null && authorizationHeader.isPresent()) {
-          Metadata.Key<String> key =
-              Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
-          headers.put(key, authorizationHeaderValue);
-        } else if (authorizationHeader.isPresent()
-            && sessionHeaderValue == null
+        if (authorizationHeaderValue != null
+            && authorizationHeader.isPresent()
             && !hasAuthorizationHeader(headers)) {
           Metadata.Key<String> key =
               Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
-          reconcilerMachineAuthTokenProvider
-              .authorizationHeader()
-              .ifPresent(value -> headers.put(key, value));
+          headers.put(key, authorizationHeaderValue);
         }
 
         putIfNonBlank(headers, QUERY_ID, queryId);

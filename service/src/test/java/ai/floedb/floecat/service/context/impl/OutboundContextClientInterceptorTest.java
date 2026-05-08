@@ -42,19 +42,7 @@ final class OutboundContextClientInterceptorTest {
   @Test
   void doesNotEmitEmptyEngineHeadersWhenContextMissing() {
     OutboundContextClientInterceptor interceptor =
-        new OutboundContextClientInterceptor(
-            Optional.empty(),
-            Optional.empty(),
-            new ReconcilerMachineAuthTokenProvider(
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                30,
-                java.time.Duration.ofSeconds(10),
-                java.time.Clock.systemUTC(),
-                (endpoint, requestBody, connectTimeout) -> {
-                  throw new AssertionError("machine auth should not be used");
-                }));
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.empty());
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
     MethodDescriptor<String, String> method =
@@ -75,21 +63,9 @@ final class OutboundContextClientInterceptorTest {
   }
 
   @Test
-  void propagatedAuthorizationHeaderTakesPrecedenceOverMachineToken() {
+  void propagatesAuthorizationHeaderFromRequestContext() {
     OutboundContextClientInterceptor interceptor =
-        new OutboundContextClientInterceptor(
-            Optional.empty(),
-            Optional.of("authorization"),
-            new ReconcilerMachineAuthTokenProvider(
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                30,
-                java.time.Duration.ofSeconds(10),
-                java.time.Clock.systemUTC(),
-                (endpoint, requestBody, connectTimeout) -> {
-                  throw new AssertionError("machine auth should not be used");
-                }));
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.of("authorization"));
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
     Context context =
@@ -111,20 +87,9 @@ final class OutboundContextClientInterceptorTest {
   }
 
   @Test
-  void machineTokenIsUsedWhenNoRequestContextExists() {
+  void doesNotInventAuthorizationHeaderWhenNoRequestContextExists() {
     OutboundContextClientInterceptor interceptor =
-        new OutboundContextClientInterceptor(
-            Optional.empty(),
-            Optional.of("authorization"),
-            new ReconcilerMachineAuthTokenProvider(
-                Optional.of("http://issuer"),
-                Optional.of("worker-client"),
-                Optional.of("worker-secret"),
-                30,
-                java.time.Duration.ofSeconds(10),
-                java.time.Clock.systemUTC(),
-                (endpoint, requestBody, connectTimeout) ->
-                    new ReconcilerMachineAuthTokenProvider.TokenResponse("machine-token", 60)));
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.of("authorization"));
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
     ClientCall<String, String> call =
@@ -134,7 +99,35 @@ final class OutboundContextClientInterceptorTest {
 
     Metadata.Key<String> authKey =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-    assertThat(captured.get().get(authKey)).isEqualTo("Bearer machine-token");
+    assertThat(captured.get().get(authKey)).isNull();
+  }
+
+  @Test
+  void existingAuthorizationHeaderIsNotOverwrittenByPropagatedContext() {
+    OutboundContextClientInterceptor interceptor =
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.of("authorization"));
+    AtomicReference<Metadata> captured = new AtomicReference<>();
+
+    Context context =
+        Context.current()
+            .withValue(
+                InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY, "Bearer propagated");
+
+    context.run(
+        () -> {
+          ClientCall<String, String> call =
+              interceptor.interceptCall(
+                  testMethod("test/explicit"), CallOptions.DEFAULT, new TestChannel(captured));
+          Metadata headers = new Metadata();
+          headers.put(
+              Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
+              "Bearer explicit");
+          call.start(new ClientCall.Listener<>() {}, headers);
+        });
+
+    Metadata.Key<String> authKey =
+        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    assertThat(captured.get().get(authKey)).isEqualTo("Bearer explicit");
   }
 
   private static MethodDescriptor<String, String> testMethod(String fullMethodName) {

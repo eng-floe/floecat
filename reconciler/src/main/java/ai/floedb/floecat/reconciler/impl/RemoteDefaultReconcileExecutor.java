@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -35,6 +36,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   private final ReconcilerService reconcilerService;
   private final QueuedReconcileWorkerSupport queuedWorkerSupport;
   private final RemotePlannerWorkerClient workerClient;
+  private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
 
   @Inject
@@ -42,6 +44,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       ReconcilerService reconcilerService,
       QueuedReconcileWorkerSupport queuedWorkerSupport,
       RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-default.enabled",
               defaultValue = "false")
@@ -49,6 +52,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     this.reconcilerService = reconcilerService;
     this.queuedWorkerSupport = queuedWorkerSupport;
     this.workerClient = workerClient;
+    this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.enabled = enabled;
   }
 
@@ -109,7 +113,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             payload.scope(),
             payload.tableTask(),
             payload.captureMode(),
-            null,
+            workerAuthorizationHeader(),
             context.shouldStop(),
             progressListener);
     ExecutionResult result = tableExecution.result();
@@ -177,7 +181,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             connectorId,
             payload.scope(),
             payload.viewTask(),
-            null,
+            workerAuthorizationHeader(),
             context.shouldStop(),
             progressListener);
     ExecutionResult result = planned.result();
@@ -257,7 +261,17 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     }
     ReconcileScope scope = payload.scope() == null ? ReconcileScope.empty() : payload.scope();
     return reconcilerService.planSnapshotTasks(
-        principal, connectorId, payload.fullRescan(), scope, task, payload.captureMode(), null);
+        principal,
+        connectorId,
+        payload.fullRescan(),
+        scope,
+        task,
+        payload.captureMode(),
+        workerAuthorizationHeader());
+  }
+
+  private String workerAuthorizationHeader() {
+    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(

@@ -120,6 +120,7 @@ public final class RolePermissions {
     if (devMode) {
       perms.add("account.write");
       perms.add(STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+      perms.add(RECONCILE_EXECUTOR_CONTROL_INTERNAL);
     }
     if (perms.isEmpty()) {
       perms.addAll(devMode ? FULL_PERMS : READ_PERMS);

@@ -86,7 +86,7 @@ import java.util.Set;
 public class ReconcileExecutorControlImpl extends BaseServiceImpl
     implements ReconcileExecutorControl {
   static final java.util.List<String> EXECUTOR_CONTROL_PERMISSIONS =
-      java.util.List.of("connector.manage", RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
+      java.util.List.of(RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;

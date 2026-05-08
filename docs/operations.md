@@ -114,6 +114,14 @@ Recommended split deployment:
 - Control-plane-specific setting: `reconciler.max-parallelism=0`
 - Executor-plane-specific setting: `floecat.reconciler.worker.mode=remote`
 
+Worker gRPC auth boundary:
+
+- Remote reconcile workers authenticate to `ReconcileExecutorControl` with an explicit bearer
+  token attached by the worker client itself.
+- In OIDC mode, that bearer token comes from the configured reconciler worker service principal.
+- Internal user-context fanout still uses propagated request metadata where appropriate, but that
+  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.
+
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
 and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through

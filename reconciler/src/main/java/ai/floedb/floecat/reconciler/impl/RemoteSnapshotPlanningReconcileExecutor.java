@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -49,6 +50,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
 
   private final ReconcilerBackend backend;
   private final RemotePlannerWorkerClient workerClient;
+  private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
   private final int maxFilesPerGroup;
 
@@ -56,6 +58,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   public RemoteSnapshotPlanningReconcileExecutor(
       ReconcilerBackend backend,
       RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       @ConfigProperty(
               name = "floecat.reconciler.snapshot-plan.max-files-per-group",
               defaultValue = "128")
@@ -66,6 +69,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           boolean enabled) {
     this.backend = backend;
     this.workerClient = workerClient;
+    this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.maxFilesPerGroup = Math.max(1, maxFilesPerGroup);
     this.enabled = enabled;
   }
@@ -316,7 +320,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             .build();
     ReconcileContext reconcileContext =
         new ReconcileContext(
-            "reconciler-job-" + lease.jobId, principal, id(), Instant.now(), Optional.empty());
+            "reconciler-job-" + lease.jobId,
+            principal,
+            id(),
+            Instant.now(),
+            Optional.ofNullable(workerAuthorizationHeader()));
     backend.lookupConnector(reconcileContext, connectorId);
     return backend.fetchSnapshot(reconcileContext, tableId, task.snapshotId());
   }
@@ -416,7 +424,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             .setCorrelationId("reconciler-job-" + lease.jobId)
             .build();
     return new ReconcileContext(
-        "reconciler-job-" + lease.jobId, principal, id(), Instant.now(), Optional.empty());
+        "reconciler-job-" + lease.jobId,
+        principal,
+        id(),
+        Instant.now(),
+        Optional.ofNullable(workerAuthorizationHeader()));
+  }
+
+  private String workerAuthorizationHeader() {
+    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
   }
 
   private static ReconcileScope effectiveFileGroupScope(

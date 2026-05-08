@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
@@ -57,8 +58,10 @@ import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -68,8 +71,41 @@ class GrpcRemoteReconcileExecutorClient
         RemoteFileGroupWorkerClient {
   private static final Logger LOG = Logger.getLogger(GrpcRemoteReconcileExecutorClient.class);
 
+  private static final Metadata.Key<String> AUTHORIZATION =
+      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+
+  private final Optional<String> authorizationHeaderName;
+  private final String authMode;
+  private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
+
+  @Inject
+  GrpcRemoteReconcileExecutorClient(
+      @ConfigProperty(name = "floecat.interceptor.authorization.header")
+          Optional<String> authorizationHeaderName,
+      @ConfigProperty(name = "floecat.auth.mode", defaultValue = "dev") String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(authorizationHeaderName, authMode, reconcileWorkerAuthProvider, true);
+  }
+
+  GrpcRemoteReconcileExecutorClient(
+      String authorizationHeaderName,
+      String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(Optional.ofNullable(authorizationHeaderName), authMode, reconcileWorkerAuthProvider, true);
+  }
+
+  private GrpcRemoteReconcileExecutorClient(
+      Optional<String> authorizationHeaderName,
+      String authMode,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      boolean ignored) {
+    this.authorizationHeaderName =
+        authorizationHeaderName.map(String::trim).filter(value -> !value.isBlank());
+    this.authMode = authMode == null ? "dev" : authMode.trim().toLowerCase(java.util.Locale.ROOT);
+    this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
+  }
 
   @GrpcClient("floecat")
   ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub executorControl;
@@ -1027,10 +1063,33 @@ class GrpcRemoteReconcileExecutorClient
         MetadataUtils.newAttachHeadersInterceptor(metadata(correlationId)));
   }
 
-  private Metadata metadata(String correlationId) {
+  Metadata metadata(String correlationId) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, correlationId == null ? "" : correlationId);
+    attachWorkerAuthorization(metadata);
     return metadata;
+  }
+
+  private void attachWorkerAuthorization(Metadata metadata) {
+    if (authorizationHeaderName.isEmpty()) {
+      return;
+    }
+    Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader();
+    if (authorization.isPresent()) {
+      metadata.put(headerKey(authorizationHeaderName.orElseThrow()), authorization.orElseThrow());
+      return;
+    }
+    if (!"dev".equals(authMode)) {
+      throw new IllegalStateException(
+          "Reconcile worker authorization header is required but no worker auth configuration is available");
+    }
+  }
+
+  private static Metadata.Key<String> headerKey(String headerName) {
+    if ("authorization".equalsIgnoreCase(headerName)) {
+      return AUTHORIZATION;
+    }
+    return Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
   }
 
   private static String correlationId(RemoteLeasedJob lease) {

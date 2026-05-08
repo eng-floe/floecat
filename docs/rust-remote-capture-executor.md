@@ -63,8 +63,9 @@ floecat.reconciler.job-store.lease-ms=30000
 ```
 
 The Rust worker should target the control-plane gRPC endpoint and acquire bearer tokens for the
-configured reconciler service principal via client credentials. Per-request propagated auth still
-takes precedence when the worker is acting on behalf of an inbound user request.
+configured reconciler service principal via client credentials. Worker RPCs should attach that
+bearer token explicitly; they should not rely on propagated inbound user auth or global client
+interceptor behavior for correctness.
 
 ## Worker Identity and Leasing
 The lease request supports:

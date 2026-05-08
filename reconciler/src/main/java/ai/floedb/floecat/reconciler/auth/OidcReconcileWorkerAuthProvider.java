@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.context.impl;
+package ai.floedb.floecat.reconciler.auth;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -34,8 +34,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class ReconcilerMachineAuthTokenProvider {
-  private static final Logger LOG = Logger.getLogger(ReconcilerMachineAuthTokenProvider.class);
+public class OidcReconcileWorkerAuthProvider implements ReconcileWorkerAuthProvider {
+  private static final Logger LOG = Logger.getLogger(OidcReconcileWorkerAuthProvider.class);
 
   private final Optional<String> issuer;
   private final Optional<String> clientId;
@@ -48,7 +48,7 @@ public class ReconcilerMachineAuthTokenProvider {
   private volatile CachedToken cachedToken;
 
   @Inject
-  public ReconcilerMachineAuthTokenProvider(
+  public OidcReconcileWorkerAuthProvider(
       @ConfigProperty(name = "floecat.reconciler.oidc.issuer") Optional<String> issuer,
       @ConfigProperty(name = "floecat.reconciler.oidc.client-id") Optional<String> clientId,
       @ConfigProperty(name = "floecat.reconciler.oidc.client-secret") Optional<String> clientSecret,
@@ -68,7 +68,7 @@ public class ReconcilerMachineAuthTokenProvider {
         new HttpTokenEndpointClient());
   }
 
-  ReconcilerMachineAuthTokenProvider(
+  public OidcReconcileWorkerAuthProvider(
       Optional<String> issuer,
       Optional<String> clientId,
       Optional<String> clientSecret,
@@ -86,6 +86,7 @@ public class ReconcilerMachineAuthTokenProvider {
         tokenEndpointClient == null ? new HttpTokenEndpointClient() : tokenEndpointClient;
   }
 
+  @Override
   public Optional<String> authorizationHeader() {
     if (issuer.isEmpty() || clientId.isEmpty() || clientSecret.isEmpty()) {
       return Optional.empty();
@@ -178,9 +179,10 @@ public class ReconcilerMachineAuthTokenProvider {
 
   record CachedToken(String authorizationHeader, Instant refreshAt) {}
 
-  record TokenResponse(String accessToken, long expiresInSeconds) {}
+  public record TokenResponse(String accessToken, long expiresInSeconds) {}
 
-  interface TokenEndpointClient {
+  @FunctionalInterface
+  public interface TokenEndpointClient {
     TokenResponse fetch(URI endpoint, String requestBody, Duration connectTimeout);
   }
 

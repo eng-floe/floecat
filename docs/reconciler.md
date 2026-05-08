@@ -141,12 +141,12 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - In OIDC mode, background workers obtain a machine token via client credentials using
   `floecat.reconciler.oidc.issuer`, `client-id`, `client-secret`,
   `token-refresh-skew-seconds`, and `connect-timeout`.
-- Precedence is explicit:
-  1. request-scoped propagated auth header when present
-  2. reconciler machine OIDC token
-  3. no auth header
-- `ReconcileExecutorControl` accepts either normal propagated user auth (`connector.manage`) or
-  the dedicated internal worker permission carried by the reconciler service principal.
+- Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
+  interceptor is not responsible for minting or attaching worker tokens.
+- `ReconcileExecutorControl` accepts only the dedicated internal worker permission carried by the
+  reconciler service principal.
+- Other internal gRPC fanout paths may still propagate request-scoped user/session headers where
+  that is the actual call contract, but that is separate from reconcile worker auth.
 
 ## Data Flow & Lifecycle
 ```text

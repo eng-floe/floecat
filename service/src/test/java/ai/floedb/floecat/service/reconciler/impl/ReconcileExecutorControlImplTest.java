@@ -78,15 +78,13 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void leaseReconcileJobAuthorizesWithWorkerPermissionOrConnectorManage() {
+  void leaseReconcileJobAuthorizesWithWorkerPermission() {
     when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
 
     service.leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance()).await().indefinitely();
 
     verify(service.authz)
-        .require(
-            any(),
-            eq(List.of("connector.manage", RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL)));
+        .require(any(), eq(List.of(RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL)));
   }
 
   @Test

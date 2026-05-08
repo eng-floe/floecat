@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.context.impl;
+package ai.floedb.floecat.reconciler.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -26,14 +26,14 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-class ReconcilerMachineAuthTokenProviderTest {
+class OidcReconcileWorkerAuthProviderTest {
 
   @Test
   void cachesTokenUntilRefreshWindow() {
     MutableClock clock = new MutableClock(Instant.parse("2026-05-07T12:00:00Z"));
     AtomicInteger calls = new AtomicInteger();
-    ReconcilerMachineAuthTokenProvider provider =
-        new ReconcilerMachineAuthTokenProvider(
+    OidcReconcileWorkerAuthProvider provider =
+        new OidcReconcileWorkerAuthProvider(
             Optional.of("http://issuer"),
             Optional.of("worker-client"),
             Optional.of("worker-secret"),
@@ -41,7 +41,7 @@ class ReconcilerMachineAuthTokenProviderTest {
             Duration.ofSeconds(10),
             clock,
             (endpoint, requestBody, connectTimeout) ->
-                new ReconcilerMachineAuthTokenProvider.TokenResponse(
+                new OidcReconcileWorkerAuthProvider.TokenResponse(
                     "token-" + calls.incrementAndGet(), 120));
 
     assertThat(provider.authorizationHeader()).contains("Bearer token-1");
@@ -54,8 +54,8 @@ class ReconcilerMachineAuthTokenProviderTest {
   void refreshesTokenBeforeExpiryUsingConfiguredSkew() {
     MutableClock clock = new MutableClock(Instant.parse("2026-05-07T12:00:00Z"));
     AtomicInteger calls = new AtomicInteger();
-    ReconcilerMachineAuthTokenProvider provider =
-        new ReconcilerMachineAuthTokenProvider(
+    OidcReconcileWorkerAuthProvider provider =
+        new OidcReconcileWorkerAuthProvider(
             Optional.of("http://issuer"),
             Optional.of("worker-client"),
             Optional.of("worker-secret"),
@@ -63,7 +63,7 @@ class ReconcilerMachineAuthTokenProviderTest {
             Duration.ofSeconds(10),
             clock,
             (endpoint, requestBody, connectTimeout) ->
-                new ReconcilerMachineAuthTokenProvider.TokenResponse(
+                new OidcReconcileWorkerAuthProvider.TokenResponse(
                     "token-" + calls.incrementAndGet(), 120));
 
     assertThat(provider.authorizationHeader()).contains("Bearer token-1");
@@ -75,9 +75,9 @@ class ReconcilerMachineAuthTokenProviderTest {
   @Test
   void parsesAccessTokenAndExpiryFromTokenResponse() {
     assertThat(
-            ReconcilerMachineAuthTokenProvider.parseTokenResponse(
+            OidcReconcileWorkerAuthProvider.parseTokenResponse(
                 "{\"access_token\":\"abc\",\"expires_in\":120}"))
-        .isEqualTo(new ReconcilerMachineAuthTokenProvider.TokenResponse("abc", 120));
+        .isEqualTo(new OidcReconcileWorkerAuthProvider.TokenResponse("abc", 120));
   }
 
   private static final class MutableClock extends Clock {
