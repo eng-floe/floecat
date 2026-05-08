@@ -1854,6 +1854,14 @@ auth resolution path, not a connector-specific feature.</p>
 <li>Control-plane-specific setting: <code>reconciler.max-parallelism=0</code></li>
 <li>Executor-plane-specific setting: <code>floecat.reconciler.worker.mode=remote</code></li>
 </ul>
+<p>Worker gRPC auth boundary:</p>
+<ul>
+<li>Remote reconcile workers authenticate to <code>ReconcileExecutorControl</code> with an explicit bearer
+  token attached by the worker client itself.</li>
+<li>In OIDC mode, that bearer token comes from the configured reconciler worker service principal.</li>
+<li>Internal user-context fanout still uses propagated request metadata where appropriate, but that
+  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.</li>
+</ul>
 <p>In the split model, the control plane owns top-level <code>PLAN_CONNECTOR</code> jobs and public reconcile
 APIs, while executor-plane nodes primarily run child <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, <code>PLAN_SNAPSHOT</code>,
 and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> uses the same plan-plus-child execution path. File-group workers submit results through
