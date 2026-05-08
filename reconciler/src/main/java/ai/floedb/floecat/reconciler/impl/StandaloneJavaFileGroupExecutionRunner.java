@@ -51,7 +51,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.statsColumns(),
                 payload.indexColumns(),
                 FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
-                payload.capturePageIndex()));
+                payload.capturePageIndex(),
+                java.util.Optional.empty()));
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }

@@ -62,11 +62,28 @@ public class ServerSideStorageConfigResolver {
   }
 
   public ConnectorConfig resolve(Connector connector, ConnectorConfig config) {
-    return resolve(Optional.empty(), connector, config);
+    return resolve(Optional.empty(), Optional.empty(), connector, config);
   }
 
   public ConnectorConfig resolve(
       Optional<ReconcileContext> ctx, Connector connector, ConnectorConfig config) {
+    return resolve(
+        ctx.map(ReconcileContext::correlationId),
+        ctx.flatMap(ReconcileContext::authorizationToken),
+        connector,
+        config);
+  }
+
+  public ConnectorConfig resolveWithAuthorization(
+      Optional<String> authorizationToken, Connector connector, ConnectorConfig config) {
+    return resolve(Optional.empty(), authorizationToken, connector, config);
+  }
+
+  private ConnectorConfig resolve(
+      Optional<String> correlationId,
+      Optional<String> authorizationToken,
+      Connector connector,
+      ConnectorConfig config) {
     if (connector == null || config == null || connector.getKindValue() == 0) {
       return config;
     }
@@ -80,7 +97,7 @@ public class ServerSideStorageConfigResolver {
     ResolveStorageAuthorityResponse response;
     try {
       response =
-          withHeaders(storageAuthorities, ctx)
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
               .resolveStorageAuthorityForAccountLocation(
                   ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
                       .setAccountId(connector.getResourceId().getAccountId())
@@ -263,18 +280,19 @@ public class ServerSideStorageConfigResolver {
         .anyMatch("x-iceberg-access-delegation"::equals);
   }
 
-  private <T extends AbstractStub<T>> T withHeaders(T stub, Optional<ReconcileContext> ctx) {
+  private <T extends AbstractStub<T>> T withHeaders(
+      T stub, Optional<String> correlationId, Optional<String> authorizationToken) {
     return stub.withInterceptors(
-        MetadataUtils.newAttachHeadersInterceptor(metadataForContext(ctx)));
+        MetadataUtils.newAttachHeadersInterceptor(
+            metadataForContext(correlationId, authorizationToken)));
   }
 
-  private Metadata metadataForContext(Optional<ReconcileContext> ctx) {
+  private Metadata metadataForContext(
+      Optional<String> correlationId, Optional<String> authorizationToken) {
     Metadata metadata = new Metadata();
-    ctx.map(ReconcileContext::correlationId)
-        .ifPresent(value -> metadata.put(CORRELATION_ID, value));
-    ctx.flatMap(ReconcileContext::authorizationToken)
-        .ifPresent(
-            value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
+    correlationId.ifPresent(value -> metadata.put(CORRELATION_ID, value));
+    authorizationToken.ifPresent(
+        value -> metadata.put(authHeaderKey(), GrpcReconcilerBackend.withBearerPrefix(value)));
     return metadata;
   }
 
