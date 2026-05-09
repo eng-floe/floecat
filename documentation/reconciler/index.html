@@ -1903,13 +1903,14 @@ reconcile control RPCs:</p>
 <ul>
 <li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
   payload/result exchange.</li>
-<li><code>floecat.reconciler.authorization.header</code> configures the outbound header name used for bearer
-  auth on worker gRPC calls.</li>
+<li>Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
+  interceptor is not responsible for minting or attaching worker tokens.</li>
 <li>In OIDC mode, background workers obtain a machine token via client credentials using
   <code>floecat.reconciler.oidc.issuer</code>, <code>client-id</code>, <code>client-secret</code>,
   <code>token-refresh-skew-seconds</code>, and <code>connect-timeout</code>.</li>
-<li>Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
-  interceptor is not responsible for minting or attaching worker tokens.</li>
+<li>If <code>floecat.interceptor.session.header</code> is configured, worker RPCs attach the token there
+  (typically <code>x-floe-session</code>). Otherwise they fall back to
+  <code>floecat.reconciler.authorization.header</code>.</li>
 <li><code>ReconcileExecutorControl</code> accepts only the dedicated internal worker permission carried by the
   reconciler service principal.</li>
 <li>Other internal gRPC fanout paths may still propagate request-scoped user/session headers where
