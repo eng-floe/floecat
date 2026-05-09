@@ -21,6 +21,7 @@ services:
     ports:
       - "${FLOECAT_SERVICE_PORT:-9100}:9100"
     environment:
+      QUARKUS_PROFILE: ${QUARKUS_PROFILE_SERVICE:-prod}
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
       FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS: ${FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS:-}
@@ -29,6 +30,7 @@ services:
       FLOECAT_SEED_MODE: ${FLOECAT_SEED_MODE:-iceberg}
       FLOECAT_SEED_SYNC_ENABLED: ${FLOECAT_SEED_SYNC_ENABLED:-true}
       FLOECAT_RECONCILER_WORKER_MODE: ${FLOECAT_RECONCILER_WORKER_MODE:-local}
+      FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED: ${FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED:-true}
       FLOECAT_RECONCILER_MAX_PARALLELISM: ${FLOECAT_RECONCILER_MAX_PARALLELISM:-1}
       FLOECAT_RECONCILER_AUTO_ENABLED: ${FLOECAT_RECONCILER_AUTO_ENABLED:-true}
       JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
@@ -67,6 +69,7 @@ services:
       FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED: "true"
       FLOECAT_RECONCILER_BACKEND: "remote"
       FLOECAT_RECONCILER_AUTO_ENABLED: "false"
+      FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED: ${FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED:-true}
       JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
       AWS_REGION: ${FLOECAT_EXECUTOR_AWS_REGION-${AWS_REGION:-us-east-1}}
       AWS_DEFAULT_REGION: ${FLOECAT_EXECUTOR_AWS_DEFAULT_REGION-${AWS_DEFAULT_REGION:-us-east-1}}

@@ -136,13 +136,14 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 ### gRPC auth
 - Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
   payload/result exchange.
-- `floecat.reconciler.authorization.header` configures the outbound header name used for bearer
-  auth on worker gRPC calls.
+- Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
+  interceptor is not responsible for minting or attaching worker tokens.
 - In OIDC mode, background workers obtain a machine token via client credentials using
   `floecat.reconciler.oidc.issuer`, `client-id`, `client-secret`,
   `token-refresh-skew-seconds`, and `connect-timeout`.
-- Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
-  interceptor is not responsible for minting or attaching worker tokens.
+- If `floecat.interceptor.session.header` is configured, worker RPCs attach the token there
+  (typically `x-floe-session`). Otherwise they fall back to
+  `floecat.reconciler.authorization.header`.
 - `ReconcileExecutorControl` accepts only the dedicated internal worker permission carried by the
   reconciler service principal.
 - Other internal gRPC fanout paths may still propagate request-scoped user/session headers where

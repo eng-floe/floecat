@@ -28,7 +28,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void metadataIncludesExplicitWorkerAuthorizationHeader() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", "oidc", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
 
     Metadata metadata = client.metadata("corr-1");
 
@@ -41,7 +41,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   @Test
   void oidcModeRequiresWorkerAuthorizationHeader() {
     GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient("authorization", "oidc", java.util.Optional::empty);
+        new GrpcRemoteReconcileExecutorClient("authorization", java.util.Optional::empty);
 
     IllegalStateException ex =
         assertThrows(IllegalStateException.class, () -> client.metadata("corr-2"));
@@ -50,14 +50,28 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void devModeAllowsMissingWorkerAuthorizationHeader() {
+  void workerAuthCanBeExplicitlyDisabled() {
     GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient("authorization", "dev", java.util.Optional::empty);
+        new GrpcRemoteReconcileExecutorClient("authorization", false, java.util.Optional::empty);
+
+    Metadata metadata = client.metadata("corr-disabled");
+
+    assertThat(metadata.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
+        .isNull();
+    assertThat(metadata.get(Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("corr-disabled");
+  }
+
+  @Test
+  void workerCallsUseSessionHeaderWhenConfigured() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "x-floe-session", () -> java.util.Optional.of("Bearer worker-token"));
 
     Metadata metadata = client.metadata("corr-3");
 
     assertThat(metadata.keys()).contains("x-correlation-id");
-    assertThat(metadata.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
-        .isNull();
+    assertThat(metadata.get(Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("Bearer worker-token");
   }
 }

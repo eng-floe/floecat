@@ -139,17 +139,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Inject
   public GrpcReconcilerBackend(
+      @ConfigProperty(name = "floecat.interceptor.session.header")
+          Optional<String> sessionHeaderName,
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
       @ConfigProperty(name = "floecat.reconciler.stats.timeout") Optional<Duration> statsTimeout) {
-    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
+    this.headerName =
+        ReconcileRpcAuthHeaderSupport.resolveHeaderName(sessionHeaderName, headerName);
     this.statsTimeout = statsTimeout.orElse(DEFAULT_STATS_TIMEOUT);
-  }
-
-  GrpcReconcilerBackend(
-      Optional<String> headerName,
-      Optional<String> ignoredStaticToken,
-      Optional<Duration> statsTimeout) {
-    this(headerName, statsTimeout);
   }
 
   @GrpcClient("floecat")
@@ -541,7 +537,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.statsColumns(),
                       request.indexColumns(),
                       request.requestedStatsTargetKinds(),
-                      request.capturePageIndex()));
+                      request.capturePageIndex(),
+                      ctx.authorizationToken()));
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
             return capture;
           }
@@ -1235,7 +1232,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private Metadata.Key<String> authHeaderKey() {
     if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
-      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
+      return ReconcileRpcAuthHeaderSupport.headerKey(headerName.get());
     }
     return AUTHORIZATION;
   }

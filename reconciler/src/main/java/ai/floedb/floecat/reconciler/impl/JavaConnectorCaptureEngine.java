@@ -79,7 +79,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     if (!supports(request)) {
       return Optional.empty();
     }
-    try (var source = connectorOpener.open(resolveCredentials(request.sourceConnector()))) {
+    try (var source =
+        connectorOpener.open(resolveCredentials(request.sourceConnector(), request))) {
       return Optional.of(adapter.capture(source, request));
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
@@ -93,7 +94,7 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     }
   }
 
-  private ConnectorConfig resolveCredentials(Connector connector) {
+  private ConnectorConfig resolveCredentials(Connector connector, CaptureEngineRequest request) {
     ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
     AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
     ConnectorConfig resolved;
@@ -116,7 +117,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     if (serverSideStorageConfigResolver == null) {
       return resolved;
     }
-    return serverSideStorageConfigResolver.resolve(connector, resolved);
+    return serverSideStorageConfigResolver.resolveWithAuthorization(
+        request.authorizationToken(), connector, resolved);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

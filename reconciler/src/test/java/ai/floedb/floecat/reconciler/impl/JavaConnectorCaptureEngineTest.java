@@ -36,9 +36,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.junit.jupiter.api.Test;
@@ -92,7 +94,8 @@ class JavaConnectorCaptureEngineTest {
             Set.of(),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            Optional.empty());
 
     assertThat(engine.supports(missingPlannedFiles)).isFalse();
   }
@@ -117,13 +120,60 @@ class JavaConnectorCaptureEngineTest {
             Set.of(),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            Optional.empty());
 
     assertThat(engine.capture(request)).isEmpty();
     verify(connector, never())
         .capturePlannedFileGroup(any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean());
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
+  }
+
+  @Test
+  void capturePassesAuthorizationTokenToStorageResolver() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ServerSideStorageConfigResolver storageResolver =
+        Mockito.mock(ServerSideStorageConfigResolver.class);
+    engine.serverSideStorageConfigResolver = storageResolver;
+
+    ConnectorConfig resolvedConfig =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "resolved",
+            "s3://warehouse/table",
+            java.util.Map.of(),
+            new ConnectorConfig.Auth("none", java.util.Map.of(), java.util.Map.of()));
+    when(storageResolver.resolveWithAuthorization(
+            eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any()))
+        .thenReturn(resolvedConfig);
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean()))
+        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of()));
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of("s3://bucket/path/file-1.parquet"),
+            Set.of("id"),
+            Set.of(),
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            false,
+            Optional.of("worker-token"));
+
+    assertThat(engine.capture(request)).isPresent();
+    verify(storageResolver)
+        .resolveWithAuthorization(eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any());
   }
 
   @Test
@@ -194,7 +244,8 @@ class JavaConnectorCaptureEngineTest {
                 FloecatConnector.StatsTargetKind.TABLE,
                 FloecatConnector.StatsTargetKind.COLUMN,
                 FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            Optional.empty());
 
     var result = engine.capture(request);
 
@@ -276,7 +327,8 @@ class JavaConnectorCaptureEngineTest {
             Set.of(),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            Optional.empty());
 
     var result = engine.capture(request);
 
@@ -327,7 +379,8 @@ class JavaConnectorCaptureEngineTest {
             Set.of("id"),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
-            false);
+            false,
+            Optional.empty());
 
     var result = engine.capture(request);
 
@@ -439,7 +492,8 @@ class JavaConnectorCaptureEngineTest {
             Set.of("stats_only"),
             Set.of("index_only"),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            true);
+            true,
+            Optional.empty());
 
     var result = engine.capture(request);
 
@@ -609,7 +663,8 @@ class JavaConnectorCaptureEngineTest {
                 FloecatConnector.StatsTargetKind.TABLE,
                 FloecatConnector.StatsTargetKind.COLUMN,
                 FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            Optional.empty());
 
     var result = engine.capture(request);
 

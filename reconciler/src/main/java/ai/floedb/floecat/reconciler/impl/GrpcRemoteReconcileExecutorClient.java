@@ -76,34 +76,58 @@ class GrpcRemoteReconcileExecutorClient
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
-  private final Optional<String> authorizationHeaderName;
-  private final String authMode;
+  private final Optional<String> workerAuthHeaderName;
+  private final boolean workerAuthRequired;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
 
   @Inject
   GrpcRemoteReconcileExecutorClient(
-      @ConfigProperty(name = "floecat.interceptor.authorization.header")
+      @ConfigProperty(name = "floecat.interceptor.session.header")
+          Optional<String> sessionHeaderName,
+      @ConfigProperty(name = "floecat.reconciler.authorization.header")
           Optional<String> authorizationHeaderName,
-      @ConfigProperty(name = "floecat.auth.mode", defaultValue = "dev") String authMode,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
-    this(authorizationHeaderName, authMode, reconcileWorkerAuthProvider, true);
+    this(
+        sessionHeaderName,
+        authorizationHeaderName,
+        workerAuthRequired,
+        reconcileWorkerAuthProvider,
+        true);
   }
 
   GrpcRemoteReconcileExecutorClient(
-      String authorizationHeaderName,
-      String authMode,
+      String workerAuthHeaderName, ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(
+        Optional.ofNullable(workerAuthHeaderName),
+        Optional.empty(),
+        true,
+        reconcileWorkerAuthProvider,
+        true);
+  }
+
+  GrpcRemoteReconcileExecutorClient(
+      String workerAuthHeaderName,
+      boolean workerAuthRequired,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
-    this(Optional.ofNullable(authorizationHeaderName), authMode, reconcileWorkerAuthProvider, true);
+    this(
+        Optional.ofNullable(workerAuthHeaderName),
+        Optional.empty(),
+        workerAuthRequired,
+        reconcileWorkerAuthProvider,
+        true);
   }
 
   private GrpcRemoteReconcileExecutorClient(
+      Optional<String> sessionHeaderName,
       Optional<String> authorizationHeaderName,
-      String authMode,
+      boolean workerAuthRequired,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       boolean ignored) {
-    this.authorizationHeaderName =
-        authorizationHeaderName.map(String::trim).filter(value -> !value.isBlank());
-    this.authMode = authMode == null ? "dev" : authMode.trim().toLowerCase(java.util.Locale.ROOT);
+    this.workerAuthHeaderName =
+        ReconcileRpcAuthHeaderSupport.resolveHeaderName(sessionHeaderName, authorizationHeaderName);
+    this.workerAuthRequired = workerAuthRequired;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
   }
 
@@ -1071,25 +1095,25 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private void attachWorkerAuthorization(Metadata metadata) {
-    if (authorizationHeaderName.isEmpty()) {
+    if (workerAuthHeaderName.isEmpty()) {
       return;
     }
     Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader();
-    if (authorization.isPresent()) {
-      metadata.put(headerKey(authorizationHeaderName.orElseThrow()), authorization.orElseThrow());
-      return;
-    }
-    if (!"dev".equals(authMode)) {
+    if (authorization.isEmpty()) {
+      if (!workerAuthRequired) {
+        return;
+      }
       throw new IllegalStateException(
           "Reconcile worker authorization header is required but no worker auth configuration is available");
     }
+    metadata.put(headerKey(workerAuthHeaderName.orElseThrow()), authorization.orElseThrow());
   }
 
   private static Metadata.Key<String> headerKey(String headerName) {
     if ("authorization".equalsIgnoreCase(headerName)) {
       return AUTHORIZATION;
     }
-    return Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
+    return ReconcileRpcAuthHeaderSupport.headerKey(headerName);
   }
 
   private static String correlationId(RemoteLeasedJob lease) {
