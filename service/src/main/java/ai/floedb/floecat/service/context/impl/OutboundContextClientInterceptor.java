@@ -96,7 +96,9 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
               Metadata.Key.of(sessionHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
           headers.put(key, sessionHeaderValue);
         }
-        if (authorizationHeaderValue != null && authorizationHeader.isPresent()) {
+        if (authorizationHeaderValue != null
+            && authorizationHeader.isPresent()
+            && !hasAuthorizationHeader(headers)) {
           Metadata.Key<String> key =
               Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
           headers.put(key, authorizationHeaderValue);
@@ -124,5 +126,14 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       }
     }
     return null;
+  }
+
+  private boolean hasAuthorizationHeader(Metadata headers) {
+    if (authorizationHeader.isEmpty()) {
+      return false;
+    }
+    Metadata.Key<String> key =
+        Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+    return headers.containsKey(key);
   }
 }

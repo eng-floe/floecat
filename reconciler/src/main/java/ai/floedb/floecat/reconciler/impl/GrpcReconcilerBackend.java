@@ -131,18 +131,20 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Duration DEFAULT_STATS_TIMEOUT = Duration.ofMinutes(1);
 
   private final Optional<String> headerName;
-  private final Optional<String> staticToken;
   private final Duration statsTimeout;
   ConnectorOpener connectorOpener = ConnectorFactory::create;
   @Inject CaptureEngineRegistry captureEngineRegistry;
   @Inject CredentialResolver credentialResolver;
+  @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
 
+  @Inject
   public GrpcReconcilerBackend(
+      @ConfigProperty(name = "floecat.interceptor.session.header")
+          Optional<String> sessionHeaderName,
       @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
-      @ConfigProperty(name = "floecat.reconciler.authorization.token") Optional<String> staticToken,
       @ConfigProperty(name = "floecat.reconciler.stats.timeout") Optional<Duration> statsTimeout) {
-    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
-    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
+    this.headerName =
+        ReconcileRpcAuthHeaderSupport.resolveHeaderName(sessionHeaderName, headerName);
     this.statsTimeout = statsTimeout.orElse(DEFAULT_STATS_TIMEOUT);
   }
 
@@ -535,7 +537,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.statsColumns(),
                       request.indexColumns(),
                       request.requestedStatsTargetKinds(),
-                      request.capturePageIndex()));
+                      request.capturePageIndex(),
+                      ctx.authorizationToken()));
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
             return capture;
           }
@@ -1222,17 +1225,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   Metadata metadataForContext(ReconcileContext ctx) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, ctx.correlationId());
-    Optional<String> token = ctx.authorizationToken();
-    if (token.isEmpty()) {
-      token = staticToken;
-    }
-    token.ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
+    ctx.authorizationToken()
+        .ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
     return metadata;
   }
 
   private Metadata.Key<String> authHeaderKey() {
     if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
-      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
+      return ReconcileRpcAuthHeaderSupport.headerKey(headerName.get());
     }
     return AUTHORIZATION;
   }
@@ -1413,8 +1413,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
     ResourceId connectorId = sourceContext.get().connectorId();
     ConnectorConfig config =
-        resolveCredentials(
-            ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId);
+        resolveServerSideStorage(
+            ctx,
+            connector,
+            resolveCredentials(
+                ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId));
     try (FloecatConnector source = connectorOpener.open(config)) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
@@ -1451,6 +1454,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .resolve(connectorId.getAccountId(), connectorId.getId())
         .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
         .orElse(base);
+  }
+
+  private ConnectorConfig resolveServerSideStorage(
+      ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+    if (serverSideStorageConfigResolver == null) {
+      return config;
+    }
+    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

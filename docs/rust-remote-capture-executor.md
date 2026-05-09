@@ -55,12 +55,17 @@ Relevant shared settings:
 ```properties
 floecat.reconciler.job-store=durable
 floecat.reconciler.authorization.header=authorization
-floecat.reconciler.authorization.token=<shared-token>
+floecat.reconciler.oidc.issuer=https://<issuer>/realms/<realm>
+floecat.reconciler.oidc.client-id=<reconcile-worker-client-id>
+floecat.reconciler.oidc.client-secret=<reconcile-worker-client-secret>
+floecat.reconciler.oidc.token-refresh-skew-seconds=30
 floecat.reconciler.job-store.lease-ms=30000
 ```
 
-The Rust worker should target the control-plane gRPC endpoint and send the same authorization
-header/token pair configured on the service.
+The Rust worker should target the control-plane gRPC endpoint and acquire bearer tokens for the
+configured reconciler service principal via client credentials. Worker RPCs should attach that
+bearer token explicitly; they should not rely on propagated inbound user auth or global client
+interceptor behavior for correctness.
 
 ## Worker Identity and Leasing
 The lease request supports:
@@ -135,7 +140,7 @@ connector definition and auth material needed to read source files.
 - `success`
 - `failure`
 
-Both now require `result_id`.
+Both require `result_id`.
 
 Success carries:
 
@@ -162,10 +167,10 @@ Recommended shape:
 <job_id>:<plan_id>:<group_id>:failure
 ```
 
-That is the same stability rule the current Java file-group executor now follows when `plan_id`
+That is the same stability rule the current Java file-group executor follows when `plan_id`
 and `group_id` are available.
 
-Do not reuse one `result_id` for different payloads. The control plane now rejects replay with the
+Do not reuse one `result_id` for different payloads. The control plane rejects replay with the
 same `result_id` if the full request payload changes.
 
 ## Idempotency and Retry Semantics

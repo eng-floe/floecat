@@ -604,7 +604,7 @@ class ConnectorCliSupportTest {
   // --- connector jobs ---
 
   @Test
-  void connectorJobsCallsListAndPrintsOutput() throws Exception {
+  void connectorJobsPrintsParentTableOnlyByDefault() throws Exception {
     try (Harness h = new Harness()) {
       h.reconcileControlService.listJobsResponse =
           ListReconcileJobsResponse.newBuilder()
@@ -649,21 +649,83 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
-      assertTrue(buf.toString().contains("kind=plan_connector"));
-      assertTrue(buf.toString().contains("kind=plan_table"));
-      assertTrue(
-          buf.toString()
-              .contains("tables_scanned=2 tables_changed=0 views_scanned=1 views_changed=0"));
-      assertTrue(
-          buf.toString()
-              .contains("tables_scanned=1 tables_changed=1 views_scanned=0 views_changed=0"));
-      assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
-      assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
+      assertTrue(buf.toString().contains("JOB_ID"));
+      assertTrue(buf.toString().contains("MODE"));
+      assertTrue(buf.toString().contains("INDEXES"));
+      assertTrue(buf.toString().contains("job-plan-1"));
+      assertTrue(buf.toString().contains("0/2"));
+      assertTrue(buf.toString().contains("0/1"));
+      assertTrue(!buf.toString().contains("job-table-1"));
+      assertTrue(!buf.toString().contains("sales.orders->orders_curated"));
     }
   }
 
   @Test
-  void connectorJobPrintsSplitJobDetails() throws Exception {
+  void connectorJobsChildPrintsRecursiveTree() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-plan-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+                      .build())
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-table-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
+                      .setParentJobId("job-plan-1")
+                      .setExecutorId("remote-executor-a")
+                      .setTablesScanned(1)
+                      .setTablesChanged(1)
+                      .setTableTask(
+                          ReconcileTableTask.newBuilder()
+                              .setSourceNamespace("sales")
+                              .setSourceTable("orders")
+                              .setDestinationTableDisplayName("orders_curated")
+                              .build())
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_QUEUED)
+                      .build())
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-snapshot-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_SNAPSHOT)
+                      .setParentJobId("job-table-1")
+                      .setExecutorId("remote-snapshot-worker")
+                      .setSnapshotsProcessed(2)
+                      .setStatsProcessed(65)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_SUCCEEDED)
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs", "--child", "job-plan-1"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(buf.toString().contains("JOB_TREE"));
+      assertTrue(buf.toString().contains("INDEXES"));
+      assertTrue(buf.toString().contains("job-plan-1"));
+      assertTrue(buf.toString().contains("\\- job-table-1"));
+      assertTrue(buf.toString().contains("plan_table"));
+      assertTrue(buf.toString().contains("sales.orders->orders_curated"));
+      assertTrue(buf.toString().contains("\\- job-snapshot-1"));
+      assertTrue(buf.toString().contains("plan_snapshot"));
+      assertTrue(buf.toString().contains("2           65"));
+    }
+  }
+
+  @Test
+  void connectorJobPrintsStructuredDetailView() throws Exception {
     try (Harness h = new Harness()) {
       h.reconcileControlService.getJobResponse =
           ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
@@ -694,12 +756,14 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(1, h.reconcileControlService.getReconcileJobCalls.get());
-      assertTrue(buf.toString().contains("kind=plan_table"));
-      assertTrue(
-          buf.toString()
-              .contains("tables_scanned=4 tables_changed=1 views_scanned=0 views_changed=0"));
-      assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
-      assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
+      assertTrue(buf.toString().contains("JOB_ID:       job-table-1"));
+      assertTrue(buf.toString().contains("PARENT_JOB:   job-plan-1"));
+      assertTrue(buf.toString().contains("STATE:        RUNNING"));
+      assertTrue(buf.toString().contains("KIND:         plan_table"));
+      assertTrue(buf.toString().contains("EXECUTOR:     remote-executor-a"));
+      assertTrue(buf.toString().contains("TARGET:       sales.orders->orders_curated"));
+      assertTrue(buf.toString().contains("INDEXES:      0"));
+      assertTrue(buf.toString().contains("TABLES:       1 changed / 4 scanned"));
     }
   }
 
@@ -737,8 +801,70 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertTrue(
-          buf.toString().contains("view=sales.orders_view->ns-123.orders_curated_view"),
-          "expected discovery view routing to use destination display name");
+          buf.toString().contains("TARGET:       sales.orders_view->ns-123.orders_curated_view"),
+          "expected discovery view target to use destination display name");
+    }
+  }
+
+  @Test
+  void connectorJobsJsonPrintsFilteredJobs() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-plan-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+                      .build())
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-table-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
+                      .setParentJobId("job-plan-1")
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_QUEUED)
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs", "--json"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(buf.toString().contains("\"jobId\": \"job-plan-1\""));
+      assertTrue(!buf.toString().contains("\"jobId\": \"job-table-1\""));
+    }
+  }
+
+  @Test
+  void connectorJobJsonPrintsSingleJob() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.getJobResponse =
+          ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+              .setJobId("job-table-1")
+              .setConnectorId(CONNECTOR_UUID)
+              .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("job", "job-table-1", "--json"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(buf.toString().contains("\"jobId\": \"job-table-1\""));
+      assertTrue(buf.toString().contains("\"state\": \"JS_RUNNING\""));
     }
   }
 

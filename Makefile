@@ -50,6 +50,7 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-smoke          # sequential docker smoke (default: localstack + localstack-oidc)
 #   COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke
+#   COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -96,6 +97,7 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 
 DOCKER_COMPOSE ?= docker compose
 DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
@@ -240,14 +242,7 @@ FIXTURE_LOCALSTACK_PROPS := \
 	$(LOCALSTACK_FIXTURE_AWS_PROPS)
 
 REST_LOCALSTACK_IO_PROPS := \
-	-Dfloecat.connector.integration.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO \
-	-Dfloecat.connector.integration.storage-credential.scope=* \
-	-Dfloecat.connector.integration.storage-credential.properties.type=s3 \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.region=$(LOCALSTACK_REGION) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
-	-Dfloecat.connector.integration.storage-credential.properties.s3.path-style-access=true
+	-Dfloecat.connector.integration.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO
 
 CATALOG_REAL_AWS_PROPS := \
 	-Dfloecat.kv=dynamodb \
@@ -355,6 +350,7 @@ test: $(PROTO_JAR) keycloak-up
 	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -370,7 +366,7 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  $(MVN) $(MVN_TESTALL) install -N; \
 	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
 	  $(LOCALSTACK_ENV) \
-	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
+	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -405,6 +401,7 @@ unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
 	  -Dfloecat.fixtures.use-aws-s3=false \
+	  $(TEST_RECONCILER_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  -DskipITs=true \
 	  test
@@ -416,6 +413,7 @@ integration-test: keycloak-up
 	  echo "==> [TEST] integration tests (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    -DskipUTs=true -DfailIfNoTests=false \
 	    verify'
@@ -427,6 +425,7 @@ verify: keycloak-up
 	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -556,7 +555,7 @@ run-rest:
 
 .PHONY: run-rest-localstack
 run-rest-localstack: localstack-up $(PROTO_JAR)
-	@echo "==> [DEV] quarkus:dev REST gateway (LocalStack-style storage credentials)"
+	@echo "==> [DEV] quarkus:dev REST gateway (LocalStack metadata FileIO only; storage authorities must be created through Floecat)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
 	  $(REST_LOCALSTACK_IO_PROPS) \

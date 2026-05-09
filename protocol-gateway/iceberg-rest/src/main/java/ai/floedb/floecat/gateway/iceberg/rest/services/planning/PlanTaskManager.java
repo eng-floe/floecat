@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
@@ -63,6 +64,7 @@ public class PlanTaskManager {
 
   public PlanDescriptor registerCompletedPlan(
       String planId,
+      ResourceId tableId,
       String namespace,
       String table,
       List<FileScanTaskDto> fileScanTasks,
@@ -70,6 +72,7 @@ public class PlanTaskManager {
       List<StorageCredentialDto> credentials) {
     expire();
     Objects.requireNonNull(planId, "planId is required");
+    Objects.requireNonNull(tableId, "tableId is required");
     List<FileScanTaskDto> files =
         fileScanTasks == null
             ? List.of()
@@ -81,6 +84,7 @@ public class PlanTaskManager {
     PlanEntry entry =
         new PlanEntry(
             planId,
+            tableId,
             namespace,
             table,
             credentials == null ? List.of() : List.copyOf(credentials),
@@ -96,38 +100,47 @@ public class PlanTaskManager {
             new TablePlanTasksResponseDto(null, List.copyOf(chunk), deletes);
         String taskId = planId + "-task-" + offset / chunkSize;
         entry.addTask(taskId);
-        planTasks.put(taskId, new PlanTaskPayload(taskId, planId, namespace, table, payload));
+        planTasks.put(taskId, new PlanTaskPayload(taskId, planId, tableId, payload));
       }
     }
     plans.put(planId, entry);
     return entry.toDescriptor();
   }
 
-  public PlanDescriptor registerSubmittedPlan(String planId, String namespace, String table) {
+  public PlanDescriptor registerSubmittedPlan(
+      String planId, ResourceId tableId, String namespace, String table) {
     expire();
     Objects.requireNonNull(planId, "planId is required");
     PlanEntry entry =
         new PlanEntry(
-            planId, namespace, table, List.of(), List.of(), List.of(), PlanStatus.SUBMITTED);
+            planId,
+            tableId,
+            namespace,
+            table,
+            List.of(),
+            List.of(),
+            List.of(),
+            PlanStatus.SUBMITTED);
     plans.put(planId, entry);
     return entry.toDescriptor();
   }
 
-  public Optional<PlanDescriptor> findPlan(String planId) {
+  public Optional<PlanDescriptor> findPlan(String planId, ResourceId tableId) {
     expire();
     PlanEntry entry = plans.get(planId);
-    return entry == null ? Optional.empty() : Optional.of(entry.toDescriptor());
+    if (entry == null || !sameTable(entry.tableId(), tableId)) {
+      return Optional.empty();
+    }
+    return Optional.of(entry.toDescriptor());
   }
 
-  public Optional<TablePlanTasksResponseDto> consumeTask(
-      String namespace, String table, String planTaskId) {
+  public Optional<TablePlanTasksResponseDto> consumeTask(ResourceId tableId, String planTaskId) {
     expire();
     PlanTaskPayload payload = planTasks.remove(planTaskId);
     if (payload == null) {
       return Optional.empty();
     }
-    if (!Objects.equals(namespace, payload.namespace())
-        || !Objects.equals(table, payload.table())) {
+    if (!sameTable(payload.tableId(), tableId)) {
       planTasks.put(payload.planTaskId(), payload);
       return Optional.empty();
     }
@@ -141,10 +154,10 @@ public class PlanTaskManager {
     return Optional.of(payload.payload());
   }
 
-  public void cancelPlan(String planId) {
+  public void cancelPlan(String planId, ResourceId tableId) {
     expire();
     PlanEntry entry = plans.get(planId);
-    if (entry == null) {
+    if (entry == null || !sameTable(entry.tableId(), tableId)) {
       return;
     }
     for (String taskId : entry.planTaskIds()) {
@@ -158,7 +171,7 @@ public class PlanTaskManager {
     Instant cutoff = Instant.now().minus(ttl);
     for (var entry : plans.values()) {
       if (entry.isExpired(cutoff)) {
-        cancelPlan(entry.planId());
+        cancelPlan(entry.planId(), entry.tableId());
         plans.remove(entry.planId(), entry);
       }
     }
@@ -188,6 +201,7 @@ public class PlanTaskManager {
 
   public record PlanDescriptor(
       String planId,
+      ResourceId tableId,
       String namespace,
       String table,
       PlanStatus status,
@@ -198,6 +212,7 @@ public class PlanTaskManager {
 
   private static final class PlanEntry {
     private final String planId;
+    private final ResourceId tableId;
     private final String namespace;
     private final String table;
     private final List<StorageCredentialDto> credentials;
@@ -209,6 +224,7 @@ public class PlanTaskManager {
 
     PlanEntry(
         String planId,
+        ResourceId tableId,
         String namespace,
         String table,
         List<StorageCredentialDto> credentials,
@@ -216,6 +232,7 @@ public class PlanTaskManager {
         List<ContentFileDto> deleteFiles,
         PlanStatus status) {
       this.planId = planId;
+      this.tableId = tableId;
       this.namespace = namespace;
       this.table = table;
       this.credentials = credentials;
@@ -252,13 +269,25 @@ public class PlanTaskManager {
       return planId;
     }
 
+    ResourceId tableId() {
+      return tableId;
+    }
+
     boolean isExpired(Instant cutoff) {
       return updatedAt.isBefore(cutoff);
     }
 
     PlanDescriptor toDescriptor() {
       return new PlanDescriptor(
-          planId, namespace, table, status, planTaskIds(), credentials, fileScanTasks, deleteFiles);
+          planId,
+          tableId,
+          namespace,
+          table,
+          status,
+          planTaskIds(),
+          credentials,
+          fileScanTasks,
+          deleteFiles);
     }
 
     private void touch() {
@@ -269,17 +298,21 @@ public class PlanTaskManager {
   private record PlanTaskPayload(
       String planTaskId,
       String planId,
-      String namespace,
-      String table,
+      ResourceId tableId,
       TablePlanTasksResponseDto payload,
       Instant createdAt) {
     PlanTaskPayload(
-        String planTaskId,
-        String planId,
-        String namespace,
-        String table,
-        TablePlanTasksResponseDto payload) {
-      this(planTaskId, planId, namespace, table, payload, Instant.now());
+        String planTaskId, String planId, ResourceId tableId, TablePlanTasksResponseDto payload) {
+      this(planTaskId, planId, tableId, payload, Instant.now());
     }
+  }
+
+  private static boolean sameTable(ResourceId left, ResourceId right) {
+    if (left == null || right == null) {
+      return false;
+    }
+    return Objects.equals(left.getAccountId(), right.getAccountId())
+        && Objects.equals(left.getKind(), right.getKind())
+        && Objects.equals(left.getId(), right.getId());
   }
 }

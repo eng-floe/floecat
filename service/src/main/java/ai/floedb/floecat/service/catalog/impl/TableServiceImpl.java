@@ -48,6 +48,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -430,6 +431,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var spec = request.getSpec();
                   var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var normName = normalizeName(rawName);
+                  PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), corr, "spec.properties");
 
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -577,6 +580,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var spec = request.getSpec();
                   var mask = normalizeMask(request.getUpdateMask());
+                  if (maskTargets(mask, "properties")) {
+                    PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        spec.getPropertiesMap(), corr, "spec.properties");
+                  }
 
                   var meta = tableRepo.metaFor(tableId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(

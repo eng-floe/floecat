@@ -34,6 +34,8 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
@@ -176,6 +178,40 @@ class DeltaManifestMaterializerTest {
             .findFirst()
             .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
     assertTrue(withDeletes.fileIo().newInputFile(deleteManifest.path()).exists());
+  }
+
+  @Test
+  void newFileIoUsesServerSideStorageConfig() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("examples:delta:call_center").build())
+            .putProperties("storage_location", "s3://floecat-delta/call_center")
+            .putProperties("s3.endpoint", "http://table-override:4566")
+            .build();
+    TableGatewaySupport tableGatewaySupport = mock(TableGatewaySupport.class);
+    when(tableGatewaySupport.defaultFileIoProperties(table))
+        .thenReturn(Map.of("io-impl", CaptureFileIo.class.getName()));
+    when(tableGatewaySupport.serverSideFileIoPropertiesForLocation(
+            table, "s3://floecat-delta/call_center/metadata"))
+        .thenReturn(
+            Map.of(
+                "io-impl", CaptureFileIo.class.getName(),
+                "s3.endpoint", "http://localstack:4566",
+                "s3.path-style-access", "true"));
+    ConnectorIntegrationConfig config = mock(ConnectorIntegrationConfig.class);
+    when(config.metadataFileIoRoot()).thenReturn(java.util.Optional.empty());
+    when(config.metadataFileIo()).thenReturn(java.util.Optional.of(CaptureFileIo.class.getName()));
+
+    CapturingDeltaManifestMaterializer materializer = new CapturingDeltaManifestMaterializer();
+    materializer.tableGatewaySupport = tableGatewaySupport;
+    materializer.config = config;
+
+    FileIO fileIo = materializer.newFileIo(table);
+
+    assertTrue(fileIo instanceof CaptureFileIo);
+    assertEquals("http://localstack:4566", CaptureFileIo.lastInitializedProps.get("s3.endpoint"));
+    assertEquals("true", CaptureFileIo.lastInitializedProps.get("s3.path-style-access"));
+    assertFalse(CaptureFileIo.lastInitializedProps.containsValue("http://table-override:4566"));
   }
 
   @Test
@@ -914,6 +950,32 @@ class DeltaManifestMaterializerTest {
     @Override
     public void close() {
       // Keep files available across multiple materialize() calls in the same test.
+    }
+  }
+
+  private static final class CapturingDeltaManifestMaterializer extends DeltaManifestMaterializer {}
+
+  public static final class CaptureFileIo implements FileIO {
+    static Map<String, String> lastInitializedProps = Map.of();
+
+    @Override
+    public void initialize(Map<String, String> properties) {
+      lastInitializedProps = Map.copyOf(properties);
+    }
+
+    @Override
+    public InputFile newInputFile(String path) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public org.apache.iceberg.io.OutputFile newOutputFile(String path) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void deleteFile(String path) {
+      throw new UnsupportedOperationException();
     }
   }
 }

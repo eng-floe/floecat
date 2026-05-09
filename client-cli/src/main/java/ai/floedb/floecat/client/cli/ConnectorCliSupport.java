@@ -71,6 +71,7 @@ import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -579,41 +580,55 @@ final class ConnectorCliSupport {
       }
       case "job" -> {
         if (args.size() < 2) {
-          out.println("usage: connector job <jobId>");
+          out.println("usage: connector job <jobId> [--json]");
           return;
         }
+        boolean printJson = args.contains("--json");
         var resp =
             reconcileControl.getReconcileJob(
                 GetReconcileJobRequest.newBuilder().setJobId(Quotes.unquote(args.get(1))).build());
-        printReconcileJob(resp, out);
+        if (printJson) {
+          CliUtils.printJson(resp, out);
+        } else {
+          printReconcileJob(resp, out);
+        }
       }
       case "jobs" -> {
         int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
+        String childJobId = Quotes.unquote(CliArgs.parseStringFlag(args, "--child", ""));
+        boolean printJson = args.contains("--json");
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", ""));
         String stateArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--state", ""));
-        var req = ListReconcileJobsRequest.newBuilder();
-        req.setPage(
-            ai.floedb.floecat.common.rpc.PageRequest.newBuilder().setPageSize(pageSize).build());
-        if (!connectorRef.isBlank()) {
-          req.setConnectorId(
-              CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
+        var jobs =
+            listReconcileJobs(
+                pageSize,
+                connectorRef,
+                stateArg,
+                connectors,
+                reconcileControl,
+                getCurrentAccountId);
+        List<GetReconcileJobResponse> filteredJobs;
+        if (childJobId.isBlank()) {
+          filteredJobs = jobs.stream().filter(job -> job.getParentJobId().isBlank()).toList();
+        } else {
+          filteredJobs = collectDescendantJobs(jobs, childJobId);
         }
-        for (String token : CliUtils.csvList(stateArg)) {
-          JobState state = parseJobState(token);
-          if (state != JobState.JS_UNSPECIFIED) {
-            req.addStates(state);
-          }
-        }
-        var resp = reconcileControl.listReconcileJobs(req.build());
-        if (resp.getJobsList().isEmpty()) {
+        if (filteredJobs.isEmpty()) {
           out.println("no reconcile jobs");
           return;
         }
-        for (GetReconcileJobResponse job : resp.getJobsList()) {
-          printReconcileJobSummary(job, out);
-        }
-        if (resp.hasPage() && !resp.getPage().getNextPageToken().isBlank()) {
-          out.println("next_page_token=" + resp.getPage().getNextPageToken());
+        if (printJson) {
+          CliUtils.printJson(
+              ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse.newBuilder()
+                  .addAllJobs(filteredJobs)
+                  .build(),
+              out);
+        } else {
+          if (childJobId.isBlank()) {
+            printReconcileJobsTable(filteredJobs, out);
+          } else {
+            printReconcileJobTree(jobs, childJobId, out);
+          }
         }
       }
       case "cancel" -> {
@@ -740,6 +755,58 @@ final class ConnectorCliSupport {
             r -> r.getConnectorsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     return (kind == null) ? all : all.stream().filter(c -> c.getKind() == kind).toList();
+  }
+
+  private static List<GetReconcileJobResponse> listReconcileJobs(
+      int pageSize,
+      String connectorRef,
+      String stateArg,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      Supplier<String> getCurrentAccountId) {
+    return CliArgs.collectPages(
+        pageSize,
+        pageRequest -> {
+          var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest);
+          if (!connectorRef.isBlank()) {
+            req.setConnectorId(
+                CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
+          }
+          for (String token : CliUtils.csvList(stateArg)) {
+            JobState state = parseJobState(token);
+            if (state != JobState.JS_UNSPECIFIED) {
+              req.addStates(state);
+            }
+          }
+          return reconcileControl.listReconcileJobs(req.build());
+        },
+        response -> response.getJobsList(),
+        response -> response.hasPage() ? response.getPage().getNextPageToken() : "");
+  }
+
+  private static List<GetReconcileJobResponse> collectDescendantJobs(
+      List<GetReconcileJobResponse> jobs, String rootJobId) {
+    Map<String, List<GetReconcileJobResponse>> byParent = new HashMap<>();
+    for (GetReconcileJobResponse job : jobs) {
+      byParent.computeIfAbsent(job.getParentJobId(), ignored -> new ArrayList<>()).add(job);
+    }
+    List<GetReconcileJobResponse> descendants = new ArrayList<>();
+    collectDescendantJobsRecursive(rootJobId, byParent, descendants);
+    return descendants;
+  }
+
+  private static void collectDescendantJobsRecursive(
+      String parentJobId,
+      Map<String, List<GetReconcileJobResponse>> byParent,
+      List<GetReconcileJobResponse> descendants) {
+    List<GetReconcileJobResponse> children =
+        byParent.getOrDefault(parentJobId, List.of()).stream()
+            .sorted((left, right) -> left.getJobId().compareTo(right.getJobId()))
+            .toList();
+    for (GetReconcileJobResponse child : children) {
+      descendants.add(child);
+      collectDescendantJobsRecursive(child.getJobId(), byParent, descendants);
+    }
   }
 
   private static ResourceId rid(
@@ -963,63 +1030,291 @@ final class ConnectorCliSupport {
     }
   }
 
-  private static void printReconcileJobSummary(GetReconcileJobResponse job, PrintStream out) {
+  private static void printReconcileJobsTable(List<GetReconcileJobResponse> jobs, PrintStream out) {
+    final int W_JOB_ID = 36;
+    final int W_STATE = 10;
+    final int W_MODE = 12;
+    final int W_STARTED = 24;
+    final int W_DURATION = 10;
+    final int W_CHANGES = 8;
+    final int W_SNAPSHOTS = 10;
+    final int W_STATS = 8;
+    final int W_INDEXES = 8;
+    final int W_ERRORS = 8;
+
     out.printf(
-        "job_id=%s connector_id=%s state=%s kind=%s mode=%s duration_ms=%d"
-            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
-            + " snapshots=%d stats=%d errors=%d%n",
-        job.getJobId(),
-        job.getConnectorId(),
-        job.getState().name(),
+        "%-"
+            + W_JOB_ID
+            + "s  %-"
+            + W_STATE
+            + "s  %-"
+            + W_MODE
+            + "s  %-"
+            + W_STARTED
+            + "s  %-"
+            + W_DURATION
+            + "s  %-"
+            + W_CHANGES
+            + "s  %-"
+            + W_CHANGES
+            + "s  %-"
+            + W_SNAPSHOTS
+            + "s  %-"
+            + W_STATS
+            + "s  %-"
+            + W_INDEXES
+            + "s  %-"
+            + W_ERRORS
+            + "s  %s%n",
+        "JOB_ID",
+        "STATE",
+        "MODE",
+        "STARTED",
+        "DURATION",
+        "TABLES",
+        "VIEWS",
+        "SNAPSHOTS",
+        "STATS",
+        "INDEXES",
+        "ERRORS",
+        "MESSAGE");
+    for (GetReconcileJobResponse job : jobs) {
+      out.printf(
+          "%-"
+              + W_JOB_ID
+              + "s  %-"
+              + W_STATE
+              + "s  %-"
+              + W_MODE
+              + "s  %-"
+              + W_STARTED
+              + "s  %-"
+              + W_DURATION
+              + "s  %-"
+              + W_CHANGES
+              + "s  %-"
+              + W_CHANGES
+              + "s  %-"
+              + W_SNAPSHOTS
+              + "d  %-"
+              + W_STATS
+              + "d  %-"
+              + W_INDEXES
+              + "d  %-"
+              + W_ERRORS
+              + "d  %s%n",
+          job.getJobId(),
+          formatJobState(job.getState()),
+          job.getFullRescan() ? "full" : "incremental",
+          CliUtils.ts(job.getStartedAt()),
+          formatDuration(job.getDurationMs()),
+          summarizeChanges(job.getTablesChanged(), job.getTablesScanned()),
+          summarizeChanges(job.getViewsChanged(), job.getViewsScanned()),
+          job.getSnapshotsProcessed(),
+          job.getStatsProcessed(),
+          job.getIndexesProcessed(),
+          job.getErrors(),
+          truncate(singleLineMessage(job.getMessage()), 60));
+    }
+  }
+
+  private static void printReconcileJobTree(
+      List<GetReconcileJobResponse> jobs, String rootJobId, PrintStream out) {
+    final int W_TREE = 58;
+    final int W_STATE = 10;
+    final int W_KIND = 16;
+    final int W_EXECUTOR = 20;
+    final int W_TARGET = 40;
+    final int W_CHANGES = 8;
+    final int W_SNAPSHOTS = 10;
+    final int W_STATS = 8;
+    final int W_INDEXES = 8;
+    final int W_ERRORS = 8;
+
+    Map<String, GetReconcileJobResponse> byId = new HashMap<>();
+    Map<String, List<GetReconcileJobResponse>> byParent = new HashMap<>();
+    for (GetReconcileJobResponse job : jobs) {
+      byId.put(job.getJobId(), job);
+      byParent.computeIfAbsent(job.getParentJobId(), ignored -> new ArrayList<>()).add(job);
+    }
+    GetReconcileJobResponse root = byId.get(rootJobId);
+    if (root == null) {
+      out.println("no reconcile jobs");
+      return;
+    }
+
+    out.printf(
+        "%-"
+            + W_TREE
+            + "s  %-"
+            + W_STATE
+            + "s  %-"
+            + W_KIND
+            + "s  %-"
+            + W_EXECUTOR
+            + "s  %-"
+            + W_TARGET
+            + "s  %-"
+            + W_CHANGES
+            + "s  %-"
+            + W_CHANGES
+            + "s  %-"
+            + W_SNAPSHOTS
+            + "s  %-"
+            + W_STATS
+            + "s  %-"
+            + W_INDEXES
+            + "s  %-"
+            + W_ERRORS
+            + "s  %s%n",
+        "JOB_TREE",
+        "STATE",
+        "KIND",
+        "EXECUTOR",
+        "TARGET",
+        "TABLES",
+        "VIEWS",
+        "SNAPSHOTS",
+        "STATS",
+        "INDEXES",
+        "ERRORS",
+        "MESSAGE");
+    printReconcileJobTreeRow(
+        root,
+        byParent,
+        "",
+        true,
+        true,
+        W_TREE,
+        W_STATE,
+        W_KIND,
+        W_EXECUTOR,
+        W_TARGET,
+        W_CHANGES,
+        W_SNAPSHOTS,
+        W_STATS,
+        W_INDEXES,
+        W_ERRORS,
+        out);
+  }
+
+  private static void printReconcileJobTreeRow(
+      GetReconcileJobResponse job,
+      Map<String, List<GetReconcileJobResponse>> byParent,
+      String prefix,
+      boolean isLast,
+      boolean isRoot,
+      int treeWidth,
+      int stateWidth,
+      int kindWidth,
+      int executorWidth,
+      int targetWidth,
+      int changesWidth,
+      int snapshotsWidth,
+      int statsWidth,
+      int indexesWidth,
+      int errorsWidth,
+      PrintStream out) {
+    String branch = isRoot ? "" : (isLast ? "\\- " : "|- ");
+    String treeLabel = prefix + branch + job.getJobId();
+    out.printf(
+        "%-"
+            + treeWidth
+            + "s  %-"
+            + stateWidth
+            + "s  %-"
+            + kindWidth
+            + "s  %-"
+            + executorWidth
+            + "s  %-"
+            + targetWidth
+            + "s  %-"
+            + changesWidth
+            + "s  %-"
+            + changesWidth
+            + "s  %-"
+            + snapshotsWidth
+            + "d  %-"
+            + statsWidth
+            + "d  %-"
+            + indexesWidth
+            + "d  %-"
+            + errorsWidth
+            + "d  %s%n",
+        truncate(treeLabel, treeWidth),
+        formatJobState(job.getState()),
         formatJobKind(job.getKind()),
-        job.getFullRescan() ? "full" : "incremental",
-        job.getDurationMs(),
-        job.getTablesScanned(),
-        job.getTablesChanged(),
-        job.getViewsScanned(),
-        job.getViewsChanged(),
+        truncate(job.getExecutorId(), executorWidth),
+        truncate(formatJobTarget(job), targetWidth),
+        summarizeChanges(job.getTablesChanged(), job.getTablesScanned()),
+        summarizeChanges(job.getViewsChanged(), job.getViewsScanned()),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
-        job.getErrors());
-    if (hasInterestingRouting(job)) {
-      out.println("routing: " + summarizeRouting(job));
-    }
-    if (job.getMessage() != null && !job.getMessage().isBlank()) {
-      out.println("message: " + job.getMessage());
+        job.getIndexesProcessed(),
+        job.getErrors(),
+        truncate(singleLineMessage(job.getMessage()), 60));
+
+    List<GetReconcileJobResponse> children =
+        byParent.getOrDefault(job.getJobId(), List.of()).stream()
+            .sorted((left, right) -> left.getJobId().compareTo(right.getJobId()))
+            .toList();
+    String childPrefix = isRoot ? "" : prefix + (isLast ? "   " : "|  ");
+    for (int index = 0; index < children.size(); index++) {
+      printReconcileJobTreeRow(
+          children.get(index),
+          byParent,
+          childPrefix,
+          index == children.size() - 1,
+          false,
+          treeWidth,
+          stateWidth,
+          kindWidth,
+          executorWidth,
+          targetWidth,
+          changesWidth,
+          snapshotsWidth,
+          statsWidth,
+          indexesWidth,
+          errorsWidth,
+          out);
     }
   }
 
   private static void printReconcileJob(GetReconcileJobResponse job, PrintStream out) {
-    out.printf(
-        "job_id=%s connector_id=%s state=%s kind=%s mode=%s started=%s finished=%s duration_ms=%d"
-            + " tables_scanned=%d tables_changed=%d views_scanned=%d views_changed=%d"
-            + " snapshots=%d stats=%d errors=%d%n",
-        job.getJobId(),
-        job.getConnectorId(),
-        job.getState().name(),
-        formatJobKind(job.getKind()),
-        job.getFullRescan() ? "full" : "incremental",
-        CliUtils.ts(job.getStartedAt()),
-        CliUtils.ts(job.getFinishedAt()),
-        job.getDurationMs(),
-        job.getTablesScanned(),
-        job.getTablesChanged(),
-        job.getViewsScanned(),
-        job.getViewsChanged(),
-        job.getSnapshotsProcessed(),
-        job.getStatsProcessed(),
-        job.getErrors());
-    if (hasInterestingRouting(job)) {
-      out.println("routing: " + summarizeRouting(job));
+    out.printf("JOB_ID:       %s%n", job.getJobId());
+    out.printf("CONNECTOR_ID: %s%n", job.getConnectorId());
+    if (!job.getParentJobId().isBlank()) {
+      out.printf("PARENT_JOB:   %s%n", job.getParentJobId());
     }
+    out.printf("STATE:        %s%n", formatJobState(job.getState()));
+    out.printf("KIND:         %s%n", formatJobKind(job.getKind()));
+    out.printf("MODE:         %s%n", job.getFullRescan() ? "full" : "incremental");
+    if (!job.getExecutorId().isBlank()) {
+      out.printf("EXECUTOR:     %s%n", job.getExecutorId());
+    }
+    String target = formatJobTarget(job);
+    if (!target.isBlank()) {
+      out.printf("TARGET:       %s%n", target);
+    }
+    out.printf("STARTED:      %s%n", CliUtils.ts(job.getStartedAt()));
+    out.printf("FINISHED:     %s%n", CliUtils.ts(job.getFinishedAt()));
+    out.printf("DURATION:     %s%n", formatDuration(job.getDurationMs()));
+    out.printf(
+        "TABLES:       %d changed / %d scanned%n", job.getTablesChanged(), job.getTablesScanned());
+    out.printf(
+        "VIEWS:        %d changed / %d scanned%n", job.getViewsChanged(), job.getViewsScanned());
+    out.printf("SNAPSHOTS:    %d%n", job.getSnapshotsProcessed());
+    out.printf("STATS:        %d%n", job.getStatsProcessed());
+    out.printf("INDEXES:      %d%n", job.getIndexesProcessed());
+    out.printf("ERRORS:       %d%n", job.getErrors());
     if (job.getMessage() != null && !job.getMessage().isBlank()) {
       var lines = splitErrorLines(job.getMessage());
       if (lines.isEmpty()) {
-        out.println("message: " + job.getMessage());
+        out.println("MESSAGE:");
       } else if (lines.size() == 1) {
-        out.println("message: " + lines.get(0));
+        out.printf("MESSAGE:      %s%n", lines.get(0));
       } else {
-        out.println("message:");
+        out.println("MESSAGE:");
         for (String line : lines) {
           out.println("  - " + line);
         }
@@ -1034,27 +1329,29 @@ final class ConnectorCliSupport {
     return kind.name().replace("RJK_", "").toLowerCase(Locale.ROOT);
   }
 
-  private static boolean hasInterestingRouting(GetReconcileJobResponse job) {
-    return !summarizeRouting(job).isBlank();
+  private static String formatJobState(JobState state) {
+    if (state == null || state == JobState.JS_UNSPECIFIED) {
+      return "UNSPECIFIED";
+    }
+    return state.name().replace("JS_", "");
   }
 
-  private static String summarizeRouting(GetReconcileJobResponse job) {
-    List<String> parts = new ArrayList<>();
-    if (!job.getParentJobId().isBlank()) {
-      parts.add("parent=" + job.getParentJobId());
-    }
-    if (!job.getExecutorId().isBlank() && !"default_reconciler".equals(job.getExecutorId())) {
-      parts.add("executor=" + job.getExecutorId());
-    }
+  private static String formatJobTarget(GetReconcileJobResponse job) {
     String tableTask = formatTableTask(job);
     if (!tableTask.isBlank()) {
-      parts.add("table=" + tableTask);
+      return tableTask;
     }
     String viewTask = formatViewTask(job);
     if (!viewTask.isBlank()) {
-      parts.add("view=" + viewTask);
+      return viewTask;
     }
-    return String.join(" ", parts);
+    if (job.hasSnapshotTask()) {
+      return formatSnapshotTask(job.getSnapshotTask());
+    }
+    if (job.hasFileGroupTask()) {
+      return formatFileGroupTask(job.getFileGroupTask());
+    }
+    return "";
   }
 
   private static String formatTableTask(GetReconcileJobResponse job) {
@@ -1102,6 +1399,45 @@ final class ConnectorCliSupport {
       return source;
     }
     return source + "->" + destination;
+  }
+
+  private static String formatSnapshotTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask snapshotTask) {
+    String source =
+        snapshotTask.getSourceNamespace().isBlank()
+            ? snapshotTask.getSourceTable()
+            : snapshotTask.getSourceNamespace() + "." + snapshotTask.getSourceTable();
+    String snapshot =
+        snapshotTask.getSnapshotId() > 0
+            ? source.isBlank()
+                ? "snapshot " + snapshotTask.getSnapshotId()
+                : source + "@" + snapshotTask.getSnapshotId()
+            : source;
+    if (!snapshot.isBlank()) {
+      return snapshot;
+    }
+    return snapshotTask.getTableId();
+  }
+
+  private static String formatFileGroupTask(
+      ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask fileGroupTask) {
+    StringBuilder target = new StringBuilder();
+    if (!fileGroupTask.getTableId().isBlank()) {
+      target.append(fileGroupTask.getTableId());
+    }
+    if (fileGroupTask.getSnapshotId() > 0) {
+      if (target.length() > 0) {
+        target.append('@');
+      }
+      target.append(fileGroupTask.getSnapshotId());
+    }
+    if (!fileGroupTask.getGroupId().isBlank()) {
+      if (target.length() > 0) {
+        target.append(" group=");
+      }
+      target.append(fileGroupTask.getGroupId());
+    }
+    return target.toString();
   }
 
   private static void printReconcilerSettings(
@@ -1397,6 +1733,45 @@ final class ConnectorCliSupport {
 
   private static long durationSeconds(Duration d) {
     return d == null ? 0L : d.getSeconds();
+  }
+
+  private static String summarizeChanges(long changed, long scanned) {
+    return changed + "/" + scanned;
+  }
+
+  private static String formatDuration(long durationMs) {
+    if (durationMs <= 0L) {
+      return "";
+    }
+    long totalSeconds = durationMs / 1000L;
+    long hours = totalSeconds / 3600L;
+    long minutes = (totalSeconds % 3600L) / 60L;
+    long seconds = totalSeconds % 60L;
+    if (hours > 0L) {
+      return hours + "h" + minutes + "m" + seconds + "s";
+    }
+    if (minutes > 0L) {
+      return minutes + "m" + seconds + "s";
+    }
+    return seconds + "s";
+  }
+
+  private static String singleLineMessage(String msg) {
+    List<String> lines = splitErrorLines(msg);
+    return lines.isEmpty() ? "" : String.join(" | ", lines);
+  }
+
+  private static String truncate(String value, int maxWidth) {
+    if (value == null || value.isBlank() || maxWidth <= 0) {
+      return "";
+    }
+    if (value.length() <= maxWidth) {
+      return value;
+    }
+    if (maxWidth <= 3) {
+      return value.substring(0, maxWidth);
+    }
+    return value.substring(0, maxWidth - 3) + "...";
   }
 
   private static List<String> splitErrorLines(String msg) {

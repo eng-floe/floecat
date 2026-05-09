@@ -65,7 +65,7 @@ make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=locals
 
 ### Split reconciler mode
 
-The same service image can now run as a control-plane node or as a remote executor node.
+The same service image can run as a control-plane node or as a remote executor node.
 
 Run a control plane plus one executor node:
 
@@ -85,6 +85,15 @@ COMPOSE_PROFILES=localstack,reconciler-executor \
 docker compose -f docker/docker-compose.yml up -d --scale executor=3
 ```
 
+Run the same split deployment in local OIDC mode:
+
+```bash
+QUARKUS_PROFILE_SERVICE=reconciler-control \
+FLOECAT_ENV_FILE=./env.localstack-oidc \
+COMPOSE_PROFILES=localstack-oidc,reconciler-executor \
+docker compose -f docker/docker-compose.yml up -d --scale executor=1
+```
+
 Notes:
 
 - For a true split deployment, run `service` as the control plane by setting
@@ -101,7 +110,10 @@ Notes:
   connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.
 - Both services must share the same blob/kv backend configuration.
-- If your control plane requires an authorization token for remote reconciler calls, set `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN` in the env file or shell before `docker compose up`.
+- In OIDC mode, configure the reconciler worker service principal with
+  `FLOECAT_RECONCILER_OIDC_ISSUER`, `FLOECAT_RECONCILER_OIDC_CLIENT_ID`, and
+  `FLOECAT_RECONCILER_OIDC_CLIENT_SECRET`. Executors then authenticate to
+  `ReconcileExecutorControl` automatically with cached client-credentials tokens.
 
 In Kubernetes or another orchestrator, the equivalent shape is:
 
@@ -167,10 +179,10 @@ Common configuration knobs:
 - **AWS wiring**: `FLOECAT_STORAGE_AWS_REGION`, `FLOECAT_STORAGE_AWS_S3_ENDPOINT`,
   `FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT`, `FLOECAT_STORAGE_AWS_ACCESS_KEY_ID`,
   `FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY`, `FLOECAT_STORAGE_AWS_S3_PATH_STYLE`.
-- **Gateway storage credentials**: `ICEBERG_STORAGE_SCOPE`, `ICEBERG_STORAGE_TYPE`,
-  `ICEBERG_STORAGE_KEY_ID`, `ICEBERG_STORAGE_SECRET`, `ICEBERG_STORAGE_REGION`,
-  plus `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
-  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
+- **Gateway client-safe storage defaults**:
+  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
+  `FLOECAT_CONNECTOR_INTEGRATION_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for
+  non-default endpoints. Temporary vended credentials come from storage authorities.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
 - **Reconciler split deployment**:
   `FLOECAT_RECONCILER_WORKER_MODE`, `FLOECAT_RECONCILER_MAX_PARALLELISM`,
@@ -178,7 +190,8 @@ Common configuration knobs:
   `FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_FILE_GROUP_EXECUTOR_ENABLED`,
-  `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN`,
+  `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_OIDC_ISSUER`,
+  `FLOECAT_RECONCILER_OIDC_CLIENT_ID`, `FLOECAT_RECONCILER_OIDC_CLIENT_SECRET`,
   `QUARKUS_PROFILE_SERVICE`, `QUARKUS_PROFILE_EXECUTOR`.
 
 Where variables are consumed (all `FLOECAT_*`):
@@ -209,6 +222,11 @@ If `AWS_PROFILE` is unset, the SDK falls back to env vars or the instance/contai
 If your images run as a non-root user, mount `~/.aws` into that user’s home in
 `docker/docker-compose.yml`.
 
+For Iceberg REST credential vending, define a storage authority after the stack starts instead of
+injecting static gateway credentials. In LocalStack-style setups, the authority typically carries a
+storage prefix, region, endpoint, path-style flag, and source credentials supplied with
+`storage-authority create ... --cred-type aws ...`.
+
 ## OIDC Notes
 
 - `docker/env.inmem` explicitly uses DEV auth (`FLOECAT_AUTH_MODE=dev`,
@@ -220,7 +238,8 @@ If your images run as a non-root user, mount `~/.aws` into that user’s home in
 - Clients running on the **host** (or external containers not on the `docker_floecat` network)
   must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
 - If you use Trino with the REST catalog, ensure the gateway audience list includes both
-  `floecat-client` and `trino-client` (see `docker/env.localstack-oidc`).
+  `floecat-client` and `trino-client`, and ensure the service audience list also includes the
+  reconciler worker client (see `docker/env.localstack-oidc`).
 
 ### OIDC Token for Shell
 

@@ -49,7 +49,7 @@ class GrpcReconcilerBackendMetadataTest {
   }
 
   @Test
-  void metadataFallsBackToStaticTokenWhenContextLacksOne() {
+  void metadataOmitsAuthorizationHeaderWhenContextLacksOne() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.of("static-token"), Optional.<Duration>empty());
@@ -62,6 +62,6 @@ class GrpcReconcilerBackendMetadataTest {
 
     Metadata.Key<String> authorizationKey =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-    assertThat(metadata.get(authorizationKey)).isEqualTo("Bearer static-token");
+    assertThat(metadata.get(authorizationKey)).isNull();
   }
 }

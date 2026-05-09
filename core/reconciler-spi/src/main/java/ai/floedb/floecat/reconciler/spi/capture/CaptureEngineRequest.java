@@ -21,6 +21,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /** Source-aware capture request used by pluggable capture engines. */
@@ -36,7 +37,8 @@ public record CaptureEngineRequest(
     Set<String> statsColumns,
     Set<String> indexColumns,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
-    boolean capturePageIndex) {
+    boolean capturePageIndex,
+    Optional<String> authorizationToken) {
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -55,6 +57,10 @@ public record CaptureEngineRequest(
         requestedStatsTargetKinds == null
             ? Set.of()
             : Set.copyOf(new LinkedHashSet<>(requestedStatsTargetKinds));
+    authorizationToken =
+        authorizationToken == null
+            ? Optional.empty()
+            : authorizationToken.map(String::trim).filter(token -> !token.isBlank());
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {

@@ -29,6 +29,7 @@ public final class Keys {
   public static final String SEG_SNAPSHOT = "/snapshot/";
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
+  public static final String SEG_STORAGE_AUTHORITY = "/storage-authority/";
   public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
   public static final String SEG_FILE_STATS = "/file-stats/";
@@ -256,6 +257,40 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/catalogs/%s/catalog/%s.pb", encode(tid), encode(cid), encode(sha));
+  }
+
+  // ===== Storage Authority =====
+
+  public static String storageAuthorityPointerById(String accountId, String authorityId) {
+    String tid = req("account_id", accountId);
+    String aid = req("authority_id", authorityId);
+    return "/accounts/" + encode(tid) + "/storage-authorities/by-id/" + encode(aid);
+  }
+
+  public static String storageAuthorityPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/storage-authorities/by-id/";
+  }
+
+  public static String storageAuthorityPointerByName(String accountId, String displayName) {
+    String tid = req("account_id", accountId);
+    String name = req("display_name", displayName);
+    return "/accounts/" + encode(tid) + "/storage-authorities/by-name/" + encode(name);
+  }
+
+  public static String storageAuthorityPointerByNamePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/storage-authorities/by-name/";
+  }
+
+  public static String storageAuthorityBlobUri(
+      String accountId, String authorityId, String sha256) {
+    String tid = req("account_id", accountId);
+    String aid = req("authority_id", authorityId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/storage-authorities/%s/storage-authority/%s.pb",
+        encode(tid), encode(aid), encode(sha));
   }
 
   // ===== Namespace =====

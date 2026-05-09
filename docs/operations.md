@@ -55,9 +55,33 @@ Flags:
 
 ## Observability & Operations
 
+### Outbound token endpoint allowlist
+
+Floecat validates outbound token endpoint hosts before performing client credentials or token
+exchange flows on behalf of connectors or internal workers. This is an SSRF guard on the shared
+auth resolution path, not a connector-specific feature.
+
+The relevant settings are:
+
+- `FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS` – comma-separated host/domain allowlist for
+  outbound token endpoints. Exact hosts match exactly; `*.example.com` matches subdomains only.
+  `*` allows any token endpoint host.
+- `FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true` – permits allowlisted
+  HTTPS hosts that resolve to private or loopback addresses.
+- `FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true` – permits loopback-only HTTP token
+  endpoints for local development.
+
+Important behavior:
+
+- These settings restrict token endpoint hosts, not upstream catalog hosts in general.
+- `FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=*` only bypasses the host allowlist check. It
+  does not disable the private-address or loopback HTTP guards.
+- The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
+  flow that performs service-side token acquisition.
+
 ### Reconciler deployment modes
 
-The reconciler can now run in three shapes from the same artifact:
+The reconciler runs in three shapes from the same artifact:
 
 - **All-in-one**: default profile; public APIs, durable queue ownership, and local executor polling stay in one runtime.
 - **Control plane**: `QUARKUS_PROFILE=reconciler-control`; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.
@@ -73,7 +97,11 @@ floecat.reconciler.executor.remote-default.enabled
 floecat.reconciler.executor.remote-snapshot-planner.enabled
 floecat.reconciler.executor.remote-file-group.enabled
 floecat.reconciler.authorization.header
-floecat.reconciler.authorization.token
+floecat.reconciler.oidc.issuer
+floecat.reconciler.oidc.client-id
+floecat.reconciler.oidc.client-secret
+floecat.reconciler.oidc.token-refresh-skew-seconds
+floecat.reconciler.oidc.connect-timeout
 floecat.reconciler.auto.execution-class
 floecat.reconciler.auto.execution-lane
 ```
@@ -82,15 +110,22 @@ Recommended split deployment:
 
 - Control plane: `QUARKUS_PROFILE=reconciler-control`
 - Executor plane: `QUARKUS_PROFILE=reconciler-executor`
-- Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
+- Shared settings: same blob/kv backend, same reconciler OIDC worker principal configuration, executor nodes pointed at the control-plane gRPC host/port
 - Control-plane-specific setting: `reconciler.max-parallelism=0`
 - Executor-plane-specific setting: `floecat.reconciler.worker.mode=remote`
 
+Worker gRPC auth boundary:
+
+- Remote reconcile workers authenticate to `ReconcileExecutorControl` with an explicit bearer
+  token attached by the worker client itself.
+- In OIDC mode, that bearer token comes from the configured reconciler worker service principal.
+- Internal user-context fanout still uses propagated request metadata where appropriate, but that
+  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.
+
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
-and `EXEC_FILE_GROUP` work. `CaptureNow` follows the same plan-plus-child execution path rather
-than a legacy connector-wide execution mode. File-group workers submit results through
-`SubmitLeasedFileGroupExecutionResult`, which now requires `result_id` so the control plane can
+and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through
+`SubmitLeasedFileGroupExecutionResult`, which requires `result_id` so the control plane can
 enforce replay safety across worker retries.
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
@@ -110,7 +145,7 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
 ### Telemetry hub configuration
-The service now uses the telemetry hub core + Micrometer backend. The following flags are available in
+The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 `service/src/main/resources/application.properties` (the `telemetry-otlp` profile toggles OTLP tracing/log exports):
 
 ```

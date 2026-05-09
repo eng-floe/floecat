@@ -1262,7 +1262,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       if (blobUri.equals(existing.getBlobUri())) {
-        return true;
+        return false;
       }
 
       var owner = currentJobRecordForBlobUri(existing.getBlobUri());

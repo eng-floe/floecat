@@ -18,11 +18,13 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
@@ -38,18 +40,21 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   private final ReconcilerService reconcilerService;
   private final RemotePlannerWorkerClient workerClient;
+  private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
 
   @Inject
   public RemotePlannerReconcileExecutor(
       ReconcilerService reconcilerService,
       RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-planner.enabled",
               defaultValue = "false")
           boolean enabled) {
     this.reconcilerService = reconcilerService;
     this.workerClient = workerClient;
+    this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.enabled = enabled;
   }
 
@@ -129,7 +134,9 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
             "capture-only scoped capture requests cannot be combined with namespace scope");
       }
       if (scope.hasTableFilter()) {
-        var tableTasks = reconcilerService.planTableTasks(principal, connectorId, scope, null);
+        var tableTasks =
+            reconcilerService.planTableTasks(
+                principal, connectorId, scope, workerAuthorizationHeader());
         if (tableTasks.isEmpty()) {
           return ExecutionResult.terminalFailure(
               0,
@@ -170,7 +177,8 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
                 "Planned table " + task.sourceNamespace() + "." + task.sourceTable());
       } else if (scope.hasViewFilter()) {
         List<ReconcileViewTask> plannedViews =
-            reconcilerService.planViewTasks(principal, connectorId, scope, null);
+            reconcilerService.planViewTasks(
+                principal, connectorId, scope, workerAuthorizationHeader());
         if (plannedViews.isEmpty()) {
           return ExecutionResult.terminalFailure(
               0,
@@ -206,10 +214,12 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
         List<ReconcileTableTask> tableTasks =
             !includesMetadata(payload.captureMode()) && scope.hasCaptureRequestFilter()
                 ? planCaptureOnlyScopedTableTasks(principal, connectorId, scope)
-                : reconcilerService.planTableTasks(principal, connectorId, scope, null);
+                : reconcilerService.planTableTasks(
+                    principal, connectorId, scope, workerAuthorizationHeader());
         List<ReconcileViewTask> plannedViews =
             includesMetadata(payload.captureMode())
-                ? reconcilerService.planViewTasks(principal, connectorId, scope, null)
+                ? reconcilerService.planViewTasks(
+                    principal, connectorId, scope, workerAuthorizationHeader())
                 : List.of();
         validateScopedCaptureRequestsMatched(payload.captureMode(), scope, tableTasks);
         if (includesMetadata(payload.captureMode())) {
@@ -314,6 +324,13 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     if (error instanceof ReconcileFailureException) {
       return error;
     }
+    if (hasAwsCredentialsUnavailable(error)) {
+      return new ReconcileFailureException(
+          ExecutionResult.FailureKind.INTERNAL,
+          ExecutionResult.RetryDisposition.TERMINAL,
+          error.getMessage(),
+          error);
+    }
     if (error instanceof IllegalArgumentException || error instanceof IllegalStateException) {
       return new ReconcileFailureException(
           ExecutionResult.FailureKind.INTERNAL,
@@ -322,6 +339,19 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
           error);
     }
     return error;
+  }
+
+  private static boolean hasAwsCredentialsUnavailable(Throwable error) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = error;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof AwsCredentialsUnavailableException) {
+        return true;
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return false;
   }
 
   private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
@@ -362,7 +392,8 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       ReconcileScope strictScope =
           ReconcileScope.of(List.of(), entry.getKey(), entry.getValue(), scope.capturePolicy());
       plannedTasks.addAll(
-          reconcilerService.planTableTasks(principal, connectorId, strictScope, null));
+          reconcilerService.planTableTasks(
+              principal, connectorId, strictScope, workerAuthorizationHeader()));
     }
     return plannedTasks;
   }
@@ -417,5 +448,9 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
 
   private static ExecutionResult cancelled(long tablesPlanned, long viewsPlanned) {
     return ExecutionResult.cancelled(tablesPlanned, 0, viewsPlanned, 0, 0, 0, 0, "Cancelled");
+  }
+
+  private String workerAuthorizationHeader() {
+    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
   }
 }

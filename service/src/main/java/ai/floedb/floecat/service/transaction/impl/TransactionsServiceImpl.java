@@ -63,6 +63,8 @@ import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdRequest;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -76,6 +78,7 @@ import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -96,6 +99,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
   private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
   private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
+  private static final String RESERVED_TABLE_ID_PROPERTY_PREFIX =
+      "floecat.transaction.reserved-table-id.";
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
   @Inject IdempotencyRepository idempotencyStore;
@@ -353,6 +358,29 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         .invoke(L::ok);
   }
 
+  @Override
+  public Uni<ReserveTransactionTableIdResponse> reserveTransactionTableId(
+      ReserveTransactionTableIdRequest request) {
+    var L = LogHelper.start(LOG, "ReserveTransactionTableId");
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principalProvider.get();
+                  authz.require(principalContext, "table.write");
+                  String accountId = requireAccountId(principalContext.getAccountId());
+                  Timestamp now = Timestamps.fromMillis(clock.millis());
+                  ResourceId tableId =
+                      reserveTransactionTableId(
+                          accountId, request.getTxId(), request.getTableFq(), now);
+                  return ReserveTransactionTableIdResponse.newBuilder().setTableId(tableId).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
   private Transaction getTransactionOrThrow(String accountId, String txId) {
     if (txId == null || txId.isBlank()) {
       throw new IllegalArgumentException("missing tx_id");
@@ -395,6 +423,38 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     throw new PreconditionFailedException("transaction update conflict: " + txId);
   }
 
+  private ResourceId reserveTransactionTableId(
+      String accountId, String txId, String tableFq, Timestamp now) {
+    String normalizedTableFq = normalizeReservedTableFq(tableFq);
+    String propertyKey = reservedTableIdPropertyKey(normalizedTableFq);
+    for (int attempt = 0; attempt < 3; attempt++) {
+      Transaction current = getTransactionOrThrow(accountId, txId);
+      String existingId = current.getPropertiesMap().get(propertyKey);
+      if (existingId != null && !existingId.isBlank()) {
+        return ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId(existingId)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+      }
+      if (current.getState() != TransactionState.TS_OPEN) {
+        throw new IllegalArgumentException(
+            "table id reservation requires open transaction: " + current.getState().name());
+      }
+      long version = txRepo.metaFor(accountId, txId).getPointerVersion();
+      ResourceId reservedId = randomResourceId(accountId, ResourceKind.RK_TABLE);
+      Transaction updated =
+          current.toBuilder()
+              .putProperties(propertyKey, reservedId.getId())
+              .setUpdatedAt(now)
+              .build();
+      if (txRepo.update(updated, version)) {
+        return reservedId;
+      }
+    }
+    throw new PreconditionFailedException("transaction update conflict: " + txId);
+  }
+
   private String requireAccountId(String accountId) {
     if (accountId == null || accountId.isBlank()) {
       throw new IllegalArgumentException("missing account_id");
@@ -430,6 +490,19 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             .build();
     txRepo.create(txn);
     return txn;
+  }
+
+  private static String normalizeReservedTableFq(String tableFq) {
+    String normalized = tableFq == null ? "" : tableFq.trim();
+    if (normalized.isBlank()) {
+      throw new IllegalArgumentException("missing table_fq");
+    }
+    parseStaticTableFq(normalized);
+    return normalized;
+  }
+
+  private static String reservedTableIdPropertyKey(String tableFq) {
+    return RESERVED_TABLE_ID_PROPERTY_PREFIX + URLEncoder.encode(tableFq, StandardCharsets.UTF_8);
   }
 
   private Transaction prepareTransaction(
@@ -1723,6 +1796,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private NameRef parseTableFq(String tableFq) {
+    return parseStaticTableFq(tableFq);
+  }
+
+  private static NameRef parseStaticTableFq(String tableFq) {
     String trimmed = tableFq.trim();
     String[] parts = trimmed.split("\\.");
     if (parts.length < 2) {

@@ -40,6 +40,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -308,6 +309,8 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var spec = request.getSpec();
                   var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var normName = normalizeName(rawName);
+                  PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), corr, "spec.properties");
 
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -322,6 +325,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           .setResourceId(catalogId)
                           .setDisplayName(normName)
                           .setDescription(spec.getDescription())
+                          .putAllProperties(spec.getPropertiesMap())
                           .setCreatedAt(tsNow)
                           .build();
 
@@ -417,6 +421,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                   var spec = request.getSpec();
                   var mask = normalizeMask(request.getUpdateMask());
+                  if (maskTargets(mask, "properties")) {
+                    PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        spec.getPropertiesMap(), corr, "spec.properties");
+                  }
 
                   var meta = catalogRepo.metaFor(catalogId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(

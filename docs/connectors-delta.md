@@ -74,7 +74,7 @@ Databricks SQL execution, and custom file readers for S3.
       `/api/2.1/unity-catalog/tables/{full_name}`. Snapshot metadata wins on key collisions.
     - **Glue**: merge of snapshot metadata + Glue table parameters. Snapshot metadata wins on key
       collisions.
-    - **Filesystem**: snapshot metadata only (no catalog-level fallback source).
+    - **Filesystem**: snapshot metadata only.
   - Connector matrix (current behavior):
     - **Unity**: `CT_NOT_NULL`, `CT_CHECK` (`delta.constraints.*`) from merged snapshot + UC metadata.
     - **Glue**: `CT_NOT_NULL`, `CT_CHECK` (`delta.constraints.*`) from merged snapshot + Glue metadata.
@@ -112,17 +112,22 @@ Important connector properties:
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`
-  expects either `token=<access-token>` or `oauth.mode=cli` (to read the Databricks CLI cache).
-  Service principal and WIF are expressed as `AuthCredentials` and resolved upstream.
-  For `delta.source=glue`, use AWS credentials/profile options (for example resolved `s3.*` keys
-  or `auth.properties` profile settings) and set `auth.scheme=aws-sigv4` or `none`.
+  works with resolved bearer-style credentials or `oauth.mode=cli` (to read the Databricks CLI
+  cache). Secret-bearing auth values must be supplied via `AuthCredentials`, not persisted in
+  `auth.properties`. Service principal and WIF are expressed as `AuthCredentials` and resolved
+  upstream. For `delta.source=glue`, use resolved AWS credentials or non-secret
+  `auth.properties` profile settings and set `auth.scheme=aws-sigv4` or `none`.
 
 Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
-For Delta, the relevant types are `bearer`, `client` (SP), `cli`, `token-exchange` (WIF),
-`token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only work if the Databricks
-workspace is configured to trust those IdPs.
-Use the Databricks workspace host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`);
-token exchange endpoints use `https://<workspace-host>/oidc/v1/token`.
+For `delta.source=unity`, the relevant types are `bearer`, `client` (SP), `cli`,
+`token-exchange` (WIF), `token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only
+work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
+host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`); for Databricks
+Unity Catalog, token exchange endpoints typically use `https://<workspace-host>/oidc/v1/token`.
+
+For `delta.source=glue` and `delta.source=filesystem`, this Databricks OIDC token endpoint pattern
+does not apply. Shared outbound token endpoint validation behavior is documented in
+[`docs/operations.md`](operations.md).
 
 Extensibility points:
 
@@ -154,8 +159,9 @@ Extensibility points:
   ```
 
 - **CLI examples**
-  - **Service principal (SP)** – Use `client` credentials. Resolve via client credentials exchange
-    (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+  - **Service principal (SP)** – For `delta.source=unity`, use `client` credentials. Resolve via
+    client credentials exchange (service layer), connector sees a bearer token. Token endpoint is
+    the workspace OIDC URL:
     `https://<workspace-host>/oidc/v1/token`.
 
     ```bash
@@ -169,8 +175,9 @@ Extensibility points:
       --auth scope=all-apis
     ```
 
-  - **WIF (token exchange)** – Use `token-exchange`. Resolve via RFC 8693 exchange (service layer),
-    connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+  - **WIF (token exchange)** – For `delta.source=unity`, use `token-exchange`. Resolve via RFC 8693
+    exchange (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC
+    URL:
     `https://<workspace-host>/oidc/v1/token`.
 
     ```bash
@@ -201,7 +208,7 @@ Extensibility points:
   ```bash
   connector create "Unity Delta Token" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
     "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
-    --auth-scheme oauth2 --auth token=<access-token>
+    --auth-scheme oauth2 --cred-type bearer --cred token=<access-token>
   ```
 
 - **Full reconciliation** – `ReconcilerService` enters full-rescan mode (`fullRescan=true`), so the

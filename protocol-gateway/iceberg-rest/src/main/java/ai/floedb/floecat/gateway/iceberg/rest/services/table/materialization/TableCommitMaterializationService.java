@@ -61,7 +61,8 @@ public class TableCommitMaterializationService {
     boolean requestedLocation = hasText(metadataLocation) || hasText(metadata.metadataLocation());
     try {
       MaterializeMetadataService.MaterializeResult materializeResult =
-          materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
+          materializeMetadataService.materialize(
+              namespace, table, tableRecord, metadata, metadataLocation);
       String resolvedLocation = materializeResult.metadataLocation();
       if (!hasText(resolvedLocation)) {
         if (!requestedLocation) {

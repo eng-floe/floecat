@@ -145,7 +145,8 @@ class CaptureEngineRegistryTest {
             Set.of(),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            java.util.Optional.empty());
     CaptureEngineRequest columnSelectors =
         new CaptureEngineRequest(
             request(false, Set.of(FloecatConnector.StatsTargetKind.FILE)).sourceConnector(),
@@ -163,7 +164,8 @@ class CaptureEngineRegistryTest {
             Set.of("c1"),
             Set.of(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            java.util.Optional.empty());
 
     assertThat(capabilities.supports(missingPlannedFiles)).isFalse();
     assertThat(capabilities.supports(columnSelectors)).isFalse();
@@ -199,7 +201,8 @@ class CaptureEngineRegistryTest {
             Set.of(" c1 ", "", "c1", "  "),
             Set.of(" idx ", "idx", ""),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
-            false);
+            false,
+            java.util.Optional.empty());
 
     assertThat(request.statsColumns()).containsExactly("c1");
     assertThat(request.indexColumns()).containsExactly("idx");
@@ -232,7 +235,8 @@ class CaptureEngineRegistryTest {
         Set.of(),
         Set.of(),
         statsTargetKinds,
-        capturePageIndex);
+        capturePageIndex,
+        java.util.Optional.empty());
   }
 
   private record TestCaptureEngine(

@@ -151,6 +151,7 @@ public class TableCommitService {
       String idempotencyKey,
       String stageId,
       String transactionId,
+      String accessDelegationMode,
       TableRequests.Commit request,
       TableGatewaySupport tableSupport) {}
 

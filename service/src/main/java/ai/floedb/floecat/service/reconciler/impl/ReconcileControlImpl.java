@@ -1081,6 +1081,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setFullRescan(job.fullRescan)
         .setSnapshotsProcessed(job.snapshotsProcessed)
         .setStatsProcessed(job.statsProcessed)
+        .setIndexesProcessed(indexesProcessed(accountId, job))
         .setDurationMs(durationMs(job))
         .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
         .setExecutorId(job.executorId == null ? "" : job.executorId)
@@ -1097,6 +1098,34 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setFilesCompleted(fileGroupCounts.completedFiles)
         .setFilesFailed(fileGroupCounts.failedFiles)
         .build();
+  }
+
+  private long indexesProcessed(String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null) {
+      return 0L;
+    }
+    long self = indexesProcessedSelf(job);
+    if (!supportsChildAggregation(job.jobKind)) {
+      return self;
+    }
+    return self
+        + childJobsFor(accountId, job).stream()
+            .mapToLong(child -> indexesProcessed(accountId, child))
+            .sum();
+  }
+
+  private long indexesProcessedSelf(ReconcileJobStore.ReconcileJob job) {
+    if (job == null || job.fileGroupTask == null) {
+      return 0L;
+    }
+    return job.fileGroupTask.fileResults().stream()
+        .filter(result -> result != null && result.indexArtifact() != null)
+        .filter(
+            result ->
+                !result.indexArtifact().artifactUri().isBlank()
+                    || !result.indexArtifact().artifactFormat().isBlank()
+                    || result.indexArtifact().artifactFormatVersion() > 0)
+        .count();
   }
 
   private FileGroupCounts fileGroupCounts(String accountId, ReconcileJobStore.ReconcileJob job) {

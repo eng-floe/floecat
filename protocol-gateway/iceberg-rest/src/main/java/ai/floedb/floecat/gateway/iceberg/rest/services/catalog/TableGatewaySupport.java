@@ -25,10 +25,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
-import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
-import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -37,9 +34,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
+import ai.floedb.floecat.gateway.iceberg.rest.config.StorageAwsConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
+import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,33 +49,36 @@ import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
-  private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
-      List.of(new StorageCredentialDto("*", Map.of("type", "static")));
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig gatewayConfig;
   private final ConnectorIntegrationConfig connectorConfig;
+  private final StorageAwsConfig storageAwsConfig;
   private final ObjectMapper mapper;
   private final GrpcServiceFacade grpcClient;
+  private final StorageCredentialAuthority storageCredentialAuthority;
 
   @Inject
   public TableGatewaySupport(
       GrpcWithHeaders grpc,
       IcebergGatewayConfig gatewayConfig,
       ConnectorIntegrationConfig connectorConfig,
+      StorageAwsConfig storageAwsConfig,
       ObjectMapper mapper,
-      GrpcServiceFacade grpcClient) {
+      GrpcServiceFacade grpcClient,
+      StorageCredentialAuthority storageCredentialAuthority) {
     this.grpc = grpc;
     this.gatewayConfig = gatewayConfig;
     this.connectorConfig = connectorConfig;
+    this.storageAwsConfig = storageAwsConfig;
     this.mapper = mapper;
     this.grpcClient = grpcClient;
+    this.storageCredentialAuthority = storageCredentialAuthority;
   }
 
   public TableSpec.Builder buildCreateSpec(
@@ -185,9 +188,13 @@ public class TableGatewaySupport {
   }
 
   public Map<String, String> defaultTableConfig() {
-    // Expose non-secret S3 endpoint/path-style settings so clients (e.g. DuckDB) can
-    // consistently resolve object storage during both read and write paths.
-    return ConnectorIntegrationProperties.defaultTableConfig(connectorConfig);
+    return ConnectorIntegrationProperties.defaultTableConfig(connectorConfig, storageAwsConfig);
+  }
+
+  public Map<String, String> defaultTableConfig(Table table) {
+    LinkedHashMap<String, String> resolved = new LinkedHashMap<>(defaultTableConfig());
+    resolved.putAll(storageCredentialAuthority.clientSafeConfig(table));
+    return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
   }
 
   public Map<String, String> resolveRegisterFileIoProperties(
@@ -206,23 +213,36 @@ public class TableGatewaySupport {
 
   public Map<String, String> defaultFileIoProperties() {
     return ConnectorIntegrationProperties.defaultFileIoProperties(
-        connectorConfig, FileIoFactory::isFileIoProperty);
+        connectorConfig, storageAwsConfig, FileIoFactory::isFileIoProperty);
   }
 
-  public List<StorageCredentialDto> defaultCredentials() {
-    Map<String, String> props =
-        ConnectorIntegrationProperties.credentialProperties(connectorConfig);
-    if (props.isEmpty()) {
-      return STATIC_STORAGE_CREDENTIALS;
-    }
-    String scope =
-        ConnectorIntegrationProperties.credentialScope(connectorConfig)
-            .filter(s -> s != null && !s.isBlank())
-            .orElse("*");
-    return List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
+  public Map<String, String> defaultFileIoProperties(Table table) {
+    LinkedHashMap<String, String> resolved = new LinkedHashMap<>(defaultFileIoProperties());
+    defaultTableConfig(table)
+        .forEach(
+            (key, value) -> {
+              if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
+                resolved.put(key, value.trim());
+              }
+            });
+    return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
   }
 
-  public List<StorageCredentialDto> credentialsForAccessDelegation(String accessDelegationMode) {
+  public Map<String, String> serverSideFileIoProperties(Table table) {
+    return resolveServerSideFileIoProperties(
+        table, StorageLocationResolver.resolveLocationPrefix(table));
+  }
+
+  public Map<String, String> serverSideFileIoPropertiesForLocation(Table table, String location) {
+    return resolveServerSideFileIoProperties(table, location);
+  }
+
+  public Map<String, String> serverSideFileIoPropertiesForLocation(String location) {
+    return resolveServerSideFileIoProperties(null, location);
+  }
+
+  public List<StorageCredentialDto> credentialsForAccessDelegation(
+      Table table, String accessDelegationMode) {
     if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
       return null;
     }
@@ -241,11 +261,13 @@ public class TableGatewaySupport {
     if (!vended) {
       return null;
     }
-    if (!ConnectorIntegrationProperties.hasConfiguredCredentials(connectorConfig)) {
+    List<StorageCredentialDto> credentials =
+        storageCredentialAuthority.resolveForTable(table, true);
+    if (credentials == null || credentials.isEmpty()) {
       throw new IllegalArgumentException(
           "Credential vending was requested but no credentials are available");
     }
-    return defaultCredentials();
+    return credentials;
   }
 
   public IcebergMetadata loadCurrentMetadata(Table table) {
@@ -309,23 +331,6 @@ public class TableGatewaySupport {
     return templates.get(resolved);
   }
 
-  public Optional<Connector> getConnector(ResourceId connectorId) {
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return Optional.empty();
-    }
-    try {
-      GetConnectorResponse response =
-          grpcClient.getConnector(
-              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
-      if (response == null || !response.hasConnector()) {
-        return Optional.empty();
-      }
-      return Optional.of(response.getConnector());
-    } catch (StatusRuntimeException e) {
-      return Optional.empty();
-    }
-  }
-
   private static Long propertyLong(Map<String, String> props, String key) {
     String value = props.get(key);
     if (value == null || value.isBlank()) {
@@ -340,6 +345,36 @@ public class TableGatewaySupport {
 
   private static boolean isUsableIoValue(String value) {
     return ConnectorIntegrationProperties.isUsableValue(value);
+  }
+
+  private Map<String, String> resolveServerSideFileIoProperties(Table table, String location) {
+    LinkedHashMap<String, String> resolved =
+        new LinkedHashMap<>(
+            table == null ? defaultFileIoProperties() : defaultFileIoProperties(table));
+    if (table != null && table.getPropertiesCount() > 0) {
+      FileIoFactory.filterIoProperties(table.getPropertiesMap())
+          .forEach(
+              (key, value) -> {
+                if (isUsableIoValue(value)) {
+                  resolved.put(key, value.trim());
+                }
+              });
+    }
+    resolveAuthorityFileIoProperties(table, location)
+        .forEach(
+            (key, value) -> {
+              if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
+                resolved.put(key, value.trim());
+              }
+            });
+    return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
+  }
+
+  private Map<String, String> resolveAuthorityFileIoProperties(Table table, String location) {
+    if (table == null) {
+      return Map.of();
+    }
+    return storageCredentialAuthority.resolveServerSideFileIoConfig(table, false);
   }
 
   // Snapshot metadata parsing lives in SnapshotMetadataUtil.

@@ -14,9 +14,13 @@ Each secret is tagged with:
 
 These tags support ABAC-style policies.
 
-Connector AuthCredentials are written to Secrets Manager and removed from connector records before
-they are persisted to the pointer store. Responses from the Connectors service mask any sensitive
-auth fields so callers never see raw tokens, keys, or client secrets.
+Connector AuthCredentials and storage-authority source credentials are written to Secrets Manager
+and removed from the corresponding persisted resource records. Connector responses mask sensitive
+auth fields, and storage-authority resolution only returns client-safe config plus any temporary
+credentials minted for a specific table/location match.
+
+Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
+secrets are the only credential source used for client credential vending.
 
 ## Configuration
 
@@ -71,8 +75,8 @@ Set the identifiers and create a sample payload:
 
 ```bash
 export ACCOUNT_ID=acct-123
-export SECRET_TYPE=connectors
-export SECRET_ID=conn-001
+export SECRET_TYPE=connectors   # or storage-authorities
+export SECRET_ID=conn-001       # or a storage authority id such as sa-001
 export SECRET_NAME="accounts/${ACCOUNT_ID}/${SECRET_TYPE}/${SECRET_ID}"
 
 printf 'example-secret-payload' > payload.bin
@@ -125,18 +129,36 @@ The role referenced by `floecat.secrets.aws.role-arn` must trust the Floecat bas
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "AllowAssumeRole",
       "Effect": "Allow",
       "Principal": {
         "AWS": "arn:aws:iam::123456789012:role/floecat-base"
       },
-      "Action": "sts:AssumeRole",
+      "Action": "sts:AssumeRole"
+    },
+    {
+      "Sid": "AllowSessionTags",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:role/floecat-base"
+      },
+      "Action": "sts:TagSession",
       "Condition": {
-        "StringEquals": {"sts:TagSession": "true"}
+        "StringLike": {
+          "aws:RequestTag/AccountId": "*"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": ["AccountId"]
+        }
       }
     }
   ]
 }
 ```
+
+This follows the AWS STS session-tagging model: `sts:TagSession` is a permissions action in the
+trust policy, and tag constraints are expressed with condition keys such as `aws:RequestTag/...`
+and `aws:TagKeys`.
 
 ### Role permissions policy
 

@@ -17,9 +17,12 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
@@ -29,6 +32,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class PlanTaskManagerTest {
+  private static final ResourceId TABLE_ID =
+      ResourceId.newBuilder()
+          .setAccountId("acct")
+          .setKind(ResourceKind.RK_TABLE)
+          .setId("tbl-1")
+          .build();
+  private static final ResourceId OTHER_TABLE_ID = TABLE_ID.toBuilder().setId("tbl-2").build();
 
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private PlanTaskManager manager;
@@ -72,14 +82,34 @@ class PlanTaskManagerTest {
     List<ContentFileDto> deletes = List.of(deleteFile);
 
     PlanTaskManager.PlanDescriptor descriptor =
-        manager.registerCompletedPlan("plan-1", "ns", "tbl", tasks, deletes, List.of());
+        manager.registerCompletedPlan("plan-1", TABLE_ID, "ns", "tbl", tasks, deletes, List.of());
 
     assertEquals(tasks, descriptor.fileScanTasks());
     assertEquals(deletes, descriptor.deleteFiles());
 
     PlanTaskManager.PlanDescriptor fetched =
-        manager.findPlan("plan-1").orElseThrow(() -> new AssertionError("plan missing"));
+        manager.findPlan("plan-1", TABLE_ID).orElseThrow(() -> new AssertionError("plan missing"));
     assertEquals(tasks, fetched.fileScanTasks());
     assertEquals(deletes, fetched.deleteFiles());
+  }
+
+  @Test
+  void planLookupRequiresMatchingTableIdentity() {
+    manager.registerSubmittedPlan("plan-1", TABLE_ID, "ns", "tbl");
+
+    assertTrue(manager.findPlan("plan-1", OTHER_TABLE_ID).isEmpty());
+  }
+
+  @Test
+  void cancelPlanRequiresMatchingTableIdentity() {
+    manager.registerSubmittedPlan("plan-1", TABLE_ID, "ns", "tbl");
+
+    manager.cancelPlan("plan-1", OTHER_TABLE_ID);
+
+    assertTrue(manager.findPlan("plan-1", TABLE_ID).isPresent());
+    manager.cancelPlan("plan-1", TABLE_ID);
+    assertEquals(
+        PlanTaskManager.PlanStatus.CANCELLED,
+        manager.findPlan("plan-1", TABLE_ID).orElseThrow().status());
   }
 }

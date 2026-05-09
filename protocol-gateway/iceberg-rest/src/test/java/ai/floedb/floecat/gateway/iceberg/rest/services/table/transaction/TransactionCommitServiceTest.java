@@ -69,6 +69,7 @@ import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.Any;
@@ -85,7 +86,6 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -127,9 +127,11 @@ class TransactionCommitServiceTest {
     service.tableLifecycleService = tableLifecycleService;
     service.tableCreateTransactionMapper = tableCreateTransactionMapper;
     service.connectorProvisioningService = connectorProvisioningService;
+    installField(connectorProvisioningService, "grpcClient", grpcClient);
     transactionCommitExecutionSupport.grpcClient = grpcClient;
     tablePlanningSupport.transactionCommitExecutionSupport = transactionCommitExecutionSupport;
     tablePlanningSupport.tableLifecycleService = tableLifecycleService;
+    tablePlanningSupport.grpcClient = grpcClient;
     tablePlanningSupport.tableCommitPlanner = tableCommitPlanner;
     tablePlanningSupport.responseBuilder = responseBuilder;
     tablePlanningSupport.tablePropertyService = tablePropertyService;
@@ -166,6 +168,8 @@ class TransactionCommitServiceTest {
     when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    when(grpcClient.reserveTransactionTableId(any()))
+        .thenReturn(ReserveTransactionTableIdResponse.newBuilder().setTableId(tableId).build());
     when(tableSupport.resolveTableLocation(any(), any()))
         .thenAnswer(
             invocation -> {
@@ -184,22 +188,6 @@ class TransactionCommitServiceTest {
               int slash = metadataLocation.lastIndexOf('/');
               return slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
             });
-    when(tableSupport.getConnector(any()))
-        .thenAnswer(
-            invocation -> {
-              ResourceId connectorId = invocation.getArgument(0, ResourceId.class);
-              if (connectorId == null || connectorId.getId().isBlank()) {
-                return Optional.empty();
-              }
-              return Optional.of(
-                  Connector.newBuilder()
-                      .setResourceId(connectorId)
-                      .setDisplayName("existing-" + connectorId.getId())
-                      .setKind(ConnectorKind.CK_ICEBERG)
-                      .setUri("s3://existing")
-                      .setState(ConnectorState.CS_ACTIVE)
-                      .build());
-            });
     when(grpcClient.getConnector(any()))
         .thenAnswer(
             invocation -> {
@@ -216,6 +204,16 @@ class TransactionCommitServiceTest {
                           .build())
                   .build();
             });
+  }
+
+  private static void installField(Object target, String fieldName, Object value) {
+    try {
+      var field = target.getClass().getDeclaredField(fieldName);
+      field.setAccessible(true);
+      field.set(target, value);
+    } catch (ReflectiveOperationException e) {
+      throw new AssertionError("Failed to inject test field " + fieldName, e);
+    }
   }
 
   private CommitTableResponseDto defaultCommitResponse() {
@@ -344,6 +342,13 @@ class TransactionCommitServiceTest {
             any(ResourceId.class),
             eq(createRequest),
             eq(tableSupport));
+    verify(grpcClient)
+        .reserveTransactionTableId(
+            argThat(
+                request ->
+                    request != null
+                        && request.getTxId().equals("tx-1")
+                        && request.getTableFq().equals("cat.db.orders")));
     verify(grpcClient)
         .prepareTransaction(
             argThat(
@@ -725,17 +730,6 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(tableSupport.getConnector(eq(connectorId)))
-        .thenReturn(
-            Optional.of(
-                Connector.newBuilder()
-                    .setResourceId(connectorId)
-                    .setDisplayName("register:pref:db.orders")
-                    .setKind(ConnectorKind.CK_ICEBERG)
-                    .setUri("s3://floecat/iceberg/orders")
-                    .setState(ConnectorState.CS_ACTIVE)
-                    .putProperties("iceberg.source", "filesystem")
-                    .build()));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()

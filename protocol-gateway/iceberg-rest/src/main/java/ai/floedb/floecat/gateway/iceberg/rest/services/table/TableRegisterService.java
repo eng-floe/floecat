@@ -109,8 +109,7 @@ public class TableRegisterService {
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
     Table created = tableLifecycleService.getTable(tableId);
-    return tableLoadService.loadResolvedTable(
-        tableName, created, tableSupport.defaultCredentials(), tableSupport);
+    return tableLoadService.loadResolvedTable(tableName, created, (String) null, tableSupport);
   }
 
   private Response createRegisteredTable(
@@ -188,8 +187,7 @@ public class TableRegisterService {
     }
     Table updated = tableLifecycleService.getTable(tableId);
 
-    return tableLoadService.loadResolvedTable(
-        tableName, updated, tableSupport.defaultCredentials(), tableSupport);
+    return tableLoadService.loadResolvedTable(tableName, updated, (String) null, tableSupport);
   }
 
   private List<Long> listSnapshotIds(ResourceId tableId) {

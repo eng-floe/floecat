@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -47,8 +48,11 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import io.grpc.StatusRuntimeException;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,7 +72,56 @@ class ReconcileExecutorControlImplTest {
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
     when(principalContext.getCorrelationId()).thenReturn("corr");
-    doNothing().when(service.authz).require(any(), eq("connector.manage"));
+    doNothing()
+        .when(service.authz)
+        .require(any(), eq(ReconcileExecutorControlImpl.EXECUTOR_CONTROL_PERMISSIONS));
+  }
+
+  @Test
+  void leaseReconcileJobAuthorizesWithWorkerPermission() {
+    when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
+
+    service.leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance()).await().indefinitely();
+
+    verify(service.authz)
+        .require(any(), eq(List.of(RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL)));
+  }
+
+  @Test
+  void leaseReconcileJobRejectsUnrelatedPrincipal() {
+    service.authz = new Authorizer();
+    PrincipalContext principalContext =
+        PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build();
+    when(service.principalProvider.get()).thenReturn(principalContext);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                .await()
+                .indefinitely());
+  }
+
+  @Test
+  void leaseReconcileJobAcceptsWorkerPrincipal() {
+    service.authz = new Authorizer();
+    PrincipalContext principalContext =
+        PrincipalContext.newBuilder()
+            .setAccountId("acct")
+            .setCorrelationId("corr")
+            .addPermissions(RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL)
+            .build();
+    when(service.principalProvider.get()).thenReturn(principalContext);
+    when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
+
+    var response =
+        service
+            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+            .await()
+            .indefinitely();
+
+    assertTrue(!response.getFound());
   }
 
   @Test

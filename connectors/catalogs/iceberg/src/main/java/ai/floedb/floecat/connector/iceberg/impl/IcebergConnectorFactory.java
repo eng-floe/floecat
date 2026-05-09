@@ -22,6 +22,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -32,12 +33,14 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.jboss.logging.Logger;
 
 final class IcebergConnectorFactory {
-
+  private static final Logger LOG = Logger.getLogger(IcebergConnectorFactory.class);
   private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
   private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
       new ConcurrentHashMap<>();
+  private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
 
   private IcebergConnectorFactory() {}
 
@@ -70,10 +73,12 @@ final class IcebergConnectorFactory {
     } catch (NumberFormatException ignore) {
     }
 
-    validateOptions(source, uri, cleanOpts);
+    validateOptions(source, uri, cleanOpts, authScheme);
+    Map<String, String> baseProps = buildBaseIcebergProperties(cleanOpts);
     return switch (source) {
       case FILESYSTEM -> {
-        var loaded = IcebergConnector.loadExternalTable(uri, cleanOpts);
+        Map<String, String> storageProps = buildStorageProperties(baseProps, authScheme, authProps);
+        var loaded = IcebergConnector.loadExternalTable(uri, storageProps);
         Table table = loaded.table();
         FileIO fileIO = loaded.fileIO();
         String namespaceFq = cleanOpts.getOrDefault("external.namespace", "");
@@ -93,11 +98,23 @@ final class IcebergConnectorFactory {
             fileIO);
       }
       case GLUE, REST -> {
-        Map<String, String> props = buildRestProps(uri, cleanOpts);
-        applyAuth(props, authScheme, authProps);
+        Map<String, String> props = buildCatalogProperties(uri, baseProps);
+        applyCatalogAuth(props, authScheme, authProps);
+        applyStorageAuth(props, authScheme, authProps);
 
         if (headerHints != null) {
           headerHints.forEach((k, v) -> props.put("header." + k, v));
+        }
+
+        if (source == IcebergSource.REST) {
+          LOG.infof(
+              "creating iceberg rest connector uri=%s warehouse=%s accessDelegationHeader=%s"
+                  + " headerKeys=%s storageKeyPresent=%s",
+              uri,
+              cleanOpts.get("warehouse"),
+              props.get("header.X-Iceberg-Access-Delegation"),
+              headerHints == null ? java.util.Set.of() : headerHints.keySet(),
+              props.containsKey("s3.access-key-id"));
         }
 
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
@@ -162,8 +179,9 @@ final class IcebergConnectorFactory {
                   existing.retire();
                 }
                 RESTCatalog created = new RESTCatalog();
-                created.initialize(
-                    "floecat-iceberg", Collections.unmodifiableMap(new HashMap<>(props)));
+                Map<String, String> catalogProps =
+                    Collections.unmodifiableMap(new HashMap<>(props));
+                created.initialize("floecat-iceberg", catalogProps);
                 return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
               });
       CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
@@ -195,18 +213,36 @@ final class IcebergConnectorFactory {
     }
   }
 
-  private static Map<String, String> buildRestProps(String uri, Map<String, String> cleanOpts) {
+  static Map<String, String> buildBaseIcebergProperties(Map<String, String> options) {
     Map<String, String> props = new HashMap<>();
-    props.put("type", "rest");
-    props.put("uri", uri);
-    if (!cleanOpts.isEmpty()) {
-      props.putAll(cleanOpts);
+    if (options != null && !options.isEmpty()) {
+      props.putAll(options);
     }
     normalizeAwsRegionProperties(props);
     return props;
   }
 
-  private static void applyAuth(
+  static Map<String, String> buildCatalogProperties(String uri, Map<String, String> baseProps) {
+    Map<String, String> props = new HashMap<>();
+    props.put("type", "rest");
+    props.put("uri", uri);
+    if (baseProps != null && !baseProps.isEmpty()) {
+      props.putAll(baseProps);
+    }
+    return props;
+  }
+
+  static Map<String, String> buildStorageProperties(
+      Map<String, String> baseProps, String authScheme, Map<String, String> authProps) {
+    Map<String, String> props = new HashMap<>();
+    if (baseProps != null && !baseProps.isEmpty()) {
+      props.putAll(baseProps);
+    }
+    applyStorageAuth(props, authScheme, authProps);
+    return props;
+  }
+
+  static void applyCatalogAuth(
       Map<String, String> props, String authScheme, Map<String, String> authProps) {
     Map<String, String> safeAuthProps = authProps == null ? Collections.emptyMap() : authProps;
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
@@ -221,24 +257,57 @@ final class IcebergConnectorFactory {
         props.put("rest.auth.type", "sigv4");
         props.put("rest.signing-name", signingName);
         props.put("rest.signing-region", signingRegion);
-
-        props.putIfAbsent("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
-        props.putIfAbsent("s3.region", signingRegion);
-        props.putIfAbsent("client.region", signingRegion);
-
-        AwsProfileSupport.applyProfileProperties(props, safeAuthProps);
       }
 
       case "oauth2" -> {
         String token =
             Objects.requireNonNull(
                 safeAuthProps.get("token"), "authProps.token required for oauth2");
+        props.put("rest.auth.type", "oauth2");
         props.put("token", token);
+        String oauth2ServerUri = safeAuthProps.get("oauth2-server-uri");
+        if (!isBlank(oauth2ServerUri)) {
+          props.put("oauth2-server-uri", oauth2ServerUri);
+        }
       }
 
       case "none" -> {}
 
       default -> throw new IllegalArgumentException("Unsupported auth scheme: " + authScheme);
+    }
+  }
+
+  static void applyStorageAuth(
+      Map<String, String> props, String authScheme, Map<String, String> authProps) {
+    Map<String, String> safeAuthProps = authProps == null ? Collections.emptyMap() : authProps;
+    String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
+    switch (scheme) {
+      case "aws":
+      case "aws-assume-role":
+      case "aws-web-identity":
+      case "aws-sigv4":
+        AwsProfileSupport.applyProfileProperties(props, safeAuthProps);
+        props.putIfAbsent("io-impl", DEFAULT_S3_FILE_IO);
+        if ("aws-sigv4".equals(scheme)) {
+          String signingRegion =
+              safeAuthProps.getOrDefault(
+                  "signing-region",
+                  props.getOrDefault(
+                      "rest.signing-region",
+                      props.getOrDefault(
+                          "client.region", props.getOrDefault("s3.region", "us-east-1"))));
+          props.putIfAbsent("s3.region", signingRegion);
+          props.putIfAbsent("client.region", signingRegion);
+        }
+        normalizeAwsRegionProperties(props);
+        break;
+      case "none":
+      case "oauth2":
+        normalizeAwsRegionProperties(props);
+        break;
+      default:
+        normalizeAwsRegionProperties(props);
+        break;
     }
   }
 
@@ -277,17 +346,79 @@ final class IcebergConnectorFactory {
     return IcebergSource.GLUE;
   }
 
-  static void validateOptions(IcebergSource source, String uri, Map<String, String> options) {
+  static void validateOptions(
+      IcebergSource source, String uri, Map<String, String> options, String authScheme) {
     boolean hasFilesystemUri = uri != null && !uri.isBlank();
     if (source == IcebergSource.FILESYSTEM && !hasFilesystemUri) {
       throw new IllegalArgumentException("uri is required for iceberg.source=filesystem");
     }
+    if (source != IcebergSource.FILESYSTEM || !isS3Uri(uri)) {
+      return;
+    }
+    if (!isSupportedFilesystemStorageScheme(authScheme)) {
+      throw new IllegalArgumentException(
+          "Unsupported filesystem storage auth scheme for S3 URI: " + authScheme);
+    }
+  }
+
+  private static boolean isS3Uri(String uri) {
+    return uri != null && uri.trim().toLowerCase(Locale.ROOT).startsWith("s3://");
+  }
+
+  private static boolean isSupportedFilesystemStorageScheme(String authScheme) {
+    String scheme = authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT);
+    return switch (scheme) {
+      case "none", "aws", "aws-assume-role", "aws-web-identity", "aws-sigv4" -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
   private record CatalogCacheKey(Map<String, String> props) {
     static CatalogCacheKey of(Map<String, String> props) {
-      return new CatalogCacheKey(Map.copyOf(props));
+      if (props == null || props.isEmpty()) {
+        return new CatalogCacheKey(Map.of());
+      }
+      Map<String, String> safe = new LinkedHashMap<>();
+      props.entrySet().stream()
+          .sorted(Map.Entry.comparingByKey())
+          .forEach(
+              entry ->
+                  safe.put(
+                      entry.getKey(),
+                      isSensitiveCacheKey(entry.getKey())
+                          ? fingerprintValue(entry.getValue())
+                          : entry.getValue()));
+      return new CatalogCacheKey(Map.copyOf(safe));
     }
+  }
+
+  private static boolean isSensitiveCacheKey(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    String lower = key.toLowerCase(Locale.ROOT);
+    return lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+        || lower.contains("credential")
+        || lower.contains("authorization")
+        || lower.contains("bearer")
+        || lower.contains("assertion")
+        || lower.contains("private")
+        || lower.contains("session-token")
+        || lower.contains("access-key")
+        || lower.contains("secret-access-key");
+  }
+
+  private static String fingerprintValue(String value) {
+    String safe = value == null ? "" : value;
+    return "sha256:"
+        + ai.floedb.floecat.types.Hashing.sha256Hex(
+            safe.getBytes(java.nio.charset.StandardCharsets.UTF_8));
   }
 
   private static final class CatalogCacheEntry {

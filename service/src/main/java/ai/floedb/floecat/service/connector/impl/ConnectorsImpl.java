@@ -53,6 +53,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -137,6 +138,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "jwt",
           "assertion",
           "external_id");
+  private static final Set<ConnectorKind> CONNECTOR_KINDS_WITH_FORBIDDEN_SECRET_PROPERTIES =
+      Set.of(
+          ConnectorKind.CK_ICEBERG,
+          ConnectorKind.CK_DELTA,
+          ConnectorKind.CK_GLUE,
+          ConnectorKind.CK_UNITY);
 
   @Override
   public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
@@ -236,6 +243,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+                  validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
+                  validatePersistedAuthConfig(spec.getAuth(), corr);
 
                   if (!spec.hasDestination()
                       || (!spec.getDestination().hasCatalogId()
@@ -512,6 +521,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  validateConnectorProperties(
+                      desired.getKind(), desired.getPropertiesMap(), corr, "properties");
+                  validatePersistedAuthConfig(desired.getAuth(), corr);
                   String accountId = pc.getAccountId();
                   String secretId = connectorId.getId();
                   boolean authTouched =
@@ -695,6 +707,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           mustNonEmpty(spec.getUri(), "uri", corr),
                           spec.getPropertiesMap(),
                           auth);
+                  validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
+                  validatePersistedAuthConfig(spec.getAuth(), corr);
 
                   var resolved = resolveCredentials(cfg, spec.getAuth());
                   try (var connector = ConnectorFactory.create(resolved)) {
@@ -725,7 +739,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   } catch (Exception e) {
                     return ValidateConnectorResponse.newBuilder()
                         .setOk(false)
-                        .setSummary("Validation failed: " + e.getMessage())
+                        .setSummary("Validation failed")
                         .build();
                   }
                 }),
@@ -894,6 +908,40 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       }
     }
     return false;
+  }
+
+  private static void validateConnectorProperties(
+      ConnectorKind kind, Map<String, String> properties, String corr) {
+    validateConnectorProperties(kind, properties, corr, "properties");
+  }
+
+  private static void validateConnectorProperties(
+      ConnectorKind kind, Map<String, String> properties, String corr, String fieldName) {
+    if (!CONNECTOR_KINDS_WITH_FORBIDDEN_SECRET_PROPERTIES.contains(kind)
+        || properties == null
+        || properties.isEmpty()) {
+      return;
+    }
+    for (String key : properties.keySet()) {
+      if (!PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey(key)) {
+        continue;
+      }
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", fieldName, "key", String.valueOf(key)));
+    }
+  }
+
+  private static void validatePersistedAuthConfig(AuthConfig auth, String corr) {
+    if (auth == null) {
+      return;
+    }
+    validateSecretBearingMap(auth.getPropertiesMap(), corr, "auth.properties");
+    validateSecretBearingMap(auth.getHeaderHintsMap(), corr, "auth.header_hints");
+  }
+
+  private static void validateSecretBearingMap(
+      Map<String, String> values, String corr, String fieldName) {
+    PersistedSecretPropertyValidator.validateNoSecretKeys(values, corr, fieldName);
   }
 
   private ConnectorConfig resolveCredentials(ConnectorConfig base, AuthConfig auth) {

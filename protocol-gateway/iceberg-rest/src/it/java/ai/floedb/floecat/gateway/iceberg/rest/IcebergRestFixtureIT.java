@@ -57,6 +57,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
@@ -69,6 +70,11 @@ import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.storage.rpc.CreateStorageAuthorityRequest;
+import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritySpec;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
@@ -169,6 +175,7 @@ class IcebergRestFixtureIT {
     fixtureSchemaJson = SchemaParser.toJson(fixtureMetadata.schema());
     parseUpstreamTarget();
     connectorIntegrationEnabled = parseConnectorIntegration();
+    ensureFixtureStorageAuthorities();
   }
 
   @Test
@@ -2522,6 +2529,11 @@ class IcebergRestFixtureIT {
     return withServiceClient("Connectors", ConnectorsGrpc::newBlockingStub, fn);
   }
 
+  private <T> T withStorageAuthoritiesClient(
+      Function<StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub, T> fn) {
+    return withServiceClient("StorageAuthorities", StorageAuthoritiesGrpc::newBlockingStub, fn);
+  }
+
   private <T> T withReconcileControlClient(
       Function<ReconcileControlGrpc.ReconcileControlBlockingStub, T> fn) {
     return withServiceClient("ReconcileControl", ReconcileControlGrpc::newBlockingStub, fn);
@@ -2586,6 +2598,113 @@ class IcebergRestFixtureIT {
                         .setRef(NameRef.newBuilder().setCatalog(CATALOG).build())
                         .build()))
         .getResourceId();
+  }
+
+  private static void ensureFixtureStorageAuthorities() {
+    if (!USE_AWS_FIXTURES) {
+      return;
+    }
+    IcebergRestFixtureIT it = new IcebergRestFixtureIT();
+    List<StorageAuthority> existing =
+        it.withStorageAuthoritiesClient(
+            stub ->
+                stub.listStorageAuthorities(ListStorageAuthoritiesRequest.getDefaultInstance())
+                    .getAuthoritiesList());
+    Map<String, StorageAuthority> byPrefix =
+        existing.stream()
+            .collect(
+                Collectors.toMap(
+                    StorageAuthority::getLocationPrefix, Function.identity(), (a, b) -> a));
+    for (String prefix : fixtureAuthorityPrefixes()) {
+      if (byPrefix.containsKey(prefix)) {
+        continue;
+      }
+      it.withStorageAuthoritiesClient(
+          stub -> {
+            stub.createStorageAuthority(
+                CreateStorageAuthorityRequest.newBuilder()
+                    .setSpec(storageAuthoritySpec(prefix))
+                    .build());
+            return null;
+          });
+    }
+  }
+
+  private static List<String> fixtureAuthorityPrefixes() {
+    return List.of(
+        "s3://yb-iceberg-tpcds",
+        "s3://staged-fixtures",
+        "s3://floecat",
+        "s3://dev-testing-datasets-153499698604-us-east-1-an");
+  }
+
+  private static StorageAuthoritySpec storageAuthoritySpec(String prefix) {
+    StorageAuthoritySpec.Builder spec =
+        StorageAuthoritySpec.newBuilder()
+            .setDisplayName("fixture-" + prefix.substring("s3://".length()).replace('/', '-'))
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix(prefix);
+    putIfNonBlank(
+        spec::setRegion,
+        firstNonBlank(fixtureProperty("s3.region"), System.getenv("AWS_REGION")));
+    putIfNonBlank(spec::setEndpoint, fixtureProperty("s3.endpoint"));
+    String pathStyleAccess = fixtureProperty("s3.path-style-access");
+    if (pathStyleAccess != null && !pathStyleAccess.isBlank()) {
+      spec.setPathStyleAccess(Boolean.parseBoolean(pathStyleAccess));
+    }
+    spec.setCredentials(storageAuthorityCredentials());
+    return spec.build();
+  }
+
+  private static AuthCredentials storageAuthorityCredentials() {
+    AuthCredentials.AwsCredentials.Builder aws =
+        AuthCredentials.AwsCredentials.newBuilder()
+            .setAccessKeyId(
+                requireNonBlank(
+                    firstNonBlank(fixtureProperty("s3.access-key-id"), System.getenv("AWS_ACCESS_KEY_ID")),
+                    "fixture AWS access key"))
+            .setSecretAccessKey(
+                requireNonBlank(
+                    firstNonBlank(
+                        fixtureProperty("s3.secret-access-key"), System.getenv("AWS_SECRET_ACCESS_KEY")),
+                    "fixture AWS secret key"));
+    String sessionToken =
+        firstNonBlank(fixtureProperty("s3.session-token"), System.getenv("AWS_SESSION_TOKEN"));
+    if (sessionToken != null && !sessionToken.isBlank()) {
+      aws.setSessionToken(sessionToken);
+    }
+    return AuthCredentials.newBuilder().setAws(aws).build();
+  }
+
+  private static String fixtureProperty(String suffix) {
+    return System.getProperty("floecat.fixture.aws." + suffix);
+  }
+
+  private static String firstNonBlank(String... values) {
+    if (values == null) {
+      return null;
+    }
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private static String requireNonBlank(String value, String label) {
+    if (value == null || value.isBlank()) {
+      throw new IllegalStateException("Missing " + label);
+    }
+    return value;
+  }
+
+  private static void putIfNonBlank(
+      java.util.function.Consumer<String> setter, String value) {
+    if (value != null && !value.isBlank()) {
+      setter.accept(value);
+    }
   }
 
   private ResourceId resolveTableId(String namespace, String table) {

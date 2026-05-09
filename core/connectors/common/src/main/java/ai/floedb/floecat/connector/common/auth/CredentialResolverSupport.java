@@ -21,8 +21,10 @@ import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -32,9 +34,11 @@ import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -47,6 +51,7 @@ import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityRespon
 import software.amazon.awssdk.services.sts.model.Credentials;
 
 public final class CredentialResolverSupport {
+  private static final String TOKEN_ENDPOINT_DOMAIN_WILDCARD = "*";
   private static final ObjectMapper M = new ObjectMapper();
   private static final String DEFAULT_SUBJECT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt";
   private static final String AZURE_OBO_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -60,6 +65,7 @@ public final class CredentialResolverSupport {
   private static final HttpClient HTTP =
       HttpClient.newBuilder()
           .connectTimeout(java.time.Duration.ofMillis(TOKEN_EXCHANGE_TIMEOUT_MS))
+          .followRedirects(HttpClient.Redirect.NEVER)
           .build();
   private static final Set<String> RFC8693_RESERVED =
       Set.of(
@@ -88,7 +94,7 @@ public final class CredentialResolverSupport {
           "gcp.service_account_private_key_id",
           "jwt_lifetime_seconds");
   private static final Set<String> CLIENT_CREDENTIALS_RESERVED =
-      Set.of("grant_type", "endpoint", "client_id", "client_secret", "scope", "token_endpoint");
+      Set.of("grant_type", "endpoint", "client_id", "client_secret", "scope");
 
   private CredentialResolverSupport() {}
 
@@ -107,19 +113,21 @@ public final class CredentialResolverSupport {
     Map<String, String> headerHints = new HashMap<>(base.auth().headerHints());
 
     switch (credential.getCredentialCase()) {
-      case BEARER -> putIfNotBlank(authProps, "token", credential.getBearer().getToken());
+      case BEARER -> {
+        authProps = new HashMap<>(base.auth().props());
+        headerHints = new HashMap<>(base.auth().headerHints());
+        putIfNotBlank(authProps, "token", credential.getBearer().getToken());
+      }
       case CLIENT -> {
+        authProps = new HashMap<>(base.auth().props());
+        headerHints = new HashMap<>(base.auth().headerHints());
         var client = credential.getClient();
         String tokenEndpoint =
-            firstNonBlank(
-                client.getEndpoint(),
-                firstNonBlank(
-                    credential.getPropertiesMap().get("token_endpoint"),
-                    authProps.get("token_endpoint")));
+            firstNonBlank(client.getEndpoint(), authProps.get("oauth2-server-uri"));
+        String scope =
+            firstNonBlank(credential.getPropertiesMap().get("scope"), authProps.get("scope"));
 
         if (!isBlank(tokenEndpoint)) {
-          String scope =
-              firstNonBlank(credential.getPropertiesMap().get("scope"), authProps.get("scope"));
           String token =
               exchangeClientCredentials(
                   tokenEndpoint,
@@ -127,13 +135,18 @@ public final class CredentialResolverSupport {
                   scope,
                   credential.getPropertiesMap(),
                   credential.getHeadersMap());
+          authProps = new HashMap<>();
+          headerHints = new HashMap<>();
           putIfNotBlank(authProps, "token", token);
         } else {
           putIfNotBlank(authProps, "client_id", client.getClientId());
           putIfNotBlank(authProps, "client_secret", client.getClientSecret());
+          putIfNotBlank(authProps, "scope", scope);
         }
       }
       case CLI -> {
+        authProps = new HashMap<>(base.auth().props());
+        headerHints = new HashMap<>(base.auth().headerHints());
         var cli = credential.getCli();
         String provider =
             cli.getProvider() == null ? "" : cli.getProvider().trim().toLowerCase(Locale.ROOT);
@@ -149,25 +162,18 @@ public final class CredentialResolverSupport {
           if (profilePath != null && !profilePath.isBlank()) {
             putIfNotBlank(authProps, "aws.profile_path", profilePath);
           }
+        } else {
+          copyIfPresent(authProps, credential.getPropertiesMap(), "cache_path");
+          copyIfPresent(authProps, credential.getPropertiesMap(), "client_id");
+          copyIfPresent(authProps, credential.getPropertiesMap(), "scope");
         }
       }
-      case AWS -> {
-        var aws = credential.getAws();
-        putIfNotBlank(options, "s3.access-key-id", aws.getAccessKeyId());
-        putIfNotBlank(options, "s3.secret-access-key", aws.getSecretAccessKey());
-        putIfNotBlank(options, "s3.session-token", aws.getSessionToken());
-      }
-      case AWS_WEB_IDENTITY -> {
-        var web = credential.getAwsWebIdentity();
-        Credentials creds = assumeRoleWithWebIdentity(web, credential.getPropertiesMap());
-        applyAwsCredentials(options, creds);
-      }
-      case AWS_ASSUME_ROLE -> {
-        var ar = credential.getAwsAssumeRole();
-        Credentials creds = assumeRole(ar);
-        applyAwsCredentials(options, creds);
-      }
+      case AWS, AWS_WEB_IDENTITY, AWS_ASSUME_ROLE ->
+          resolveStorageCredentials(credential)
+              .ifPresent(resolved -> options.putAll(resolved.asS3Properties()));
       case RFC8693_TOKEN_EXCHANGE -> {
+        authProps = new HashMap<>();
+        headerHints = new HashMap<>();
         String token =
             exchangeRfc8693(
                 requireBase(credential.getRfc8693TokenExchange()),
@@ -177,6 +183,8 @@ public final class CredentialResolverSupport {
         putIfNotBlank(authProps, "token", token);
       }
       case AZURE_TOKEN_EXCHANGE -> {
+        authProps = new HashMap<>();
+        headerHints = new HashMap<>();
         String token =
             exchangeAzureObo(
                 requireBase(credential.getAzureTokenExchange()),
@@ -186,6 +194,8 @@ public final class CredentialResolverSupport {
         putIfNotBlank(authProps, "token", token);
       }
       case GCP_TOKEN_EXCHANGE -> {
+        authProps = new HashMap<>();
+        headerHints = new HashMap<>();
         String token =
             exchangeGoogleDwd(
                 credential.getGcpTokenExchange(),
@@ -197,17 +207,35 @@ public final class CredentialResolverSupport {
       case CREDENTIAL_NOT_SET -> {}
     }
 
-    if (!credential.getPropertiesMap().isEmpty()) {
-      authProps.putAll(credential.getPropertiesMap());
-    }
-
-    if (!credential.getHeadersMap().isEmpty()) {
-      headerHints.putAll(credential.getHeadersMap());
-    }
-
     var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
-
     return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
+  }
+
+  public static java.util.Optional<ResolvedStorageCredentials> resolveStorageCredentials(
+      AuthCredentials credential) {
+    if (credential == null) {
+      return java.util.Optional.empty();
+    }
+    return switch (credential.getCredentialCase()) {
+      case AWS ->
+          java.util.Optional.of(
+              new ResolvedStorageCredentials(
+                  blankToNull(credential.getAws().getAccessKeyId()),
+                  blankToNull(credential.getAws().getSecretAccessKey()),
+                  blankToNull(credential.getAws().getSessionToken()),
+                  null));
+      case AWS_WEB_IDENTITY -> {
+        Credentials creds =
+            assumeRoleWithWebIdentity(
+                credential.getAwsWebIdentity(), credential.getPropertiesMap());
+        yield java.util.Optional.of(toResolvedStorageCredentials(creds));
+      }
+      case AWS_ASSUME_ROLE -> {
+        Credentials creds = assumeRole(credential.getAwsAssumeRole());
+        yield java.util.Optional.of(toResolvedStorageCredentials(creds));
+      }
+      default -> java.util.Optional.empty();
+    };
   }
 
   private static void putIfNotBlank(Map<String, String> target, String key, String value) {
@@ -273,6 +301,18 @@ public final class CredentialResolverSupport {
     putIfNotBlank(options, "s3.session-token", creds.sessionToken());
   }
 
+  private static ResolvedStorageCredentials toResolvedStorageCredentials(Credentials creds) {
+    if (creds == null) {
+      throw new IllegalStateException("AWS STS did not return credentials");
+    }
+    Instant expiresAt = creds.expiration();
+    return new ResolvedStorageCredentials(
+        blankToNull(creds.accessKeyId()),
+        blankToNull(creds.secretAccessKey()),
+        blankToNull(creds.sessionToken()),
+        expiresAt);
+  }
+
   private static Credentials assumeRole(AuthCredentials.AwsAssumeRole ar) {
     var req = buildAssumeRoleRequest(ar);
 
@@ -321,6 +361,7 @@ public final class CredentialResolverSupport {
       Map<String, String> headers,
       String subjectToken) {
     String endpoint = requireNonBlank(exchange.getEndpoint(), "token_exchange.endpoint");
+    validateTokenEndpoint(endpoint);
     String subjectTokenType =
         defaultIfBlank(exchange.getSubjectTokenType(), DEFAULT_SUBJECT_TOKEN_TYPE);
 
@@ -333,7 +374,7 @@ public final class CredentialResolverSupport {
     putIfNotBlank(params, "scope", exchange.getScope());
 
     Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
-    Map<String, String> headerValues = headers == null ? Map.of() : new LinkedHashMap<>(headers);
+    Map<String, String> headerValues = new LinkedHashMap<>();
     applyClientAuth(exchange, headerValues);
     return sendTokenExchangeRequest(endpoint, params, extra, headerValues, RFC8693_RESERVED);
   }
@@ -344,6 +385,7 @@ public final class CredentialResolverSupport {
       Map<String, String> headers,
       String subjectToken) {
     String endpoint = requireNonBlank(exchange.getEndpoint(), "token_exchange.endpoint");
+    validateTokenEndpoint(endpoint);
     String scopeValue = requireNonBlank(exchange.getScope(), "token_exchange.scope");
 
     Map<String, String> params = new LinkedHashMap<>();
@@ -352,8 +394,7 @@ public final class CredentialResolverSupport {
     params.put("assertion", subjectToken);
     params.put("scope", scopeValue);
 
-    Map<String, String> headerValues =
-        headers == null ? new LinkedHashMap<>() : new LinkedHashMap<>(headers);
+    Map<String, String> headerValues = new LinkedHashMap<>();
     applyClientAuth(exchange, headerValues);
 
     Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
@@ -433,8 +474,7 @@ public final class CredentialResolverSupport {
     }
 
     if (resp.statusCode() / 100 != 2) {
-      throw new RuntimeException(
-          "Token exchange failed: HTTP " + resp.statusCode() + " " + resp.body());
+      throw new RuntimeException("Token exchange failed: HTTP " + resp.statusCode());
     }
 
     String token = extractAccessToken(resp.body());
@@ -477,6 +517,7 @@ public final class CredentialResolverSupport {
       Map<String, String> headers) {
     String clientId = requireNonBlank(client.getClientId(), "client_id");
     String clientSecret = requireNonBlank(client.getClientSecret(), "client_secret");
+    validateTokenEndpoint(endpoint);
 
     Map<String, String> params = new LinkedHashMap<>();
     params.put("grant_type", "client_credentials");
@@ -485,7 +526,7 @@ public final class CredentialResolverSupport {
     putIfNotBlank(params, "scope", scope);
 
     Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
-    Map<String, String> headerValues = headers == null ? Map.of() : headers;
+    Map<String, String> headerValues = Map.of();
     return sendTokenExchangeRequest(
         endpoint, params, extra, headerValues, CLIENT_CREDENTIALS_RESERVED);
   }
@@ -502,29 +543,29 @@ public final class CredentialResolverSupport {
     String scopeValue = requireNonBlank(base.getScope(), "gcp_token_exchange.base.scope");
 
     String endpoint = firstNonBlank(base.getEndpoint(), DEFAULT_GCP_TOKEN_ENDPOINT);
+    validateTokenEndpoint(endpoint);
+    Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
 
     String serviceAccountEmail =
         exchange.hasServiceAccountEmail()
             ? exchange.getServiceAccountEmail()
-            : extraParams.get("gcp.service_account_email");
+            : extra.get("gcp.service_account_email");
     String delegatedUser =
-        exchange.hasDelegatedUser()
-            ? exchange.getDelegatedUser()
-            : extraParams.get("gcp.delegated_user");
+        exchange.hasDelegatedUser() ? exchange.getDelegatedUser() : extra.get("gcp.delegated_user");
     String privateKeyPem =
         exchange.hasServiceAccountPrivateKeyPem()
             ? exchange.getServiceAccountPrivateKeyPem()
-            : extraParams.get("gcp.service_account_private_key_pem");
+            : extra.get("gcp.service_account_private_key_pem");
     String privateKeyId =
         exchange.hasServiceAccountPrivateKeyId()
             ? exchange.getServiceAccountPrivateKeyId()
-            : extraParams.get("gcp.service_account_private_key_id");
+            : extra.get("gcp.service_account_private_key_id");
 
     String issuer = requireNonBlank(serviceAccountEmail, "gcp.service_account_email");
     String subject = requireNonBlank(delegatedUser, "gcp.delegated_user");
     String privateKeyValue = requireNonBlank(privateKeyPem, "gcp.service_account_private_key_pem");
 
-    int lifetimeSeconds = parseLifetimeSeconds(extraParams.get("jwt_lifetime_seconds"));
+    int lifetimeSeconds = parseLifetimeSeconds(extra.get("jwt_lifetime_seconds"));
     if (lifetimeSeconds <= 0) {
       lifetimeSeconds = DEFAULT_GCP_JWT_LIFETIME_SECONDS;
     }
@@ -538,8 +579,7 @@ public final class CredentialResolverSupport {
     params.put("assertion", assertion);
     params.put("scope", scopeValue);
 
-    Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
-    Map<String, String> headerValues = headers == null ? Map.of() : headers;
+    Map<String, String> headerValues = Map.of();
     return sendTokenExchangeRequest(endpoint, params, extra, headerValues, GCP_DWD_RESERVED);
   }
 
@@ -552,6 +592,171 @@ public final class CredentialResolverSupport {
       throw new IllegalArgumentException("subject_token required for token exchange");
     }
     return token;
+  }
+
+  private static void validateTokenEndpoint(String endpoint) {
+    URI uri;
+    try {
+      uri = URI.create(endpoint);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid token endpoint");
+    }
+    String scheme = uri.getScheme();
+    String host = uri.getHost();
+    if (scheme == null || host == null || host.isBlank()) {
+      throw new IllegalArgumentException("Invalid token endpoint");
+    }
+    boolean allowLoopback =
+        Boolean.parseBoolean(
+            System.getProperty(
+                "floecat.security.allow-loopback-token-endpoints",
+                System.getenv()
+                    .getOrDefault("FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS", "false")));
+    if (!isAllowedTokenEndpointHost(host)) {
+      throw new IllegalArgumentException("Token endpoint host is not in the allowed domain list");
+    }
+    if ("https".equalsIgnoreCase(scheme)) {
+      if (isForbiddenAddress(host, allowPrivateTokenEndpointsForAllowedHosts())) {
+        throw new IllegalArgumentException("Token endpoint host is not allowed");
+      }
+      return;
+    }
+    if ("http".equalsIgnoreCase(scheme) && allowLoopback && isLoopbackHost(host)) {
+      return;
+    }
+    throw new IllegalArgumentException("Token endpoint must use HTTPS");
+  }
+
+  private static boolean isAllowedTokenEndpointHost(String host) {
+    List<String> allowedDomains = configuredTokenEndpointDomains();
+    if (allowedDomains.isEmpty()) {
+      return allowUnrestrictedTokenEndpointsForDevOnly(host);
+    }
+    if (allowedDomains.contains(TOKEN_ENDPOINT_DOMAIN_WILDCARD)) {
+      return true;
+    }
+    String normalizedHost = host == null ? "" : host.trim().toLowerCase(Locale.ROOT);
+    if (normalizedHost.isBlank()) {
+      return false;
+    }
+    for (String allowed : allowedDomains) {
+      if (matchesAllowedDomain(normalizedHost, allowed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean allowUnrestrictedTokenEndpointsForDevOnly(String host) {
+    boolean allowLoopback =
+        Boolean.parseBoolean(
+            System.getProperty(
+                "floecat.security.allow-loopback-token-endpoints",
+                System.getenv()
+                    .getOrDefault("FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS", "false")));
+    return allowLoopback && isLoopbackHost(host);
+  }
+
+  private static boolean allowPrivateTokenEndpointsForAllowedHosts() {
+    return Boolean.parseBoolean(
+        System.getProperty(
+            "floecat.security.allow-private-token-endpoints-for-allowed-hosts",
+            System.getenv()
+                .getOrDefault(
+                    "FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS", "false")));
+  }
+
+  private static List<String> configuredTokenEndpointDomains() {
+    String raw =
+        firstNonBlank(
+            System.getProperty("floecat.security.allowed-token-endpoint-domains"),
+            System.getenv("FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS"));
+    if (raw == null || raw.isBlank()) {
+      return List.of();
+    }
+    List<String> domains = new ArrayList<>();
+    for (String token : raw.split(",")) {
+      if (token == null) {
+        continue;
+      }
+      String normalized = token.trim().toLowerCase(Locale.ROOT);
+      if (!normalized.isBlank()) {
+        domains.add(normalized);
+      }
+    }
+    return domains;
+  }
+
+  private static boolean matchesAllowedDomain(String host, String allowedDomain) {
+    if (allowedDomain == null || allowedDomain.isBlank()) {
+      return false;
+    }
+    if (allowedDomain.startsWith("*.")) {
+      String normalized = allowedDomain.substring(2);
+      return !normalized.isBlank() && host.endsWith("." + normalized);
+    }
+    return host.equals(allowedDomain);
+  }
+
+  private static boolean isForbiddenAddress(String host, boolean allowPrivateAddresses) {
+    try {
+      InetAddress[] addresses = InetAddress.getAllByName(host);
+      if (addresses == null || addresses.length == 0) {
+        return true;
+      }
+      for (InetAddress address : addresses) {
+        if (address == null) {
+          return true;
+        }
+        if (address.isAnyLocalAddress()
+            || address.isLinkLocalAddress()
+            || address.isMulticastAddress()) {
+          return true;
+        }
+        if (!allowPrivateAddresses
+            && (address.isSiteLocalAddress()
+                || address.isLoopbackAddress()
+                || isUniqueLocalIpv6(address))) {
+          return true;
+        }
+      }
+      return false;
+    } catch (UnknownHostException e) {
+      throw new IllegalArgumentException("Token endpoint host could not be resolved");
+    }
+  }
+
+  private static boolean isLoopbackHost(String host) {
+    try {
+      InetAddress[] addresses = InetAddress.getAllByName(host);
+      if (addresses == null || addresses.length == 0) {
+        return false;
+      }
+      for (InetAddress address : addresses) {
+        if (address == null || !address.isLoopbackAddress()) {
+          return false;
+        }
+      }
+      return true;
+    } catch (UnknownHostException e) {
+      return false;
+    }
+  }
+
+  private static boolean isUniqueLocalIpv6(InetAddress address) {
+    byte[] raw = address.getAddress();
+    return raw != null && raw.length == 16 && (raw[0] & (byte) 0xfe) == (byte) 0xfc;
+  }
+
+  private static void copyIfPresent(
+      Map<String, String> target, Map<String, String> source, String key) {
+    if (target == null || source == null || key == null || key.isBlank()) {
+      return;
+    }
+    String value = source.get(key);
+    if (value != null && !value.isBlank()) {
+      target.put(key, value);
+    }
   }
 
   private static int parseLifetimeSeconds(String raw) {

@@ -54,10 +54,10 @@ message ScanSystemTableChunk {
 
 Arrow allocator cap is controlled by `ai.floedb.floecat.arrow.max-bytes` (default 1 GiB).
 
-### Row compatibility path
+### Row output path
 
 When `output_format = ROWS`, the service streams `SystemObjectRow` payloads directly after
-filtering/projecting rows. This mode is compatibility-only; Arrow remains the primary path.
+filtering and projection. Arrow remains the primary columnar path.
 
 ## Predicate/projection notes
 
@@ -76,7 +76,7 @@ Scanners can read best-effort stats through `StatsProvider` in
 `TableStatsView` / `ColumnStatsView` and is wired via `StatsProviderFactory` with per-query cache
 behavior.
 
-- Stats are optional (`StatsProvider.NONE` fallback).
+- Stats are optional (`StatsProvider.NONE` when none are available).
 - Missing stats for system/unpinned objects are expected.
 - `ColumnStatsView` may include logical type, null/nan counts, canonical min/max, and NDV summary.
 - Consumers must treat relation stats as advisory, not required.

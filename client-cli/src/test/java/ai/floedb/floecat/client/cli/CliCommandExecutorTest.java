@@ -49,6 +49,9 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
+import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesResponse;
+import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.Status;
@@ -113,6 +116,14 @@ class CliCommandExecutorTest {
     try (Harness h = new Harness()) {
       assertTrue(h.executor.execute("account list"));
       assertEquals(1, h.accountService.listAccountsCalls.get());
+    }
+  }
+
+  @Test
+  void storageAuthoritiesRouted() throws Exception {
+    try (Harness h = new Harness()) {
+      assertTrue(h.executor.execute("storage-authorities"));
+      assertEquals(1, h.storageAuthorityService.listAuthoritiesCalls.get());
     }
   }
 
@@ -222,6 +233,8 @@ class CliCommandExecutorTest {
     final MinimalConnectorService connectorService = new MinimalConnectorService();
     final MinimalAccountService accountService = new MinimalAccountService();
     final MinimalQueryService queryService = new MinimalQueryService();
+    final MinimalStorageAuthorityService storageAuthorityService =
+        new MinimalStorageAuthorityService();
     final CliCommandExecutor executor;
 
     Harness() throws Exception {
@@ -243,6 +256,7 @@ class CliCommandExecutorTest {
               .addService(new NullReconcileControlService())
               .addService(new NullQueryScanService())
               .addService(new NullQuerySchemaService())
+              .addService(storageAuthorityService)
               .build()
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
@@ -271,6 +285,7 @@ class CliCommandExecutorTest {
           .queries(QueryServiceGrpc.newBlockingStub(channel))
           .queryScan(QueryScanServiceGrpc.newBlockingStub(channel))
           .querySchema(QuerySchemaServiceGrpc.newBlockingStub(channel))
+          .storageAuthorities(StorageAuthoritiesGrpc.newBlockingStub(channel))
           .getAccountId(() -> "acct-1")
           .build();
     }
@@ -365,6 +380,20 @@ class CliCommandExecutorTest {
       renewQueryCalls.incrementAndGet();
       responseObserver.onNext(
           RenewQueryResponse.newBuilder().setQueryId(request.getQueryId()).build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class MinimalStorageAuthorityService
+      extends StorageAuthoritiesGrpc.StorageAuthoritiesImplBase {
+    final AtomicInteger listAuthoritiesCalls = new AtomicInteger();
+
+    @Override
+    public void listStorageAuthorities(
+        ListStorageAuthoritiesRequest request,
+        StreamObserver<ListStorageAuthoritiesResponse> responseObserver) {
+      listAuthoritiesCalls.incrementAndGet();
+      responseObserver.onNext(ListStorageAuthoritiesResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }

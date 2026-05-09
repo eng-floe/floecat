@@ -4,7 +4,7 @@
 
 `client-cli/` packages a Picocli-based interactive shell backed by the same gRPC stubs used by the
 service. It is the quickest way for developers and operators to explore catalogs, namespaces, tables,
-connectors, and query-lifecycle workflows without writing bespoke clients.
+connectors, storage authorities, and query-lifecycle workflows without writing bespoke clients.
 
 The CLI runs as a Quarkus application, depends on generated RPC stubs, and includes helpers for
 fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing for column lists
@@ -49,6 +49,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
   while `query fetch-scan <query_id> <table_id>` requests the connector-provided `ScanFile` lists for
   an individual table.
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
+- `storage-authorities` / `storage-authority <subcommand>` – Manage storage credential authorities
+  used by the Iceberg REST gateway to vend temporary object-store credentials.
 
 Inputs map directly to RPCs (for example `table create` builds `CreateTableRequest`). The CLI adds
 syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated arguments that fill
@@ -61,6 +63,9 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 - **Error handling** – Set `FLOECAT_SHELL_DEBUG=true` (or `-Dfloecat.shell.debug=true`) to print full
   stack traces when gRPC calls fail. Otherwise the shell surfaces localized messages from
   `GrpcErrors`.
+- **Secret handling** – Secret-bearing connector and storage-authority values must be supplied via
+  `--cred-type` / `--cred`, not `--auth k=v`. The service stores those secrets out-of-band and
+  only returns redacted or client-safe values.
 - **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands like `catalogs` accept
   `--page-size` overrides and persist `next_page_token` transparently.
 - **Query display** – `query get` prints the `QueryDescriptor` metadata (snapshots, expansions,
@@ -78,11 +83,10 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
-`connector job <id>` and `connector jobs` show split-job metadata when present:
-
-- `kind=plan_connector` or `kind=exec_table`
-- routing context such as `parent=<job-id>` and `executor=<executor-id>`
-- table-task detail for child execution jobs (`table=<source-ns>.<source-table>-><dest-table>`)
+`connector jobs` shows a parent-job summary table by default. Use
+`connector jobs --child <parent-job-id>` to render the descendant job tree rooted at that job.
+Both commands support `--json` for machine-readable output, while `connector job <id>` remains a
+detailed human-readable view and also supports `--json`.
 
 ## Configuration & Extensibility
 
@@ -144,6 +148,20 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   ```
   connector trigger glue-iceberg --mode metadata-only
   connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
+  ```
+
+- **Creating a storage authority for Iceberg REST credential vending**
+
+  ```
+  storage-authority create localstack-demo \
+    --location-prefix s3://warehouse/ \
+    --region us-east-1 \
+    --endpoint http://localhost:4566 \
+    --path-style-access true \
+    --assume-role-arn arn:aws:iam::123456789012:role/floecat-vended-storage \
+    --cred-type aws \
+    --cred access_key_id=test \
+    --cred secret_access_key=test
   ```
 
 - **Managing snapshot constraints**
