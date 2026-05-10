@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.rpc.CreateStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.DeleteStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.GetStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
@@ -85,6 +87,7 @@ class StorageAuthorityServiceImplTest {
   private TableRepository tableRepo;
   private AtomicReference<StorageAuthority> state;
   private AtomicLong version;
+  private ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
 
   @BeforeEach
   void setUp() {
@@ -94,6 +97,7 @@ class StorageAuthorityServiceImplTest {
     authz = mock(Authorizer.class);
     secretsManager = new RecordingSecretsManager();
     tableRepo = mock(TableRepository.class);
+    idempotencyStore = mock(ai.floedb.floecat.service.repo.IdempotencyRepository.class);
     state = new AtomicReference<>(currentAuthority());
     version = new AtomicLong(1L);
 
@@ -104,6 +108,7 @@ class StorageAuthorityServiceImplTest {
     service.resolver = new StorageAuthorityResolver();
     service.resolver.secretsManager = secretsManager;
     service.tableRepo = tableRepo;
+    service.idempotencyStore = idempotencyStore;
     installBasePrincipal(service, principalProvider);
 
     PrincipalContext principal =
@@ -119,9 +124,9 @@ class StorageAuthorityServiceImplTest {
     when(principalProvider.get()).thenReturn(principal);
 
     when(repo.getById(AUTHORITY_ID)).thenAnswer(_ -> Optional.ofNullable(state.get()));
-    when(repo.metaFor(AUTHORITY_ID))
+    when(repo.metaFor(any(ResourceId.class)))
         .thenAnswer(_ -> MutationMeta.newBuilder().setPointerVersion(version.get()).build());
-    when(repo.metaForSafe(AUTHORITY_ID))
+    when(repo.metaForSafe(any(ResourceId.class)))
         .thenAnswer(_ -> MutationMeta.newBuilder().setPointerVersion(version.get()).build());
     when(repo.update(any(StorageAuthority.class), anyLong()))
         .thenAnswer(
@@ -337,6 +342,44 @@ class StorageAuthorityServiceImplTest {
     assertEquals("renamed", response.getAuthority().getDisplayName());
     assertEquals("s3://warehouse/renamed", response.getAuthority().getLocationPrefix());
     assertEquals("us-east-2", response.getAuthority().getRegion());
+  }
+
+  @Test
+  void createPersistsAuthorityWithoutInlineCredentials() {
+    AtomicReference<StorageAuthority> created = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              created.set(invocation.getArgument(0, StorageAuthority.class));
+              return null;
+            })
+        .when(repo)
+        .create(any(StorageAuthority.class));
+
+    StorageAuthoritySpec spec =
+        StorageAuthoritySpec.newBuilder()
+            .setDisplayName("warehouse")
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix("s3://warehouse/orders")
+            .setCredentials(
+                AuthCredentials.newBuilder()
+                    .setAws(
+                        AuthCredentials.AwsCredentials.newBuilder()
+                            .setAccessKeyId("akid")
+                            .setSecretAccessKey("secret")))
+            .build();
+
+    var response =
+        service
+            .createStorageAuthority(
+                CreateStorageAuthorityRequest.newBuilder().setSpec(spec).build())
+            .await()
+            .indefinitely();
+
+    assertFalse(response.getAuthority().hasDescription());
+    assertEquals(created.get(), response.getAuthority());
+    assertFalse(secretsManager.deleteCalled);
+    assertTrue(secretsManager.putCalled || secretsManager.updateCalled);
   }
 
   private static StorageAuthority currentAuthority() {

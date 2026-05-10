@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.*;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -220,6 +221,87 @@ class QueryScanServiceIT {
     assertEquals(metadataLocation, info.getMetadataLocation());
     assertEquals(1, info.getPropertiesCount());
     assertEquals(metadataLocation, info.getPropertiesMap().get("metadata-location"));
+  }
+
+  @Test
+  void fetchScanBundleReturnsMetadataLocationFromSnapshotMetadata() throws Exception {
+
+    var catName = catalogPrefix + "scan_snapshot_meta";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "scan_snapshot_meta", List.of("scan"), "");
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "scan_snapshot_meta",
+            "s3://bucket/scan_snapshot_meta",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "table with snapshot metadata");
+
+    var metadataLocation = "s3://bucket/meta/scan_snapshot_meta.metadata.json";
+    var snap =
+        snapshot
+            .createSnapshot(
+                CreateSnapshotRequest.newBuilder()
+                    .setSpec(
+                        SnapshotSpec.newBuilder()
+                            .setTableId(tbl.getResourceId())
+                            .setSnapshotId(603L)
+                            .setUpstreamCreatedAt(
+                                com.google.protobuf.util.Timestamps.fromMillis(
+                                    System.currentTimeMillis() - 2_000L))
+                            .putFormatMetadata(
+                                "iceberg",
+                                IcebergMetadata.newBuilder()
+                                    .setMetadataLocation(metadataLocation)
+                                    .build()
+                                    .toByteString()))
+                    .build())
+            .getSnapshot();
+
+    var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "snapshotmeta");
+    attachConnectorToTable(tbl.getResourceId(), connector);
+
+    var name =
+        NameRef.newBuilder()
+            .setCatalog(catName)
+            .addPath("scan")
+            .setName("scan_snapshot_meta")
+            .build();
+
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
+
+    var queryId = begin.getQuery().getQueryId();
+
+    schema.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(
+                QueryInput.newBuilder()
+                    .setName(name)
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(
+                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
+                    .build())
+            .build());
+
+    var resp =
+        scan.fetchScanBundle(
+            FetchScanBundleRequest.newBuilder()
+                .setQueryId(queryId)
+                .setTableId(tbl.getResourceId())
+                .build());
+
+    assertTrue(resp.hasTableInfo());
+    var info = resp.getTableInfo();
+    assertEquals(metadataLocation, info.getMetadataLocation());
+    assertFalse(info.getPropertiesMap().containsKey("metadata-location"));
   }
 
   /** Ensures FetchScanBundle rejects unpinned tables. */

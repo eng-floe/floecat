@@ -63,6 +63,7 @@ import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultStreamRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
@@ -77,6 +78,7 @@ import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
@@ -766,6 +768,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setPlanId(payload.planId())
                       .setGroupId(payload.groupId())
                       .addAllFilePaths(payload.plannedFilePaths())
+                      .putAllSourceStorageConfig(payload.sourceStorageConfig())
                       .setCapturePolicy(
                           ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
                               .addAllColumns(
@@ -843,6 +846,17 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               }
               throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
             }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<SubmitLeasedFileGroupExecutionResultResponse>
+      submitLeasedFileGroupExecutionResultStream(
+          Multi<SubmitLeasedFileGroupExecutionResultStreamRequest> requests) {
+    var principalContext = principalProvider.get();
+    requireExecutorControl(principalContext);
+    return mapFailures(
+        leasedFileGroupExecutionService.persistStreamedResult(principalContext, requests),
         correlationId());
   }
 

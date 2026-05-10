@@ -1431,10 +1431,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                 + sourceContext.get().sourceTable(),
             e);
       }
-      throw e;
+      Exception normalized = ReconcileFailureClassifier.normalize(e);
+      throw normalized instanceof RuntimeException runtime ? runtime : e;
     } catch (Exception e) {
-      throw new IllegalStateException(
-          "Failed to open source connector for table " + tableId.getId(), e);
+      Exception normalized =
+          ReconcileFailureClassifier.normalize(
+              new IllegalStateException(
+                  "Failed to open source connector for table " + tableId.getId(), e));
+      throw normalized instanceof RuntimeException runtime
+          ? runtime
+          : new IllegalStateException(
+              "Failed to open source connector for table " + tableId.getId(), e);
     }
   }
 

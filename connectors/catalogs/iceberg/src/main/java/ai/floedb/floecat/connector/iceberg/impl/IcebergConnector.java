@@ -84,6 +84,7 @@ import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
+import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -232,6 +233,21 @@ public abstract class IcebergConnector implements FloecatConnector {
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
+    Map<String, String> properties = new LinkedHashMap<>();
+    if (table.properties() != null && !table.properties().isEmpty()) {
+      properties.putAll(table.properties());
+    }
+    IcebergMetadata metadata = buildIcebergMetadata(namespaceFq, tableName, table);
+    if (metadata != null && metadata.getMetadataLocation() != null) {
+      String metadataLocation = metadata.getMetadataLocation().trim();
+      if (!metadataLocation.isBlank()) {
+        properties.put("metadata-location", metadataLocation);
+      }
+    }
+    Snapshot currentSnapshot = table.currentSnapshot();
+    if (currentSnapshot != null && !properties.containsKey("current-snapshot-id")) {
+      properties.put("current-snapshot-id", Long.toString(currentSnapshot.snapshotId()));
+    }
 
     return new TableDescriptor(
         namespaceFq,
@@ -240,7 +256,7 @@ public abstract class IcebergConnector implements FloecatConnector {
         schemaJson,
         partitionKeys,
         ColumnIdAlgorithm.CID_FIELD_ID,
-        table.properties());
+        Map.copyOf(properties));
   }
 
   @Override
@@ -925,15 +941,15 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private IcebergMetadata buildIcebergMetadata(String namespaceFq, String tableName, Table table) {
+    String resolvedMetadataLocation = resolveAttachedMetadataLocation(table);
     TableMetadata metadata = tableMetadata(table);
     if (metadata == null) {
-      String fallbackLocation = tableMetadataLocation(table);
-      if (fallbackLocation == null || fallbackLocation.isBlank()) {
+      if (resolvedMetadataLocation == null || resolvedMetadataLocation.isBlank()) {
         return null;
       }
       IcebergMetadata.Builder minimal =
           IcebergMetadata.newBuilder()
-              .setMetadataLocation(fallbackLocation)
+              .setMetadataLocation(resolvedMetadataLocation)
               .setFormatVersion(2)
               .setTableUuid(
                   table
@@ -944,7 +960,11 @@ public abstract class IcebergConnector implements FloecatConnector {
           .ifPresent(minimal::setCurrentSnapshotId);
       return minimal.build();
     }
-    return toIcebergMetadata(metadata);
+    IcebergMetadata base = toIcebergMetadata(metadata);
+    if (!hasText(base.getMetadataLocation()) && hasText(resolvedMetadataLocation)) {
+      return base.toBuilder().setMetadataLocation(resolvedMetadataLocation).build();
+    }
+    return base;
   }
 
   private TableMetadata tableMetadata(Table table) {
@@ -960,6 +980,47 @@ public abstract class IcebergConnector implements FloecatConnector {
       return null;
     }
     return props.get("metadata-location");
+  }
+
+  private String resolveAttachedMetadataLocation(Table table) {
+    String metadataLocation = normalizeMetadataLocation(tableMetadataLocation(table));
+    if (metadataLocation != null) {
+      return metadataLocation;
+    }
+    if (!(table instanceof HasTableOperations hasOps)) {
+      return null;
+    }
+    TableOperations ops = hasOps.operations();
+    if (ops == null) {
+      return null;
+    }
+    TableMetadata current = ops.current();
+    metadataLocation =
+        normalizeMetadataLocation(current == null ? null : current.metadataFileLocation());
+    if (metadataLocation != null) {
+      return metadataLocation;
+    }
+    String tableLocation = table.location();
+    if (!hasText(tableLocation) || ops.io() == null) {
+      return null;
+    }
+    try {
+      return normalizeMetadataLocation(resolveMetadataLocation(tableLocation, ops.io()));
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  private static String normalizeMetadataLocation(String metadataLocation) {
+    if (metadataLocation == null) {
+      return null;
+    }
+    String trimmed = metadataLocation.trim();
+    return trimmed.isBlank() ? null : trimmed;
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
   }
 
   private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {

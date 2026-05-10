@@ -1488,6 +1488,7 @@ class QueuedReconcileWorkerSupport {
           result.message());
     }
     if (!result.ok()) {
+      Exception normalized = ReconcileFailureClassifier.normalize(result.error);
       return ExecutionResult.failure(
           result.tablesScanned,
           result.tablesChanged,
@@ -1496,10 +1497,10 @@ class QueuedReconcileWorkerSupport {
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
-          failureKindOf(result.error),
-          retryDispositionOf(result.error),
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
           result.message(),
-          result.error);
+          normalized);
     }
     return ExecutionResult.success(
         result.tablesScanned,

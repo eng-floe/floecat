@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
+import io.grpc.Status;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -174,6 +176,39 @@ class JavaConnectorCaptureEngineTest {
     assertThat(engine.capture(request)).isPresent();
     verify(storageResolver)
         .resolveWithAuthorization(eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any());
+  }
+
+  @Test
+  void captureMarksPermissionDeniedTerminal() {
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener =
+        ignored -> {
+          throw Status.PERMISSION_DENIED.withDescription("Forbidden").asRuntimeException();
+        };
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of("s3://bucket/path/file-1.parquet"),
+            Set.of("id"),
+            Set.of(),
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            false,
+            Optional.empty());
+
+    assertThatThrownBy(() -> engine.capture(request))
+        .isInstanceOf(ReconcileFailureException.class)
+        .satisfies(
+            failure ->
+                assertThat(((ReconcileFailureException) failure).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
   }
 
   @Test

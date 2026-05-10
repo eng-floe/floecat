@@ -175,10 +175,11 @@ public class ReconcilerService {
                       task.destinationTableDisplayName()))
           .toList();
     } catch (RuntimeException e) {
-      throw e;
+      throw classifyConnectorPlanningFailure(e);
     } catch (Exception e) {
-      throw new RuntimeException(
-          "Failed to plan reconcile tasks for connector " + connectorId.getId(), e);
+      throw classifyConnectorPlanningFailure(
+          new RuntimeException(
+              "Failed to plan reconcile tasks for connector " + connectorId.getId(), e));
     }
   }
 
@@ -251,10 +252,11 @@ public class ReconcilerService {
                       task.destinationViewDisplayName()))
           .toList();
     } catch (RuntimeException e) {
-      throw e;
+      throw classifyConnectorPlanningFailure(e);
     } catch (Exception e) {
-      throw new RuntimeException(
-          "Failed to plan reconcile view tasks for connector " + connectorId.getId(), e);
+      throw classifyConnectorPlanningFailure(
+          new RuntimeException(
+              "Failed to plan reconcile view tasks for connector " + connectorId.getId(), e));
     }
   }
 
@@ -337,10 +339,11 @@ public class ReconcilerService {
           .distinct()
           .toList();
     } catch (RuntimeException e) {
-      throw e;
+      throw classifyConnectorPlanningFailure(e);
     } catch (Exception e) {
-      throw new RuntimeException(
-          "Failed to plan snapshot tasks for connector " + connectorId.getId(), e);
+      throw classifyConnectorPlanningFailure(
+          new RuntimeException(
+              "Failed to plan snapshot tasks for connector " + connectorId.getId(), e));
     }
   }
 
@@ -800,6 +803,11 @@ public class ReconcilerService {
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         message,
         cause);
+  }
+
+  private static RuntimeException classifyConnectorPlanningFailure(RuntimeException error) {
+    Exception normalized = ReconcileFailureClassifier.normalize(error);
+    return normalized instanceof RuntimeException runtime ? runtime : error;
   }
 
   static ResourceId destinationResourceId(

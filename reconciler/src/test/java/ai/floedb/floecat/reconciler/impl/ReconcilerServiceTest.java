@@ -43,12 +43,15 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetada
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationViewMetadata;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
+import io.grpc.Status;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   private static final String DEST_CATALOG = "cat-1";
@@ -575,6 +578,49 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining(
             "Pinned destination table id requires exactly one planned source table, but found 2");
+  }
+
+  @Test
+  void planTableTasksMarksGrpcPermissionDeniedTerminal() {
+    service.backend = new ReturningBackend(activeConnector());
+    service.connectorOpener =
+        cfg -> {
+          throw Status.PERMISSION_DENIED.withDescription("Forbidden").asRuntimeException();
+        };
+
+    assertThatThrownBy(
+            () -> service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null))
+        .isInstanceOf(ReconcileFailureException.class)
+        .satisfies(
+            failure ->
+                assertThat(((ReconcileFailureException) failure).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
+  }
+
+  @Test
+  void planTableTasksMarksAwsAccessDeniedTerminal() {
+    service.backend = new ReturningBackend(activeConnector());
+    service.connectorOpener =
+        cfg -> {
+          throw S3Exception.builder()
+              .message("The security token included in the request is invalid.")
+              .statusCode(403)
+              .awsErrorDetails(
+                  AwsErrorDetails.builder()
+                      .serviceName("S3")
+                      .errorCode("InvalidToken")
+                      .errorMessage("The security token included in the request is invalid.")
+                      .build())
+              .build();
+        };
+
+    assertThatThrownBy(
+            () -> service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null))
+        .isInstanceOf(ReconcileFailureException.class)
+        .satisfies(
+            failure ->
+                assertThat(((ReconcileFailureException) failure).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
   }
 
   @Test

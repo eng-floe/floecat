@@ -627,6 +627,7 @@ message LeasedFileGroupExecution {
   repeated string file_paths = 11;
   CapturePolicy capture_policy = 12;
   string metadata_location = 13;
+  map<string, string> source_storage_config = 14;
 }
 
 message GetLeasedFileGroupExecutionResponse {
@@ -662,6 +663,48 @@ message SubmitLeasedFileGroupExecutionResultRequest {
 
 message SubmitLeasedFileGroupExecutionResultResponse {
   bool accepted = 1;
+}
+
+message SubmitLeasedFileGroupExecutionResultStreamRequest {
+  enum OutcomeKind {
+    OK_UNSPECIFIED = 0;
+    OK_SUCCESS = 1;
+    OK_FAILURE = 2;
+  }
+
+  message Begin {
+    string job_id = 1;
+    string lease_epoch = 2;
+    string result_id = 3;
+    OutcomeKind outcome_kind = 4;
+    string failure_message = 5;
+  }
+
+  message StatsChunk {
+    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 1;
+  }
+
+  message IndexArtifactBegin {
+    ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
+    string content_type = 2;
+  }
+
+  message IndexArtifactContent {
+    bytes content = 1;
+  }
+
+  message IndexArtifactEnd {}
+
+  message End {}
+
+  oneof frame {
+    Begin begin = 1;
+    StatsChunk stats_chunk = 2;
+    IndexArtifactBegin index_artifact_begin = 3;
+    IndexArtifactContent index_artifact_content = 4;
+    IndexArtifactEnd index_artifact_end = 5;
+    End end = 6;
+  }
 }
 
 message GetReconcileJobRequest {
@@ -857,5 +900,9 @@ service ReconcileExecutorControl {
       returns (GetLeasedFileGroupExecutionResponse);
   // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
   rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
+      returns (SubmitLeasedFileGroupExecutionResultResponse);
+  // Streams one standalone worker execution result for a leased EXEC_FILE_GROUP job.
+  rpc SubmitLeasedFileGroupExecutionResultStream(
+      stream SubmitLeasedFileGroupExecutionResultStreamRequest)
       returns (SubmitLeasedFileGroupExecutionResultResponse);
 }

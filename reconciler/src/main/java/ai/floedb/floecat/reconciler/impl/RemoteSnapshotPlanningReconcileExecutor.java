@@ -155,8 +155,13 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     try {
       snapshot = fetchSnapshot(lease, task).orElse(null);
     } catch (Exception e) {
+      Exception normalized = ReconcileFailureClassifier.normalize(e);
       workerClient.submitPlanSnapshotFailure(
-          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), e.getMessage());
+          remoteLease,
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
+          retryClassOf(normalized),
+          normalized.getMessage());
       return ExecutionResult.failure(
           0,
           0,
@@ -165,11 +170,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           1,
           0,
           0,
-          failureKindOf(e),
-          retryDispositionOf(e),
-          retryClassOf(e),
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
+          retryClassOf(normalized),
           "Failed to fetch snapshot " + task.snapshotId(),
-          e);
+          normalized);
     }
     if (snapshot == null) {
       IllegalStateException error = new IllegalStateException("snapshot not found");
@@ -254,9 +259,14 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
               + fileGroupTasks.size()
               + " file group(s)");
     } catch (RuntimeException e) {
+      Exception normalized = ReconcileFailureClassifier.normalize(e);
       workerClient.submitPlanSnapshotFailure(
-          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), e.getMessage());
-      if (isObsoleteFailureKind(failureKindOf(e))) {
+          remoteLease,
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
+          retryClassOf(normalized),
+          normalized.getMessage());
+      if (isObsoleteFailureKind(failureKindOf(normalized))) {
         return ExecutionResult.obsolete(
             0,
             0,
@@ -265,11 +275,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             1,
             0,
             0,
-            failureKindOf(e),
-            "Snapshot planning failed: " + e.getMessage(),
-            e);
+            failureKindOf(normalized),
+            "Snapshot planning failed: " + normalized.getMessage(),
+            normalized);
       }
-      if (retryDispositionOf(e) == ExecutionResult.RetryDisposition.TERMINAL) {
+      if (retryDispositionOf(normalized) == ExecutionResult.RetryDisposition.TERMINAL) {
         return ExecutionResult.terminalFailure(
             0,
             0,
@@ -278,9 +288,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             1,
             0,
             0,
-            failureKindOf(e),
-            "Snapshot planning failed: " + e.getMessage(),
-            e);
+            failureKindOf(normalized),
+            "Snapshot planning failed: " + normalized.getMessage(),
+            normalized);
       }
       return ExecutionResult.failure(
           0,
@@ -290,11 +300,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           1,
           0,
           0,
-          failureKindOf(e),
-          retryDispositionOf(e),
-          retryClassOf(e),
-          "Snapshot planning failed: " + e.getMessage(),
-          e);
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
+          retryClassOf(normalized),
+          "Snapshot planning failed: " + normalized.getMessage(),
+          normalized);
     }
   }
 

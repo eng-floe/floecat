@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -73,6 +74,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "lease-1",
         "parent-1",
         Connector.newBuilder().setKind(ConnectorKind.CK_ICEBERG).build(),
+        "s3://bucket/table/metadata/00001.metadata.json",
         "ns",
         "table",
         ResourceId.newBuilder()
@@ -84,6 +86,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "plan-1",
         "group-1",
         List.of("s3://bucket/path/file.parquet"),
-        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)),
+        Map.of());
   }
 }

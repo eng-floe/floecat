@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public record StandaloneFileGroupExecutionPayload(
@@ -35,7 +36,8 @@ public record StandaloneFileGroupExecutionPayload(
     String planId,
     String groupId,
     List<String> plannedFilePaths,
-    ReconcileCapturePolicy capturePolicy) {
+    ReconcileCapturePolicy capturePolicy,
+    Map<String, String> sourceStorageConfig) {
   public StandaloneFileGroupExecutionPayload {
     jobId = jobId == null ? "" : jobId.trim();
     leaseEpoch = leaseEpoch == null ? "" : leaseEpoch.trim();
@@ -54,6 +56,7 @@ public record StandaloneFileGroupExecutionPayload(
                 .map(String::trim)
                 .toList();
     capturePolicy = capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    sourceStorageConfig = sourceStorageConfig == null ? Map.of() : Map.copyOf(sourceStorageConfig);
   }
 
   public Set<String> statsColumns() {

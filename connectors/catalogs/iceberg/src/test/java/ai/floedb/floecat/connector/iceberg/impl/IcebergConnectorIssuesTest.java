@@ -28,14 +28,23 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.FileGroupCaptureResult;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableOperations;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
@@ -183,6 +192,43 @@ class IcebergConnectorIssuesTest {
   }
 
   @Test
+  void describeInfersMetadataLocationWhenOperationsMetadataPointerIsUnavailable() {
+    String latest = "s3://warehouse/events/metadata/00007-latest.metadata.json";
+    Schema schema = new Schema(Types.NestedField.optional(1, "id", Types.IntegerType.get()));
+    FileIO fileIO =
+        new MetadataListingFileIO(
+            Map.of(
+                "s3://warehouse/events/metadata",
+                List.of(
+                    new FileInfo("s3://warehouse/events/metadata/00001-old.metadata.json", 1L, 1L),
+                    new FileInfo(latest, 1L, 2L))));
+    TableOperations operations =
+        (TableOperations)
+            Proxy.newProxyInstance(
+                TableOperations.class.getClassLoader(),
+                new Class<?>[] {TableOperations.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "current" -> null;
+                      case "io" -> fileIO;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        tableProxy(
+            schema,
+            PartitionSpec.unpartitioned(),
+            Map.of(),
+            "s3://warehouse/events",
+            null,
+            operations);
+
+    try (var connector = new TestIcebergConnector(table)) {
+      var descriptor = connector.describe("db", "events");
+      assertEquals(latest, descriptor.properties().get("metadata-location"));
+    }
+  }
+
+  @Test
   void simpleFixtureFileGroupCaptureRetainsColumnMetadata() {
     TestS3Fixtures.seedFixturesOnce();
 
@@ -264,5 +310,103 @@ class IcebergConnectorIssuesTest {
                           && !fileColumn.getScalar().getLogicalType().isBlank()),
           () -> "file-column stats should preserve name/type: " + captured.statsRecords());
     }
+  }
+
+  private static Table tableProxy(
+      Schema schema,
+      PartitionSpec partitionSpec,
+      Map<String, String> properties,
+      String location,
+      Snapshot currentSnapshot,
+      TableOperations operations) {
+    InvocationHandler handler =
+        (proxy, method, args) ->
+            switch (method.getName()) {
+              case "schema" -> schema;
+              case "spec" -> partitionSpec;
+              case "properties" -> properties;
+              case "location" -> location;
+              case "currentSnapshot" -> currentSnapshot;
+              case "operations" -> operations;
+              default -> throw new UnsupportedOperationException(method.getName());
+            };
+    return (Table)
+        Proxy.newProxyInstance(
+            Table.class.getClassLoader(),
+            new Class<?>[] {Table.class, HasTableOperations.class},
+            handler);
+  }
+
+  private static final class TestIcebergConnector extends IcebergConnector {
+    private final Table table;
+
+    private TestIcebergConnector(Table table) {
+      super("test", table, "db", "events", false, 1.0d, 0L, null);
+      this.table = table;
+    }
+
+    @Override
+    public List<String> listNamespaces() {
+      return List.of("db");
+    }
+
+    @Override
+    public List<String> listTables(String namespaceFq) {
+      return List.of("events");
+    }
+
+    @Override
+    protected Table loadTableFromSource(String namespaceFq, String tableName) {
+      return table;
+    }
+  }
+
+  private static final class MetadataListingFileIO implements SupportsPrefixOperations {
+    private final Map<String, List<FileInfo>> filesByPrefix;
+
+    private MetadataListingFileIO(Map<String, List<FileInfo>> filesByPrefix) {
+      this.filesByPrefix = filesByPrefix;
+    }
+
+    @Override
+    public InputFile newInputFile(String location) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public InputFile newInputFile(String location, long length) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public OutputFile newOutputFile(String location) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void deleteFile(String location) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Map<String, String> properties() {
+      return Map.of();
+    }
+
+    @Override
+    public void initialize(Map<String, String> properties) {}
+
+    @Override
+    public Iterable<FileInfo> listPrefix(String prefix) {
+      return filesByPrefix.getOrDefault(prefix, List.of());
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void close() {}
   }
 }

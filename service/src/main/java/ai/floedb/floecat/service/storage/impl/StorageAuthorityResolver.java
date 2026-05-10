@@ -94,6 +94,17 @@ public class StorageAuthorityResolver {
     return response.build();
   }
 
+  public Map<String, String> resolveServerSideStorageConfig(
+      StorageAuthority authority, String locationPrefix, String accountId) {
+    return buildResponse(authority, locationPrefix, accountId, true, false, true)
+        .getStorageCredentialsList()
+        .stream()
+        .findFirst()
+        .map(VendedStorageCredential::getConfigMap)
+        .map(Map::copyOf)
+        .orElse(Map.of());
+  }
+
   Optional<AuthCredentials> resolveAuthoritySecret(String accountId, String authorityId) {
     if (accountId == null || accountId.isBlank() || authorityId == null || authorityId.isBlank()) {
       return Optional.empty();
@@ -285,7 +296,7 @@ public class StorageAuthorityResolver {
     }
   }
 
-  static Optional<StorageAuthority> resolveBest(
+  public static Optional<StorageAuthority> resolveBest(
       List<StorageAuthority> authorities, String locationPrefix) {
     StorageAuthority best = null;
     if (authorities == null

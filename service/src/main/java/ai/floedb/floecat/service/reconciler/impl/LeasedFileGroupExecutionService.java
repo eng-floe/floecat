@@ -35,45 +35,73 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultStreamRequest;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.IcebergMetadataLocationResolver;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
+import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
+  @FunctionalInterface
+  interface ConnectorOpener {
+    FloecatConnector open(ConnectorConfig config);
+  }
+
   @Inject ReconcileJobStore jobs;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepo;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject StorageAuthorityRepository storageAuthorityRepo;
+  @Inject StorageAuthorityResolver storageAuthorityResolver;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -101,12 +129,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .getById(tableId)
             .orElseThrow(
                 () -> GrpcErrors.notFound(corr, TABLE, Map.of("table_id", tableId.getId())));
-    String metadataLocation = table.getPropertiesMap().getOrDefault("metadata-location", "").trim();
-    if (metadataLocation.isBlank()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("table metadata-location property is required for file-group execution")
-          .asRuntimeException();
-    }
     if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
       throw Status.FAILED_PRECONDITION
           .withDescription("table upstream connector metadata is required for file-group execution")
@@ -120,6 +142,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                 () ->
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
+    String metadataLocation = resolveMetadataLocation(tableId, table, plannedTask, connector);
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("table metadata-location property is required for file-group execution")
+          .asRuntimeException();
+    }
+    Map<String, String> sourceStorageConfig =
+        resolveSourceStorageConfig(lease.accountId, metadataLocation);
     Connector resolvedConnector = connector.toBuilder().setAuth(resolvedAuth(connector)).build();
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
@@ -134,7 +164,289 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         plannedTask.planId(),
         plannedTask.groupId(),
         plannedTask.filePaths(),
-        FileGroupExecutionSupport.effectiveCapturePolicy(lease));
+        FileGroupExecutionSupport.effectiveCapturePolicy(lease),
+        sourceStorageConfig);
+  }
+
+  private String resolveMetadataLocation(
+      ResourceId tableId, Table table, ReconcileFileGroupTask plannedTask, Connector connector) {
+    String metadataLocation =
+        IcebergMetadataLocationResolver.resolve(
+            table, snapshotRepo.getById(tableId, plannedTask.snapshotId()).orElse(null));
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      return metadataLocation;
+    }
+    return resolveMetadataLocationFromConnector(table, connector);
+  }
+
+  private String resolveMetadataLocationFromConnector(Table table, Connector connector) {
+    if (table == null
+        || connector == null
+        || !table.hasUpstream()
+        || table.getUpstream().getNamespacePathCount() == 0
+        || table.getUpstream().getTableDisplayName().isBlank()) {
+      return null;
+    }
+    ConnectorConfig resolvedConfig = resolveCredentials(connector);
+    try (FloecatConnector source = connectorOpener.open(resolvedConfig)) {
+      FloecatConnector.TableDescriptor descriptor =
+          source.describe(
+              String.join(".", table.getUpstream().getNamespacePathList()),
+              table.getUpstream().getTableDisplayName());
+      if (descriptor == null || descriptor.properties() == null) {
+        return null;
+      }
+      String metadataLocation = descriptor.properties().get("metadata-location");
+      if (metadataLocation == null) {
+        return null;
+      }
+      metadataLocation = metadataLocation.trim();
+      return metadataLocation.isBlank() ? null : metadataLocation;
+    } catch (RuntimeException e) {
+      return null;
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Failed to resolve metadata-location from source connector", e);
+    }
+  }
+
+  private Map<String, String> resolveSourceStorageConfig(
+      String accountId, String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return Map.of();
+    }
+    var authority =
+        StorageAuthorityResolver.resolveBest(
+                storageAuthorityRepo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder()),
+                metadataLocation)
+            .orElse(null);
+    if (authority == null) {
+      return Map.of();
+    }
+    return storageAuthorityResolver.resolveServerSideStorageConfig(
+        authority, metadataLocation, accountId);
+  }
+
+  public Uni<SubmitLeasedFileGroupExecutionResultResponse> persistStreamedResult(
+      PrincipalContext principalContext,
+      Multi<SubmitLeasedFileGroupExecutionResultStreamRequest> requests) {
+    StreamingSubmitState state = new StreamingSubmitState();
+    return requests
+        .emitOn(Infrastructure.getDefaultExecutor())
+        .onItem()
+        .invoke(request -> processStreamFrame(principalContext, state, request))
+        .collect()
+        .last()
+        .onItem()
+        .ifNull()
+        .failWith(
+            () ->
+                Status.INVALID_ARGUMENT
+                    .withDescription("file-group result stream must not be empty")
+                    .asRuntimeException())
+        .replaceWith(() -> finalizeStreamedResult(principalContext, state));
+  }
+
+  private void processStreamFrame(
+      PrincipalContext principalContext,
+      StreamingSubmitState state,
+      SubmitLeasedFileGroupExecutionResultStreamRequest request) {
+    if (request == null
+        || request.getFrameCase()
+            == SubmitLeasedFileGroupExecutionResultStreamRequest.FrameCase.FRAME_NOT_SET) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream frame is required")
+          .asRuntimeException();
+    }
+    if (state.completed) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream received frames after end")
+          .asRuntimeException();
+    }
+    state.digest.update(request.toByteArray());
+    switch (request.getFrameCase()) {
+      case BEGIN -> processStreamBegin(principalContext, state, request.getBegin());
+      case STATS_CHUNK -> processStatsChunk(principalContext, state, request.getStatsChunk());
+      case INDEX_ARTIFACT_BEGIN ->
+          processArtifactBegin(principalContext, state, request.getIndexArtifactBegin());
+      case INDEX_ARTIFACT_CONTENT ->
+          processArtifactContent(principalContext, state, request.getIndexArtifactContent());
+      case INDEX_ARTIFACT_END -> processArtifactEnd(principalContext, state);
+      case END -> processStreamEnd(state);
+      case FRAME_NOT_SET ->
+          throw Status.INVALID_ARGUMENT
+              .withDescription("file-group result stream frame is required")
+              .asRuntimeException();
+    }
+  }
+
+  private void processStreamBegin(
+      PrincipalContext principalContext,
+      StreamingSubmitState state,
+      SubmitLeasedFileGroupExecutionResultStreamRequest.Begin begin) {
+    if (state.context != null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream begin frame must be first")
+          .asRuntimeException();
+    }
+    if (begin.getOutcomeKind()
+        == SubmitLeasedFileGroupExecutionResultStreamRequest.OutcomeKind.OK_UNSPECIFIED) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("outcome_kind is required for file-group result streaming")
+          .asRuntimeException();
+    }
+    PersistContext context =
+        preparePersistContext(principalContext, begin.getJobId(), begin.getLeaseEpoch());
+    state.context = context;
+    state.resultId = requireResultId(begin.getResultId());
+    state.outcomeKind = begin.getOutcomeKind();
+    state.failureMessage = begin.getFailureMessage() == null ? "" : begin.getFailureMessage();
+    for (String filePath : context.plannedTask().filePaths()) {
+      state.statsByFile.put(filePath, 0L);
+    }
+  }
+
+  private void processStatsChunk(
+      PrincipalContext principalContext,
+      StreamingSubmitState state,
+      SubmitLeasedFileGroupExecutionResultStreamRequest.StatsChunk chunk) {
+    PersistContext context = requireStreamingSuccessState(state);
+    for (TargetStatsRecord record : nonNullStatsRecords(chunk.getStatsRecordsList())) {
+      if (!isFileTargetStat(record)) {
+        continue;
+      }
+      persistTargetStat(
+          principalContext,
+          context.tableId(),
+          context.plannedTask().snapshotId(),
+          state.resultId,
+          record);
+      String filePath = filePathForStatsRecord(record);
+      if (!filePath.isBlank() && state.statsByFile.containsKey(filePath)) {
+        state.statsByFile.computeIfPresent(filePath, (ignored, count) -> count + 1L);
+      }
+    }
+  }
+
+  private void processArtifactBegin(
+      PrincipalContext principalContext,
+      StreamingSubmitState state,
+      SubmitLeasedFileGroupExecutionResultStreamRequest.IndexArtifactBegin begin) {
+    requireStreamingSuccessState(state);
+    if (state.currentArtifact != null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription(
+              "index artifact stream cannot begin a new artifact before ending the prior artifact")
+          .asRuntimeException();
+    }
+    if (begin == null || !begin.hasRecord()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("index artifact begin frame requires a record")
+          .asRuntimeException();
+    }
+    state.currentArtifact =
+        new StreamingArtifact(
+            begin.getRecord(), begin.getContentType(), new ByteArrayOutputStream());
+  }
+
+  private void processArtifactContent(
+      PrincipalContext principalContext,
+      StreamingSubmitState state,
+      SubmitLeasedFileGroupExecutionResultStreamRequest.IndexArtifactContent content) {
+    requireStreamingSuccessState(state);
+    if (state.currentArtifact == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("index artifact content frame requires an active artifact")
+          .asRuntimeException();
+    }
+    ByteString bytes = content == null ? ByteString.EMPTY : content.getContent();
+    if (!bytes.isEmpty()) {
+      state.currentArtifact.content().writeBytes(bytes.toByteArray());
+    }
+  }
+
+  private void processArtifactEnd(PrincipalContext principalContext, StreamingSubmitState state) {
+    PersistContext context = requireStreamingSuccessState(state);
+    if (state.currentArtifact == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("index artifact end frame requires an active artifact")
+          .asRuntimeException();
+    }
+    var artifact = state.currentArtifact;
+    state.currentArtifact = null;
+    var stagedArtifact =
+        new ReconcilerBackend.StagedIndexArtifact(
+            artifact.record(), artifact.content().toByteArray(), artifact.contentType());
+    persistIndexArtifact(
+        principalContext,
+        context.tableId(),
+        context.plannedTask().snapshotId(),
+        state.resultId,
+        stagedArtifact);
+    String filePath = filePathForIndexArtifact(artifact.record());
+    if (!filePath.isBlank()) {
+      state.artifactByFile.put(
+          filePath,
+          ReconcileIndexArtifactResult.of(
+              artifact.record().getArtifactUri(),
+              artifact.record().getArtifactFormat(),
+              artifact.record().getArtifactFormatVersion()));
+    }
+  }
+
+  private void processStreamEnd(StreamingSubmitState state) {
+    if (state.context == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream begin frame is required before end")
+          .asRuntimeException();
+    }
+    if (state.currentArtifact != null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream ended with an incomplete index artifact")
+          .asRuntimeException();
+    }
+    state.completed = true;
+  }
+
+  private SubmitLeasedFileGroupExecutionResultResponse finalizeStreamedResult(
+      PrincipalContext principalContext, StreamingSubmitState state) {
+    if (state.context == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream begin frame is required")
+          .asRuntimeException();
+    }
+    if (!state.completed) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream end frame is required")
+          .asRuntimeException();
+    }
+    return switch (state.outcomeKind) {
+      case OK_SUCCESS ->
+          SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+              .setAccepted(
+                  persistStreamedSuccess(
+                      principalContext,
+                      state.context,
+                      state.resultId,
+                      state.digest.digest(),
+                      streamFileResults(
+                          state.context.plannedTask(), state.statsByFile, state.artifactByFile)))
+              .build();
+      case OK_FAILURE ->
+          SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+              .setAccepted(
+                  persistStreamedFailure(
+                      principalContext,
+                      state.context,
+                      state.resultId,
+                      state.failureMessage,
+                      state.digest.digest()))
+              .build();
+      case OK_UNSPECIFIED, UNRECOGNIZED ->
+          throw Status.INVALID_ARGUMENT
+              .withDescription("outcome_kind is required for file-group result streaming")
+              .asRuntimeException();
+    };
   }
 
   public boolean persistSuccess(
@@ -144,25 +456,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String resultId,
       List<TargetStatsRecord> statsRecords,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    String corr = principalContext.getCorrelationId();
-    ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask =
-        FileGroupExecutionSupport.resolvePlannedTask(
-                jobs,
-                lease,
-                lease.fileGroupTask == null ? ReconcileFileGroupTask.empty() : lease.fileGroupTask)
-            .orElseThrow(
-                () ->
-                    Status.FAILED_PRECONDITION
-                        .withDescription(
-                            "planned file group could not be resolved from parent snapshot plan")
-                        .asRuntimeException());
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(plannedTask.tableId())
-            .build();
+    PersistContext context = preparePersistContext(principalContext, jobId, leaseEpoch);
     String requiredResultId = requireResultId(resultId);
     List<TargetStatsRecord> effectiveStats = nonNullStatsRecords(statsRecords);
     List<TargetStatsRecord> effectiveFileStats =
@@ -185,29 +479,32 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     resultIdempotencyKey(jobId, requiredResultId),
                     () -> requestBytes,
                     () -> {
-                      long snapshotId = plannedTask.snapshotId();
                       persistTargetStats(
                           principalContext,
-                          tableId,
-                          snapshotId,
+                          context.tableId(),
+                          context.plannedTask().snapshotId(),
                           requiredResultId,
                           effectiveFileStats);
                       persistIndexArtifacts(
                           principalContext,
-                          tableId,
-                          snapshotId,
+                          context.tableId(),
+                          context.plannedTask().snapshotId(),
                           requiredResultId,
                           effectiveArtifacts);
                       jobs.persistFileGroupResult(
-                          lease.jobId,
-                          plannedTask.withFileResults(
-                              FileGroupExecutionSupport.fileResultsForSuccess(
-                                  plannedTask, effectiveFileStats, effectiveArtifacts)));
+                          context.lease().jobId,
+                          context
+                              .plannedTask()
+                              .withFileResults(
+                                  FileGroupExecutionSupport.fileResultsForSuccess(
+                                      context.plannedTask(),
+                                      effectiveFileStats,
+                                      effectiveArtifacts)));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
                               .build(),
-                          tableId);
+                          context.tableId());
                     },
                     ignored -> MutationMeta.getDefaultInstance(),
                     idempotencyStore,
@@ -225,6 +522,43 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String resultId,
       String message) {
+    PersistContext context = preparePersistContext(principalContext, jobId, leaseEpoch);
+    String requiredResultId = requireResultId(resultId);
+    String effectiveMessage = message == null ? "" : message;
+    byte[] requestBytes = failurePayload(requiredResultId, effectiveMessage).toByteArray();
+    return runIdempotentCreate(
+            () ->
+                MutationOps.createProto(
+                    principalContext.getAccountId(),
+                    "SubmitLeasedFileGroupExecutionResult",
+                    resultIdempotencyKey(jobId, requiredResultId),
+                    () -> requestBytes,
+                    () -> {
+                      jobs.persistFileGroupResult(
+                          context.lease().jobId,
+                          context
+                              .plannedTask()
+                              .withFileResults(
+                                  FileGroupExecutionSupport.fileResultsForFailure(
+                                      context.plannedTask(), effectiveMessage)));
+                      return new IdempotencyGuard.CreateResult<>(
+                          SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                              .setAccepted(true)
+                              .build(),
+                          context.tableId());
+                    },
+                    ignored -> MutationMeta.getDefaultInstance(),
+                    idempotencyStore,
+                    nowTs(),
+                    idempotencyTtlSeconds(),
+                    principalContext::getCorrelationId,
+                    SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
+        .body
+        .getAccepted();
+  }
+
+  private PersistContext preparePersistContext(
+      PrincipalContext principalContext, String jobId, String leaseEpoch) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
     ReconcileFileGroupTask plannedTask =
@@ -244,27 +578,69 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .setKind(ResourceKind.RK_TABLE)
             .setId(plannedTask.tableId())
             .build();
-    String requiredResultId = requireResultId(resultId);
-    String effectiveMessage = message == null ? "" : message;
-    byte[] requestBytes = failurePayload(requiredResultId, effectiveMessage).toByteArray();
+    return new PersistContext(lease, plannedTask, tableId);
+  }
+
+  private boolean persistStreamedSuccess(
+      PrincipalContext principalContext,
+      PersistContext context,
+      String resultId,
+      byte[] fingerprint,
+      List<ReconcileFileResult> fileResults) {
     return runIdempotentCreate(
             () ->
                 MutationOps.createProto(
                     principalContext.getAccountId(),
-                    "SubmitLeasedFileGroupExecutionResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
+                    "SubmitLeasedFileGroupExecutionResultStream",
+                    resultIdempotencyKey(context.lease().jobId, resultId),
+                    () -> fingerprint,
                     () -> {
                       jobs.persistFileGroupResult(
-                          lease.jobId,
-                          plannedTask.withFileResults(
-                              FileGroupExecutionSupport.fileResultsForFailure(
-                                  plannedTask, effectiveMessage)));
+                          context.lease().jobId,
+                          context.plannedTask().withFileResults(fileResults));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
                               .build(),
-                          tableId);
+                          context.tableId());
+                    },
+                    ignored -> MutationMeta.getDefaultInstance(),
+                    idempotencyStore,
+                    nowTs(),
+                    idempotencyTtlSeconds(),
+                    principalContext::getCorrelationId,
+                    SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
+        .body
+        .getAccepted();
+  }
+
+  private boolean persistStreamedFailure(
+      PrincipalContext principalContext,
+      PersistContext context,
+      String resultId,
+      String message,
+      byte[] fingerprint) {
+    String effectiveMessage = message == null ? "" : message;
+    return runIdempotentCreate(
+            () ->
+                MutationOps.createProto(
+                    principalContext.getAccountId(),
+                    "SubmitLeasedFileGroupExecutionResultStream",
+                    resultIdempotencyKey(context.lease().jobId, resultId),
+                    () -> fingerprint,
+                    () -> {
+                      jobs.persistFileGroupResult(
+                          context.lease().jobId,
+                          context
+                              .plannedTask()
+                              .withFileResults(
+                                  FileGroupExecutionSupport.fileResultsForFailure(
+                                      context.plannedTask(), effectiveMessage)));
+                      return new IdempotencyGuard.CreateResult<>(
+                          SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                              .setAccepted(true)
+                              .build(),
+                          context.tableId());
                     },
                     ignored -> MutationMeta.getDefaultInstance(),
                     idempotencyStore,
@@ -282,31 +658,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       long snapshotId,
       String resultId,
       List<TargetStatsRecord> statsRecords) {
-    String accountId = principalContext.getAccountId();
-    var now = nowTs();
     for (TargetStatsRecord targetRecord : statsRecords) {
       if (targetRecord == null) {
         continue;
       }
-      String targetKey = StatsTargetIdentity.storageId(targetRecord.getTarget());
-      String itemKey = itemIdempotencyKey(resultId, "target", hashString(targetKey));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "SubmitLeasedFileGroupExecutionResult",
-                  itemKey,
-                  targetRecord::toByteArray,
-                  () -> {
-                    statsStore.putTargetStats(targetRecord);
-                    return new IdempotencyGuard.CreateResult<>(targetRecord, tableId);
-                  },
-                  rec -> statsStore.metaForTargetStats(tableId, snapshotId, rec.getTarget(), now),
-                  idempotencyStore,
-                  now,
-                  idempotencyTtlSeconds(),
-                  principalContext::getCorrelationId,
-                  TargetStatsRecord::parseFrom));
+      persistTargetStat(principalContext, tableId, snapshotId, resultId, targetRecord);
     }
   }
 
@@ -316,38 +672,74 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       long snapshotId,
       String resultId,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    String accountId = principalContext.getAccountId();
-    var now = nowTs();
     for (ReconcilerBackend.StagedIndexArtifact stagedArtifact : stagedIndexArtifacts) {
       if (stagedArtifact == null || stagedArtifact.record() == null) {
         continue;
       }
-      PutIndexArtifactItem item = toPutIndexArtifactItem(stagedArtifact);
-      String itemKey =
-          itemIdempotencyKey(
-              resultId,
-              "index_artifact",
-              hashString(targetStorageId(item.getRecord().getTarget())));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "SubmitLeasedFileGroupExecutionResult",
-                  itemKey,
-                  item::toByteArray,
-                  () -> {
-                    persistIndexArtifact(item);
-                    return new IdempotencyGuard.CreateResult<>(item, tableId);
-                  },
-                  persisted ->
-                      indexArtifactRepo.metaForIndexArtifact(
-                          tableId, snapshotId, persisted.getRecord().getTarget(), now),
-                  idempotencyStore,
-                  now,
-                  idempotencyTtlSeconds(),
-                  principalContext::getCorrelationId,
-                  PutIndexArtifactItem::parseFrom));
+      persistIndexArtifact(principalContext, tableId, snapshotId, resultId, stagedArtifact);
     }
+  }
+
+  private void persistTargetStat(
+      PrincipalContext principalContext,
+      ResourceId tableId,
+      long snapshotId,
+      String resultId,
+      TargetStatsRecord targetRecord) {
+    String accountId = principalContext.getAccountId();
+    var now = nowTs();
+    String targetKey = StatsTargetIdentity.storageId(targetRecord.getTarget());
+    String itemKey = itemIdempotencyKey(resultId, "target", hashString(targetKey));
+    runIdempotentCreate(
+        () ->
+            MutationOps.createProto(
+                accountId,
+                "SubmitLeasedFileGroupExecutionResult",
+                itemKey,
+                targetRecord::toByteArray,
+                () -> {
+                  statsStore.putTargetStats(targetRecord);
+                  return new IdempotencyGuard.CreateResult<>(targetRecord, tableId);
+                },
+                rec -> statsStore.metaForTargetStats(tableId, snapshotId, rec.getTarget(), now),
+                idempotencyStore,
+                now,
+                idempotencyTtlSeconds(),
+                principalContext::getCorrelationId,
+                TargetStatsRecord::parseFrom));
+  }
+
+  private void persistIndexArtifact(
+      PrincipalContext principalContext,
+      ResourceId tableId,
+      long snapshotId,
+      String resultId,
+      ReconcilerBackend.StagedIndexArtifact stagedArtifact) {
+    String accountId = principalContext.getAccountId();
+    var now = nowTs();
+    PutIndexArtifactItem item = toPutIndexArtifactItem(stagedArtifact);
+    String itemKey =
+        itemIdempotencyKey(
+            resultId, "index_artifact", hashString(targetStorageId(item.getRecord().getTarget())));
+    runIdempotentCreate(
+        () ->
+            MutationOps.createProto(
+                accountId,
+                "SubmitLeasedFileGroupExecutionResult",
+                itemKey,
+                item::toByteArray,
+                () -> {
+                  persistIndexArtifact(item);
+                  return new IdempotencyGuard.CreateResult<>(item, tableId);
+                },
+                persisted ->
+                    indexArtifactRepo.metaForIndexArtifact(
+                        tableId, snapshotId, persisted.getRecord().getTarget(), now),
+                idempotencyStore,
+                now,
+                idempotencyTtlSeconds(),
+                principalContext::getCorrelationId,
+                PutIndexArtifactItem::parseFrom));
   }
 
   private void persistIndexArtifact(PutIndexArtifactItem item) {
@@ -441,6 +833,62 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .build();
   }
 
+  private static boolean isFileTargetStat(TargetStatsRecord record) {
+    return record != null
+        && record.hasTarget()
+        && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE;
+  }
+
+  private static String filePathForStatsRecord(TargetStatsRecord record) {
+    if (record == null) {
+      return "";
+    }
+    if (record.hasFile() && record.getFile().getFilePath() != null) {
+      return record.getFile().getFilePath();
+    }
+    if (record.hasTarget() && record.getTarget().hasFile()) {
+      return record.getTarget().getFile().getFilePath();
+    }
+    return "";
+  }
+
+  private static String filePathForIndexArtifact(IndexArtifactRecord record) {
+    if (record == null || !record.hasTarget() || !record.getTarget().hasFile()) {
+      return "";
+    }
+    return record.getTarget().getFile().getFilePath();
+  }
+
+  private static List<ReconcileFileResult> streamFileResults(
+      ReconcileFileGroupTask plannedTask,
+      LinkedHashMap<String, Long> statsByFile,
+      HashMap<String, ReconcileIndexArtifactResult> artifactByFile) {
+    List<ReconcileFileResult> results = new ArrayList<>(plannedTask.filePaths().size());
+    for (String filePath : plannedTask.filePaths()) {
+      results.add(
+          ReconcileFileResult.succeeded(
+              filePath,
+              statsByFile.getOrDefault(filePath, 0L),
+              artifactByFile.getOrDefault(filePath, ReconcileIndexArtifactResult.empty())));
+    }
+    return List.copyOf(results);
+  }
+
+  private static PersistContext requireStreamingSuccessState(StreamingSubmitState state) {
+    if (state.context == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stream begin frame is required before data frames")
+          .asRuntimeException();
+    }
+    if (state.outcomeKind
+        != SubmitLeasedFileGroupExecutionResultStreamRequest.OutcomeKind.OK_SUCCESS) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("success data frames are only valid for success outcomes")
+          .asRuntimeException();
+    }
+    return state.context;
+  }
+
   private ReconcileJobStore.LeasedJob requireLeasedFileGroupJob(
       String corr, String jobId, String leaseEpoch) {
     boolean renewed = jobs.renewLease(jobId, leaseEpoch);
@@ -508,5 +956,37 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       case TARGET_NOT_SET ->
           throw new IllegalArgumentException("target must be set on IndexArtifactRecord");
     };
+  }
+
+  private record PersistContext(
+      ReconcileJobStore.LeasedJob lease, ReconcileFileGroupTask plannedTask, ResourceId tableId) {}
+
+  private record StreamingArtifact(
+      IndexArtifactRecord record, String contentType, ByteArrayOutputStream content) {
+    StreamingArtifact {
+      contentType = contentType == null ? "" : contentType;
+    }
+  }
+
+  private static final class StreamingSubmitState {
+    private PersistContext context;
+    private String resultId = "";
+    private String failureMessage = "";
+    private SubmitLeasedFileGroupExecutionResultStreamRequest.OutcomeKind outcomeKind =
+        SubmitLeasedFileGroupExecutionResultStreamRequest.OutcomeKind.OK_UNSPECIFIED;
+    private final LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
+    private final HashMap<String, ReconcileIndexArtifactResult> artifactByFile = new HashMap<>();
+    private StreamingArtifact currentArtifact;
+    private boolean completed;
+    private final MessageDigest digest = newSha256();
+  }
+
+  private static MessageDigest newSha256() {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(
+          "SHA-256 digest is required for reconcile result streaming", e);
+    }
   }
 }

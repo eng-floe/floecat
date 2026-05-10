@@ -581,7 +581,8 @@ class GrpcRemoteReconcileExecutorClient
                 execution.getCapturePolicy().getOutputsList().stream()
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+            : ReconcileCapturePolicy.empty(),
+        execution.getSourceStorageConfigMap());
   }
 
   public boolean submitSuccess(RemoteLeasedJob lease, StandaloneFileGroupExecutionResult result) {

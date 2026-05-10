@@ -90,7 +90,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
             "source object missing",
             e);
       }
-      throw e;
+      Exception normalized = ReconcileFailureClassifier.normalize(e);
+      throw normalized instanceof RuntimeException runtime ? runtime : e;
     }
   }
 

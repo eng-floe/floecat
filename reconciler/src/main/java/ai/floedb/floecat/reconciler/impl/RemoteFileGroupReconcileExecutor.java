@@ -189,10 +189,36 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.success(
           0, 0, 0, 0, 0, 0, statsProcessed, "Executed file group " + payload.groupId());
     } catch (RuntimeException e) {
-      workerClient.submitFailure(remoteLease, failureResultId(lease, payload), e.getMessage());
+      Exception normalized = ReconcileFailureClassifier.normalize(e);
+      workerClient.submitFailure(
+          remoteLease, failureResultId(lease, payload), normalized.getMessage());
       return ExecutionResult.failure(
-          0, 0, 0, 0, 1, 0, 0, "File-group capture failed: " + e.getMessage(), e);
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          failureKindOf(normalized),
+          retryDispositionOf(normalized),
+          "File-group capture failed: " + normalized.getMessage(),
+          normalized);
     }
+  }
+
+  private static ExecutionResult.FailureKind failureKindOf(Exception error) {
+    if (error instanceof ReconcileFailureException failure) {
+      return failure.failureKind();
+    }
+    return ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static ExecutionResult.RetryDisposition retryDispositionOf(Exception error) {
+    if (error instanceof ReconcileFailureException failure) {
+      return failure.retryDisposition();
+    }
+    return ExecutionResult.RetryDisposition.RETRYABLE;
   }
 
   private static String successResultId(
