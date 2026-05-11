@@ -191,6 +191,8 @@ public final class FileGroupTargetStatsRollup {
     private String min;
     private String max;
     private final ColumnNdv ndv = new ColumnNdv();
+    private Long ndvRowsSeen;
+    private Long ndvRowsTotal;
     private Ndv singleSourceNdv;
     private int scalarContributors = 0;
 
@@ -261,10 +263,24 @@ public final class FileGroupTargetStatsRollup {
           ndv.mergeTheta(sketch.getData().toByteArray());
         }
       }
+      if (scalar.getNdv().hasApprox()) {
+        var approx = scalar.getNdv().getApprox();
+        ndvRowsSeen = (ndvRowsSeen == null ? 0L : ndvRowsSeen) + Math.max(0L, approx.getRowsSeen());
+        ndvRowsTotal =
+            (ndvRowsTotal == null ? 0L : ndvRowsTotal) + Math.max(0L, approx.getRowsTotal());
+      }
     }
 
     private Ndv aggregateNdv() {
       ndv.finalizeTheta();
+      if (ndv.approx != null) {
+        if (ndv.approx.rowsSeen == null && ndvRowsSeen != null) {
+          ndv.approx.rowsSeen = ndvRowsSeen;
+        }
+        if (ndv.approx.rowsTotal == null && ndvRowsTotal != null) {
+          ndv.approx.rowsTotal = ndvRowsTotal;
+        }
+      }
       if (ndv.approx != null || (ndv.sketches != null && !ndv.sketches.isEmpty())) {
         Ndv.Builder builder = Ndv.newBuilder();
         if (ndv.approx != null) {

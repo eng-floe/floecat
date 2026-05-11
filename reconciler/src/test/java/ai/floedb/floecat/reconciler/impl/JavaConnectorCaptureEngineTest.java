@@ -436,6 +436,64 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
+  void captureAggregatesThetaSketchNdvRowDiagnosticsAcrossFileGroupStats() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String fileOne = "s3://bucket/path/file-1.parquet";
+    String fileTwo = "s3://bucket/path/file-2.parquet";
+
+    when(connector.capturePlannedFileGroup(
+            eq("db"),
+            eq("events"),
+            eq(tableId),
+            eq(55L),
+            eq(Set.of(fileOne, fileTwo)),
+            eq(Set.of("id")),
+            eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
+            eq(false)))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(
+                    fileRecordWithColumnNdv(
+                        tableId, 55L, fileOne, ndvWithThetaSketchAndRows(4L, 10L, 1L, 2L)),
+                    fileRecordWithColumnNdv(
+                        tableId, 55L, fileTwo, ndvWithThetaSketchAndRows(6L, 10L, 2L, 3L))),
+                List.of()));
+
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(fileOne, fileTwo),
+            Set.of("id"),
+            Set.of(),
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            false,
+            Optional.empty());
+
+    var result = engine.capture(request);
+
+    assertThat(result).isPresent();
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
+        .singleElement()
+        .satisfies(
+            record -> {
+              assertThat(record.getScalar().getNdv().hasApprox()).isTrue();
+              assertThat(record.getScalar().getNdv().getApprox().getRowsSeen()).isEqualTo(10L);
+              assertThat(record.getScalar().getNdv().getApprox().getRowsTotal()).isEqualTo(20L);
+            });
+  }
+
+  @Test
   void captureKeepsStatsAndPageIndexSelectorsSeparate() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
@@ -595,6 +653,15 @@ class JavaConnectorCaptureEngineTest {
                 .setCompression(sketchModel.compression == null ? "" : sketchModel.compression)
                 .setVersion(sketchModel.version == null ? 0 : sketchModel.version));
     return builder.build();
+  }
+
+  private static Ndv ndvWithThetaSketchAndRows(
+      long rowsSeen, long rowsTotal, long... values) {
+    Ndv base = ndvWithThetaSketch(values);
+    return base.toBuilder()
+        .setApprox(
+            base.getApprox().toBuilder().setRowsSeen(rowsSeen).setRowsTotal(rowsTotal).build())
+        .build();
   }
 
   @Test
