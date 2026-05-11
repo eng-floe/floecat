@@ -30,9 +30,7 @@ class TableRegisterRequestBuilderTest {
 
     Map<String, String> merged =
         builder.mergeImportedProperties(
-            Map.of("existing", "value"),
-            null,
-            "s3://bucket/table/metadata/00001.metadata.json",
+            Map.of("existing", "value"), null,
             Map.of(
                 "s3.endpoint", "http://localhost:4566",
                 "s3.access-key-id", "akid",
@@ -43,7 +41,7 @@ class TableRegisterRequestBuilderTest {
     assertEquals("value", merged.get("existing"));
     assertEquals("http://localhost:4566", merged.get("s3.endpoint"));
     assertEquals("2", merged.get("format-version"));
-    assertEquals("s3://bucket/table/metadata/00001.metadata.json", merged.get("metadata-location"));
+    assertFalse(merged.containsKey("metadata-location"));
     assertFalse(merged.containsKey("s3.access-key-id"));
     assertFalse(merged.containsKey("s3.secret-access-key"));
     assertFalse(merged.containsKey("s3.session-token"));

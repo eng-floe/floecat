@@ -58,7 +58,6 @@ public class TableMetadataImportMapperSupport {
 
   private Map<String, String> properties(TableMetadata metadata, String metadataLocation) {
     Map<String, String> props = new LinkedHashMap<>(metadata.properties());
-    MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
     props.putIfAbsent("table-uuid", metadata.uuid());
     if (metadata.location() != null && !metadata.location().isBlank()) {
       props.put("location", metadata.location());
@@ -135,7 +134,6 @@ public class TableMetadataImportMapperSupport {
         IcebergMetadata.newBuilder()
             .setTableUuid(metadata.uuid())
             .setFormatVersion(metadata.formatVersion())
-            .setMetadataLocation(metadataLocation)
             .setLastUpdatedMs(metadata.lastUpdatedMillis())
             .setLastColumnId(metadata.lastColumnId())
             .setCurrentSchemaId(metadata.currentSchemaId())

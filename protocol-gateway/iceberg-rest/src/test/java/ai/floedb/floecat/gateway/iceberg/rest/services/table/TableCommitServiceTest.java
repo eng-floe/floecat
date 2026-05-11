@@ -410,6 +410,77 @@ class TableCommitServiceTest {
   }
 
   @Test
+  void commitAllowsSuccessfulCreateResponseWithoutSnapshotMetadataLocation() {
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResourceId.newBuilder().setId("cat:db:orders").build());
+    Table created = tableRecord("cat:db:orders");
+    when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
+        .thenReturn(created);
+    when(tableSupport.loadCurrentMetadata(created)).thenReturn(IcebergMetadata.getDefaultInstance());
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+
+    StagedTableEntry staged =
+        new StagedTableEntry(
+            new StagedTableKey("account-1", "catalog", List.of("db"), "orders", "stage-1"),
+            ResourceId.newBuilder().setId("cat").build(),
+            ResourceId.newBuilder().setId("cat:db").build(),
+            createRequest(),
+            ai.floedb.floecat.catalog.rpc.TableSpec.newBuilder().build(),
+            List.of(Map.of("type", "assert-create")),
+            StageState.STAGED,
+            Instant.now(),
+            Instant.now(),
+            "idem");
+    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+
+    TransactionCommitRequest stagedCreateTx =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto(
+                        List.of("db"), "orders"),
+                    List.of(Map.of("type", "assert-create")),
+                    List.of(Map.of("action", "add-schema")))));
+    when(tableCreateTransactionMapper.buildCreateRequest(any(), any(), any(), any(), any(), any()))
+        .thenReturn(stagedCreateTx);
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            null,
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    CommitTableResponseDto dto = new CommitTableResponseDto(null, metadataView);
+    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(dto);
+
+    Response response = service.commit(commandWithStage(commitWithSingleUpdate(), "stage-1"));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+  }
+
+  @Test
   void commitRejectsDeltaWhenCompatReadOnlyEnabled() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table deltaTable =

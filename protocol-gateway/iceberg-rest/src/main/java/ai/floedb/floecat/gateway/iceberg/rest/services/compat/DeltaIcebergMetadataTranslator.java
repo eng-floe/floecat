@@ -48,8 +48,6 @@ public class DeltaIcebergMetadataTranslator {
     long currentSnapshotId = current == null ? -1L : current.getSnapshotId();
     long lastUpdatedMs = current == null ? System.currentTimeMillis() : snapshotMillis(current);
     long lastSequence = ordered.stream().mapToLong(this::snapshotSequence).max().orElse(0L);
-    String metadataLocation =
-        DeltaMetadataLocationSynthesizer.syntheticLocation(table, Math.max(0L, currentSnapshotId));
     String tableUuid =
         table != null && table.hasResourceId() ? table.getResourceId().getId() : "delta-table";
     int schemaId = current != null && current.getSchemaId() > 0 ? current.getSchemaId() : 0;
@@ -59,7 +57,6 @@ public class DeltaIcebergMetadataTranslator {
         IcebergMetadata.newBuilder()
             .setTableUuid(tableUuid)
             .setFormatVersion(2)
-            .setMetadataLocation(metadataLocation)
             .setLastUpdatedMs(lastUpdatedMs)
             .setCurrentSnapshotId(currentSnapshotId)
             .setLastSequenceNumber(lastSequence)
@@ -67,12 +64,7 @@ public class DeltaIcebergMetadataTranslator {
             .setDefaultSpecId(0)
             .setLastPartitionId(0)
             .setDefaultSortOrderId(0)
-            .addSortOrders(IcebergSortOrder.newBuilder().setSortOrderId(0).build())
-            .addMetadataLog(
-                IcebergMetadataLogEntry.newBuilder()
-                    .setTimestampMs(lastUpdatedMs)
-                    .setFile(metadataLocation)
-                    .build());
+            .addSortOrders(IcebergSortOrder.newBuilder().setSortOrderId(0).build());
 
     if (current != null && currentSnapshotId >= 0) {
       builder.putRefs(

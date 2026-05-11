@@ -31,7 +31,6 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
@@ -42,7 +41,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -52,7 +50,6 @@ class TableCommitMaterializationServiceTest {
   private final TableCommitMaterializationService service = new TableCommitMaterializationService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
-  private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private final TableCommitMaterializationLocationSupport locationSupport =
       new TableCommitMaterializationLocationSupport();
   private final TableCommitMaterializationMetadataSupport metadataSupport =
@@ -63,8 +60,6 @@ class TableCommitMaterializationServiceTest {
     service.materializeMetadataService = materializeMetadataService;
     service.locationResolver = locationSupport;
     service.metadataNormalizer = metadataSupport;
-    locationSupport.config = config;
-    when(config.defaultWarehousePath()).thenReturn(Optional.empty());
   }
 
   @Test
@@ -156,7 +151,7 @@ class TableCommitMaterializationServiceTest {
   }
 
   @Test
-  void materializeMetadataDerivesLocationFromTableWhenMissing() throws Exception {
+  void materializeMetadataDoesNotDeriveLocationFromTableWhenMissing() throws Exception {
     TableMetadataView base =
         metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
@@ -192,29 +187,19 @@ class TableCommitMaterializationServiceTest {
             .setResourceId(tableId)
             .putProperties("location", "s3://warehouse/tables/orders")
             .build();
-    TableMetadataView materialized =
-        noMetadataLocation.withMetadataLocation(
-            "s3://warehouse/tables/orders/metadata/00001-new.metadata.json");
     when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            eq(table),
-            any(TableMetadataView.class),
-            eq("s3://warehouse/tables/orders/metadata/")))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
+            eq("cat.db"), eq("orders"), eq(table), any(TableMetadataView.class), eq(null)))
+        .thenReturn(new MaterializeResult(null, noMetadataLocation));
 
     MaterializeMetadataResult result =
         service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+    assertNull(result.metadataLocation());
   }
 
   @Test
-  void materializeMetadataDerivesLocationFromUpstreamUri() throws Exception {
+  void materializeMetadataDoesNotDeriveLocationFromUpstreamUri() throws Exception {
     TableMetadataView base =
         metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
@@ -253,30 +238,19 @@ class TableCommitMaterializationServiceTest {
                     .setUri("s3://warehouse/tables/orders")
                     .build())
             .build();
-    TableMetadataView materialized =
-        noMetadataLocation.withMetadataLocation(
-            "s3://warehouse/tables/orders/metadata/00001-new.metadata.json");
     when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            eq(table),
-            any(TableMetadataView.class),
-            eq("s3://warehouse/tables/orders/metadata/")))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
+            any(), any(), any(), any(TableMetadataView.class), any()))
+        .thenReturn(new MaterializeResult(null, noMetadataLocation));
 
     MaterializeMetadataResult result =
         service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+    assertNull(result.metadataLocation());
   }
 
   @Test
-  void materializeMetadataDerivesLocationFromDefaultWarehouseWhenMissing() throws Exception {
-    when(config.defaultWarehousePath()).thenReturn(Optional.of("s3://warehouse"));
+  void materializeMetadataDoesNotDeriveLocationFromDefaultWarehouseWhenMissing() throws Exception {
     TableMetadataView base =
         metadata("s3://warehouse/iceberg/orders/metadata/00000-abc.metadata.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
@@ -306,25 +280,14 @@ class TableCommitMaterializationServiceTest {
             base.statistics(),
             base.partitionStatistics(),
             base.snapshots());
-    when(materializeMetadataService.materialize(
-            eq("iceberg"),
-            eq("orders"),
-            eq((Table) null),
-            any(TableMetadataView.class),
-            eq("s3://warehouse/iceberg/orders/metadata/")))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/iceberg/orders/metadata/00001-new.metadata.json",
-                noLocation.withMetadataLocation(
-                    "s3://warehouse/iceberg/orders/metadata/00001-new.metadata.json")));
+    when(materializeMetadataService.materialize("iceberg", "orders", null, noLocation, null))
+        .thenReturn(new MaterializeResult(null, noLocation));
 
     MaterializeMetadataResult result =
         service.materializeMetadata("iceberg", "orders", null, noLocation, null);
 
     assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/iceberg/orders/metadata/00001-new.metadata.json",
-        result.metadataLocation());
+    assertNull(result.metadataLocation());
   }
 
   @Test

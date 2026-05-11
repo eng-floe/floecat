@@ -156,7 +156,8 @@ public class ConnectorProvisioningService {
       return null;
     }
     String requestedLocation = table.getPropertiesMap().get("location");
-    String metadataLocation = table.getPropertiesMap().get("metadata-location");
+    String metadataLocation =
+        tableSupport == null ? null : tableSupport.loadCurrentMetadataLocation(table);
     String resolved =
         tableSupport == null
             ? requestedLocation

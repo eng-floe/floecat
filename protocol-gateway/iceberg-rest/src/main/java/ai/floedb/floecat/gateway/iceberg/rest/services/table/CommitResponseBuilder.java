@@ -68,6 +68,8 @@ public class CommitResponseBuilder {
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(req);
     List<Snapshot> snapshotList =
         SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
+    String metadataLocation =
+        tableSupport == null ? null : tableSupport.loadCurrentMetadataLocation(committedTable);
     Set<Long> removedSnapshotIds = parsed.removedSnapshotIdsSet();
     if (!removedSnapshotIds.isEmpty() && snapshotList != null && !snapshotList.isEmpty()) {
       snapshotList =
@@ -76,7 +78,8 @@ public class CommitResponseBuilder {
               .toList();
     }
     CommitTableResponseDto initialResponse =
-        TableResponseMapper.toCommitResponse(tableName, committedTable, metadata, snapshotList);
+        TableResponseMapper.toCommitResponse(
+            tableName, committedTable, metadata, snapshotList, metadataLocation);
     CommitTableResponseDto stageAwareResponse =
         parsed.containsSnapshotUpdates()
             ? initialResponse
@@ -95,6 +98,7 @@ public class CommitResponseBuilder {
       Set<Long> removedSnapshotIds) {
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(req);
     IcebergMetadata refreshedMetadata = tableSupport.loadCurrentMetadata(committedTable);
+    String refreshedMetadataLocation = tableSupport.loadCurrentMetadataLocation(committedTable);
     List<Snapshot> refreshedSnapshots =
         SnapshotLister.fetchSnapshots(
             snapshotClient, tableId, SnapshotLister.Mode.ALL, refreshedMetadata);
@@ -108,7 +112,11 @@ public class CommitResponseBuilder {
     }
     CommitTableResponseDto finalResponse =
         TableResponseMapper.toCommitResponse(
-            tableName, committedTable, refreshedMetadata, refreshedSnapshots);
+            tableName,
+            committedTable,
+            refreshedMetadata,
+            refreshedSnapshots,
+            refreshedMetadataLocation);
     if (!parsed.containsSnapshotUpdates()) {
       finalResponse = preferStageMetadata(finalResponse, stageMaterialization);
     }
@@ -124,12 +132,6 @@ public class CommitResponseBuilder {
     LoadTableResultDto staged = stageMaterialization.loadResult();
     TableMetadataView stagedMetadata = staged.metadata();
     String stagedLocation = staged.metadataLocation();
-    if ((stagedLocation == null || stagedLocation.isBlank())
-        && stagedMetadata != null
-        && stagedMetadata.metadataLocation() != null
-        && !stagedMetadata.metadataLocation().isBlank()) {
-      stagedLocation = stagedMetadata.metadataLocation();
-    }
     if (stagedLocation == null || stagedLocation.isBlank()) {
       if (stagedMetadata == null) {
         return response;

@@ -79,6 +79,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.InjectMock;
@@ -195,6 +196,8 @@ public abstract class AbstractRestResourceTest {
         Snapshot.newBuilder()
             .setSnapshotId(FIXTURE.metadata().getCurrentSnapshotId())
             .putFormatMetadata("iceberg", FIXTURE.metadata().toByteString())
+            .putFormatMetadata(
+                "iceberg.metadata-location", ByteString.copyFromUtf8(FIXTURE.metadataLocation()))
             .build();
     Mockito.when(snapshotStub.getSnapshot(Mockito.any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(fixtureSnapshot).build());

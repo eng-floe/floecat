@@ -1772,78 +1772,37 @@ class IcebergRestFixtureIT {
               0));
       createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
       createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
+      createPayload.put("location", String.format("s3://floecat/%s/%s", namespace, table));
       createPayload.put("properties", Map.of());
 
-      given()
-          .spec(spec)
-          .body(createPayload)
-          .when()
-          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
-          .then()
-          .statusCode(200);
-
-      Map<String, Object> commitPayload = new LinkedHashMap<>();
-      commitPayload.put("requirements", List.of());
-      commitPayload.put(
-          "updates",
-          List.of(
-              Map.of("action", "assign-uuid", "uuid", table),
-              Map.of("action", "upgrade-format-version", "format-version", 1),
-              Map.of(
-                  "action",
-                  "add-schema",
-                  "last-column-id",
-                  1,
-                  "schema",
-                  Map.of(
-                      "type",
-                      "struct",
-                      "fields",
-                      List.of(
-                          Map.of("name", "event_id", "id", 1, "type", "int", "required", false)),
-                      "schema-id",
-                      0,
-                      "identifier-field-ids",
-                      List.of())),
-              Map.of("action", "set-current-schema", "schema-id", 0),
-              Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
-              Map.of("action", "set-default-spec", "spec-id", 0),
-              Map.of(
-                  "action",
-                  "add-sort-order",
-                  "sort-order",
-                  Map.of("order-id", 0, "fields", List.of())),
-              Map.of("action", "set-default-sort-order", "sort-order-id", 0),
-              Map.of(
-                  "action",
-                  "set-location",
-                  "location",
-                  String.format("s3://floecat/%s/%s", namespace, table))));
-      io.restassured.response.Response commitResponse =
+      io.restassured.response.Response createResponse =
           given()
               .spec(spec)
-              .body(commitPayload)
+              .body(createPayload)
               .when()
-              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
               .then()
               .extract()
               .response();
-      String commitBody = commitResponse.asString();
+      String commitBody = createResponse.asString();
       Assertions.assertEquals(
           200,
-          commitResponse.statusCode(),
+          createResponse.statusCode(),
           () ->
-              "DuckDB commit failed: status="
-                  + commitResponse.statusCode()
+              "DuckDB create failed: status="
+                  + createResponse.statusCode()
                   + " body="
                   + commitBody);
 
       JsonNode responseNode = MAPPER.readTree(commitBody);
       JsonNode commitNode = responseNode.path("metadata");
+      JsonNode metadataLocationNode = responseNode.path("metadata-location");
       Assertions.assertTrue(
-          responseNode.path("metadata-location").asText("").contains("/metadata/"),
-          "metadata-location should be populated");
-      Assertions.assertEquals(1, commitNode.path("format-version").asInt());
+          metadataLocationNode.isMissingNode()
+              || metadataLocationNode.isNull()
+              || metadataLocationNode.asText("").isBlank(),
+          "metadata-location should remain empty before any snapshot is created");
+      Assertions.assertEquals(2, commitNode.path("format-version").asInt());
       Assertions.assertTrue(
           commitNode.path("current-snapshot-id").isMissingNode()
               || commitNode.path("current-snapshot-id").isNull()
@@ -1890,7 +1849,7 @@ class IcebergRestFixtureIT {
                   stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
                       .getTable());
       Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
-      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
+      String metadataLocation = fetchMetadataLocation("iceberg", "trino_test");
       Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
       Assertions.assertTrue(
           metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
@@ -2223,15 +2182,7 @@ class IcebergRestFixtureIT {
   }
 
   private String fetchTablePropertyMetadataLocation(String namespace, String table) {
-    ResourceId tableId = resolveTableId(namespace, table);
-    Table tableRecord =
-        withTableClient(
-            stub ->
-                stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
-    if (tableRecord == null) {
-      return null;
-    }
-    return tableRecord.getPropertiesMap().get("metadata-location");
+    return fetchMetadataLocation(namespace, table);
   }
 
   private List<Long> fetchSnapshotIds(String namespace, String table) {

@@ -144,6 +144,7 @@ public class StageCommitProcessor {
   private LoadTableResultDto toLoadResult(
       String tableName, StagedTableEntry entry, Table tableRecord, String accessDelegationMode) {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
+    String metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig(tableRecord);
     List<StorageCredentialDto> credentials =
         tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
@@ -153,7 +154,13 @@ public class StageCommitProcessor {
           tableName, tableRecord, entry.request(), tableConfig, credentials);
     }
     return TableResponseMapper.toLoadResult(
-        tableName, tableRecord, metadata, snapshots, tableConfig, credentials);
+        tableName,
+        tableRecord,
+        metadata,
+        snapshots,
+        metadataLocation,
+        tableConfig,
+        credentials);
   }
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {

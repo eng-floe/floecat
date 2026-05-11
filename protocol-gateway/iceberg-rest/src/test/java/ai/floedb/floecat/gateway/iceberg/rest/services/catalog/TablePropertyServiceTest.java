@@ -47,7 +47,7 @@ class TablePropertyServiceTest {
 
     service.stripMetadataLocation(props);
 
-    assertEquals(Map.of("metadata-location", "a", "other", "value"), props);
+    assertEquals(Map.of("other", "value"), props);
   }
 
   @Test
@@ -78,7 +78,7 @@ class TablePropertyServiceTest {
                 Map.of("action", "remove-properties", "removals", List.of("existing"))));
 
     assertNull(response);
-    assertEquals(Map.of("foo", "bar", "metadata-location", "ignored"), props);
+    assertEquals(Map.of("foo", "bar"), props);
   }
 
   @Test

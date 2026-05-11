@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -48,20 +47,23 @@ public class TableLoadSupport {
   LoadData loadData(
       Table tableRecord, SnapshotLister.Mode snapshotMode, TableGatewaySupport tableSupport) {
     IcebergMetadata metadata;
+    String metadataLocation;
     List<Snapshot> snapshotList;
     if (deltaCompatEnabled(tableRecord)) {
       DeltaIcebergMetadataService.DeltaLoadResult delta =
           deltaMetadataService.load(tableRecord.getResourceId(), tableRecord, snapshotMode);
       metadata = delta.metadata();
+      metadataLocation = delta.metadataLocation();
       snapshotList = delta.snapshots();
     } else {
       metadata = tableSupport.loadCurrentMetadata(tableRecord);
-      metadata = hydrateMetadataIfNeeded(tableRecord, tableSupport, metadata);
+      metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
+      metadata = hydrateMetadataIfNeeded(tableRecord, tableSupport, metadata, metadataLocation);
       snapshotList =
           SnapshotLister.fetchSnapshots(
               snapshotClient, tableRecord.getResourceId(), snapshotMode, metadata);
     }
-    return new LoadData(metadata, snapshotList);
+    return new LoadData(metadata, metadataLocation, snapshotList);
   }
 
   SnapshotLister.Mode parseSnapshotMode(String raw) {
@@ -74,8 +76,8 @@ public class TableLoadSupport {
     throw new IllegalArgumentException("snapshots must be one of [all, refs]");
   }
 
-  String etagValue(IcebergMetadata metadata, SnapshotLister.Mode snapshotMode) {
-    String source = etagSource(metadata, snapshotMode);
+  String etagValue(String metadataLocation, SnapshotLister.Mode snapshotMode) {
+    String source = etagSource(metadataLocation, snapshotMode);
     return source == null ? null : IcebergHttpUtil.etagForMetadataLocation(source);
   }
 
@@ -111,24 +113,7 @@ public class TableLoadSupport {
     return value;
   }
 
-  private String metadataLocation(IcebergMetadata metadata, Table tableRecord) {
-    if (tableRecord != null && tableRecord.getPropertiesCount() > 0) {
-      String propertyLocation =
-          MetadataLocationUtil.metadataLocation(tableRecord.getPropertiesMap());
-      if (propertyLocation != null && !propertyLocation.isBlank()) {
-        return propertyLocation;
-      }
-    }
-    if (metadata != null
-        && metadata.getMetadataLocation() != null
-        && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
-    }
-    return null;
-  }
-
-  private String etagSource(IcebergMetadata metadata, SnapshotLister.Mode snapshotMode) {
-    String metadataLocation = metadataLocation(metadata, null);
+  private String etagSource(String metadataLocation, SnapshotLister.Mode snapshotMode) {
     if (metadataLocation == null) {
       return null;
     }
@@ -150,18 +135,13 @@ public class TableLoadSupport {
   }
 
   private IcebergMetadata hydrateMetadataIfNeeded(
-      Table tableRecord, TableGatewaySupport tableSupport, IcebergMetadata metadata) {
-    String tableMetadataLocation = metadataLocation(null, tableRecord);
-    String snapshotMetadataLocation = metadataLocation(metadata, null);
-    boolean pointerAdvanced =
-        tableMetadataLocation != null
-            && !tableMetadataLocation.isBlank()
-            && !tableMetadataLocation.equals(snapshotMetadataLocation);
-    if (!pointerAdvanced && metadata != null && metadata.getSchemasCount() > 0) {
+      Table tableRecord,
+      TableGatewaySupport tableSupport,
+      IcebergMetadata metadata,
+      String metadataLocation) {
+    if (!requiresHydration(metadata)) {
       return metadata;
     }
-    String metadataLocation =
-        pointerAdvanced ? tableMetadataLocation : metadataLocation(metadata, tableRecord);
     if (metadataLocation == null || metadataLocation.isBlank()) {
       LOG.warn("Load metadata had no schemas/metadata and no metadata-location; cannot hydrate");
       return metadata;
@@ -188,5 +168,13 @@ public class TableLoadSupport {
     }
   }
 
-  record LoadData(IcebergMetadata metadata, List<Snapshot> snapshots) {}
+  private boolean requiresHydration(IcebergMetadata metadata) {
+    if (metadata == null || metadata.getSchemasCount() == 0) {
+      return true;
+    }
+    return metadata.getSchemasList().stream()
+        .anyMatch(schema -> schema == null || schema.getSchemaJson() == null || schema.getSchemaJson().isBlank());
+  }
+
+  record LoadData(IcebergMetadata metadata, String metadataLocation, List<Snapshot> snapshots) {}
 }

@@ -102,6 +102,7 @@ import org.jboss.logging.Logger;
 public abstract class IcebergConnector implements FloecatConnector {
   private static final Logger LOG = Logger.getLogger(IcebergConnector.class);
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+  private static final String ICEBERG_METADATA_LOCATION_KEY = "iceberg.metadata-location";
   private final String connectorId;
   protected final Table singleTable;
   private final String singleNamespaceFq;
@@ -260,6 +261,7 @@ public abstract class IcebergConnector implements FloecatConnector {
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
     }
     IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
+    String currentMetadataLocation = currentMetadataLocation(table);
 
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : snapshots) {
@@ -286,8 +288,17 @@ public abstract class IcebergConnector implements FloecatConnector {
       String manifestList = snapshot.manifestListLocation();
       long sequenceNumber = snapshot.sequenceNumber();
 
-      Map<String, ByteString> metadataAttachments =
-          (icebergMetadata != null) ? Map.of("iceberg", icebergMetadata.toByteString()) : Map.of();
+      Map<String, ByteString> metadataAttachments = new LinkedHashMap<>();
+      if (icebergMetadata != null) {
+        metadataAttachments.put("iceberg", icebergMetadata.toByteString());
+      }
+      if (currentMetadataLocation != null
+          && !currentMetadataLocation.isBlank()
+          && table.currentSnapshot() != null
+          && table.currentSnapshot().snapshotId() == snapshotId) {
+        metadataAttachments.put(
+            ICEBERG_METADATA_LOCATION_KEY, ByteString.copyFromUtf8(currentMetadataLocation));
+      }
       out.add(
           new SnapshotBundle(
               snapshotId,
@@ -299,7 +310,7 @@ public abstract class IcebergConnector implements FloecatConnector {
               manifestList,
               summary,
               schemaId,
-              metadataAttachments));
+              metadataAttachments.isEmpty() ? Map.of() : Map.copyOf(metadataAttachments)));
     }
     return out;
   }
@@ -927,22 +938,7 @@ public abstract class IcebergConnector implements FloecatConnector {
   private IcebergMetadata buildIcebergMetadata(String namespaceFq, String tableName, Table table) {
     TableMetadata metadata = tableMetadata(table);
     if (metadata == null) {
-      String fallbackLocation = tableMetadataLocation(table);
-      if (fallbackLocation == null || fallbackLocation.isBlank()) {
-        return null;
-      }
-      IcebergMetadata.Builder minimal =
-          IcebergMetadata.newBuilder()
-              .setMetadataLocation(fallbackLocation)
-              .setFormatVersion(2)
-              .setTableUuid(
-                  table
-                      .properties()
-                      .getOrDefault("table-uuid", tableName == null ? "" : tableName));
-      Optional.ofNullable(table.properties().get("current-snapshot-id"))
-          .map(this::safeLong)
-          .ifPresent(minimal::setCurrentSnapshotId);
-      return minimal.build();
+      return null;
     }
     return toIcebergMetadata(metadata);
   }
@@ -954,12 +950,13 @@ public abstract class IcebergConnector implements FloecatConnector {
     return hasOps.operations().current();
   }
 
-  private String tableMetadataLocation(Table table) {
-    Map<String, String> props = table.properties();
-    if (props == null || props.isEmpty()) {
+  private String currentMetadataLocation(Table table) {
+    TableMetadata metadata = tableMetadata(table);
+    if (metadata == null || metadata.metadataFileLocation() == null) {
       return null;
     }
-    return props.get("metadata-location");
+    String location = metadata.metadataFileLocation().trim();
+    return location.isBlank() ? null : location;
   }
 
   private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {
@@ -967,7 +964,6 @@ public abstract class IcebergConnector implements FloecatConnector {
         IcebergMetadata.newBuilder()
             .setTableUuid(metadata.uuid())
             .setFormatVersion(metadata.formatVersion())
-            .setMetadataLocation(metadata.metadataFileLocation())
             .setLastUpdatedMs(metadata.lastUpdatedMillis())
             .setLastColumnId(metadata.lastColumnId())
             .setCurrentSchemaId(metadata.currentSchemaId())

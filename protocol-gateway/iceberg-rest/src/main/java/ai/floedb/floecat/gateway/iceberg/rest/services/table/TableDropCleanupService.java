@@ -62,7 +62,7 @@ public class TableDropCleanupService {
           namespace, tableName, catalogName);
       return;
     }
-    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    String metadataLocation = tableGatewaySupport.loadCurrentMetadataLocation(table);
     if (metadataLocation == null || metadataLocation.isBlank()) {
       LOG.debugf(
           "Skipping purge for %s.%s in catalog %s because metadata-location was missing",

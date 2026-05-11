@@ -67,7 +67,6 @@ class DeltaIcebergMetadataTranslatorTest {
     assertEquals(2L, metadata.getLastSequenceNumber());
     assertEquals("branch", metadata.getRefsOrThrow("main").getType());
     assertEquals(1, metadata.getSchemasCount());
-    assertTrue(metadata.getMetadataLocation().contains("floe+delta://cat:db:delta_orders"));
     assertEquals(2, metadata.getSnapshotLogCount());
     assertEquals(7, metadata.getCurrentSchemaId());
     assertEquals(7, metadata.getSchemas(0).getLastColumnId());

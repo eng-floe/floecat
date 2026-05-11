@@ -41,10 +41,6 @@ public final class StorageLocationResolver {
     if (isStorageUri(externalLocation)) {
       return externalLocation.trim();
     }
-    String metadataLocation = deriveLocationFromMetadata(table);
-    if (metadataLocation != null) {
-      return metadataLocation;
-    }
     String upstreamUri = table != null && table.hasUpstream() ? table.getUpstream().getUri() : null;
     if (isStorageUri(upstreamUri)) {
       return upstreamUri.trim();
@@ -74,22 +70,6 @@ public final class StorageLocationResolver {
         || lower.startsWith("oss://")
         || lower.startsWith("cos://")
         || lower.startsWith("file://");
-  }
-
-  private static String deriveLocationFromMetadata(Table table) {
-    if (table == null) {
-      return null;
-    }
-    String metadataLocation = table.getPropertiesMap().get("metadata-location");
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    if (idx > 0) {
-      return metadataLocation.substring(0, idx);
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    return slash > 0 ? metadataLocation.substring(0, slash) : null;
   }
 
   private static boolean isNonBlank(String value) {

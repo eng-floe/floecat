@@ -71,10 +71,16 @@ public final class TableMetadataBuilder {
       Map<String, String> props,
       IcebergMetadata metadata,
       List<Snapshot> snapshots) {
-    String metadataLocation =
-        metadata == null || metadata.getMetadataLocation().isBlank()
-            ? null
-            : metadata.getMetadataLocation();
+    return fromCatalog(tableName, table, props, metadata, snapshots, null);
+  }
+
+  public static TableMetadataView fromCatalog(
+      String tableName,
+      Table table,
+      Map<String, String> props,
+      IcebergMetadata metadata,
+      List<Snapshot> snapshots,
+      String metadataLocation) {
     return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
   }
 
@@ -90,14 +96,6 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    String propertyMetadataLocation = MetadataLocationUtil.metadataLocation(props);
-    // The catalog pointer (table property) is the source of truth for current metadata location.
-    // Snapshot payload metadata is used as fallback only when pointer data is unavailable.
-    if (propertyMetadataLocation != null && !propertyMetadataLocation.isBlank()) {
-      metadataLocation = propertyMetadataLocation;
-    } else if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = propertyMetadataLocation;
-    }
     String location = props.get("location");
     if (!hasText(location) && table.hasUpstream()) {
       location = table.getUpstream().getUri();

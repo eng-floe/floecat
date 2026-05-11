@@ -79,6 +79,7 @@ import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -157,6 +158,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         Snapshot.newBuilder()
             .setSnapshotId(metadata.getCurrentSnapshotId())
             .putFormatMetadata("iceberg", metadata.toByteString())
+            .putFormatMetadata(
+                "iceberg.metadata-location", ByteString.copyFromUtf8(metadataLocation))
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
@@ -245,6 +248,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setTableId(tableId)
             .setSnapshotId(currentSnapshot.getSnapshotId())
             .putFormatMetadata("iceberg", metadata.toByteString())
+            .putFormatMetadata(
+                "iceberg.metadata-location", ByteString.copyFromUtf8(FIXTURE.metadataLocation()))
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
@@ -407,7 +412,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("metadata.snapshots.size()", equalTo(1))
         .body("metadata.snapshots[0].'snapshot-id'", equalTo(102))
         .body("metadata.snapshots[0].'manifest-list'", notNullValue())
-        .body("'metadata-location'", notNullValue());
+        .body("'metadata-location'", nullValue());
   }
 
   @Test
@@ -679,6 +684,9 @@ class TableResourceTest extends AbstractRestResourceTest {
         Snapshot.newBuilder()
             .setSnapshotId(differentMetadata.getCurrentSnapshotId())
             .putFormatMetadata("iceberg", differentMetadata.toByteString())
+            .putFormatMetadata(
+                "iceberg.metadata-location",
+                ByteString.copyFromUtf8(FIXTURE.metadataLocation()))
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
@@ -691,9 +699,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.'format-version'", equalTo(2))
-        .body(
-            "'metadata-location'",
-            equalTo(created.getPropertiesOrDefault("metadata-location", null)));
+        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
   }
 
   @Test

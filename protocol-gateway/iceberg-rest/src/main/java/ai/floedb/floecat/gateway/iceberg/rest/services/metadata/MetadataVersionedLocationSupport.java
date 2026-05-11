@@ -61,7 +61,7 @@ public class MetadataVersionedLocationSupport {
 
     Map<String, String> props = metadata.properties();
     if (props != null && !props.isEmpty()) {
-      String candidate = firstNonBlank(props.get("metadata-location"), props.get("location"));
+      String candidate = props.get("location");
       directory = metadataDirectoryFromLocation(candidate);
       if (directory != null) {
         return directory;

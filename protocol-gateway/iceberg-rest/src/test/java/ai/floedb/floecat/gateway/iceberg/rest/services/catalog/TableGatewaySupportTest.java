@@ -99,7 +99,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void buildCreateSpecSanitizesPropertiesAndSetsMetadataLocation() throws Exception {
+  void buildCreateSpecSanitizesPropertiesWithoutPersistingMetadataLocation() throws Exception {
     TableRequests.Create req =
         new TableRequests.Create(
             "orders",
@@ -131,9 +131,7 @@ class TableGatewaySupportTest {
     assertEquals("s3://bucket/warehouse/orders", spec.getUpstream().getUri());
     assertNotNull(spec.getSchemaJson());
     assertEquals("analytics", spec.getPropertiesOrThrow("owner"));
-    assertEquals(
-        "s3://bucket/warehouse/orders/metadata/v1.metadata.json",
-        spec.getPropertiesOrThrow("metadata-location"));
+    assertFalse(spec.getPropertiesMap().containsKey("metadata-location"));
     assertFalse(spec.getPropertiesMap().containsKey("s3.secret-key"));
     assertFalse(spec.getPropertiesMap().containsKey("fs.floecat.test-root"));
   }
@@ -309,24 +307,15 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void loadCurrentMetadataPrefersCurrentSnapshotAndOnlyFallsBackOnError() {
+  void loadCurrentMetadataUsesCurrentSnapshotOnly() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
         Table.newBuilder()
             .setResourceId(tableId)
             .putProperties("current-snapshot-id", "99")
             .build();
-    IcebergMetadata firstMetadata = IcebergMetadata.newBuilder().setTableUuid("t-11").build();
     IcebergMetadata secondMetadata = IcebergMetadata.newBuilder().setTableUuid("t-99").build();
     when(grpcClient.getSnapshot(any()))
-        .thenReturn(
-            GetSnapshotResponse.newBuilder()
-                .setSnapshot(
-                    Snapshot.newBuilder()
-                        .setSnapshotId(11L)
-                        .putFormatMetadata("iceberg", firstMetadata.toByteString())
-                        .build())
-                .build())
         .thenReturn(
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
@@ -338,25 +327,17 @@ class TableGatewaySupportTest {
 
     IcebergMetadata loaded = support.loadCurrentMetadata(table);
 
-    assertEquals("t-11", loaded.getTableUuid());
+    assertEquals("t-99", loaded.getTableUuid());
     verify(grpcClient, times(1)).getSnapshot(any());
 
-    when(grpcClient.getSnapshot(any()))
-        .thenThrow(Status.UNAVAILABLE.asRuntimeException())
-        .thenReturn(
-            GetSnapshotResponse.newBuilder()
-                .setSnapshot(
-                    Snapshot.newBuilder()
-                        .setSnapshotId(99L)
-                        .putFormatMetadata("iceberg", secondMetadata.toByteString())
-                        .build())
-                .build());
-    IcebergMetadata recovered = support.loadCurrentMetadata(table);
-    assertEquals("t-99", recovered.getTableUuid());
+    when(grpcClient.getSnapshot(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
+    assertNull(support.loadCurrentMetadata(table));
     ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
-    verify(grpcClient, times(3)).getSnapshot(captor.capture());
-    assertEquals(tableId, captor.getAllValues().get(2).getTableId());
-    assertEquals(99L, captor.getAllValues().get(2).getSnapshot().getSnapshotId());
+    verify(grpcClient, times(2)).getSnapshot(captor.capture());
+    assertEquals(tableId, captor.getAllValues().get(1).getTableId());
+    assertEquals(
+        ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT,
+        captor.getAllValues().get(1).getSnapshot().getSpecial());
   }
 
   @Test

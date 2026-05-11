@@ -51,7 +51,7 @@ public class TableLoadService {
     }
     TableLoadSupport.LoadData loadData =
         loadSupport.loadData(tableRecord, snapshotMode, tableSupport);
-    String etagValue = loadSupport.etagValue(loadData.metadata(), snapshotMode);
+    String etagValue = loadSupport.etagValue(loadData.metadataLocation(), snapshotMode);
     if (loadSupport.hasWildcardIfNoneMatch(ifNoneMatch)) {
       return IcebergErrorResponses.validation("If-None-Match may not take the value of '*'");
     }
@@ -71,6 +71,7 @@ public class TableLoadService {
                 tableRecord,
                 loadData.metadata(),
                 loadData.snapshots(),
+                loadData.metadataLocation(),
                 tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {
@@ -119,6 +120,7 @@ public class TableLoadService {
                 tableRecord,
                 loadData.metadata(),
                 loadData.snapshots(),
+                loadData.metadataLocation(),
                 tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {

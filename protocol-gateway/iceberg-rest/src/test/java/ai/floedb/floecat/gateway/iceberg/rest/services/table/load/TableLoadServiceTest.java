@@ -97,12 +97,11 @@ class TableLoadServiceTest {
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("floe+delta://cat:db:delta_orders/metadata/11.metadata.json")
-            .setCurrentSnapshotId(11L)
-            .build();
+        IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
-        .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
+        .thenReturn(
+            new DeltaIcebergMetadataService.DeltaLoadResult(
+                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
 
     TableRef context =
         new TableRef(
@@ -134,14 +133,15 @@ class TableLoadServiceTest {
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("floe+delta://cat:db:delta_orders/metadata/11.metadata.json")
-            .setCurrentSnapshotId(11L)
-            .build();
+        IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
-        .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
+        .thenReturn(
+            new DeltaIcebergMetadataService.DeltaLoadResult(
+                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.REFS))
-        .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
+        .thenReturn(
+            new DeltaIcebergMetadataService.DeltaLoadResult(
+                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
 
     TableRef context =
         new TableRef(
@@ -164,29 +164,33 @@ class TableLoadServiceTest {
   }
 
   @Test
-  void loadPrefersTablePointerMetadataLocationOverSnapshotMetadataLocation() {
+  void loadHydratesFromSnapshotMetadataLocation() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setDisplayName("orders")
-            .putProperties("metadata-location", "s3://new/metadata/00003.metadata.json")
-            .build();
+        Table.newBuilder().setResourceId(tableId).setDisplayName("orders").build();
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
     when(tableSupport.loadCurrentMetadata(table))
         .thenReturn(
             IcebergMetadata.newBuilder()
-                .setMetadataLocation("s3://old/metadata/00002.metadata.json")
                 .build());
-    when(tableSupport.defaultFileIoProperties(table)).thenReturn(Map.of());
+    when(tableSupport.loadCurrentMetadataLocation(table))
+        .thenReturn("s3://new/metadata/00003.metadata.json");
+    when(tableSupport.serverSideFileIoPropertiesForLocation(table, "s3://new/metadata/00003.metadata.json"))
+        .thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
+                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}",
                 null,
-                Map.of(),
                 null,
                 IcebergMetadata.newBuilder()
-                    .setMetadataLocation("s3://new/metadata/00003.metadata.json")
+                    .addSchemas(
+                        ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
+                            .setSchemaId(0)
+                            .setSchemaJson(
+                                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}")
+                            .setLastColumnId(0)
+                            .build())
                     .build(),
                 null,
                 List.of()));
@@ -208,37 +212,45 @@ class TableLoadServiceTest {
   }
 
   @Test
-  void loadRefreshesWhenTableMetadataPointerAdvancesWithoutNewSnapshot() {
+  void loadRefreshesWhenSnapshotMetadataLocationChanges() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
         Table.newBuilder()
             .setResourceId(tableId)
             .setDisplayName("orders")
-            .putProperties(
-                "metadata-location", "s3://warehouse/orders/metadata/00002.metadata.json")
             .putProperties("format-version", "2")
             .build();
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
     when(tableSupport.loadCurrentMetadata(table))
         .thenReturn(
             IcebergMetadata.newBuilder()
-                .setMetadataLocation("s3://warehouse/orders/metadata/00001.metadata.json")
                 .setFormatVersion(1)
                 .addSchemas(
                     ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
                         .setSchemaId(0)
                         .build())
                 .build());
-    when(tableSupport.defaultFileIoProperties(table)).thenReturn(Map.of());
+    when(tableSupport.loadCurrentMetadataLocation(table))
+        .thenReturn("s3://warehouse/orders/metadata/00002.metadata.json");
+    when(
+            tableSupport.serverSideFileIoPropertiesForLocation(
+                table, "s3://warehouse/orders/metadata/00002.metadata.json"))
+        .thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
+                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}",
                 null,
-                Map.of(),
                 null,
                 IcebergMetadata.newBuilder()
-                    .setMetadataLocation("s3://warehouse/orders/metadata/00002.metadata.json")
                     .setFormatVersion(2)
+                    .addSchemas(
+                        ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
+                            .setSchemaId(0)
+                            .setSchemaJson(
+                                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}")
+                            .setLastColumnId(0)
+                            .build())
                     .build(),
                 null,
                 List.of()));

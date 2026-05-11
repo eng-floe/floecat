@@ -62,7 +62,7 @@ public class TablePropertyService {
     if (props == null || props.isEmpty()) {
       return;
     }
-    // no-op: metadata-location updates are carried through standard set-properties updates
+    props.remove("metadata-location");
   }
 
   public Response applyPropertyUpdates(
@@ -378,7 +378,7 @@ public class TablePropertyService {
         formatVersion,
         propsValue(safeProps, "table-uuid"),
         propsValue(safeProps, "location"),
-        propsValue(safeProps, "metadata-location"),
+        null,
         null,
         safeProps,
         lastColumnId,
@@ -418,6 +418,7 @@ public class TablePropertyService {
     syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
     putStringProperty(props, "table-uuid", metadata.tableUuid());
     putStringProperty(props, "location", metadata.location());
+    props.remove("metadata-location");
     syncRefProperty(props, metadata.refs());
     return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
   }

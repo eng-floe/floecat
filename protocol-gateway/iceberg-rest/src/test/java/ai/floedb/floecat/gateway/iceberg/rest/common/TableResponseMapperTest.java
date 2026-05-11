@@ -42,13 +42,15 @@ class TableResponseMapperTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
   private static final ObjectMapper JSON = new ObjectMapper();
+  private static final String FIXTURE_METADATA_LOCATION = FIXTURE.metadataLocation();
   private static final TableMetadataView FIXTURE_METADATA_VIEW =
       TableMetadataBuilder.fromCatalog(
           FIXTURE.table().getDisplayName(),
           FIXTURE.table(),
           new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
           FIXTURE.metadata(),
-          FIXTURE.snapshots());
+          FIXTURE.snapshots(),
+          FIXTURE_METADATA_LOCATION);
 
   @Test
   void loadResultUsesMetadataSchema() {
@@ -60,7 +62,14 @@ class TableResponseMapperTest {
     IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            FIXTURE_METADATA_LOCATION,
+            Map.of(),
+            List.of());
 
     assertNotNull(result.metadata());
     assertEquals(
@@ -85,18 +94,18 @@ class TableResponseMapperTest {
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .putProperties(
-                "metadata-location",
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            FIXTURE_METADATA_LOCATION,
+            Map.of(),
+            List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -159,23 +168,23 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void metadataLocationPrefersIcebergMetadataWhenPropertyIsPointer() {
+  void metadataLocationUsesExplicitSnapshotMetadataLocation() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .putProperties(
-                "metadata-location",
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00001-abc.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            FIXTURE_METADATA_LOCATION,
+            Map.of(),
+            List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -185,23 +194,23 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void metadataLocationUsesTablePropertyPointerWhenSnapshotMetadataDiffers() {
+  void metadataLocationUsesExplicitMetadataLocationArgument() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .putProperties(
-                "metadata-location",
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00002-new.metadata.json")
             .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00001-old.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            "s3://yb-iceberg-tpcds/trino_test/metadata/00002-new.metadata.json",
+            Map.of(),
+            List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata/00002-new.metadata.json",
@@ -217,14 +226,17 @@ class TableResponseMapperTest {
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            FIXTURE_METADATA_LOCATION,
+            Map.of(),
+            List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -269,14 +281,18 @@ class TableResponseMapperTest {
                         : FIXTURE_METADATA_VIEW.defaultSortOrderId()))
             .putProperties("last-sequence-number", "0")
             .putProperties("location", "s3://warehouse/db/orders")
-            .putProperties(
-                "metadata-location", "s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
             .build();
 
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(11L).setSequenceNumber(1L).build();
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders", table, null, List.of(snapshot), Map.of(), List.of());
+            "orders",
+            table,
+            null,
+            List.of(snapshot),
+            "s3://warehouse/db/orders/metadata/00000-abc.metadata.json",
+            Map.of(),
+            List.of());
 
     assertNotNull(result.metadata());
     assertEquals(2, result.metadata().formatVersion());
@@ -295,8 +311,6 @@ class TableResponseMapperTest {
             .build();
     IcebergMetadata metadata =
         FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .addStatistics(
                 IcebergStatisticsFile.newBuilder()
                     .setSnapshotId(5L)
@@ -306,7 +320,14 @@ class TableResponseMapperTest {
             .build();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            FIXTURE_METADATA_LOCATION,
+            Map.of(),
+            List.of());
 
     List<Map<String, Object>> statistics = result.metadata().statistics();
     assertFalse(statistics.isEmpty());
@@ -322,16 +343,18 @@ class TableResponseMapperTest {
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .setUpstream(UpstreamRef.newBuilder().setUri("http://iceberg-rest:9200"))
             .putProperties("location", "s3://warehouse/db/orders")
-            .putProperties(
-                "metadata-location", "s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
             .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation("s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
 
     LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+        TableResponseMapper.toLoadResult(
+            "orders",
+            table,
+            metadata,
+            List.of(),
+            "s3://warehouse/db/orders/metadata/00000-abc.metadata.json",
+            Map.of(),
+            List.of());
 
     assertEquals("s3://warehouse/db/orders", result.metadata().location());
     assertEquals("s3://warehouse/db/orders/metadata", result.config().get("write.metadata.path"));

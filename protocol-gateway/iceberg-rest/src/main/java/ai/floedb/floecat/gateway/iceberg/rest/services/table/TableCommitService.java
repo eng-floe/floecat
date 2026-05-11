@@ -113,10 +113,7 @@ public class TableCommitService {
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
             command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
-    if (finalResponse == null
-        || finalResponse.metadata() == null
-        || finalResponse.metadataLocation() == null
-        || finalResponse.metadataLocation().isBlank()) {
+    if (finalResponse == null || finalResponse.metadata() == null) {
       return IcebergErrorResponses.failure(
           "Commit response missing metadata",
           "InternalServerError",
