@@ -58,6 +58,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -120,6 +121,68 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       return "";
     }
     return "";
+  }
+
+  private void maybeAdvanceCurrentSnapshot(ResourceId tableId, Snapshot candidate, String corr) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Table table =
+          tableRepo
+              .getById(tableId)
+              .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+
+      if (!shouldAdvanceCurrentSnapshot(tableId, table, candidate)) {
+        return;
+      }
+
+      long expectedVersion = tableRepo.metaFor(tableId).getPointerVersion();
+      Table updated =
+          table.toBuilder()
+              .putProperties("current-snapshot-id", Long.toString(candidate.getSnapshotId()))
+              .build();
+      if (tableRepo.update(updated, expectedVersion)) {
+        return;
+      }
+    }
+
+    throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
+  }
+
+  private boolean shouldAdvanceCurrentSnapshot(
+      ResourceId tableId, Table table, Snapshot candidateSnapshot) {
+    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
+    if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
+      return true;
+    }
+
+    long currentId;
+    try {
+      currentId = Long.parseLong(currentSnapshotId);
+    } catch (NumberFormatException e) {
+      return true;
+    }
+
+    if (currentId == candidateSnapshot.getSnapshotId()) {
+      return false;
+    }
+
+    Snapshot currentSnapshot = snapshotRepo.getById(tableId, currentId).orElse(null);
+    if (currentSnapshot == null) {
+      return true;
+    }
+
+    long currentMs =
+        currentSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(currentSnapshot.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+    long candidateMs =
+        candidateSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(candidateSnapshot.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+
+    if (candidateMs != currentMs) {
+      return candidateMs > currentMs;
+    }
+    return candidateSnapshot.getSnapshotId() > currentSnapshot.getSnapshotId();
   }
 
   @Override
@@ -317,6 +380,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                 "table_id", tableId.getId(),
                                 "snapshot_id", Long.toString(snap.getSnapshotId())));
                       }
+                      maybeAdvanceCurrentSnapshot(tableId, existing.get(), corr);
                       var meta = snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
                       return CreateSnapshotResponse.newBuilder()
                           .setSnapshot(existing.get())
@@ -324,6 +388,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           .build();
                     }
                     snapshotRepo.create(snap);
+                    maybeAdvanceCurrentSnapshot(tableId, snap, corr);
                     var meta = snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
                     return CreateSnapshotResponse.newBuilder()
                         .setSnapshot(snap)
@@ -349,6 +414,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                         var stored = normalizeSnapshotForComparison(existing.get());
                                         var incoming = normalizeSnapshotForComparison(snap);
                                         if (stored.equals(incoming)) {
+                                          maybeAdvanceCurrentSnapshot(
+                                              tableId, existing.get(), corr);
                                           return new IdempotencyGuard.CreateResult<>(
                                               existing.get(), existing.get().getTableId());
                                         }
@@ -360,6 +427,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                               "table_id", tableId.getId(),
                                               "snapshot_id", Long.toString(snap.getSnapshotId())));
                                     }
+                                    maybeAdvanceCurrentSnapshot(tableId, snap, corr);
                                     return new IdempotencyGuard.CreateResult<>(
                                         snap, snap.getTableId());
                                   },
