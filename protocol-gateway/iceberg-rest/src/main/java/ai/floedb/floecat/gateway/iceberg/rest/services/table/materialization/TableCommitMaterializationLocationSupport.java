@@ -25,11 +25,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 public class TableCommitMaterializationLocationSupport {
 
   String resolveOutputMetadataLocation(
-      String namespace,
-      String tableName,
-      Table tableRecord,
-      TableMetadataView metadata,
-      String metadataLocation) {
+      Table tableRecord, TableMetadataView metadata, String metadataLocation) {
     String resolved =
         firstNonBlank(metadataLocation, metadata == null ? null : metadata.metadataLocation());
     if (hasText(resolved)) {
@@ -46,11 +42,7 @@ public class TableCommitMaterializationLocationSupport {
   }
 
   TableMetadataView normalizeTableLocation(
-      String namespace,
-      String tableName,
-      Table tableRecord,
-      TableMetadataView metadata,
-      String metadataLocation) {
+      Table tableRecord, TableMetadataView metadata, String metadataLocation) {
     if (metadata == null || hasText(metadata.location())) {
       return metadata;
     }

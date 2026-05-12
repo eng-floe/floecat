@@ -452,7 +452,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         String metadataLocation =
             snapshotRepo
                 .getById(table.getResourceId(), snapshotId)
-                .map(ai.floedb.floecat.service.common.SnapshotMetadataLocationResolver::resolve)
+                .map(SnapshotRepository::metadataLocation)
                 .orElse(null);
         if (metadataLocation != null && !metadataLocation.isBlank()) {
           int idx = metadataLocation.indexOf("/metadata/");

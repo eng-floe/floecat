@@ -28,7 +28,6 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TableInfo;
-import ai.floedb.floecat.service.common.SnapshotMetadataLocationResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -167,7 +166,7 @@ public class ScanBundleService {
       builder.putAllProperties(table.getPropertiesMap());
     }
 
-    String metadataLocation = SnapshotMetadataLocationResolver.resolve(snapshot);
+    String metadataLocation = SnapshotRepository.metadataLocation(snapshot);
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
     }

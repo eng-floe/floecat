@@ -53,7 +53,7 @@ public class TableLoadSupport {
       DeltaIcebergMetadataService.DeltaLoadResult delta =
           deltaMetadataService.load(tableRecord.getResourceId(), tableRecord, snapshotMode);
       metadata = delta.metadata();
-      metadataLocation = delta.metadataLocation();
+      metadataLocation = null;
       snapshotList = delta.snapshots();
     } else {
       metadata = tableSupport.loadCurrentMetadata(tableRecord);

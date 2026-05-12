@@ -46,7 +46,7 @@ class DeltaIcebergMetadataServiceTest {
     when(service.snapshotClient.listSnapshots(org.mockito.ArgumentMatchers.any()))
         .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
     when(service.translator.translate(table, List.of(snapshot)))
-        .thenReturn(IcebergMetadata.newBuilder().setMetadataLocation("floe+delta://x").build());
+        .thenReturn(IcebergMetadata.newBuilder().build());
     when(service.manifestMaterializer.materialize(table, List.of())).thenReturn(List.of());
 
     DeltaIcebergMetadataService.DeltaLoadResult result =
@@ -75,10 +75,7 @@ class DeltaIcebergMetadataServiceTest {
     when(service.snapshotClient.listSnapshots(org.mockito.ArgumentMatchers.any()))
         .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
     when(service.translator.translate(scopedTable, List.of(snapshot)))
-        .thenReturn(
-            IcebergMetadata.newBuilder()
-                .setMetadataLocation("floe+delta://cat:db:delta_orders/metadata/10.metadata.json")
-                .build());
+        .thenReturn(IcebergMetadata.newBuilder().build());
     when(service.manifestMaterializer.materialize(scopedTable, List.of(snapshot)))
         .thenReturn(List.of(snapshot));
 

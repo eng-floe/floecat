@@ -31,6 +31,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -55,6 +56,7 @@ public class TransactionCommitSnapshotSupport {
   @Inject TransactionCommitExecutionSupport transactionCommitExecutionSupport;
   @Inject TablePropertyService tablePropertyService;
   @Inject GrpcServiceFacade grpcClient;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   record SnapshotChangePlan(
       List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges, Response error) {}
@@ -89,13 +91,14 @@ public class TransactionCommitSnapshotSupport {
     String resolvedMetadataLocation =
         firstNonBlank(requestedMetadataLocation, trimToNull(metadataLocation));
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
-    boolean addedSnapshot = false;
+    boolean writesNewSnapshot = false;
     if (updates != null && !updates.isEmpty()) {
       for (Map<String, Object> update : updates) {
         String action = CommitUpdateInspector.actionOf(update);
         if (!CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(action)) {
           continue;
         }
+        writesNewSnapshot = true;
         Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
         if (snapshotMap == null || snapshotMap.isEmpty()) {
           return new SnapshotChangePlan(
@@ -106,26 +109,22 @@ public class TransactionCommitSnapshotSupport {
           return new SnapshotChangePlan(
               List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot-id"));
         }
-        addedSnapshot = true;
 
         Snapshot snapshot;
         try {
           snapshot =
-              fetchOrBuildSnapshotPayload(
+              buildSnapshotPayload(
                   scopedTableId,
                   table,
                   tableSupport,
                   snapshotId,
                   snapshotMap,
                   resolvedMetadataLocation);
-        } catch (StatusRuntimeException e) {
-          return new SnapshotChangePlan(
-              List.of(), transactionCommitExecutionSupport.mapPrepareFailure(e));
         } catch (RuntimeException e) {
           return new SnapshotChangePlan(
               List.of(),
               IcebergErrorResponses.failure(
-                  "failed to fetch or build snapshot payload",
+                  "failed to build snapshot payload",
                   "CommitStateUnknownException",
                   Response.Status.SERVICE_UNAVAILABLE));
         }
@@ -156,30 +155,21 @@ public class TransactionCommitSnapshotSupport {
                 .build());
       }
     }
-    if (!addedSnapshot && resolvedMetadataLocation != null) {
-      Snapshot currentSnapshot;
-      try {
-        currentSnapshot =
-            fetchCurrentSnapshotPayload(
-                scopedTableId, table, tableSupport, resolvedMetadataLocation);
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-          currentSnapshot = null;
-        } else {
-          return new SnapshotChangePlan(
-              List.of(), transactionCommitExecutionSupport.mapPrepareFailure(e));
-        }
-      } catch (RuntimeException e) {
-        return new SnapshotChangePlan(
-            List.of(),
-            IcebergErrorResponses.failure(
-                "failed to load current snapshot payload for metadata update",
-                "CommitStateUnknownException",
-                Response.Status.SERVICE_UNAVAILABLE));
+    if (!writesNewSnapshot
+        && resolvedMetadataLocation != null
+        && !resolvedMetadataLocation.isBlank()) {
+      SnapshotChangePlan metadataOnlyPlan =
+          planCurrentSnapshotMetadataLocationUpdate(
+              resolvedAccountId,
+              txId,
+              scopedTableId,
+              table,
+              tableSupport,
+              resolvedMetadataLocation);
+      if (metadataOnlyPlan.error() != null) {
+        return metadataOnlyPlan;
       }
-      if (currentSnapshot != null) {
-        addSnapshotWriteChanges(out, resolvedAccountId, scopedTableId.getId(), currentSnapshot);
-      }
+      out.addAll(metadataOnlyPlan.txChanges());
     }
     if (removedSnapshotIds != null && !removedSnapshotIds.isEmpty()) {
       for (Long snapshotId : removedSnapshotIds) {
@@ -237,46 +227,99 @@ public class TransactionCommitSnapshotSupport {
     return new SnapshotChangePlan(out, null);
   }
 
-  private void addSnapshotWriteChanges(
-      List<ai.floedb.floecat.transaction.rpc.TxChange> out,
+  private SnapshotChangePlan planCurrentSnapshotMetadataLocationUpdate(
       String accountId,
-      String tableId,
-      Snapshot snapshot) {
+      String txId,
+      ResourceId tableId,
+      Table table,
+      TableGatewaySupport tableSupport,
+      String metadataLocation) {
+    Snapshot currentSnapshot;
+    try {
+      var response =
+          grpcClient.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(
+                      SnapshotRef.newBuilder()
+                          .setSpecial(ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT)
+                          .build())
+                  .build());
+      if (response == null || !response.hasSnapshot()) {
+        return new SnapshotChangePlan(List.of(), null);
+      }
+      currentSnapshot = response.getSnapshot();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return new SnapshotChangePlan(List.of(), null);
+      }
+      return new SnapshotChangePlan(
+          List.of(), transactionCommitExecutionSupport.mapPrepareFailure(e));
+    } catch (RuntimeException e) {
+      return new SnapshotChangePlan(
+          List.of(),
+          IcebergErrorResponses.failure(
+              "failed to load current snapshot payload for metadata-only commit",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE));
+    }
+
+    IcebergMetadata refreshedMetadata;
+    try {
+      refreshedMetadata = importMetadataForSnapshotWrite(table, tableSupport, metadataLocation);
+    } catch (IllegalArgumentException e) {
+      return new SnapshotChangePlan(List.of(), IcebergErrorResponses.validation(e.getMessage()));
+    } catch (RuntimeException e) {
+      return new SnapshotChangePlan(
+          List.of(),
+          IcebergErrorResponses.failure(
+              "failed to import materialized metadata for metadata-only commit",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE));
+    }
+
+    Snapshot.Builder updatedSnapshot = currentSnapshot.toBuilder();
+    updatedSnapshot.putFormatMetadata(
+        SnapshotMetadataUtil.ICEBERG_METADATA_LOCATION_KEY,
+        ByteString.copyFromUtf8(metadataLocation));
+    if (refreshedMetadata != null) {
+      updatedSnapshot.putFormatMetadata(
+          TransactionCommitService.ICEBERG_METADATA_KEY, refreshedMetadata.toByteString());
+    }
     long upstreamCreatedMs =
-        snapshot.hasUpstreamCreatedAt()
-            ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
+        updatedSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(updatedSnapshot.getUpstreamCreatedAt())
             : clockMillis();
-    String byIdKey = Keys.snapshotPointerById(accountId, tableId, snapshot.getSnapshotId());
+    String byIdKey =
+        Keys.snapshotPointerById(accountId, tableId.getId(), updatedSnapshot.getSnapshotId());
     String byTimeKey =
-        Keys.snapshotPointerByTime(accountId, tableId, snapshot.getSnapshotId(), upstreamCreatedMs);
-    ByteString payload = ByteString.copyFrom(snapshot.toByteArray());
-    out.add(
-        ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-            .setTargetPointerKey(byIdKey)
-            .setPayload(payload)
-            .build());
-    out.add(
-        ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-            .setTargetPointerKey(byTimeKey)
-            .setPayload(payload)
-            .build());
+        Keys.snapshotPointerByTime(
+            accountId, tableId.getId(), updatedSnapshot.getSnapshotId(), upstreamCreatedMs);
+    ByteString payload = ByteString.copyFrom(updatedSnapshot.build().toByteArray());
+    return new SnapshotChangePlan(
+        List.of(
+            ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+                .setTargetPointerKey(byIdKey)
+                .setPayload(payload)
+                .build(),
+            ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+                .setTargetPointerKey(byTimeKey)
+                .setPayload(payload)
+                .build()),
+        null);
   }
 
-  private Snapshot fetchCurrentSnapshotPayload(
-      ResourceId tableId, Table table, TableGatewaySupport tableSupport, String metadataLocation) {
-    var response =
-        grpcClient.getSnapshot(
-            GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(
-                    SnapshotRef.newBuilder()
-                        .setSpecial(ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT)
-                        .build())
-                .build());
-    if (response == null || !response.hasSnapshot()) {
+  private IcebergMetadata importMetadataForSnapshotWrite(
+      Table table, TableGatewaySupport tableSupport, String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
       return null;
     }
-    return enrichExistingSnapshot(response.getSnapshot(), table, tableSupport, metadataLocation);
+    Map<String, String> ioProps =
+        tableSupport == null
+            ? Map.of()
+            : new LinkedHashMap<>(
+                tableSupport.serverSideFileIoPropertiesForLocation(table, metadataLocation));
+    return tableMetadataImportService.importMetadata(metadataLocation, ioProps).icebergMetadata();
   }
 
   private ai.floedb.floecat.transaction.rpc.TxChange snapshotDeleteChange(
@@ -296,7 +339,7 @@ public class TransactionCommitSnapshotSupport {
         .build();
   }
 
-  private Snapshot fetchOrBuildSnapshotPayload(
+  private Snapshot buildSnapshotPayload(
       ResourceId tableId,
       Table table,
       TableGatewaySupport tableSupport,
@@ -305,25 +348,6 @@ public class TransactionCommitSnapshotSupport {
       String requestedMetadataLocation) {
     String explicitMetadataLocation =
         trimToNull(TableMappingUtil.asString(snapshotMap.get("metadata-location")));
-    try {
-      var resp =
-          grpcClient.getSnapshot(
-              GetSnapshotRequest.newBuilder()
-                  .setTableId(tableId)
-                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                  .build());
-      if (resp != null && resp.hasSnapshot()) {
-        return enrichExistingSnapshot(
-            resp.getSnapshot(),
-            table,
-            tableSupport,
-            firstNonBlank(explicitMetadataLocation, trimToNull(requestedMetadataLocation)));
-      }
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
 
     Snapshot.Builder builder = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
     Long upstreamCreated = TableMappingUtil.asLong(snapshotMap.get("timestamp-ms"));
@@ -374,28 +398,6 @@ public class TransactionCommitSnapshotSupport {
     }
     if (!builder.hasUpstreamCreatedAt()) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(clockMillis()));
-    }
-    return builder.build();
-  }
-
-  private Snapshot enrichExistingSnapshot(
-      Snapshot existing, Table table, TableGatewaySupport tableSupport, String metadataLocation) {
-    Snapshot.Builder builder = existing.toBuilder();
-    if (!existing
-        .getFormatMetadataMap()
-        .containsKey(TransactionCommitService.ICEBERG_METADATA_KEY)) {
-      IcebergMetadata snapshotIcebergMetadata =
-          buildSnapshotIcebergMetadata(
-              table, tableSupport, existing.getSnapshotId(), existing.getSequenceNumber());
-      if (snapshotIcebergMetadata != null) {
-        builder.putFormatMetadata(
-            TransactionCommitService.ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString());
-      }
-    }
-    if (metadataLocation != null) {
-      builder.putFormatMetadata(
-          SnapshotMetadataUtil.ICEBERG_METADATA_LOCATION_KEY,
-          ByteString.copyFromUtf8(metadataLocation));
     }
     return builder.build();
   }

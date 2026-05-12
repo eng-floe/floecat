@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table.load;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -43,7 +42,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetada
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;
@@ -98,9 +96,7 @@ class TableLoadServiceTest {
 
     IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
-        .thenReturn(
-            new DeltaIcebergMetadataService.DeltaLoadResult(
-                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
+        .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of()));
 
     TableRef context =
         new TableRef(
@@ -118,47 +114,6 @@ class TableLoadServiceTest {
     assertNotNull(response.getEntity());
     verify(deltaMetadataService).load(tableId, table, SnapshotLister.Mode.ALL);
     verify(tableSupport, never()).loadCurrentMetadata(any());
-  }
-
-  @Test
-  void loadUsesDistinctEtagsForAllAndRefsSnapshotsModes() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:delta_orders").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setDisplayName("delta_orders")
-            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).build())
-            .build();
-    when(tableLifecycleService.getTable(tableId)).thenReturn(table);
-
-    IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
-    when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
-        .thenReturn(
-            new DeltaIcebergMetadataService.DeltaLoadResult(
-                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
-    when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.REFS))
-        .thenReturn(
-            new DeltaIcebergMetadataService.DeltaLoadResult(
-                metadata, "floe+delta://cat:db:delta_orders/metadata/11.metadata.json", List.of()));
-
-    TableRef context =
-        new TableRef(
-            new NamespaceRef(
-                new CatalogRef("pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
-                "db",
-                List.of("db"),
-                ResourceId.newBuilder().setId("cat:db").build()),
-            "delta_orders",
-            tableId);
-
-    Response allResponse = service.load(context, "delta_orders", null, null, null, tableSupport);
-    Response refsResponse = service.load(context, "delta_orders", "refs", null, null, tableSupport);
-
-    String allEtag = allResponse.getHeaderString(HttpHeaders.ETAG);
-    String refsEtag = refsResponse.getHeaderString(HttpHeaders.ETAG);
-    assertNotNull(allEtag);
-    assertNotNull(refsEtag);
-    assertNotEquals(allEtag, refsEtag);
   }
 
   @Test

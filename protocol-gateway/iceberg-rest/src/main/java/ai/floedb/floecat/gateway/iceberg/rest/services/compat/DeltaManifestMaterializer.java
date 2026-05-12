@@ -484,7 +484,7 @@ public class DeltaManifestMaterializer {
       }
 
       QueryInput input =
-          snapshotId > 0
+          snapshotId >= 0
               ? QueryInput.newBuilder()
                   .setTableId(table.getResourceId())
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))

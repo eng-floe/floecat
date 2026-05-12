@@ -55,6 +55,13 @@ public class TableRegisterRequestBuilder {
 
     List<Long> importedSnapshotIds = new ArrayList<>();
     for (ImportedSnapshot snapshot : snapshotsToImport(importedMetadata)) {
+      if (snapshot != null
+          && snapshot.snapshotId() != null
+          && existingSnapshotIds != null
+          && existingSnapshotIds.contains(snapshot.snapshotId())) {
+        importedSnapshotIds.add(snapshot.snapshotId());
+        continue;
+      }
       Map<String, Object> snapshotMap =
           toSnapshotUpdate(snapshot, importedMetadata, metadataLocation);
       if (!snapshotMap.isEmpty()) {

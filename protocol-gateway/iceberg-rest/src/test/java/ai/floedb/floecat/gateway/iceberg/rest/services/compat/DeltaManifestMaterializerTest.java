@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
@@ -158,6 +160,24 @@ class DeltaManifestMaterializerTest {
     assertEquals(secondManifestList, second.get(1).getManifestList());
 
     verify(grpcClient, times(2)).fetchScanBundle(any());
+  }
+
+  @Test
+  void materializeTreatsSnapshotZeroAsExplicitDeltaSnapshotId() {
+    Table table = deltaTable("snapshot-zero");
+    Snapshot zeroSnapshot = snapshot(0L, 0L);
+
+    List<Snapshot> out = materializer.materialize(table, List.of(zeroSnapshot));
+
+    assertFalse(out.get(0).getManifestList().isBlank());
+    verify(grpcClient)
+        .describeInputs(
+            argThat(
+                request ->
+                    request.getInputsCount() == 1
+                        && request.getInputs(0).getSnapshot().getSnapshotId() == 0L
+                        && request.getInputs(0).getSnapshot().getSpecial()
+                            != SpecialSnapshot.SS_CURRENT));
   }
 
   @Test

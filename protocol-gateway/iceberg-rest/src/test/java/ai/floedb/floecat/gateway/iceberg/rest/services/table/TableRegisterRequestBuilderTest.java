@@ -18,7 +18,12 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -46,5 +51,38 @@ class TableRegisterRequestBuilderTest {
     assertFalse(merged.containsKey("s3.access-key-id"));
     assertFalse(merged.containsKey("s3.secret-access-key"));
     assertFalse(merged.containsKey("s3.session-token"));
+  }
+
+  @Test
+  void buildRegisterTransactionRequestSkipsAddSnapshotForExistingSnapshotIds() {
+    TableRegisterRequestBuilder builder = new TableRegisterRequestBuilder();
+    ImportedSnapshot currentSnapshot =
+        new ImportedSnapshot(11L, null, 3L, 1000L, "s3://manifest.avro", Map.of(), 1);
+    ImportedMetadata importedMetadata =
+        new ImportedMetadata(
+            "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[],\"last-column-id\":1}",
+            Map.of("format-version", "2"),
+            "s3://warehouse/orders",
+            null,
+            currentSnapshot,
+            List.of(currentSnapshot));
+
+    TransactionCommitRequest request =
+        builder.buildRegisterTransactionRequest(
+            List.of("db"),
+            "orders",
+            Map.of("location", "s3://warehouse/orders"),
+            "s3://warehouse/orders/metadata/00003.metadata.json",
+            importedMetadata,
+            List.of(11L),
+            false);
+
+    assertTrue(
+        request.tableChanges().get(0).updates().stream()
+            .noneMatch(
+                update ->
+                    "add-snapshot".equals(update.get("action"))
+                        && update.get("snapshot") instanceof Map<?, ?> snapshot
+                        && Long.valueOf(11L).equals(snapshot.get("snapshot-id"))));
   }
 }

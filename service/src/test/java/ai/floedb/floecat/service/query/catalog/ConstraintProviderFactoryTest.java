@@ -35,6 +35,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
@@ -61,8 +62,10 @@ class ConstraintProviderFactoryTest {
   @Test
   void userConstraintsReadFromRepositoryWhenSnapshotProvided() {
     CountingConstraintRepository repository = new CountingConstraintRepository();
-    SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    TableRepository tables = new TableRepository(pointers, blobs);
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
@@ -84,8 +87,10 @@ class ConstraintProviderFactoryTest {
   @Test
   void missingSnapshotReturnsNoConstraints() {
     CountingConstraintRepository repository = new CountingConstraintRepository();
-    SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    TableRepository tables = new TableRepository(pointers, blobs);
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
     ConstraintProviderFactory factory =
@@ -100,8 +105,10 @@ class ConstraintProviderFactoryTest {
   @Test
   void latestConstraintsUsesCurrentSnapshotForUserTable() {
     CountingConstraintRepository repository = new CountingConstraintRepository();
-    SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    TableRepository tables = new TableRepository(pointers, blobs);
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
@@ -110,6 +117,24 @@ class ConstraintProviderFactoryTest {
             repository, snapshots, overlay, ConstraintProvider.NONE);
     repository.putSnapshotConstraints(USER_TABLE, 100L, constraints(USER_TABLE, 100L, "pk_v100"));
     repository.putSnapshotConstraints(USER_TABLE, 200L, constraints(USER_TABLE, 200L, "pk_v200"));
+    tables.create(
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(USER_TABLE)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("catalog")
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .build())
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("namespace")
+                    .setKind(ResourceKind.RK_NAMESPACE)
+                    .build())
+            .setDisplayName("users")
+            .putProperties("current-snapshot-id", "200")
+            .build());
     snapshots.create(snapshot(USER_TABLE, 100L, 1_000L, 1_000L));
     snapshots.create(snapshot(USER_TABLE, 200L, 2_000L, 2_000L));
 
@@ -121,8 +146,10 @@ class ConstraintProviderFactoryTest {
   @Test
   void routesSystemRelationsToSystemProvider() {
     CountingConstraintRepository repository = new CountingConstraintRepository();
-    SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    TableRepository tables = new TableRepository(pointers, blobs);
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     GraphNode systemNode = mock(GraphNode.class);
     when(systemNode.origin()).thenReturn(GraphNodeOrigin.SYSTEM);

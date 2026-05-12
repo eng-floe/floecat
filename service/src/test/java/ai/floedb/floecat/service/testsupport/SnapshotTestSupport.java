@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
@@ -37,7 +38,11 @@ public final class SnapshotTestSupport {
     private final Map<ResourceId, Map<Long, Snapshot>> snapshots = new HashMap<>();
 
     public FakeSnapshotRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
+      this(new InMemoryPointerStore(), new InMemoryBlobStore());
+    }
+
+    private FakeSnapshotRepository(InMemoryPointerStore pointers, InMemoryBlobStore blobs) {
+      super(pointers, blobs, new TableRepository(pointers, blobs));
     }
 
     @Override

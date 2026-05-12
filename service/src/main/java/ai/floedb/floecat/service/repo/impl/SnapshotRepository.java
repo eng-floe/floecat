@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -25,10 +26,12 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 
@@ -36,9 +39,11 @@ import java.util.Optional;
 public class SnapshotRepository {
 
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
+  private final TableRepository tableRepo;
 
   @Inject
-  public SnapshotRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public SnapshotRepository(
+      PointerStore pointerStore, BlobStore blobStore, TableRepository tableRepo) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -47,6 +52,7 @@ public class SnapshotRepository {
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf");
+    this.tableRepo = tableRepo;
   }
 
   public void create(Snapshot snapshot) {
@@ -72,37 +78,41 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
+  public static String metadataLocation(Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    ByteString raw =
+        snapshot.getFormatMetadataOrDefault("iceberg.metadata-location", ByteString.EMPTY);
+    if (raw == null || raw.isEmpty()) {
+      return null;
+    }
+    String value = raw.toString(StandardCharsets.UTF_8).trim();
+    return value.isBlank() ? null : value;
+  }
+
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
-    String token = "";
-    StringBuilder next = new StringBuilder();
-    Snapshot best = null;
-    long bestCreatedMs = Long.MIN_VALUE;
-
-    do {
-      List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
-      for (Snapshot snapshot : batch) {
-        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (best == null) {
-          best = snapshot;
-          bestCreatedMs = createdMs;
-          continue;
-        }
-        if (createdMs != bestCreatedMs) {
-          return Optional.of(best);
-        }
-        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
-          best = snapshot;
-        }
-      }
-      token = next.toString();
-      next.setLength(0);
-    } while (!token.isEmpty());
-
-    if (best == null) {
+    if (tableId == null) {
       return Optional.empty();
     }
-    return Optional.of(best);
+    Optional<Table> table = tableRepo.getById(tableId);
+    if (table.isEmpty()) {
+      return Optional.empty();
+    }
+    String currentSnapshotId = table.get().getPropertiesMap().get("current-snapshot-id");
+    if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
+      return Optional.empty();
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(currentSnapshotId);
+    } catch (NumberFormatException e) {
+      return Optional.empty();
+    }
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    return getById(tableId, snapshotId);
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {

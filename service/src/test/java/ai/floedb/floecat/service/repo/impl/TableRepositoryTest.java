@@ -71,7 +71,7 @@ class TableRepositoryTest {
     catalogRepo = new CatalogRepository(ptr, blobs);
     namespaceRepo = new NamespaceRepository(ptr, blobs);
     tableRepo = new TableRepository(ptr, blobs);
-    snapshotRepo = new SnapshotRepository(ptr, blobs);
+    snapshotRepo = new SnapshotRepository(ptr, blobs, tableRepo);
   }
 
   private ResourceId createTable(String catalogName, String namespaceName, String tableName) {
@@ -193,6 +193,11 @@ class TableRepositoryTest {
             .setIngestedAt(Timestamps.fromMillis(clock.millis()))
             .build();
     snapshotRepo.create(snap);
+
+    var tableMeta = tableRepo.metaFor(tableId);
+    var updatedTable =
+        foundTable.toBuilder().putProperties("current-snapshot-id", Long.toString(42L)).build();
+    assertTrue(tableRepo.update(updatedTable, tableMeta.getPointerVersion()));
 
     var fetched = tableRepo.getById(tableId).orElseThrow();
     assertEquals("line_item", fetched.getDisplayName());
