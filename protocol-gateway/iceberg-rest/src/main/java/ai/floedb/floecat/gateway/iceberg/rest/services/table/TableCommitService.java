@@ -112,7 +112,7 @@ public class TableCommitService {
     Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
-            command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
+            command.table(), committedTable, tableId, req, tableSupport, removedSnapshotIds);
     if (finalResponse == null || finalResponse.metadata() == null) {
       return IcebergErrorResponses.failure(
           "Commit response missing metadata",

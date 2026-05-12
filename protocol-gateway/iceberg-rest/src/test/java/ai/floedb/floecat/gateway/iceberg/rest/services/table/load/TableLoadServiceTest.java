@@ -96,8 +96,7 @@ class TableLoadServiceTest {
             .build();
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
 
-    IcebergMetadata metadata =
-        IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
+    IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
         .thenReturn(
             new DeltaIcebergMetadataService.DeltaLoadResult(
@@ -132,8 +131,7 @@ class TableLoadServiceTest {
             .build();
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
 
-    IcebergMetadata metadata =
-        IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
+    IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(11L).build();
     when(deltaMetadataService.load(tableId, table, SnapshotLister.Mode.ALL))
         .thenReturn(
             new DeltaIcebergMetadataService.DeltaLoadResult(
@@ -166,16 +164,13 @@ class TableLoadServiceTest {
   @Test
   void loadHydratesFromSnapshotMetadataLocation() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table =
-        Table.newBuilder().setResourceId(tableId).setDisplayName("orders").build();
+    Table table = Table.newBuilder().setResourceId(tableId).setDisplayName("orders").build();
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
-    when(tableSupport.loadCurrentMetadata(table))
-        .thenReturn(
-            IcebergMetadata.newBuilder()
-                .build());
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(IcebergMetadata.newBuilder().build());
     when(tableSupport.loadCurrentMetadataLocation(table))
         .thenReturn("s3://new/metadata/00003.metadata.json");
-    when(tableSupport.serverSideFileIoPropertiesForLocation(table, "s3://new/metadata/00003.metadata.json"))
+    when(tableSupport.serverSideFileIoPropertiesForLocation(
+            table, "s3://new/metadata/00003.metadata.json"))
         .thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
@@ -232,9 +227,8 @@ class TableLoadServiceTest {
                 .build());
     when(tableSupport.loadCurrentMetadataLocation(table))
         .thenReturn("s3://warehouse/orders/metadata/00002.metadata.json");
-    when(
-            tableSupport.serverSideFileIoPropertiesForLocation(
-                table, "s3://warehouse/orders/metadata/00002.metadata.json"))
+    when(tableSupport.serverSideFileIoPropertiesForLocation(
+            table, "s3://warehouse/orders/metadata/00002.metadata.json"))
         .thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(

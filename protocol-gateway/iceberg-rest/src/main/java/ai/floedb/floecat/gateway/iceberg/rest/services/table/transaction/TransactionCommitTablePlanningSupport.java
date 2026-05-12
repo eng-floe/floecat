@@ -119,8 +119,7 @@ public class TransactionCommitTablePlanningSupport {
       if (preMaterialized.error() != null) {
         transactionCommitExecutionSupport.abortIfOpen(
             currentState, txId, "metadata materialization failed before atomic commit");
-        return new PlannedExistingTableChange(
-            null, 0L, null, preMaterialized.error());
+        return new PlannedExistingTableChange(null, 0L, null, preMaterialized.error());
       }
       if (currentResponse == null) {
         return new PlannedExistingTableChange(
@@ -220,7 +219,6 @@ public class TransactionCommitTablePlanningSupport {
             tableName,
             plannedTable,
             tableId,
-            null,
             new TableRequests.Commit(List.of(), updates == null ? List.of() : List.copyOf(updates)),
             tableSupport,
             metadata);

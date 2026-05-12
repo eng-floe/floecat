@@ -164,7 +164,7 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(defaultCommitResponse());
     when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
@@ -769,7 +769,7 @@ class TransactionCommitServiceTest {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     Table table = Table.newBuilder().setResourceId(tableId).build();
     TableMetadataView defaultMetadata = defaultCommitResponse().metadata();
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(
             new CommitTableResponseDto(
                 null,
@@ -1023,10 +1023,7 @@ class TransactionCommitServiceTest {
   @Test
   void commitWithSnapshotUpdatesRematerializesWhenMetadataLocationAlreadyExists() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
@@ -1171,10 +1168,7 @@ class TransactionCommitServiceTest {
   @Test
   void commitWithExplicitMetadataLocationSkipsRematerialization() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
             GetTableResponse.newBuilder()

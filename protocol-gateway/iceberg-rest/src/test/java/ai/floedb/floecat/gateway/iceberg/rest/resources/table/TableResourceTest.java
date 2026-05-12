@@ -685,8 +685,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setSnapshotId(differentMetadata.getCurrentSnapshotId())
             .putFormatMetadata("iceberg", differentMetadata.toByteString())
             .putFormatMetadata(
-                "iceberg.metadata-location",
-                ByteString.copyFromUtf8(FIXTURE.metadataLocation()))
+                "iceberg.metadata-location", ByteString.copyFromUtf8(FIXTURE.metadataLocation()))
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());

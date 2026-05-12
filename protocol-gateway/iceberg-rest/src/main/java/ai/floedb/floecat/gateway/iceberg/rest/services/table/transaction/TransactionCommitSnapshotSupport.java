@@ -160,7 +160,8 @@ public class TransactionCommitSnapshotSupport {
       Snapshot currentSnapshot;
       try {
         currentSnapshot =
-            fetchCurrentSnapshotPayload(scopedTableId, table, tableSupport, resolvedMetadataLocation);
+            fetchCurrentSnapshotPayload(
+                scopedTableId, table, tableSupport, resolvedMetadataLocation);
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
           currentSnapshot = null;
@@ -247,8 +248,7 @@ public class TransactionCommitSnapshotSupport {
             : clockMillis();
     String byIdKey = Keys.snapshotPointerById(accountId, tableId, snapshot.getSnapshotId());
     String byTimeKey =
-        Keys.snapshotPointerByTime(
-            accountId, tableId, snapshot.getSnapshotId(), upstreamCreatedMs);
+        Keys.snapshotPointerByTime(accountId, tableId, snapshot.getSnapshotId(), upstreamCreatedMs);
     ByteString payload = ByteString.copyFrom(snapshot.toByteArray());
     out.add(
         ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
@@ -263,15 +263,15 @@ public class TransactionCommitSnapshotSupport {
   }
 
   private Snapshot fetchCurrentSnapshotPayload(
-      ResourceId tableId,
-      Table table,
-      TableGatewaySupport tableSupport,
-      String metadataLocation) {
+      ResourceId tableId, Table table, TableGatewaySupport tableSupport, String metadataLocation) {
     var response =
         grpcClient.getSnapshot(
             GetSnapshotRequest.newBuilder()
                 .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSpecial(ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT).build())
+                .setSnapshot(
+                    SnapshotRef.newBuilder()
+                        .setSpecial(ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT)
+                        .build())
                 .build());
     if (response == null || !response.hasSnapshot()) {
       return null;
@@ -303,7 +303,8 @@ public class TransactionCommitSnapshotSupport {
       long snapshotId,
       Map<String, Object> snapshotMap,
       String requestedMetadataLocation) {
-    String explicitMetadataLocation = trimToNull(TableMappingUtil.asString(snapshotMap.get("metadata-location")));
+    String explicitMetadataLocation =
+        trimToNull(TableMappingUtil.asString(snapshotMap.get("metadata-location")));
     try {
       var resp =
           grpcClient.getSnapshot(
@@ -364,7 +365,8 @@ public class TransactionCommitSnapshotSupport {
       builder.putFormatMetadata(
           TransactionCommitService.ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString());
     }
-    String metadataLocation = firstNonBlank(explicitMetadataLocation, trimToNull(requestedMetadataLocation));
+    String metadataLocation =
+        firstNonBlank(explicitMetadataLocation, trimToNull(requestedMetadataLocation));
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.putFormatMetadata(
           SnapshotMetadataUtil.ICEBERG_METADATA_LOCATION_KEY,
@@ -377,16 +379,14 @@ public class TransactionCommitSnapshotSupport {
   }
 
   private Snapshot enrichExistingSnapshot(
-      Snapshot existing,
-      Table table,
-      TableGatewaySupport tableSupport,
-      String metadataLocation) {
+      Snapshot existing, Table table, TableGatewaySupport tableSupport, String metadataLocation) {
     Snapshot.Builder builder = existing.toBuilder();
     if (!existing
         .getFormatMetadataMap()
         .containsKey(TransactionCommitService.ICEBERG_METADATA_KEY)) {
       IcebergMetadata snapshotIcebergMetadata =
-          buildSnapshotIcebergMetadata(table, tableSupport, existing.getSnapshotId(), existing.getSequenceNumber());
+          buildSnapshotIcebergMetadata(
+              table, tableSupport, existing.getSnapshotId(), existing.getSequenceNumber());
       if (snapshotIcebergMetadata != null) {
         builder.putFormatMetadata(
             TransactionCommitService.ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString());

@@ -236,13 +236,13 @@ public class TransactionCommitService {
           planned.add(
               new PlannedChange(
                   namespacePath,
-              namespaceId,
-              identifier.name(),
-              tableId,
-              plannedChangeResult.table(),
-              plannedChangeResult.metadataLocation(),
-              change.updates() == null ? List.of() : List.copyOf(change.updates()),
-              plannedChangeResult.pointerVersion()));
+                  namespaceId,
+                  identifier.name(),
+                  tableId,
+                  plannedChangeResult.table(),
+                  plannedChangeResult.metadataLocation(),
+                  change.updates() == null ? List.of() : List.copyOf(change.updates()),
+                  plannedChangeResult.pointerVersion()));
         } catch (StatusRuntimeException e) {
           if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
             transactionCommitExecutionSupport.abortIfOpen(

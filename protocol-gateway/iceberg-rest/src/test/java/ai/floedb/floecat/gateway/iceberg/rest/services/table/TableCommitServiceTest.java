@@ -176,9 +176,9 @@ class TableCommitServiceTest {
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
     Response response = service.commit(command(commitWithSingleUpdate()));
@@ -233,9 +233,9 @@ class TableCommitServiceTest {
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
     Response response = service.commit(command(request));
@@ -317,7 +317,7 @@ class TableCommitServiceTest {
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
     Response response = service.commit(commandWithStage(commitWithSingleUpdate(), "stage-1"));
@@ -399,7 +399,7 @@ class TableCommitServiceTest {
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
     Response response =
@@ -417,7 +417,8 @@ class TableCommitServiceTest {
     Table created = tableRecord("cat:db:orders");
     when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
         .thenReturn(created);
-    when(tableSupport.loadCurrentMetadata(created)).thenReturn(IcebergMetadata.getDefaultInstance());
+    when(tableSupport.loadCurrentMetadata(created))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
     when(transactionCommitService.commit(any(), any(), any(), any()))
         .thenReturn(Response.noContent().build());
 
@@ -448,31 +449,12 @@ class TableCommitServiceTest {
 
     TableMetadataView metadataView =
         new TableMetadataView(
-            2,
-            null,
-            null,
-            null,
-            null,
-            Map.of(),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            List.of(),
-            List.of(),
-            List.of(),
-            Map.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
+            2, null, null, null, null, Map.of(), null, null, null, null, null, null, null,
+            List.of(), List.of(), List.of(), Map.of(), List.of(), List.of(), List.of(), List.of(),
             List.of());
     CommitTableResponseDto dto = new CommitTableResponseDto(null, metadataView);
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
     Response response = service.commit(commandWithStage(commitWithSingleUpdate(), "stage-1"));

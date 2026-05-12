@@ -128,8 +128,7 @@ public class StageCommitProcessor {
               .getTable(GetTableRequest.newBuilder().setTableId(createdId).build())
               .getTable();
     }
-    LoadTableResultDto loadResult =
-        toLoadResult(tableName, entry, tableRecord, accessDelegationMode);
+    LoadTableResultDto loadResult = toLoadResult(tableName, tableRecord, accessDelegationMode);
     LOG.infof(
         "Stage commit load result stageId=%s metadataLocation=%s tableId=%s",
         stageId,
@@ -142,25 +141,15 @@ public class StageCommitProcessor {
   }
 
   private LoadTableResultDto toLoadResult(
-      String tableName, StagedTableEntry entry, Table tableRecord, String accessDelegationMode) {
+      String tableName, Table tableRecord, String accessDelegationMode) {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     String metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig(tableRecord);
     List<StorageCredentialDto> credentials =
         tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     List<Snapshot> snapshots = loadSnapshots(tableRecord.getResourceId());
-    if (metadata == null) {
-      return TableResponseMapper.toLoadResultFromCreate(
-          tableName, tableRecord, entry.request(), tableConfig, credentials);
-    }
     return TableResponseMapper.toLoadResult(
-        tableName,
-        tableRecord,
-        metadata,
-        snapshots,
-        metadataLocation,
-        tableConfig,
-        credentials);
+        tableName, tableRecord, metadata, snapshots, metadataLocation, tableConfig, credentials);
   }
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {

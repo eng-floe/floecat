@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -64,7 +65,7 @@ class MaterializeMetadataServiceTest {
   }
 
   @Test
-  void materializeUsesTableLocationWhenMetadataLocationMissing() throws Exception {
+  void materializeSkipsWhenMetadataLocationMissing() throws Exception {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
     service.mapper = MAPPER;
 
@@ -105,9 +106,10 @@ class MaterializeMetadataServiceTest {
 
     MaterializeResult result = service.materialize("sales.us", "orders", metadata, null);
 
+    assertNull(result.metadataLocation());
     assertTrue(
-        result.metadataLocation().contains("/orders/metadata/"),
-        "Expected metadata location to include table metadata directory");
+        result.metadata() == metadata,
+        "Expected materialize service to leave metadata unchanged when metadata-location is absent");
   }
 
   @Test

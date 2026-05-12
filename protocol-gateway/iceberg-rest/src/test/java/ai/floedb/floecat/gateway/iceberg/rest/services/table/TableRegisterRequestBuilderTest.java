@@ -30,7 +30,8 @@ class TableRegisterRequestBuilderTest {
 
     Map<String, String> merged =
         builder.mergeImportedProperties(
-            Map.of("existing", "value"), null,
+            Map.of("existing", "value"),
+            null,
             Map.of(
                 "s3.endpoint", "http://localhost:4566",
                 "s3.access-key-id", "akid",

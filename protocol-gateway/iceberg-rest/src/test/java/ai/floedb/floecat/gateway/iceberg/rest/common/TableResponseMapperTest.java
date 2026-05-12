@@ -63,13 +63,7 @@ class TableResponseMapperTest {
 
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders",
-            table,
-            metadata,
-            List.of(),
-            FIXTURE_METADATA_LOCATION,
-            Map.of(),
-            List.of());
+            "orders", table, metadata, List.of(), FIXTURE_METADATA_LOCATION, Map.of(), List.of());
 
     assertNotNull(result.metadata());
     assertEquals(
@@ -99,13 +93,7 @@ class TableResponseMapperTest {
 
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders",
-            table,
-            metadata,
-            List.of(),
-            FIXTURE_METADATA_LOCATION,
-            Map.of(),
-            List.of());
+            "orders", table, metadata, List.of(), FIXTURE_METADATA_LOCATION, Map.of(), List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -178,13 +166,7 @@ class TableResponseMapperTest {
 
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders",
-            table,
-            metadata,
-            List.of(),
-            FIXTURE_METADATA_LOCATION,
-            Map.of(),
-            List.of());
+            "orders", table, metadata, List.of(), FIXTURE_METADATA_LOCATION, Map.of(), List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -230,13 +212,7 @@ class TableResponseMapperTest {
 
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders",
-            table,
-            metadata,
-            List.of(),
-            FIXTURE_METADATA_LOCATION,
-            Map.of(),
-            List.of());
+            "orders", table, metadata, List.of(), FIXTURE_METADATA_LOCATION, Map.of(), List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -321,13 +297,7 @@ class TableResponseMapperTest {
 
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult(
-            "orders",
-            table,
-            metadata,
-            List.of(),
-            FIXTURE_METADATA_LOCATION,
-            Map.of(),
-            List.of());
+            "orders", table, metadata, List.of(), FIXTURE_METADATA_LOCATION, Map.of(), List.of());
 
     List<Map<String, Object>> statistics = result.metadata().statistics();
     assertFalse(statistics.isEmpty());

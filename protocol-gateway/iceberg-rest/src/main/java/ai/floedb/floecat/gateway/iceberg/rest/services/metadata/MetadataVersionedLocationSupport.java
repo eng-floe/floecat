@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
-
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -32,13 +30,10 @@ public class MetadataVersionedLocationSupport {
 
   String resolveVersionedLocation(
       FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
-    String directory = null;
-    if (metadataLocation != null) {
-      directory = metadataLocation.endsWith("/") ? metadataLocation : directoryOf(metadataLocation);
-    }
-    if (directory == null) {
-      directory = metadataDirectory(metadata);
-    }
+    String directory =
+        metadataLocation == null
+            ? null
+            : (metadataLocation.endsWith("/") ? metadataLocation : directoryOf(metadataLocation));
     directory = normalizeMetadataDirectory(directory);
     if (directory == null || directory.isBlank()) {
       return null;
@@ -47,68 +42,6 @@ public class MetadataVersionedLocationSupport {
       directory = directory + "/";
     }
     return directory + nextMetadataFileName(fileIO, directory, metadata);
-  }
-
-  private String metadataDirectory(TableMetadataView metadata) {
-    if (metadata == null) {
-      return null;
-    }
-    String location = firstNonBlank(metadata.metadataLocation(), metadata.location());
-    String directory = metadataDirectoryFromLocation(location);
-    if (directory != null) {
-      return directory;
-    }
-
-    Map<String, String> props = metadata.properties();
-    if (props != null && !props.isEmpty()) {
-      String candidate = props.get("location");
-      directory = metadataDirectoryFromLocation(candidate);
-      if (directory != null) {
-        return directory;
-      }
-    }
-
-    directory = directoryFromMetadataLog(metadata);
-    if (directory != null) {
-      return directory;
-    }
-
-    location = firstNonBlank(location, props == null ? null : props.get("location"));
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
-    return base + "/metadata/";
-  }
-
-  private String metadataDirectoryFromLocation(String location) {
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    return looksLikeMetadataPath(location) ? directoryOf(location) : null;
-  }
-
-  private boolean looksLikeMetadataPath(String location) {
-    if (location == null || location.isBlank()) {
-      return false;
-    }
-    return location.contains("/metadata/") || location.endsWith(".metadata.json");
-  }
-
-  private String directoryFromMetadataLog(TableMetadataView metadata) {
-    if (metadata == null || metadata.metadataLog() == null) {
-      return null;
-    }
-    for (Map<String, Object> entry : metadata.metadataLog()) {
-      Object value = entry == null ? null : entry.get("metadata-file");
-      if (value instanceof String file && !file.isBlank()) {
-        String directory = directoryOf(file);
-        if (directory != null) {
-          return directory;
-        }
-      }
-    }
-    return null;
   }
 
   private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadataView metadata) {

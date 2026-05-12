@@ -151,7 +151,7 @@ class TableCommitMaterializationServiceTest {
   }
 
   @Test
-  void materializeMetadataDoesNotDeriveLocationFromTableWhenMissing() throws Exception {
+  void materializeMetadataDerivesLocationFromTableWhenMissing() throws Exception {
     TableMetadataView base =
         metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
@@ -188,18 +188,27 @@ class TableCommitMaterializationServiceTest {
             .putProperties("location", "s3://warehouse/tables/orders")
             .build();
     when(materializeMetadataService.materialize(
-            eq("cat.db"), eq("orders"), eq(table), any(TableMetadataView.class), eq(null)))
-        .thenReturn(new MaterializeResult(null, noMetadataLocation));
+            eq("cat.db"),
+            eq("orders"),
+            eq(table),
+            any(TableMetadataView.class),
+            eq("s3://warehouse/tables/orders/metadata/")))
+        .thenReturn(
+            new MaterializeResult(
+                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
+                noMetadataLocation.withMetadataLocation(
+                    "s3://warehouse/tables/orders/metadata/00001-new.metadata.json")));
 
     MaterializeMetadataResult result =
         service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
-    assertNull(result.metadataLocation());
+    assertEquals(
+        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
   }
 
   @Test
-  void materializeMetadataDoesNotDeriveLocationFromUpstreamUri() throws Exception {
+  void materializeMetadataDerivesLocationFromUpstreamUri() throws Exception {
     TableMetadataView base =
         metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
@@ -239,14 +248,23 @@ class TableCommitMaterializationServiceTest {
                     .build())
             .build();
     when(materializeMetadataService.materialize(
-            any(), any(), any(), any(TableMetadataView.class), any()))
-        .thenReturn(new MaterializeResult(null, noMetadataLocation));
+            eq("cat.db"),
+            eq("orders"),
+            eq(table),
+            any(TableMetadataView.class),
+            eq("s3://warehouse/tables/orders/metadata/")))
+        .thenReturn(
+            new MaterializeResult(
+                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
+                noMetadataLocation.withMetadataLocation(
+                    "s3://warehouse/tables/orders/metadata/00001-new.metadata.json")));
 
     MaterializeMetadataResult result =
         service.materializeMetadata("cat.db", "orders", table, noMetadataLocation, null);
 
     assertNull(result.error());
-    assertNull(result.metadataLocation());
+    assertEquals(
+        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
   }
 
   @Test

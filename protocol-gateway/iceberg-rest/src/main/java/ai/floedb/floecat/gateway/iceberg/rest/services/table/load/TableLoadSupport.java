@@ -173,7 +173,11 @@ public class TableLoadSupport {
       return true;
     }
     return metadata.getSchemasList().stream()
-        .anyMatch(schema -> schema == null || schema.getSchemaJson() == null || schema.getSchemaJson().isBlank());
+        .anyMatch(
+            schema ->
+                schema == null
+                    || schema.getSchemaJson() == null
+                    || schema.getSchemaJson().isBlank());
   }
 
   record LoadData(IcebergMetadata metadata, String metadataLocation, List<Snapshot> snapshots) {}

@@ -30,7 +30,19 @@ public class TableCommitMaterializationLocationSupport {
       Table tableRecord,
       TableMetadataView metadata,
       String metadataLocation) {
-    return firstNonBlank(metadataLocation, metadata == null ? null : metadata.metadataLocation());
+    String resolved =
+        firstNonBlank(metadataLocation, metadata == null ? null : metadata.metadataLocation());
+    if (hasText(resolved)) {
+      return resolved;
+    }
+    String tableLocation =
+        firstNonBlank(
+            tableLocation(tableRecord),
+            metadata == null ? null : metadata.location(),
+            metadata == null || metadata.properties() == null
+                ? null
+                : metadata.properties().get("location"));
+    return deriveMetadataDirectoryFromTableLocation(tableLocation);
   }
 
   TableMetadataView normalizeTableLocation(
@@ -71,6 +83,20 @@ public class TableCommitMaterializationLocationSupport {
       return trimmed.substring(0, trimmed.length() - "/metadata".length());
     }
     return null;
+  }
+
+  private String deriveMetadataDirectoryFromTableLocation(String tableLocation) {
+    if (!hasText(tableLocation)) {
+      return null;
+    }
+    String trimmed = stripTrailingSlash(tableLocation);
+    if (!hasText(trimmed)) {
+      return null;
+    }
+    if (trimmed.endsWith("/metadata")) {
+      return trimmed + "/";
+    }
+    return trimmed + "/metadata/";
   }
 
   private String tableLocation(Table tableRecord) {
