@@ -23,6 +23,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -142,6 +144,36 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return Optional.of(Map.of(ATTR_PARTITION_KEY, S(parts[0]), ATTR_SORT_KEY, S(parts[1])));
   }
 
+  private static <T> Uni<T> fromStage(CompletionStage<T> stage) {
+    return Uni.createFrom()
+        .emitter(
+            emitter -> {
+              stage.whenComplete(
+                  (item, failure) -> {
+                    if (failure != null) {
+                      emitter.fail(unwrapStageFailure(failure));
+                    } else {
+                      emitter.complete(item);
+                    }
+                  });
+              emitter.onTermination(
+                  () -> {
+                    if (stage instanceof CompletableFuture<?> future) {
+                      future.cancel(true);
+                    }
+                  });
+            });
+  }
+
+  private static Throwable unwrapStageFailure(Throwable failure) {
+    Throwable current = failure;
+    while ((current instanceof CompletionException || current instanceof ExecutionException)
+        && current.getCause() != null) {
+      current = current.getCause();
+    }
+    return current;
+  }
+
   // ---- KvStore (reads)
 
   @Override
@@ -149,8 +181,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     var req =
         GetItemRequest.builder().tableName(table).key(keyMap(key)).consistentRead(true).build();
 
-    return Uni.createFrom()
-        .completionStage(ddb.getItem(req))
+    return fromStage(ddb.getItem(req))
         .map(resp -> resp.hasItem() ? Optional.of(avToRecord(resp.item())) : Optional.empty());
   }
 
@@ -177,8 +208,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
           .expressionAttributeValues(Map.of(":ev", N(expectedVersion)));
     }
 
-    return Uni.createFrom()
-        .completionStage(ddb.putItem(b.build()))
+    return fromStage(ddb.putItem(b.build()))
         .replaceWith(true)
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(false);
@@ -199,8 +229,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             .expressionAttributeValues(Map.of(":ev", N(expectedVersion)))
             .build();
 
-    return Uni.createFrom()
-        .completionStage(ddb.deleteItem(req))
+    return fromStage(ddb.deleteItem(req))
         .replaceWith(true)
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(false);
@@ -232,8 +261,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
 
-    return Uni.createFrom()
-        .completionStage(ddb.query(qb.build()))
+    return fromStage(ddb.query(qb.build()))
         .map(
             resp -> {
               var items = new ArrayList<Record>(resp.items().size());
@@ -277,7 +305,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                             ":skp", S(sortKeyPrefix)));
               }
 
-              return Uni.createFrom().completionStage(ddb.query(qb.build()));
+              return fromStage(ddb.query(qb.build()));
             })
         .whilst(resp -> resp.lastEvaluatedKey() != null && !resp.lastEvaluatedKey().isEmpty())
         .onItem()
@@ -315,8 +343,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     }
 
     // Attempt to delete this batch.
-    return Uni.createFrom()
-        .completionStage(
+    return fromStage(
             ddb.batchWriteItem(
                 BatchWriteItemRequest.builder().requestItems(Map.of(table, batch)).build()))
         .onItem()
@@ -392,8 +419,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     var req = TransactWriteItemsRequest.builder().transactItems(tx).build();
 
-    return Uni.createFrom()
-        .completionStage(ddb.transactWriteItems(req))
+    return fromStage(ddb.transactWriteItems(req))
         .replaceWith(true)
         .onFailure(TransactionCanceledException.class)
         .recoverWithItem(
@@ -426,7 +452,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   @Override
   public Uni<Void> reset() {
-    return Uni.createFrom().completionStage(CompletableFuture.runAsync(this::resetTableIfExists));
+    return fromStage(CompletableFuture.runAsync(this::resetTableIfExists));
   }
 
   @Override
@@ -437,13 +463,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             .limit(1) // only need to find one item
             .build();
 
-    return Uni.createFrom().completionStage(ddb.scan(req).thenApply(r -> r.items().isEmpty()));
+    return fromStage(ddb.scan(req).thenApply(r -> r.items().isEmpty()));
   }
 
   @Override
   public Uni<Void> dump(String header) {
-    return Uni.createFrom()
-        .completionStage(CompletableFuture.runAsync(() -> listTableIfExists(header)));
+    return fromStage(CompletableFuture.runAsync(() -> listTableIfExists(header)));
   }
 
   void resetTableIfExists() {
