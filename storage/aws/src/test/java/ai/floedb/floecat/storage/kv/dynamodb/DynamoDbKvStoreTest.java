@@ -35,8 +35,12 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -132,6 +136,102 @@ public class DynamoDbKvStoreTest {
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
     assertEquals(3L, got.version());
     assertEquals("bar", got.attrs().get("foo"));
+  }
+
+  @Test
+  void get_pending_future_completion_produces_record() throws Exception {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    var response =
+        GetItemResponse.builder()
+            .item(
+                Map.of(
+                    KvAttributes.ATTR_PARTITION_KEY, AttributeValue.builder().s("pk").build(),
+                    KvAttributes.ATTR_SORT_KEY, AttributeValue.builder().s("sk").build(),
+                    KvAttributes.ATTR_KIND, AttributeValue.builder().s("K").build(),
+                    KvAttributes.ATTR_VALUE,
+                        AttributeValue.fromB(
+                            software.amazon.awssdk.core.SdkBytes.fromUtf8String("v")),
+                    KvAttributes.ATTR_VERSION, AttributeValue.builder().n("7").build()))
+            .build();
+
+    CountDownLatch completed = new CountDownLatch(1);
+    AtomicReference<KvStore.Record> result = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    store
+        .get(key("pk", "sk"))
+        .subscribe()
+        .with(
+            item -> {
+              result.set(item.orElseThrow());
+              completed.countDown();
+            },
+            t -> {
+              failure.set(t);
+              completed.countDown();
+            });
+
+    pending.complete(response);
+
+    assertTrue(completed.await(5, TimeUnit.SECONDS));
+    assertNull(failure.get());
+    KvStore.Record got = result.get();
+    assertNotNull(got);
+    assertEquals(7L, got.version());
+    assertEquals("pk", got.key().partitionKey());
+    assertEquals("sk", got.key().sortKey());
+  }
+
+  @Test
+  void get_pending_future_failure_is_propagated() throws Exception {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    CountDownLatch completed = new CountDownLatch(1);
+    AtomicReference<Optional<KvStore.Record>> result = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    store
+        .get(key("pk", "sk"))
+        .subscribe()
+        .with(
+            item -> {
+              result.set(item);
+              completed.countDown();
+            },
+            t -> {
+              failure.set(t);
+              completed.countDown();
+            });
+
+    pending.completeExceptionally(new RuntimeException("ddb get failed"));
+
+    assertTrue(completed.await(5, TimeUnit.SECONDS));
+    assertNull(result.get());
+    assertNotNull(failure.get());
+    assertTrue(failure.get().getMessage().contains("ddb get failed"));
+  }
+
+  @Test
+  void get_subscription_cancel_cancels_underlying_future() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
+    subscription.cancel();
+
+    assertTrue(pending.isCancelled());
   }
 
   @Test
@@ -471,6 +571,19 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void txnWriteCas_returns_false_when_cancellation_is_wrapped_by_completion_exception() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.wrapTxnFailureInCompletionException = true;
+    handler.setCancellationReasonCodes(List.of("ConditionalCheckFailed"));
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertFalse(store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
   void txnWriteCas_returns_false_with_none_and_retryable_reasons() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     handler.setCancellationReasonCodes(List.of("None", "ConditionalCheckFailed"));
@@ -591,10 +704,12 @@ public class DynamoDbKvStoreTest {
     private boolean failScan;
     private boolean failTxnWithNonConditional;
     private boolean failTxnWithNullReasons;
+    private boolean wrapTxnFailureInCompletionException;
     private List<String> cancellationReasonCodes;
     private int createTableCalls;
     private int deleteTableCalls;
     private int unprocessedCount;
+    private CompletableFuture<GetItemResponse> pendingGetFuture;
 
     private void setQueryResponses(List<QueryResponse> responses) {
       queryResponses.clear();
@@ -608,6 +723,10 @@ public class DynamoDbKvStoreTest {
 
     private void setCancellationReasonCodes(List<String> codes) {
       this.cancellationReasonCodes = codes;
+    }
+
+    private void setPendingGetFuture(CompletableFuture<GetItemResponse> pendingGetFuture) {
+      this.pendingGetFuture = pendingGetFuture;
     }
 
     @Override
@@ -689,6 +808,11 @@ public class DynamoDbKvStoreTest {
     }
 
     private CompletableFuture<GetItemResponse> handleGetItem(GetItemRequest req) {
+      if (pendingGetFuture != null) {
+        var future = pendingGetFuture;
+        pendingGetFuture = null;
+        return future;
+      }
       String key = keyFromKey(req.key());
       Map<String, AttributeValue> item = items.get(key);
       if (item == null) {
@@ -805,7 +929,9 @@ public class DynamoDbKvStoreTest {
     private CompletableFuture<TransactWriteItemsResponse> handleTransactWrite(
         TransactWriteItemsRequest req) {
       if (cancellationReasonCodes != null) {
-        return failedTransaction(cancellationReasonCodes);
+        return wrapTxnFailureInCompletionException
+            ? failedTransactionWrapped(cancellationReasonCodes)
+            : failedTransaction(cancellationReasonCodes);
       }
       if (failTxnWithNullReasons) {
         return failedTransactionWithNullReasons();
@@ -926,16 +1052,25 @@ public class DynamoDbKvStoreTest {
 
     private static <T> CompletableFuture<T> failedTransaction(List<String> codes) {
       CompletableFuture<T> failed = new CompletableFuture<>();
+      failed.completeExceptionally(transactionCanceledException(codes));
+      return failed;
+    }
+
+    private static <T> CompletableFuture<T> failedTransactionWrapped(List<String> codes) {
+      CompletableFuture<T> failed = new CompletableFuture<>();
+      failed.completeExceptionally(new CompletionException(transactionCanceledException(codes)));
+      return failed;
+    }
+
+    private static TransactionCanceledException transactionCanceledException(List<String> codes) {
       List<CancellationReason> reasons = new ArrayList<>(codes.size());
       for (String code : codes) {
         reasons.add(CancellationReason.builder().code(code).build());
       }
-      failed.completeExceptionally(
-          TransactionCanceledException.builder()
-              .message("tx failed")
-              .cancellationReasons(reasons)
-              .build());
-      return failed;
+      return TransactionCanceledException.builder()
+          .message("tx failed")
+          .cancellationReasons(reasons)
+          .build();
     }
 
     private static <T> CompletableFuture<T> failedTransactionWithNullReasons() {
