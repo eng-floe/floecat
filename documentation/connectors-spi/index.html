@@ -1808,9 +1808,9 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   authentication). The service uses it to validate specs and the reconciler uses it during runs.</li>
 <li><strong><code>ConnectorConfigMapper</code></strong> – Bidirectional conversion between RPC <code>Connector</code> protobufs and the
   SPI’s <code>ConnectorConfig</code> records.</li>
-<li><strong>Snapshot bundle attachments</strong> – <code>SnapshotBundle.metadata</code> exposes a <code>map&lt;string, bytes&gt;</code> that
-  connectors can use to attach format-specific payloads (for example, Iceberg metadata snapshots)
-  without changing the SPI surface.</li>
+<li><strong>Snapshot bundle metadata location</strong> – <code>SnapshotBundle.metadataLocation</code> carries the canonical
+  snapshot metadata location when the source format exposes one. Format-specific snapshot blobs are
+  not part of the SPI surface.</li>
 <li><strong>Auth providers</strong> – <code>AuthProvider</code> + concrete implementations such as <code>NoAuthProvider</code> and
   <code>AwsSigV4AuthProvider</code> supply credentials or headers per connector.</li>
 <li><strong>Stats helpers</strong> – <code>StatsEngine</code>, <code>GenericStatsEngine</code>, <code>StatsProtoEmitter</code>, and NDV utilities

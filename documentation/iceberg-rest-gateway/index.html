@@ -2184,9 +2184,9 @@
 <ol>
 <li>Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.</li>
 <li>Compute metadata location, connector configuration, and storage config/credentials. Storage
-   authority resolution prefers the concrete table <code>location</code>, then the metadata-location-derived
-   table root, and only falls back to <code>upstream.uri</code> when that URI is a real storage URI such as
-   <code>s3://...</code>.</li>
+   authority resolution prefers the concrete table <code>location</code>, then the current snapshot
+   <code>metadata_location</code>-derived table root, and only falls back to <code>upstream.uri</code> when that URI is
+   a real storage URI such as <code>s3://...</code>.</li>
 <li>Persist a <code>StagedTableEntry</code> keyed by account + catalog + namespace + table + stage-id (provided via <code>Iceberg-Transaction-Id</code>/<code>Idempotency-Key</code> or generated). <code>StagedTableService</code> enforces TTL and idempotency.</li>
 <li>Return <code>StageCreateResponse</code> (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.</li>
 </ol>
@@ -2195,7 +2195,8 @@
 <li>Resolve catalog/namespace/table context and reject unsupported commit modes (for example Delta read-only tables).</li>
 <li>Wrap the table commit payload into a single-entry <code>TransactionCommitRequest</code> and delegate to <code>TransactionCommitService</code>.</li>
 <li><code>TransactionCommitService</code> begins/loads a backend transaction, validates idempotency + request-hash replay semantics, validates requirements/updates, and plans table/snapshot pointer changes with optimistic preconditions.</li>
-<li>Metadata materialization and <code>metadata-location</code> update are prepared before backend apply so pointer updates commit atomically with table state.</li>
+<li>Metadata materialization and backend snapshot <code>metadata_location</code> updates are prepared before
+   backend apply so pointer updates commit atomically with table state.</li>
 <li>Backend <code>prepareTransaction</code> + <code>commitTransaction</code> apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.</li>
 <li>The table endpoint then builds and returns <code>CommitTableResponseDto</code> (HTTP 200) from committed state.</li>
 </ol>
@@ -2337,7 +2338,8 @@ no marker file/state is required.</p>
   <code>floecat.connector.mode=capture-only</code>. The upstream source may still be modeled with
   <code>iceberg.source=rest</code>, but capture-only enforcement comes from the explicit mode property rather
   than the source type. Steady-state discovery comes from Floecat’s own REST catalog, while the
-  table record’s <code>location</code> and <code>metadata-location</code> remain the source of truth for Iceberg clients.</li>
+  table record’s <code>location</code> plus backend snapshot <code>metadata_location</code> remain the source of truth
+  for Iceberg clients.</li>
 <li><strong>Credentials:</strong> <code>/tables/{table}/credentials</code>, table load responses, and plan responses return
   vended credentials only when access delegation explicitly requests them and a matching storage
   authority is configured for the resolved storage prefix. Floecat does not vend static long-lived
