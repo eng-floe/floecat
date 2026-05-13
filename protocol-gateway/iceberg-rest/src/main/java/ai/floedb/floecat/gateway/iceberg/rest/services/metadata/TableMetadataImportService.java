@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -37,7 +36,6 @@ public class TableMetadataImportService {
       String schemaJson,
       Map<String, String> properties,
       String tableLocation,
-      IcebergMetadata icebergMetadata,
       ImportedSnapshot currentSnapshot,
       List<ImportedSnapshot> snapshots) {}
 

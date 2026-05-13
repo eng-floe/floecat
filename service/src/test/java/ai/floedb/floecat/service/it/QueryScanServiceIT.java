@@ -29,7 +29,6 @@ import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -170,7 +169,7 @@ class QueryScanServiceIT {
     var snap =
         TestSupport.createSnapshot(
             snapshot, tbl.getResourceId(), 602L, System.currentTimeMillis() - 2000L);
-    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
+    FieldMask mask = FieldMask.newBuilder().addPaths("metadata_location").build();
     snap =
         snapshot
             .updateSnapshot(
@@ -179,9 +178,7 @@ class QueryScanServiceIT {
                         SnapshotSpec.newBuilder()
                             .setTableId(tbl.getResourceId())
                             .setSnapshotId(snap.getSnapshotId())
-                            .putFormatMetadata(
-                                "iceberg.metadata-location",
-                                ByteString.copyFromUtf8(metadataLocation)))
+                            .setMetadataLocation(metadataLocation))
                     .setUpdateMask(mask)
                     .build())
             .getSnapshot();

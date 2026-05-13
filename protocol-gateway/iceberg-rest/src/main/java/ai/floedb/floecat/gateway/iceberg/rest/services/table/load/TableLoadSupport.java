@@ -23,47 +23,32 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaManifestMaterializer;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableLoadSupport {
-  private static final Logger LOG = Logger.getLogger(TableLoadSupport.class);
-
   @Inject IcebergGatewayConfig config;
   @Inject GrpcServiceFacade snapshotClient;
   @Inject TableFormatSupport tableFormatSupport;
-  @Inject DeltaIcebergMetadataService deltaMetadataService;
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject DeltaManifestMaterializer deltaManifestMaterializer;
 
   LoadData loadData(
       Table tableRecord, SnapshotLister.Mode snapshotMode, TableGatewaySupport tableSupport) {
-    IcebergMetadata metadata;
     String metadataLocation;
     List<Snapshot> snapshotList;
     if (deltaCompatEnabled(tableRecord)) {
-      DeltaIcebergMetadataService.DeltaLoadResult delta =
-          deltaMetadataService.load(tableRecord.getResourceId(), tableRecord, snapshotMode);
-      metadata = delta.metadata();
       metadataLocation = null;
-      snapshotList = delta.snapshots();
+      snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
+      snapshotList = deltaManifestMaterializer.materialize(tableRecord, snapshotList);
     } else {
-      metadata = tableSupport.loadCurrentMetadata(tableRecord);
       metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
-      metadata = hydrateMetadataIfNeeded(tableRecord, tableSupport, metadata, metadataLocation);
-      snapshotList =
-          SnapshotLister.fetchSnapshots(
-              snapshotClient, tableRecord.getResourceId(), snapshotMode, metadata);
+      snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
     }
-    return new LoadData(metadata, metadataLocation, snapshotList);
+    return new LoadData(metadataLocation, snapshotList);
   }
 
   SnapshotLister.Mode parseSnapshotMode(String raw) {
@@ -134,51 +119,5 @@ public class TableLoadSupport {
         && tableFormatSupport.isDelta(table);
   }
 
-  private IcebergMetadata hydrateMetadataIfNeeded(
-      Table tableRecord,
-      TableGatewaySupport tableSupport,
-      IcebergMetadata metadata,
-      String metadataLocation) {
-    if (!requiresHydration(metadata)) {
-      return metadata;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      LOG.warn("Load metadata had no schemas/metadata and no metadata-location; cannot hydrate");
-      return metadata;
-    }
-    LOG.infof("Hydrating load metadata from metadata-location=%s", metadataLocation);
-    try {
-      Map<String, String> ioProps =
-          new LinkedHashMap<>(
-              tableSupport.serverSideFileIoPropertiesForLocation(tableRecord, metadataLocation));
-      IcebergMetadata imported =
-          tableMetadataImportService.importMetadata(metadataLocation, ioProps).icebergMetadata();
-      LOG.infof(
-          "Hydrated load metadata schemas=%d partitionSpecs=%d sortOrders=%d",
-          imported.getSchemasCount(),
-          imported.getPartitionSpecsCount(),
-          imported.getSortOrdersCount());
-      return imported;
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Failed to hydrate table metadata from %s; continuing with catalog metadata",
-          metadataLocation);
-      return metadata;
-    }
-  }
-
-  private boolean requiresHydration(IcebergMetadata metadata) {
-    if (metadata == null || metadata.getSchemasCount() == 0) {
-      return true;
-    }
-    return metadata.getSchemasList().stream()
-        .anyMatch(
-            schema ->
-                schema == null
-                    || schema.getSchemaJson() == null
-                    || schema.getSchemaJson().isBlank());
-  }
-
-  record LoadData(IcebergMetadata metadata, String metadataLocation, List<Snapshot> snapshots) {}
+  record LoadData(String metadataLocation, List<Snapshot> snapshots) {}
 }

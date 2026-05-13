@@ -47,7 +47,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -1586,18 +1585,14 @@ class QueuedReconcileWorkerSupport {
         () -> existing != null ? existing.getSchemaId() : 0L,
         value -> builder.setSchemaId((int) value),
         value -> value > 0);
-    Map<String, ByteString> mergedMetadata = new LinkedHashMap<>();
-    if (existing != null && !existing.getFormatMetadataMap().isEmpty()) {
-      mergedMetadata.putAll(existing.getFormatMetadataMap());
-    }
-    if (bundle.metadata() != null && !bundle.metadata().isEmpty()) {
-      bundle
-          .metadata()
-          .forEach(
-              (key, value) -> mergedMetadata.put(key, value != null ? value : ByteString.EMPTY));
-    }
-    if (!mergedMetadata.isEmpty()) {
-      builder.putAllFormatMetadata(mergedMetadata);
+    String metadataLocation =
+        bundle.metadataLocation() != null && !bundle.metadataLocation().isBlank()
+            ? bundle.metadataLocation()
+            : existing != null && existing.hasMetadataLocation()
+                ? existing.getMetadataLocation()
+                : null;
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      builder.setMetadataLocation(metadataLocation);
     }
     Snapshot candidate = builder.build();
     if (existing != null && SnapshotHelpers.equalsIgnoringIngested(candidate, existing)) {

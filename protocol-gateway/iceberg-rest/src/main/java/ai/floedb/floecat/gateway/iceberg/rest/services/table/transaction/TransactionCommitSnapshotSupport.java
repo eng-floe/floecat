@@ -23,18 +23,11 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
-import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.storage.kv.Keys;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
@@ -54,9 +47,7 @@ public class TransactionCommitSnapshotSupport {
   private static final Logger LOG = Logger.getLogger(TransactionCommitSnapshotSupport.class);
 
   @Inject TransactionCommitExecutionSupport transactionCommitExecutionSupport;
-  @Inject TablePropertyService tablePropertyService;
   @Inject GrpcServiceFacade grpcClient;
-  @Inject TableMetadataImportService tableMetadataImportService;
 
   record SnapshotChangePlan(
       List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges, Response error) {}
@@ -264,28 +255,8 @@ public class TransactionCommitSnapshotSupport {
               Response.Status.SERVICE_UNAVAILABLE));
     }
 
-    IcebergMetadata refreshedMetadata;
-    try {
-      refreshedMetadata = importMetadataForSnapshotWrite(table, tableSupport, metadataLocation);
-    } catch (IllegalArgumentException e) {
-      return new SnapshotChangePlan(List.of(), IcebergErrorResponses.validation(e.getMessage()));
-    } catch (RuntimeException e) {
-      return new SnapshotChangePlan(
-          List.of(),
-          IcebergErrorResponses.failure(
-              "failed to import materialized metadata for metadata-only commit",
-              "CommitStateUnknownException",
-              Response.Status.SERVICE_UNAVAILABLE));
-    }
-
     Snapshot.Builder updatedSnapshot = currentSnapshot.toBuilder();
-    updatedSnapshot.putFormatMetadata(
-        SnapshotMetadataUtil.ICEBERG_METADATA_LOCATION_KEY,
-        ByteString.copyFromUtf8(metadataLocation));
-    if (refreshedMetadata != null) {
-      updatedSnapshot.putFormatMetadata(
-          TransactionCommitService.ICEBERG_METADATA_KEY, refreshedMetadata.toByteString());
-    }
+    updatedSnapshot.setMetadataLocation(metadataLocation);
     long upstreamCreatedMs =
         updatedSnapshot.hasUpstreamCreatedAt()
             ? Timestamps.toMillis(updatedSnapshot.getUpstreamCreatedAt())
@@ -307,19 +278,6 @@ public class TransactionCommitSnapshotSupport {
                 .setPayload(payload)
                 .build()),
         null);
-  }
-
-  private IcebergMetadata importMetadataForSnapshotWrite(
-      Table table, TableGatewaySupport tableSupport, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    Map<String, String> ioProps =
-        tableSupport == null
-            ? Map.of()
-            : new LinkedHashMap<>(
-                tableSupport.serverSideFileIoPropertiesForLocation(table, metadataLocation));
-    return tableMetadataImportService.importMetadata(metadataLocation, ioProps).icebergMetadata();
   }
 
   private ai.floedb.floecat.transaction.rpc.TxChange snapshotDeleteChange(
@@ -383,86 +341,15 @@ public class TransactionCommitSnapshotSupport {
     if (!summary.isEmpty()) {
       builder.putAllSummary(summary);
     }
-    IcebergMetadata snapshotIcebergMetadata =
-        buildSnapshotIcebergMetadata(table, tableSupport, snapshotId, sequenceNumber);
-    if (snapshotIcebergMetadata != null) {
-      builder.putFormatMetadata(
-          TransactionCommitService.ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString());
-    }
     String metadataLocation =
         firstNonBlank(explicitMetadataLocation, trimToNull(requestedMetadataLocation));
     if (metadataLocation != null && !metadataLocation.isBlank()) {
-      builder.putFormatMetadata(
-          SnapshotMetadataUtil.ICEBERG_METADATA_LOCATION_KEY,
-          ByteString.copyFromUtf8(metadataLocation));
+      builder.setMetadataLocation(metadataLocation);
     }
     if (!builder.hasUpstreamCreatedAt()) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(clockMillis()));
     }
     return builder.build();
-  }
-
-  private IcebergMetadata buildSnapshotIcebergMetadata(
-      Table table, TableGatewaySupport tableSupport, long snapshotId, Long sequenceNumber) {
-    IcebergMetadata base = null;
-    if (tableSupport != null && table != null) {
-      try {
-        base = tableSupport.loadCurrentMetadata(table);
-      } catch (RuntimeException e) {
-        LOG.debugf(
-            e,
-            "Unable to load current metadata for snapshot format metadata tableId=%s",
-            table.getResourceId().getId());
-      }
-    }
-    IcebergMetadata.Builder builder =
-        base != null ? base.toBuilder() : IcebergMetadata.newBuilder();
-    if (table != null) {
-      Map<String, String> props = table.getPropertiesMap();
-      TableMetadataView metadata = tablePropertyService.metadataFromProperties(props);
-      Integer formatVersion = metadata.formatVersion();
-      if (formatVersion != null && formatVersion > 0) {
-        builder.setFormatVersion(formatVersion);
-      }
-      String tableUuid = metadata.tableUuid();
-      if (tableUuid != null && !tableUuid.isBlank()) {
-        builder.setTableUuid(tableUuid);
-      }
-      Integer lastColumnId = metadata.lastColumnId();
-      if (lastColumnId != null && lastColumnId >= 0) {
-        builder.setLastColumnId(lastColumnId);
-      }
-      Integer currentSchemaId = metadata.currentSchemaId();
-      if (currentSchemaId != null && currentSchemaId >= 0) {
-        builder.setCurrentSchemaId(currentSchemaId);
-      }
-      Integer defaultSpecId = metadata.defaultSpecId();
-      if (defaultSpecId != null && defaultSpecId >= 0) {
-        builder.setDefaultSpecId(defaultSpecId);
-      }
-      Integer lastPartitionId = metadata.lastPartitionId();
-      if (lastPartitionId != null && lastPartitionId >= 0) {
-        builder.setLastPartitionId(lastPartitionId);
-      }
-      Integer defaultSortOrderId = metadata.defaultSortOrderId();
-      if (defaultSortOrderId != null && defaultSortOrderId >= 0) {
-        builder.setDefaultSortOrderId(defaultSortOrderId);
-      }
-      Long lastSequenceNumber = metadata.lastSequenceNumber();
-      if (lastSequenceNumber != null && lastSequenceNumber > 0) {
-        builder.setLastSequenceNumber(lastSequenceNumber);
-      }
-      Map<String, IcebergRef> refs = decodePropertyRefs(props.get(RefPropertyUtil.PROPERTY_KEY));
-      if (!refs.isEmpty()) {
-        builder.clearRefs();
-        builder.putAllRefs(refs);
-      }
-    }
-    builder.setCurrentSnapshotId(snapshotId);
-    if (sequenceNumber != null && sequenceNumber > 0) {
-      builder.setLastSequenceNumber(sequenceNumber);
-    }
-    return builder.getFormatVersion() > 0 ? builder.build() : null;
   }
 
   private String trimToNull(String value) {
@@ -471,46 +358,6 @@ public class TransactionCommitSnapshotSupport {
     }
     String trimmed = value.trim();
     return trimmed.isEmpty() ? null : trimmed;
-  }
-
-  private Map<String, IcebergRef> decodePropertyRefs(String encodedRefs) {
-    if (encodedRefs == null || encodedRefs.isBlank()) {
-      return Map.of();
-    }
-    Map<String, Map<String, Object>> decoded = RefPropertyUtil.decode(encodedRefs);
-    if (decoded.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, IcebergRef> refs = new LinkedHashMap<>();
-    for (Map.Entry<String, Map<String, Object>> entry : decoded.entrySet()) {
-      if (entry == null || entry.getKey() == null || entry.getValue() == null) {
-        continue;
-      }
-      Long snapshotId = TableMappingUtil.asLong(entry.getValue().get("snapshot-id"));
-      if (snapshotId == null || snapshotId <= 0) {
-        continue;
-      }
-      IcebergRef.Builder ref = IcebergRef.newBuilder().setSnapshotId(snapshotId);
-      String type = TableMappingUtil.asString(entry.getValue().get("type"));
-      if (type != null && !type.isBlank()) {
-        ref.setType(type);
-      }
-      Long maxRefAgeMs = TableMappingUtil.asLong(entry.getValue().get("max-ref-age-ms"));
-      if (maxRefAgeMs != null && maxRefAgeMs >= 0) {
-        ref.setMaxReferenceAgeMs(maxRefAgeMs);
-      }
-      Long maxSnapshotAgeMs = TableMappingUtil.asLong(entry.getValue().get("max-snapshot-age-ms"));
-      if (maxSnapshotAgeMs != null && maxSnapshotAgeMs >= 0) {
-        ref.setMaxSnapshotAgeMs(maxSnapshotAgeMs);
-      }
-      Integer minSnapshotsToKeep =
-          TableMappingUtil.asInteger(entry.getValue().get("min-snapshots-to-keep"));
-      if (minSnapshotsToKeep != null && minSnapshotsToKeep >= 0) {
-        ref.setMinSnapshotsToKeep(minSnapshotsToKeep);
-      }
-      refs.put(entry.getKey(), ref.build());
-    }
-    return refs.isEmpty() ? Map.of() : Map.copyOf(refs);
   }
 
   private static String firstNonBlank(String... values) {

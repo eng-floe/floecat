@@ -2246,6 +2246,8 @@ class IcebergRestFixtureIT {
     TableMetadata parsed = TableMetadataParser.fromJson(location, metadata);
     JsonNode normalized = MAPPER.readTree(TableMetadataParser.toJson(parsed));
     if (normalized instanceof ObjectNode objectNode) {
+      objectNode.remove("snapshot-log");
+      objectNode.remove("metadata-log");
       JsonNode propsNode = objectNode.get("properties");
       if (propsNode instanceof ObjectNode props) {
         props.remove("format-version");

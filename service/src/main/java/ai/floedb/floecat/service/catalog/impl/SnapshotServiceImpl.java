@@ -62,7 +62,6 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -362,8 +361,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasSchemaId()) {
                     snapBuilder.setSchemaId(spec.getSchemaId());
                   }
-                  if (!spec.getFormatMetadataMap().isEmpty()) {
-                    snapBuilder.putAllFormatMetadata(spec.getFormatMetadataMap());
+                  if (spec.hasMetadataLocation() && !spec.getMetadataLocation().isBlank()) {
+                    snapBuilder.setMetadataLocation(spec.getMetadataLocation());
                   }
                   var snap = snapBuilder.build();
 
@@ -639,7 +638,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "manifest_list",
           "summary",
           "schema_id",
-          "format_metadata");
+          "metadata_location");
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
@@ -704,12 +703,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setSchemaId(spec.getSchemaId());
         }
-        case "format_metadata" -> {
-          if (spec.getFormatMetadataCount() == 0) {
+        case "metadata_location" -> {
+          if (!spec.hasMetadataLocation()) {
             throw GrpcErrors.invalidArgument(corr, SNAPSHOT_ICEBERG_REQUIRED, Map.of());
           }
-          builder.clearFormatMetadata();
-          builder.putAllFormatMetadata(spec.getFormatMetadataMap());
+          builder.setMetadataLocation(spec.getMetadataLocation());
         }
         default ->
             throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
@@ -763,7 +761,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasSchemaId()) {
       c.scalar("schema_id", spec.getSchemaId());
     }
-    canonicalFormatMetadata(c, "format_metadata", spec.getFormatMetadataMap());
+    if (spec.hasMetadataLocation()) {
+      c.scalar("metadata_location", spec.getMetadataLocation());
+    }
     return c.bytes();
   }
 
@@ -810,26 +810,5 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                 });
           }
         });
-  }
-
-  private static void canonicalFormatMetadata(
-      Canonicalizer c, String key, Map<String, com.google.protobuf.ByteString> fm) {
-    if (fm == null || fm.isEmpty()) {
-      return;
-    }
-    c.group(
-        key,
-        g ->
-            fm.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(
-                    e -> g.scalar("[" + e.getKey() + "]", bytesToB64(e.getValue().toByteArray()))));
-  }
-
-  private static String bytesToB64(byte[] data) {
-    if (data == null || data.length == 0) {
-      return "";
-    }
-    return Base64.getEncoder().encodeToString(data);
   }
 }

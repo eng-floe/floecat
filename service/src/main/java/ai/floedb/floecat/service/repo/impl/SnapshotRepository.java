@@ -26,12 +26,10 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 
@@ -79,15 +77,10 @@ public class SnapshotRepository {
   }
 
   public static String metadataLocation(Snapshot snapshot) {
-    if (snapshot == null) {
+    if (snapshot == null || !snapshot.hasMetadataLocation()) {
       return null;
     }
-    ByteString raw =
-        snapshot.getFormatMetadataOrDefault("iceberg.metadata-location", ByteString.EMPTY);
-    if (raw == null || raw.isEmpty()) {
-      return null;
-    }
-    String value = raw.toString(StandardCharsets.UTF_8).trim();
+    String value = snapshot.getMetadataLocation().trim();
     return value.isBlank() ? null : value;
   }
 

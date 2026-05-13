@@ -27,6 +27,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
+import ai.floedb.floecat.gateway.iceberg.rest.common.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -580,8 +581,14 @@ public class DeltaManifestMaterializer {
     if (schemaJson == null || schemaJson.isBlank()) {
       return null;
     }
+    String normalizedSchemaJson =
+        DeltaSchemaNormalizer.normalizeSchemaJson(
+            schemaJson, snapshot == null ? 0 : snapshot.getSchemaId());
     try {
-      return SchemaParser.fromJson(schemaJson);
+      return SchemaParser.fromJson(
+          normalizedSchemaJson == null || normalizedSchemaJson.isBlank()
+              ? schemaJson
+              : normalizedSchemaJson);
     } catch (RuntimeException e) {
       LOG.debugf(e, "Unable to parse schema JSON for compat partition spec construction");
       return null;

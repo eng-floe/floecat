@@ -42,7 +42,6 @@ import java.util.Map;
 
 @ApplicationScoped
 public class TransactionCommitService {
-  static final String ICEBERG_METADATA_KEY = "iceberg";
   static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   @Inject AccountContext accountContext;
   @Inject ResourceResolver resourceResolver;

@@ -36,7 +36,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction.TransactionCommitService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -142,14 +141,13 @@ public class StageCommitProcessor {
 
   private LoadTableResultDto toLoadResult(
       String tableName, Table tableRecord, String accessDelegationMode) {
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     String metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig(tableRecord);
     List<StorageCredentialDto> credentials =
         tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     List<Snapshot> snapshots = loadSnapshots(tableRecord.getResourceId());
     return TableResponseMapper.toLoadResult(
-        tableName, tableRecord, metadata, snapshots, metadataLocation, tableConfig, credentials);
+        tableName, tableRecord, snapshots, metadataLocation, tableConfig, credentials);
   }
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {

@@ -39,7 +39,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
@@ -259,24 +258,6 @@ public class TableGatewaySupport {
     return credentials;
   }
 
-  public IcebergMetadata loadCurrentMetadata(Table table) {
-    if (table == null || !table.hasResourceId()) {
-      return null;
-    }
-    try {
-      SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
-      var requestBuilder =
-          GetSnapshotRequest.newBuilder().setTableId(table.getResourceId()).setSnapshot(ref);
-      var response = grpcClient.getSnapshot(requestBuilder.build());
-      if (response == null || !response.hasSnapshot()) {
-        return null;
-      }
-      return SnapshotMetadataUtil.parseSnapshotMetadata(response.getSnapshot());
-    } catch (StatusRuntimeException e) {
-      return null;
-    }
-  }
-
   public String loadCurrentMetadataLocation(Table table) {
     if (table == null || !table.hasResourceId()) {
       return null;
@@ -293,21 +274,6 @@ public class TableGatewaySupport {
     } catch (StatusRuntimeException e) {
       return null;
     }
-  }
-
-  private IcebergMetadata loadSnapshotById(ResourceId tableId, Long snapshotId) {
-    if (snapshotId == null || snapshotId <= 0) {
-      return null;
-    }
-    SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
-    var response =
-        grpcClient.getSnapshot(
-            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build());
-    if (response == null || !response.hasSnapshot()) {
-      return null;
-    }
-    var snapshot = response.getSnapshot();
-    return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
   }
 
   public ConnectorIntegrationConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {

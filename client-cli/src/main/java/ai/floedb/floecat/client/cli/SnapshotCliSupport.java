@@ -25,8 +25,6 @@ import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
 import io.grpc.Status;
@@ -174,19 +172,6 @@ final class SnapshotCliSupport {
 
   private static void printDecodedFormatMetadata(
       Snapshot snapshot, JsonFormat.Printer printer, PrintStream out) {
-    if (snapshot == null || snapshot.getFormatMetadataCount() == 0) {
-      return;
-    }
-    ByteString icebergRaw = snapshot.getFormatMetadataOrDefault("iceberg", ByteString.EMPTY);
-    if (icebergRaw == null || icebergRaw.isEmpty()) {
-      return;
-    }
-    out.println("decoded_format_metadata:");
-    try {
-      IcebergMetadata metadata = IcebergMetadata.parseFrom(icebergRaw);
-      out.println("  iceberg: " + printer.print(metadata));
-    } catch (InvalidProtocolBufferException e) {
-      out.println("  iceberg: <failed to parse: " + e.getMessage() + ">");
-    }
+    // Snapshot format metadata is now treated as opaque in the CLI.
   }
 }

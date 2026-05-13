@@ -35,7 +35,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitPlanner;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -204,24 +203,13 @@ public class TransactionCommitTablePlanningSupport {
           IcebergErrorResponses.validation("metadata-location must be a valid URI"));
     }
     boolean skipMaterialization = requestedLocation != null;
-    IcebergMetadata metadata = null;
-    try {
-      metadata = tableSupport.loadCurrentMetadata(plannedTable);
-    } catch (RuntimeException e) {
-      LOG.debugf(
-          e,
-          "Proceeding with pre-materialization without current metadata for tableId=%s table=%s",
-          tableId == null ? "<missing>" : tableId.getId(),
-          tableName);
-    }
     var commitView =
         responseBuilder.buildInitialResponse(
             tableName,
             plannedTable,
             tableId,
             new TableRequests.Commit(List.of(), updates == null ? List.of() : List.copyOf(updates)),
-            tableSupport,
-            metadata);
+            tableSupport);
     TableMetadataView commitMetadata = commitView == null ? null : commitView.metadata();
     if (commitMetadata == null) {
       return new PreMaterializedTable(plannedTable, null, null);

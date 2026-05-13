@@ -26,7 +26,6 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
-import com.google.protobuf.ByteString;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +45,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .setSchemaJson("existing-schema")
             .setManifestList("existing-manifest")
             .putSummary("existing-key", "existing-val")
-            .putFormatMetadata("meta-key", ByteString.copyFromUtf8("old"))
+            .setMetadataLocation("s3://bucket/old.metadata.json")
             .build();
 
     var bundle =
@@ -60,9 +59,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             null,
             Map.of("new-key", "new-val"),
             0,
-            Map.of(
-                "meta-key", ByteString.copyFromUtf8("new"),
-                "extra", ByteString.copyFromUtf8("value")));
+            "s3://bucket/new.metadata.json");
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
@@ -73,10 +70,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
     assertThat(result.getSummaryMap()).containsEntry("existing-key", "existing-val");
     assertThat(result.getSummaryMap()).containsEntry("new-key", "new-val");
-    assertThat(result.getFormatMetadataMap())
-        .containsEntry("meta-key", ByteString.copyFromUtf8("new"));
-    assertThat(result.getFormatMetadataMap())
-        .containsEntry("extra", ByteString.copyFromUtf8("value"));
+    assertThat(result.getMetadataLocation()).isEqualTo("s3://bucket/new.metadata.json");
   }
 
   @Test
@@ -84,11 +78,11 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, Map.of()),
+                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()),
+                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, Map.of()));
+                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
@@ -104,9 +98,9 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, Map.of()),
+                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()));
+                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
@@ -122,11 +116,11 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, Map.of()),
+                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, Map.of()),
+                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, Map.of()));
+                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(

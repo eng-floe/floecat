@@ -69,7 +69,6 @@ public class TableLoadService {
             TableResponseMapper.toLoadResult(
                 tableName,
                 tableRecord,
-                loadData.metadata(),
                 loadData.snapshots(),
                 loadData.metadataLocation(),
                 tableSupport.defaultTableConfig(tableRecord),
@@ -118,7 +117,6 @@ public class TableLoadService {
             TableResponseMapper.toLoadResult(
                 tableName,
                 tableRecord,
-                loadData.metadata(),
                 loadData.snapshots(),
                 loadData.metadataLocation(),
                 tableSupport.defaultTableConfig(tableRecord),

@@ -465,7 +465,7 @@ abstract class DeltaConnector implements FloecatConnector {
     final String schemaJson = kernelSchema.toJson();
     final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
     return new SnapshotBundle(
-        version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, Map.of());
+        version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, null);
   }
 
   private List<TargetStatsRecord> buildTargetStats(

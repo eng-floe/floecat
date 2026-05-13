@@ -148,7 +148,7 @@ public final class DummyConnector implements FloecatConnector {
     String schemaJson = describe(namespace, table).schemaJson();
     return List.of(
         new SnapshotBundle(
-            snapshotId, 0L, createdAt, schemaJson, null, 0L, null, Map.of(), 0, Map.of()));
+            snapshotId, 0L, createdAt, schemaJson, null, 0L, null, Map.of(), 0, null));
   }
 
   @Override

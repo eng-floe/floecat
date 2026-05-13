@@ -63,7 +63,6 @@ class TableRegisterRequestBuilderTest {
             "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[],\"last-column-id\":1}",
             Map.of("format-version", "2"),
             "s3://warehouse/orders",
-            null,
             currentSnapshot,
             List.of(currentSnapshot));
 

@@ -21,7 +21,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asL
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
@@ -42,16 +42,6 @@ public class CommitRequirementService {
       return null;
     }
     Table table = tableSupplier.get();
-    IcebergMetadata[] metadataHolder = new IcebergMetadata[1];
-    boolean[] metadataLoaded = new boolean[] {false};
-    Supplier<IcebergMetadata> metadataSupplier =
-        () -> {
-          if (!metadataLoaded[0]) {
-            metadataHolder[0] = tableSupport.loadCurrentMetadata(table);
-            metadataLoaded[0] = true;
-          }
-          return metadataHolder[0];
-        };
 
     for (Map<String, Object> requirement : requirements) {
       if (requirement == null) {
@@ -70,19 +60,6 @@ public class CommitRequirementService {
           if (expected == null || expected.isBlank()) {
             return validationErrorFactory.apply("assert-table-uuid requires uuid");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          String metadataUuid =
-              metadata != null
-                      && metadata.getTableUuid() != null
-                      && !metadata.getTableUuid().isBlank()
-                  ? metadata.getTableUuid()
-                  : null;
-          if (metadataUuid != null) {
-            if (expected.equals(metadataUuid)) {
-              continue;
-            }
-            return conflictErrorFactory.apply("assert-table-uuid failed");
-          }
           String fallbackUuid = resolveTableUuid(table);
           if (fallbackUuid != null && expected.equals(fallbackUuid)) {
             continue;
@@ -96,11 +73,7 @@ public class CommitRequirementService {
                 "assert-current-schema-id requires current-schema-id");
           }
           Integer actual =
-              resolveIntFromMetadataOrProperty(
-                  table,
-                  metadataSupplier,
-                  "current-schema-id",
-                  IcebergMetadata::getCurrentSchemaId);
+              propertyInt(table == null ? null : table.getPropertiesMap(), "current-schema-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-current-schema-id failed");
           }
@@ -112,8 +85,7 @@ public class CommitRequirementService {
                 "assert-last-assigned-field-id requires last-assigned-field-id");
           }
           Integer actual =
-              resolveIntFromMetadataOrProperty(
-                  table, metadataSupplier, "last-column-id", IcebergMetadata::getLastColumnId);
+              propertyInt(table == null ? null : table.getPropertiesMap(), "last-column-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-field-id failed");
           }
@@ -125,11 +97,7 @@ public class CommitRequirementService {
                 "assert-last-assigned-partition-id requires last-assigned-partition-id");
           }
           Integer actual =
-              resolveIntFromMetadataOrProperty(
-                  table,
-                  metadataSupplier,
-                  "last-partition-id",
-                  IcebergMetadata::getLastPartitionId);
+              propertyInt(table == null ? null : table.getPropertiesMap(), "last-partition-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-partition-id failed");
           }
@@ -140,8 +108,7 @@ public class CommitRequirementService {
             return validationErrorFactory.apply("assert-default-spec-id requires default-spec-id");
           }
           Integer actual =
-              resolveIntFromMetadataOrProperty(
-                  table, metadataSupplier, "default-spec-id", IcebergMetadata::getDefaultSpecId);
+              propertyInt(table == null ? null : table.getPropertiesMap(), "default-spec-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-spec-id failed");
           }
@@ -153,11 +120,7 @@ public class CommitRequirementService {
                 "assert-default-sort-order-id requires default-sort-order-id");
           }
           Integer actual =
-              resolveIntFromMetadataOrProperty(
-                  table,
-                  metadataSupplier,
-                  "default-sort-order-id",
-                  IcebergMetadata::getDefaultSortOrderId);
+              propertyInt(table == null ? null : table.getPropertiesMap(), "default-sort-order-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-sort-order-id failed");
           }
@@ -172,8 +135,7 @@ public class CommitRequirementService {
             // Compatibility: clients may omit snapshot-id for this assertion.
             continue;
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Long actual = resolveRefSnapshotId(table, metadata, refName);
+          Long actual = resolveRefSnapshotId(table, refName);
           if (actual == null) {
             // Compatibility: skip strict check when current ref snapshot cannot be resolved.
             continue;
@@ -207,48 +169,19 @@ public class CommitRequirementService {
     return null;
   }
 
-  private static Long resolveRefSnapshotId(Table table, IcebergMetadata metadata, String refName) {
-    if (metadata != null) {
-      if (metadata.getRefsMap().containsKey(refName)) {
-        long snapshotId = metadata.getRefsOrThrow(refName).getSnapshotId();
-        if (snapshotId >= 0L) {
-          return snapshotId;
-        }
-      }
-      if ("main".equals(refName)) {
-        long currentSnapshotId = metadata.getCurrentSnapshotId();
-        // currentSnapshotId defaults to 0 in proto3 when unset; only positive values are
-        // unambiguous here. Explicit version 0 is resolved via refs/properties.
-        if (currentSnapshotId > 0L) {
-          return currentSnapshotId;
-        }
-      }
-    }
+  private static Long resolveRefSnapshotId(Table table, String refName) {
     if ("main".equals(refName) && table != null) {
       return asLong(table.getPropertiesMap().get("current-snapshot-id"));
     }
-    return null;
-  }
-
-  private static Integer resolveIntFromMetadataOrProperty(
-      Table table,
-      Supplier<IcebergMetadata> metadataSupplier,
-      String propertyKey,
-      Function<IcebergMetadata, Integer> metadataExtractor) {
-    Integer propertyValue =
-        propertyInt(table == null ? null : table.getPropertiesMap(), propertyKey);
-    IcebergMetadata metadata = metadataSupplier.get();
-    if (metadata == null) {
-      return propertyValue;
+    if (table == null) {
+      return null;
     }
-    Integer metadataValue = metadataExtractor.apply(metadata);
-    if (metadataValue == null || metadataValue < 0) {
-      return propertyValue;
+    Map<String, Map<String, Object>> refs =
+        RefPropertyUtil.decode(table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY));
+    if (!refs.containsKey(refName)) {
+      return null;
     }
-    if (propertyValue != null && metadataValue < propertyValue) {
-      return propertyValue;
-    }
-    return metadataValue;
+    return asLong(refs.get(refName).get("snapshot-id"));
   }
 
   private static Integer propertyInt(Map<String, String> props, String key) {
