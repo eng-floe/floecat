@@ -164,14 +164,8 @@ final class SnapshotCliSupport {
     try {
       JsonFormat.Printer printer = JsonFormat.printer().includingDefaultValueFields();
       out.println(printer.print(snapshot));
-      printDecodedFormatMetadata(snapshot, printer, out);
     } catch (InvalidProtocolBufferException e) {
       out.println(snapshot.toString());
     }
-  }
-
-  private static void printDecodedFormatMetadata(
-      Snapshot snapshot, JsonFormat.Printer printer, PrintStream out) {
-    // Snapshot format metadata is now treated as opaque in the CLI.
   }
 }

@@ -235,6 +235,12 @@ public final class CommitUpdateInspector {
           if (snapshot == null || snapshot.isEmpty()) {
             continue;
           }
+          if (requestedMetadataLocation == null || requestedMetadataLocation.isBlank()) {
+            String location = TableMappingUtil.asString(snapshot.get("metadata-location"));
+            if (location != null && !location.isBlank()) {
+              requestedMetadataLocation = location;
+            }
+          }
           addedSnapshots.add(snapshot);
           Long snapshotId = TableMappingUtil.asLong(snapshot.get("snapshot-id"));
           if (snapshotId != null && snapshotId >= 0L) {
@@ -315,12 +321,6 @@ public final class CommitUpdateInspector {
           Map<String, Object> props = TableMappingUtil.asObjectMap(update.get("updates"));
           if (props == null || props.isEmpty()) {
             continue;
-          }
-          if (requestedMetadataLocation == null || requestedMetadataLocation.isBlank()) {
-            String location = TableMappingUtil.asString(props.get("metadata-location"));
-            if (location != null && !location.isBlank()) {
-              requestedMetadataLocation = location;
-            }
           }
           Long sequence = TableMappingUtil.asLong(props.get("last-sequence-number"));
           if (sequence != null && sequence > 0L) {

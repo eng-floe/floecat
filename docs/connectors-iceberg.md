@@ -49,9 +49,9 @@ specializing discovery and catalog wiring.
   Parquet footer data.
 - **S3 IO** – Uses `org.apache.iceberg.aws.s3.S3FileIO` unless `io-impl` is specified in
   connector options. Header hints (`rest.header.*`) propagate custom headers to REST calls.
-- **Metadata capture** – `IcebergConnector` carries only the canonical snapshot fields plus the
-  current `iceberg.metadata-location` attachment when available. It no longer embeds a serialized
-  Iceberg metadata protobuf in snapshot payloads.
+- **Metadata capture** – `IcebergConnector` carries only canonical snapshot fields, including the
+  snapshot metadata location as first-class state. It does not embed serialized Iceberg metadata
+  protobuf payloads in snapshot state.
 - **Constraint mapping** – Snapshot constraints currently emit only metadata that is reliably
   exposed by core Iceberg tables:
   - `CT_PRIMARY_KEY` from Iceberg `identifier-field-ids` (advisory, emitted as not-enforced).

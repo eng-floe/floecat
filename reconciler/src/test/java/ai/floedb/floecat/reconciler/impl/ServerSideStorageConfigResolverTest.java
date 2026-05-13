@@ -57,7 +57,7 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void filesystemConnectorUsesMetadataLocationForAuthorityLookup() {
+  void filesystemConnectorUsesUriForAuthorityLookup() {
     ConnectorConfig config =
         new ConnectorConfig(
             ConnectorConfig.Kind.ICEBERG,
@@ -69,6 +69,21 @@ class ServerSideStorageConfigResolverTest {
     assertEquals(
         "s3://warehouse/ns/table/metadata/00001.metadata.json",
         ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+  }
+
+  @Test
+  void filesystemConnectorWithoutUriDoesNotResolveAuthorityLookupLocation() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "filesystem",
+            "",
+            Map.of(
+                "iceberg.source", "filesystem",
+                "metadata-location", "s3://warehouse/ns/table/metadata/00001.metadata.json"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    assertNull(ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
   }
 
   @Test

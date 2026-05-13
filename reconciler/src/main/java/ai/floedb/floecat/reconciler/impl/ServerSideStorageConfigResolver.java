@@ -167,11 +167,7 @@ public class ServerSideStorageConfigResolver {
     Map<String, String> options = config.options();
     String source = normalize(options.get("iceberg.source"));
     if ("filesystem".equals(source)) {
-      String uri = normalizeS3Location(config.uri(), false);
-      if (uri != null) {
-        return uri;
-      }
-      return normalizeS3Location(options.get("metadata-location"), false);
+      return normalizeS3Location(config.uri(), false);
     }
     if ("rest".equals(source)) {
       String warehouse = options.get("warehouse");
