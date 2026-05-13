@@ -1293,8 +1293,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.getSchemaId() > 0) {
       builder.setSchemaId(snapshot.getSchemaId());
     }
-    if (!snapshot.getFormatMetadataMap().isEmpty()) {
-      builder.putAllFormatMetadata(snapshot.getFormatMetadataMap());
+    if (snapshot.hasMetadataLocation() && !snapshot.getMetadataLocation().isBlank()) {
+      builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
     return builder.build();
   }
@@ -1322,8 +1322,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (spec.hasSchemaId()) {
       mask.addPaths("schema_id");
     }
-    if (!spec.getFormatMetadataMap().isEmpty()) {
-      mask.addPaths("format_metadata");
+    if (spec.hasMetadataLocation()) {
+      mask.addPaths("metadata_location");
     }
     return mask.build();
   }

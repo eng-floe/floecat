@@ -42,7 +42,6 @@ import java.util.Map;
 
 @ApplicationScoped
 public class TransactionCommitService {
-  static final String ICEBERG_METADATA_KEY = "iceberg";
   static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   @Inject AccountContext accountContext;
   @Inject ResourceResolver resourceResolver;
@@ -240,6 +239,7 @@ public class TransactionCommitService {
                   identifier.name(),
                   tableId,
                   plannedChangeResult.table(),
+                  plannedChangeResult.metadataLocation(),
                   change.updates() == null ? List.of() : List.copyOf(change.updates()),
                   plannedChangeResult.pointerVersion()));
         } catch (StatusRuntimeException e) {
@@ -298,6 +298,7 @@ public class TransactionCommitService {
               plan.tableId(),
               tableForTx,
               tableSupport,
+              plan.metadataLocation(),
               plan.updates(),
               removedSnapshotIds);
       if (snapshotChangePlan.error() != null) {
@@ -319,6 +320,7 @@ public class TransactionCommitService {
       String tableName,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table,
+      String metadataLocation,
       List<Map<String, Object>> updates,
       long expectedVersion) {}
 

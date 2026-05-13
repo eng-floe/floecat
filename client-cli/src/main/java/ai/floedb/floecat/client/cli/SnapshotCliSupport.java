@@ -25,8 +25,6 @@ import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
 import io.grpc.Status;
@@ -166,27 +164,8 @@ final class SnapshotCliSupport {
     try {
       JsonFormat.Printer printer = JsonFormat.printer().includingDefaultValueFields();
       out.println(printer.print(snapshot));
-      printDecodedFormatMetadata(snapshot, printer, out);
     } catch (InvalidProtocolBufferException e) {
       out.println(snapshot.toString());
-    }
-  }
-
-  private static void printDecodedFormatMetadata(
-      Snapshot snapshot, JsonFormat.Printer printer, PrintStream out) {
-    if (snapshot == null || snapshot.getFormatMetadataCount() == 0) {
-      return;
-    }
-    ByteString icebergRaw = snapshot.getFormatMetadataOrDefault("iceberg", ByteString.EMPTY);
-    if (icebergRaw == null || icebergRaw.isEmpty()) {
-      return;
-    }
-    out.println("decoded_format_metadata:");
-    try {
-      IcebergMetadata metadata = IcebergMetadata.parseFrom(icebergRaw);
-      out.println("  iceberg: " + printer.print(metadata));
-    } catch (InvalidProtocolBufferException e) {
-      out.println("  iceberg: <failed to parse: " + e.getMessage() + ">");
     }
   }
 }

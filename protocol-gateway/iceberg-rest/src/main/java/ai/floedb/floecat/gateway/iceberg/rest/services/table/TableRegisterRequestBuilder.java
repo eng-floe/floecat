@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -35,6 +34,7 @@ public class TableRegisterRequestBuilder {
       List<String> namespacePath,
       String tableName,
       Map<String, String> mergedProps,
+      String metadataLocation,
       ImportedMetadata importedMetadata,
       List<Long> existingSnapshotIds,
       boolean assertCreate) {
@@ -55,7 +55,15 @@ public class TableRegisterRequestBuilder {
 
     List<Long> importedSnapshotIds = new ArrayList<>();
     for (ImportedSnapshot snapshot : snapshotsToImport(importedMetadata)) {
-      Map<String, Object> snapshotMap = toSnapshotUpdate(snapshot, importedMetadata);
+      if (snapshot != null
+          && snapshot.snapshotId() != null
+          && existingSnapshotIds != null
+          && existingSnapshotIds.contains(snapshot.snapshotId())) {
+        importedSnapshotIds.add(snapshot.snapshotId());
+        continue;
+      }
+      Map<String, Object> snapshotMap =
+          toSnapshotUpdate(snapshot, importedMetadata, metadataLocation);
       if (!snapshotMap.isEmpty()) {
         updates.add(
             Map.of("action", CommitUpdateInspector.ACTION_ADD_SNAPSHOT, "snapshot", snapshotMap));
@@ -84,7 +92,6 @@ public class TableRegisterRequestBuilder {
   Map<String, String> mergeImportedProperties(
       Map<String, String> existing,
       ImportedMetadata importedMetadata,
-      String metadataLocation,
       Map<String, String> registerIoProperties) {
     Map<String, String> merged = new LinkedHashMap<>();
     if (existing != null && !existing.isEmpty()) {
@@ -106,7 +113,6 @@ public class TableRegisterRequestBuilder {
             }
           });
     }
-    MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
     return merged;
   }
 
@@ -135,7 +141,7 @@ public class TableRegisterRequestBuilder {
   }
 
   private Map<String, Object> toSnapshotUpdate(
-      ImportedSnapshot snapshot, ImportedMetadata importedMetadata) {
+      ImportedSnapshot snapshot, ImportedMetadata importedMetadata, String metadataLocation) {
     if (snapshot == null) {
       return Map.of();
     }
@@ -166,6 +172,23 @@ public class TableRegisterRequestBuilder {
         && !importedMetadata.schemaJson().isBlank()) {
       snapshotMap.put("schema-json", importedMetadata.schemaJson());
     }
+    if (isCurrentImportedSnapshot(snapshot, importedMetadata)
+        && metadataLocation != null
+        && !metadataLocation.isBlank()) {
+      snapshotMap.put("metadata-location", metadataLocation);
+    }
     return snapshotMap;
+  }
+
+  private boolean isCurrentImportedSnapshot(
+      ImportedSnapshot snapshot, ImportedMetadata importedMetadata) {
+    if (snapshot == null
+        || snapshot.snapshotId() == null
+        || importedMetadata == null
+        || importedMetadata.currentSnapshot() == null
+        || importedMetadata.currentSnapshot().snapshotId() == null) {
+      return false;
+    }
+    return snapshot.snapshotId().equals(importedMetadata.currentSnapshot().snapshotId());
   }
 }

@@ -19,11 +19,12 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
@@ -40,17 +41,15 @@ public final class SnapshotLister {
   }
 
   public static List<Snapshot> fetchSnapshots(
-      GrpcServiceFacade snapshotClient, ResourceId tableId, Mode mode, IcebergMetadata metadata) {
+      GrpcServiceFacade snapshotClient, Table table, Mode mode) {
     try {
+      ResourceId tableId = table == null ? null : table.getResourceId();
       List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
       if (mode == Mode.REFS) {
-        if (metadata == null || metadata.getRefsCount() == 0) {
+        Set<Long> refIds = referencedSnapshotIds(table);
+        if (refIds.isEmpty()) {
           return List.of();
         }
-        Set<Long> refIds =
-            metadata.getRefsMap().values().stream()
-                .map(IcebergRef::getSnapshotId)
-                .collect(Collectors.toSet());
         return snapshots.stream()
             .filter(s -> refIds.contains(s.getSnapshotId()))
             .collect(Collectors.toList());
@@ -59,6 +58,25 @@ public final class SnapshotLister {
     } catch (StatusRuntimeException e) {
       return List.of();
     }
+  }
+
+  private static Set<Long> referencedSnapshotIds(Table table) {
+    if (table == null) {
+      return Set.of();
+    }
+    Set<Long> refIds =
+        RefPropertyUtil.decode(table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY))
+            .values()
+            .stream()
+            .map(ref -> TableMappingUtil.asLong(ref.get("snapshot-id")))
+            .filter(id -> id != null && id >= 0L)
+            .collect(Collectors.toSet());
+    Long currentSnapshotId =
+        TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id"));
+    if (currentSnapshotId != null && currentSnapshotId >= 0L) {
+      refIds.add(currentSnapshotId);
+    }
+    return refIds;
   }
 
   private static List<Snapshot> fetchAllSnapshots(

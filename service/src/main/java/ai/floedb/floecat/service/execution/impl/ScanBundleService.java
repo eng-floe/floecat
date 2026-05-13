@@ -166,8 +166,8 @@ public class ScanBundleService {
       builder.putAllProperties(table.getPropertiesMap());
     }
 
-    String metadataLocation = table.getPropertiesMap().getOrDefault("metadata-location", "");
-    if (!metadataLocation.isBlank()) {
+    String metadataLocation = SnapshotRepository.metadataLocation(snapshot);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
     }
 

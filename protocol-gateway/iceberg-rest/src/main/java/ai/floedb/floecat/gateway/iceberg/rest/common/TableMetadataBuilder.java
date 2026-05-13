@@ -19,20 +19,12 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.maxPartitionFieldId;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.normalizeSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecFromRequest;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecsFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromRequest;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromTable;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemasFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrderFromRequest;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrdersFromMetadata;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.metadataLog;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.nonNullMapList;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.partitionStatistics;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.refs;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.sanitizeStatistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snapshotLog;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snapshots;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.statistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
@@ -41,11 +33,11 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.may
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersion;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersionForSnapshots;
 
+import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -66,16 +58,17 @@ public final class TableMetadataBuilder {
   private TableMetadataBuilder() {}
 
   public static TableMetadataView fromCatalog(
+      String tableName, Table table, Map<String, String> props, List<Snapshot> snapshots) {
+    return fromCatalog(tableName, table, props, snapshots, null);
+  }
+
+  public static TableMetadataView fromCatalog(
       String tableName,
       Table table,
       Map<String, String> props,
-      IcebergMetadata metadata,
-      List<Snapshot> snapshots) {
-    String metadataLocation =
-        metadata == null || metadata.getMetadataLocation().isBlank()
-            ? null
-            : metadata.getMetadataLocation();
-    return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
+      List<Snapshot> snapshots,
+      String metadataLocation) {
+    return buildMetadata(tableName, table, props, snapshots, metadataLocation);
   }
 
   public static TableMetadataView fromCreateRequest(
@@ -87,62 +80,24 @@ public final class TableMetadataBuilder {
       String tableName,
       Table table,
       Map<String, String> props,
-      IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    String propertyMetadataLocation = MetadataLocationUtil.metadataLocation(props);
-    // The catalog pointer (table property) is the source of truth for current metadata location.
-    // Snapshot payload metadata is used as fallback only when pointer data is unavailable.
-    if (propertyMetadataLocation != null && !propertyMetadataLocation.isBlank()) {
-      metadataLocation = propertyMetadataLocation;
-    } else if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = propertyMetadataLocation;
-    }
+    boolean deltaTable = DeltaSchemaNormalizer.isDeltaTable(table, props);
     String location = props.get("location");
     if (!hasText(location) && table.hasUpstream()) {
       location = table.getUpstream().getUri();
     }
     location = hasText(location) ? location : null;
-    Long lastUpdatedMs =
-        (metadata != null && metadata.getLastUpdatedMs() > 0)
-            ? Long.valueOf(metadata.getLastUpdatedMs())
-            : null;
-    Long currentSnapshotId =
-        metadata != null && metadata.getCurrentSnapshotId() >= 0
-            ? Long.valueOf(metadata.getCurrentSnapshotId())
-            : null;
-    Long lastSequenceNumber =
-        metadata != null && metadata.getLastSequenceNumber() >= 0
-            ? Long.valueOf(metadata.getLastSequenceNumber())
-            : null;
-    Integer lastColumnId =
-        metadata != null && metadata.getLastColumnId() >= 0
-            ? Integer.valueOf(metadata.getLastColumnId())
-            : null;
-    Integer currentSchemaId =
-        metadata != null && metadata.getCurrentSchemaId() >= 0
-            ? Integer.valueOf(metadata.getCurrentSchemaId())
-            : null;
-    Integer defaultSpecId =
-        metadata != null && metadata.getDefaultSpecId() >= 0
-            ? Integer.valueOf(metadata.getDefaultSpecId())
-            : null;
-    Integer lastPartitionId =
-        metadata != null && metadata.getLastPartitionId() >= 0
-            ? Integer.valueOf(metadata.getLastPartitionId())
-            : null;
-    Integer defaultSortOrderId =
-        metadata != null && metadata.getDefaultSortOrderId() >= 0
-            ? Integer.valueOf(metadata.getDefaultSortOrderId())
-            : null;
-    String tableUuid =
-        metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()
-            ? metadata.getTableUuid()
-            : null;
-    Integer formatVersion =
-        metadata != null && metadata.getFormatVersion() > 0
-            ? Integer.valueOf(metadata.getFormatVersion())
-            : null;
+    Long lastUpdatedMs = null;
+    Long currentSnapshotId = null;
+    Long lastSequenceNumber = null;
+    Integer lastColumnId = null;
+    Integer currentSchemaId = null;
+    Integer defaultSpecId = null;
+    Integer lastPartitionId = null;
+    Integer defaultSortOrderId = null;
+    String tableUuid = null;
+    Integer formatVersion = null;
     formatVersion = normalizeFormatVersion(formatVersion, maybeInt(formatVersionProperty(props)));
     if (tableUuid == null) {
       String candidate = props.get("table-uuid");
@@ -189,10 +144,25 @@ public final class TableMetadataBuilder {
     if (lastSequenceNumber == null) {
       lastSequenceNumber = 0L;
     }
-    List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
+    Snapshot currentSnapshot = resolveCurrentSnapshot(snapshots, currentSnapshotId);
+    if (currentSnapshotId == null
+        && currentSnapshot != null
+        && currentSnapshot.getSnapshotId() >= 0) {
+      currentSnapshotId = currentSnapshot.getSnapshotId();
+    }
+    List<Map<String, Object>> schemaList = schemasFromSnapshot(currentSnapshot, table, deltaTable);
+    if (!schemaList.isEmpty()) {
+      Map<String, Object> currentSchema = schemaList.get(0);
+      if (currentSchemaId == null) {
+        currentSchemaId = asInteger(currentSchema.get("schema-id"));
+      }
+      if (lastColumnId == null) {
+        lastColumnId = asInteger(currentSchema.get("last-column-id"));
+      }
+    }
     if (schemaList.isEmpty()) {
-      try {
-        Map<String, Object> schema = schemaFromTable(table);
+      Map<String, Object> schema = schemaFromTable(table, deltaTable, currentSchemaId);
+      if (schema != null) {
         schemaList = List.of(schema);
         if (currentSchemaId == null) {
           currentSchemaId = asInteger(schema.get("schema-id"));
@@ -200,11 +170,9 @@ public final class TableMetadataBuilder {
         if (lastColumnId == null) {
           lastColumnId = asInteger(schema.get("last-column-id"));
         }
-      } catch (IllegalArgumentException e) {
-        // ignore; fall back to metadata-derived defaults only
       }
     }
-    List<Map<String, Object>> specList = partitionSpecsFromMetadata(metadata);
+    List<Map<String, Object>> specList = partitionSpecsFromSnapshot(currentSnapshot);
     if (specList.isEmpty()) {
       Map<String, Object> spec = defaultPartitionSpec();
       specList = List.of(spec);
@@ -215,7 +183,7 @@ public final class TableMetadataBuilder {
         lastPartitionId = maxPartitionFieldId(spec);
       }
     }
-    List<Map<String, Object>> sortOrderList = sortOrdersFromMetadata(metadata);
+    List<Map<String, Object>> sortOrderList = List.of();
     if (sortOrderList.isEmpty()) {
       Map<String, Object> order = defaultSortOrder();
       sortOrderList = List.of(order);
@@ -227,9 +195,9 @@ public final class TableMetadataBuilder {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
     ensureDeltaNameMappingProperty(props, schemaList, currentSchemaId);
-    List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
+    List<Map<String, Object>> statisticsList = sanitizeStatistics(SnapshotMapper.statistics());
     List<Map<String, Object>> partitionStatisticsList =
-        nonNullMapList(partitionStatistics(metadata));
+        nonNullMapList(SnapshotMapper.partitionStatistics());
     List<Snapshot> orderedSnapshots =
         snapshots == null || snapshots.size() < 2
             ? snapshots
@@ -254,8 +222,11 @@ public final class TableMetadataBuilder {
       lastSequenceNumber = 0L;
     }
     formatVersion = normalizeFormatVersionForSnapshots(formatVersion, maxSnapshotSequence);
-    Map<String, Object> refs = refs(metadata);
+    Map<String, Object> refs = Map.of();
     refs = mergePropertyRefs(props, refs);
+    if ((refs == null || refs.isEmpty()) && currentSnapshotId != null && currentSnapshotId >= 0) {
+      refs = Map.of("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
+    }
     if (currentSnapshotId == null || currentSnapshotId < 0) {
       Long mainRefSnapshotId = mainRefSnapshotId(refs);
       if (mainRefSnapshotId != null && snapshotIds.contains(mainRefSnapshotId)) {
@@ -272,6 +243,7 @@ public final class TableMetadataBuilder {
     syncProperty(props, "default-spec-id", defaultSpecId);
     syncProperty(props, "last-partition-id", lastPartitionId);
     syncProperty(props, "default-sort-order-id", defaultSortOrderId);
+    props.remove("last-updated-ms");
     removeMetadataLocation(props);
     return new TableMetadataView(
         formatVersion,
@@ -291,11 +263,104 @@ public final class TableMetadataBuilder {
         specList,
         sortOrderList,
         refs,
-        snapshotLog(metadata),
-        metadataLog(metadata),
+        snapshotLog(orderedSnapshots),
+        SnapshotMapper.metadataLog(),
         statisticsList,
         partitionStatisticsList,
         snapshotList);
+  }
+
+  private static Snapshot resolveCurrentSnapshot(List<Snapshot> snapshots, Long currentSnapshotId) {
+    if (snapshots == null || snapshots.isEmpty()) {
+      return null;
+    }
+    if (currentSnapshotId != null) {
+      for (Snapshot snapshot : snapshots) {
+        if (snapshot != null && snapshot.getSnapshotId() == currentSnapshotId) {
+          return snapshot;
+        }
+      }
+    }
+    return snapshots.stream()
+        .filter(snapshot -> snapshot != null)
+        .max(
+            Comparator.comparingLong(Snapshot::getSequenceNumber)
+                .thenComparingLong(Snapshot::getSnapshotId))
+        .orElse(null);
+  }
+
+  private static List<Map<String, Object>> schemasFromSnapshot(
+      Snapshot snapshot, Table table, boolean deltaTable) {
+    if (snapshot == null
+        || snapshot.getSchemaJson() == null
+        || snapshot.getSchemaJson().isBlank()) {
+      return List.of();
+    }
+    if (deltaTable) {
+      Map<String, Object> normalized =
+          DeltaSchemaNormalizer.normalizeSchemaMap(
+              snapshot.getSchemaJson(), snapshot.getSchemaId());
+      return normalized == null ? List.of() : List.of(normalized);
+    }
+    Object parsed = parseSchema(snapshot.getSchemaJson());
+    if (!(parsed instanceof Map<?, ?> schemaMap)) {
+      return List.of();
+    }
+    @SuppressWarnings("unchecked")
+    Map<String, Object> schema = new LinkedHashMap<>((Map<String, Object>) schemaMap);
+    if (snapshot.getSchemaId() >= 0) {
+      schema.put("schema-id", snapshot.getSchemaId());
+    }
+    return List.of(schema);
+  }
+
+  private static List<Map<String, Object>> partitionSpecsFromSnapshot(Snapshot snapshot) {
+    if (snapshot == null || !snapshot.hasPartitionSpec()) {
+      return List.of();
+    }
+    PartitionSpecInfo spec = snapshot.getPartitionSpec();
+    Map<String, Object> entry = new LinkedHashMap<>();
+    entry.put("spec-id", spec.getSpecId());
+    List<Map<String, Object>> fields = new ArrayList<>();
+    spec.getFieldsList()
+        .forEach(
+            field -> {
+              Map<String, Object> mapped = new LinkedHashMap<>();
+              mapped.put("field-id", field.getFieldId());
+              mapped.put("source-id", field.getFieldId());
+              mapped.put("name", field.getName());
+              mapped.put("transform", field.getTransform());
+              fields.add(mapped);
+            });
+    entry.put("fields", fields);
+    return List.of(entry);
+  }
+
+  private static Object parseSchema(String schemaJson) {
+    if (schemaJson == null || schemaJson.isBlank()) {
+      return null;
+    }
+    try {
+      return JSON.readValue(schemaJson, Object.class);
+    } catch (JsonProcessingException e) {
+      return null;
+    }
+  }
+
+  private static Map<String, Object> schemaFromTable(
+      Table table, boolean deltaTable, Integer currentSchemaId) {
+    if (table == null || table.getSchemaJson() == null || table.getSchemaJson().isBlank()) {
+      return null;
+    }
+    if (deltaTable) {
+      return DeltaSchemaNormalizer.normalizeSchemaMap(
+          table.getSchemaJson(), currentSchemaId == null ? 0 : currentSchemaId);
+    }
+    try {
+      return SchemaMapper.schemaFromTable(table);
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 
   private static TableMetadataView initialMetadata(

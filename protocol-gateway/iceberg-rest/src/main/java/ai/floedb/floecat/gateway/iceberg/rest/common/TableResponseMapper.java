@@ -23,7 +23,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -39,20 +38,29 @@ public final class TableResponseMapper {
   public static LoadTableResultDto toLoadResult(
       String tableName,
       Table table,
-      IcebergMetadata metadata,
       List<Snapshot> snapshots,
+      Map<String, String> configOverrides,
+      List<StorageCredentialDto> storageCredentials) {
+    return toLoadResult(tableName, table, snapshots, null, configOverrides, storageCredentials);
+  }
+
+  public static LoadTableResultDto toLoadResult(
+      String tableName,
+      Table table,
+      List<Snapshot> snapshots,
+      String metadataLocation,
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
     LOG.debugf(
         "Mapping load result from catalog table=%s metadataLocation=%s configKeys=%s"
             + " requestProps=%s",
         tableName,
-        metadata == null ? "<null>" : metadata.getMetadataLocation(),
+        metadataLocation == null ? "<null>" : metadataLocation,
         configOverrides.keySet(),
         table.getPropertiesMap());
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
+        TableMetadataBuilder.fromCatalog(tableName, table, props, snapshots, metadataLocation);
     Map<String, String> effectiveConfig =
         augmentConfigWithMetadataPath(configOverrides, metadataView);
     return new LoadTableResultDto(
@@ -62,19 +70,25 @@ public final class TableResponseMapper {
   public static Response toLoadResponse(
       String tableName,
       Table table,
-      IcebergMetadata metadata,
       List<Snapshot> snapshots,
+      String metadataLocation,
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
     return withMetadataEtag(
-        toLoadResult(tableName, table, metadata, snapshots, configOverrides, storageCredentials));
+        toLoadResult(
+            tableName, table, snapshots, metadataLocation, configOverrides, storageCredentials));
   }
 
   public static CommitTableResponseDto toCommitResponse(
-      String tableName, Table table, IcebergMetadata metadata, List<Snapshot> snapshots) {
+      String tableName, Table table, List<Snapshot> snapshots) {
+    return toCommitResponse(tableName, table, snapshots, null);
+  }
+
+  public static CommitTableResponseDto toCommitResponse(
+      String tableName, Table table, List<Snapshot> snapshots, String metadataLocation) {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
+        TableMetadataBuilder.fromCatalog(tableName, table, props, snapshots, metadataLocation);
     return new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
   }
 

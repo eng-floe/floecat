@@ -19,14 +19,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 
-import ai.floedb.floecat.catalog.rpc.PartitionField;
-import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -129,74 +123,6 @@ final class SchemaMapper {
       }
     }
     return max;
-  }
-
-  static List<Map<String, Object>> schemasFromMetadata(IcebergMetadata metadata) {
-    if (metadata == null) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (IcebergSchema schema : metadata.getSchemasList()) {
-      Map<String, Object> entry = new LinkedHashMap<>();
-      entry.put("schema-id", schema.getSchemaId());
-      Object schemaObj = parseSchema(schema.getSchemaJson());
-      if (schemaObj instanceof Map<?, ?> mapObj) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> typed = (Map<String, Object>) mapObj;
-        entry.putAll(typed);
-      }
-      if (schema.getIdentifierFieldIdsCount() > 0) {
-        entry.put("identifier-field-ids", schema.getIdentifierFieldIdsList());
-      }
-      out.add(entry);
-    }
-    return out;
-  }
-
-  static List<Map<String, Object>> partitionSpecsFromMetadata(IcebergMetadata metadata) {
-    if (metadata == null) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (PartitionSpecInfo spec : metadata.getPartitionSpecsList()) {
-      Map<String, Object> entry = new LinkedHashMap<>();
-      entry.put("spec-id", spec.getSpecId());
-      List<Map<String, Object>> fields = new ArrayList<>();
-      for (PartitionField field : spec.getFieldsList()) {
-        Map<String, Object> f = new LinkedHashMap<>();
-        f.put("field-id", field.getFieldId());
-        f.put("source-id", field.getFieldId());
-        f.put("name", field.getName());
-        f.put("transform", field.getTransform());
-        fields.add(f);
-      }
-      entry.put("fields", fields);
-      out.add(entry);
-    }
-    return out;
-  }
-
-  static List<Map<String, Object>> sortOrdersFromMetadata(IcebergMetadata metadata) {
-    if (metadata == null) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (IcebergSortOrder order : metadata.getSortOrdersList()) {
-      Map<String, Object> entry = new LinkedHashMap<>();
-      entry.put("order-id", order.getSortOrderId());
-      List<Map<String, Object>> fields = new ArrayList<>();
-      for (IcebergSortField field : order.getFieldsList()) {
-        Map<String, Object> f = new LinkedHashMap<>();
-        f.put("source-id", field.getSourceFieldId());
-        f.put("transform", field.getTransform());
-        f.put("direction", field.getDirection());
-        f.put("null-order", field.getNullOrder());
-        fields.add(f);
-      }
-      entry.put("fields", fields);
-      out.add(entry);
-    }
-    return out;
   }
 
   private static void normalizeSchema(Map<String, Object> schema) {

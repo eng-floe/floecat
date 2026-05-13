@@ -1145,7 +1145,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -1346,7 +1346,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -1492,7 +1492,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -1562,7 +1562,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -1705,9 +1705,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()),
+                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
             new SnapshotBundle(
-                202L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                202L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -2013,7 +2013,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of()));
+            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -2139,7 +2139,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                         null,
                         Map.of(),
                         0,
-                        Map.of()));
+                        null));
               }
             };
 
@@ -2306,7 +2306,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                         null,
                         Map.of(),
                         0,
-                        Map.of()));
+                        null));
               }
             };
 
@@ -2450,7 +2450,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(501L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of()));
+            new SnapshotBundle(501L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -2600,7 +2600,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of()));
+            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -2742,7 +2742,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of()));
+            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -2905,7 +2905,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                101L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                101L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -3037,7 +3037,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                102L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                102L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -3173,7 +3173,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                103L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                103L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override
@@ -3306,7 +3306,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                104L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, Map.of()));
+                104L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override

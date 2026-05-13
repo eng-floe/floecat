@@ -17,41 +17,32 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableMetadataViewSupport;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import java.util.Locale;
 
 @ApplicationScoped
 public class TableCommitMaterializationLocationSupport {
 
-  @Inject IcebergGatewayConfig config;
-
   String resolveOutputMetadataLocation(
-      String namespace,
-      String tableName,
-      Table tableRecord,
-      TableMetadataView metadata,
-      String metadataLocation) {
-    if (!hasText(metadataLocation)
-        && !hasText(metadata == null ? null : metadata.metadataLocation())) {
-      metadataLocation = deriveMetadataLocation(tableRecord, metadata);
+      Table tableRecord, TableMetadataView metadata, String metadataLocation) {
+    String resolved =
+        firstNonBlank(metadataLocation, metadata == null ? null : metadata.metadataLocation());
+    if (hasText(resolved)) {
+      return resolved;
     }
-    if (!hasText(metadataLocation)
-        && !hasText(metadata == null ? null : metadata.metadataLocation())) {
-      metadataLocation = deriveDefaultMetadataLocation(namespace, tableName);
-    }
-    return metadataLocation;
+    String tableLocation =
+        firstNonBlank(
+            tableLocation(tableRecord),
+            metadata == null ? null : metadata.location(),
+            metadata == null || metadata.properties() == null
+                ? null
+                : metadata.properties().get("location"));
+    return deriveMetadataDirectoryFromTableLocation(tableLocation);
   }
 
   TableMetadataView normalizeTableLocation(
-      String namespace,
-      String tableName,
-      Table tableRecord,
-      TableMetadataView metadata,
-      String metadataLocation) {
+      Table tableRecord, TableMetadataView metadata, String metadataLocation) {
     if (metadata == null || hasText(metadata.location())) {
       return metadata;
     }
@@ -59,67 +50,11 @@ public class TableCommitMaterializationLocationSupport {
         firstNonBlank(
             tableLocation(tableRecord),
             metadata.properties() == null ? null : metadata.properties().get("location"),
-            deriveTableLocationFromMetadataLocation(metadataLocation),
-            deriveDefaultTableLocation(namespace, tableName));
+            deriveTableLocationFromMetadataLocation(metadataLocation));
     if (!hasText(resolvedLocation)) {
       return metadata;
     }
     return TableMetadataViewSupport.copyMetadata(metadata).location(resolvedLocation).build();
-  }
-
-  private String deriveMetadataLocation(Table tableRecord, TableMetadataView metadata) {
-    String location = tableLocation(tableRecord);
-    if (location == null && metadata != null) {
-      location = metadata.location();
-    }
-    if (!hasText(location)) {
-      return null;
-    }
-    String base = stripTrailingSlash(location);
-    if (base.toLowerCase(Locale.ROOT).endsWith("/metadata")) {
-      return base + "/";
-    }
-    return base + "/metadata/";
-  }
-
-  private String deriveDefaultMetadataLocation(String namespace, String tableName) {
-    if (config == null || tableName == null || tableName.isBlank()) {
-      return null;
-    }
-    String warehouse = config.defaultWarehousePath().orElse(null);
-    if (!hasText(warehouse)) {
-      return null;
-    }
-    StringBuilder path = new StringBuilder(stripTrailingSlash(warehouse));
-    if (namespace != null && !namespace.isBlank()) {
-      for (String segment : namespace.split("\\.")) {
-        if (segment != null && !segment.isBlank()) {
-          path.append('/').append(segment);
-        }
-      }
-    }
-    path.append('/').append(tableName).append("/metadata/");
-    return path.toString();
-  }
-
-  private String deriveDefaultTableLocation(String namespace, String tableName) {
-    if (config == null || tableName == null || tableName.isBlank()) {
-      return null;
-    }
-    String warehouse = config.defaultWarehousePath().orElse(null);
-    if (!hasText(warehouse)) {
-      return null;
-    }
-    StringBuilder path = new StringBuilder(stripTrailingSlash(warehouse));
-    if (namespace != null && !namespace.isBlank()) {
-      for (String segment : namespace.split("\\.")) {
-        if (segment != null && !segment.isBlank()) {
-          path.append('/').append(segment);
-        }
-      }
-    }
-    path.append('/').append(tableName);
-    return path.toString();
   }
 
   private String deriveTableLocationFromMetadataLocation(String metadataLocation) {
@@ -140,6 +75,20 @@ public class TableCommitMaterializationLocationSupport {
       return trimmed.substring(0, trimmed.length() - "/metadata".length());
     }
     return null;
+  }
+
+  private String deriveMetadataDirectoryFromTableLocation(String tableLocation) {
+    if (!hasText(tableLocation)) {
+      return null;
+    }
+    String trimmed = stripTrailingSlash(tableLocation);
+    if (!hasText(trimmed)) {
+      return null;
+    }
+    if (trimmed.endsWith("/metadata")) {
+      return trimmed + "/";
+    }
+    return trimmed + "/metadata/";
   }
 
   private String tableLocation(Table tableRecord) {

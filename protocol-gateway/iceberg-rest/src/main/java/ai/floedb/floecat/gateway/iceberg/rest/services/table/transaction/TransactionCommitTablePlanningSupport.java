@@ -35,7 +35,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitPlanner;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.materialization.TableCommitMaterializationService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -59,9 +58,10 @@ public class TransactionCommitTablePlanningSupport {
   @Inject TablePropertyService tablePropertyService;
   @Inject TableCommitMaterializationService materializationService;
 
-  record PlannedExistingTableChange(Table table, long pointerVersion, Response error) {}
+  record PlannedExistingTableChange(
+      Table table, long pointerVersion, String metadataLocation, Response error) {}
 
-  private record PreMaterializedTable(Table table, Response error) {}
+  private record PreMaterializedTable(Table table, String metadataLocation, Response error) {}
 
   PlannedExistingTableChange planExistingTableChange(
       TransactionState currentState,
@@ -93,7 +93,7 @@ public class TransactionCommitTablePlanningSupport {
       if (nullRefRequirementError != null) {
         transactionCommitExecutionSupport.abortIfOpen(
             currentState, txId, "null snapshot-id ref requirement failed");
-        return new PlannedExistingTableChange(null, 0L, nullRefRequirementError);
+        return new PlannedExistingTableChange(null, 0L, null, nullRefRequirementError);
       }
       Supplier<Table> workingTableSupplier = () -> persistedTable;
       Supplier<Table> requirementTableSupplier = () -> persistedTable;
@@ -102,7 +102,7 @@ public class TransactionCommitTablePlanningSupport {
       if (plan.hasError()) {
         transactionCommitExecutionSupport.abortIfOpen(
             currentState, txId, "transaction planning failed");
-        return new PlannedExistingTableChange(null, 0L, plan.error());
+        return new PlannedExistingTableChange(null, 0L, null, plan.error());
       }
 
       PreMaterializedTable preMaterialized =
@@ -118,10 +118,11 @@ public class TransactionCommitTablePlanningSupport {
       if (preMaterialized.error() != null) {
         transactionCommitExecutionSupport.abortIfOpen(
             currentState, txId, "metadata materialization failed before atomic commit");
-        return new PlannedExistingTableChange(null, 0L, preMaterialized.error());
+        return new PlannedExistingTableChange(null, 0L, null, preMaterialized.error());
       }
       if (currentResponse == null) {
-        return new PlannedExistingTableChange(preMaterialized.table(), pointerVersion, null);
+        return new PlannedExistingTableChange(
+            preMaterialized.table(), pointerVersion, preMaterialized.metadataLocation(), null);
       }
 
       ai.floedb.floecat.catalog.rpc.GetTableResponse latestResponse =
@@ -131,7 +132,8 @@ public class TransactionCommitTablePlanningSupport {
               ? latestResponse.getMeta().getPointerVersion()
               : 0L;
       if (latestPointerVersion == pointerVersion) {
-        return new PlannedExistingTableChange(preMaterialized.table(), pointerVersion, null);
+        return new PlannedExistingTableChange(
+            preMaterialized.table(), pointerVersion, preMaterialized.metadataLocation(), null);
       }
       currentResponse = latestResponse;
     }
@@ -139,6 +141,7 @@ public class TransactionCommitTablePlanningSupport {
     return new PlannedExistingTableChange(
         null,
         0L,
+        null,
         IcebergErrorResponses.failure(
             "table changed during commit planning",
             "CommitFailedException",
@@ -184,51 +187,37 @@ public class TransactionCommitTablePlanningSupport {
       TableGatewaySupport tableSupport,
       boolean preMaterializeAssertCreate) {
     if (plannedTable == null || tableSupport == null) {
-      return new PreMaterializedTable(plannedTable, null);
+      return new PreMaterializedTable(plannedTable, null, null);
     }
     if (!preMaterializeAssertCreate
         && TransactionCommitRequestSupport.hasRequirementType(
             requirements, CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE)) {
-      return new PreMaterializedTable(plannedTable, null);
+      return new PreMaterializedTable(plannedTable, null, null);
     }
     String requestedLocation =
         CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
     if (requestedLocation != null && !isValidExplicitMetadataLocation(requestedLocation)) {
       return new PreMaterializedTable(
-          plannedTable, IcebergErrorResponses.validation("metadata-location must be a valid URI"));
+          plannedTable,
+          null,
+          IcebergErrorResponses.validation("metadata-location must be a valid URI"));
     }
     boolean skipMaterialization = requestedLocation != null;
-    IcebergMetadata metadata = null;
-    try {
-      metadata = tableSupport.loadCurrentMetadata(plannedTable);
-    } catch (RuntimeException e) {
-      LOG.debugf(
-          e,
-          "Proceeding with pre-materialization without current metadata for tableId=%s table=%s",
-          tableId == null ? "<missing>" : tableId.getId(),
-          tableName);
-    }
     var commitView =
         responseBuilder.buildInitialResponse(
             tableName,
             plannedTable,
             tableId,
-            null,
             new TableRequests.Commit(List.of(), updates == null ? List.of() : List.copyOf(updates)),
-            tableSupport,
-            metadata);
+            tableSupport);
     TableMetadataView commitMetadata = commitView == null ? null : commitView.metadata();
     if (commitMetadata == null) {
-      return new PreMaterializedTable(plannedTable, null);
+      return new PreMaterializedTable(plannedTable, null, null);
     }
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {
-      return new PreMaterializedTable(
-          canonicalizedTable.toBuilder()
-              .putProperties(MetadataLocationUtil.PRIMARY_KEY, requestedLocation)
-              .build(),
-          null);
+      return new PreMaterializedTable(canonicalizedTable, requestedLocation, null);
     }
     MaterializeMetadataResult result =
         materializationService.materializeMetadata(
@@ -238,17 +227,16 @@ public class TransactionCommitTablePlanningSupport {
             commitMetadata,
             commitView.metadataLocation());
     if (result == null) {
-      return new PreMaterializedTable(plannedTable, null);
+      return new PreMaterializedTable(canonicalizedTable, null, null);
     }
     if (result.error() != null) {
-      return new PreMaterializedTable(plannedTable, result.error());
+      return new PreMaterializedTable(plannedTable, null, result.error());
     }
     String location = result.metadataLocation();
     if (location == null || location.isBlank()) {
-      return new PreMaterializedTable(canonicalizedTable, null);
+      return new PreMaterializedTable(canonicalizedTable, null, null);
     }
-    return new PreMaterializedTable(
-        canonicalizedTable.toBuilder().putProperties("metadata-location", location).build(), null);
+    return new PreMaterializedTable(canonicalizedTable, location, null);
   }
 
   private boolean isValidExplicitMetadataLocation(String metadataLocation) {

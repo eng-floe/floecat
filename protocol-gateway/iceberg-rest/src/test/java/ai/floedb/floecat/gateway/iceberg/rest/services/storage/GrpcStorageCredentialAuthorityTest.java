@@ -43,7 +43,7 @@ import org.mockito.ArgumentCaptor;
 class GrpcStorageCredentialAuthorityTest {
 
   @Test
-  void resolveLocationPrefixPrefersMetadataLocationOverNonStorageUpstreamUri() {
+  void resolveLocationPrefixIgnoresMetadataLocationWhenUpstreamIsNotStorage() {
     Table table =
         Table.newBuilder()
             .putProperties(
@@ -51,8 +51,7 @@ class GrpcStorageCredentialAuthorityTest {
             .setUpstream(UpstreamRef.newBuilder().setUri("https://polaris:8181/api/catalog"))
             .build();
 
-    assertEquals(
-        "s3://warehouse/orders", GrpcStorageCredentialAuthority.resolveLocationPrefix(table));
+    assertNull(GrpcStorageCredentialAuthority.resolveLocationPrefix(table));
   }
 
   @Test

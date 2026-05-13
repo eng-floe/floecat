@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -84,6 +85,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject StorageAuthorityResolver resolver;
   @Inject SecretsManager secretsManager;
   @Inject TableRepository tableRepo;
+  @Inject SnapshotRepository snapshotRepo;
 
   @Override
   public Uni<ListStorageAuthoritiesResponse> listStorageAuthorities(
@@ -423,7 +425,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                     Map.of("id", tableId.getId())));
   }
 
-  private static String resolveTableLocationPrefix(Table table) {
+  private String resolveTableLocationPrefix(Table table) {
     if (table == null) {
       return null;
     }
@@ -443,15 +445,27 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (externalLocation != null) {
       return externalLocation;
     }
-    String metadataLocation = table.getPropertiesMap().get("metadata-location");
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      int idx = metadataLocation.indexOf("/metadata/");
-      if (idx > 0) {
-        return metadataLocation.substring(0, idx);
-      }
-      int slash = metadataLocation.lastIndexOf('/');
-      if (slash > 0) {
-        return metadataLocation.substring(0, slash);
+    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
+    if (currentSnapshotId != null && !currentSnapshotId.isBlank()) {
+      try {
+        long snapshotId = Long.parseLong(currentSnapshotId);
+        String metadataLocation =
+            snapshotRepo
+                .getById(table.getResourceId(), snapshotId)
+                .map(SnapshotRepository::metadataLocation)
+                .orElse(null);
+        if (metadataLocation != null && !metadataLocation.isBlank()) {
+          int idx = metadataLocation.indexOf("/metadata/");
+          if (idx > 0) {
+            return metadataLocation.substring(0, idx);
+          }
+          int slash = metadataLocation.lastIndexOf('/');
+          if (slash > 0) {
+            return metadataLocation.substring(0, slash);
+          }
+        }
+      } catch (NumberFormatException ignored) {
+        // Ignore malformed current snapshot pointers and continue to upstream URI fallback.
       }
     }
     String upstreamUri = table.hasUpstream() ? table.getUpstream().getUri() : null;

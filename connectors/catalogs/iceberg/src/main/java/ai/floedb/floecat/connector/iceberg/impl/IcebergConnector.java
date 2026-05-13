@@ -44,13 +44,6 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -71,19 +64,15 @@ import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
-import org.apache.iceberg.HistoryEntry;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
-import org.apache.iceberg.SortField;
-import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -259,7 +248,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       throw new ConnectorNotReadyException(
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
     }
-    IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
+    String currentMetadataLocation = currentMetadataLocation(table);
 
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : snapshots) {
@@ -286,8 +275,13 @@ public abstract class IcebergConnector implements FloecatConnector {
       String manifestList = snapshot.manifestListLocation();
       long sequenceNumber = snapshot.sequenceNumber();
 
-      Map<String, ByteString> metadataAttachments =
-          (icebergMetadata != null) ? Map.of("iceberg", icebergMetadata.toByteString()) : Map.of();
+      String metadataLocation = null;
+      if (currentMetadataLocation != null
+          && !currentMetadataLocation.isBlank()
+          && table.currentSnapshot() != null
+          && table.currentSnapshot().snapshotId() == snapshotId) {
+        metadataLocation = currentMetadataLocation;
+      }
       out.add(
           new SnapshotBundle(
               snapshotId,
@@ -299,7 +293,7 @@ public abstract class IcebergConnector implements FloecatConnector {
               manifestList,
               summary,
               schemaId,
-              metadataAttachments));
+              metadataLocation));
     }
     return out;
   }
@@ -924,29 +918,6 @@ public abstract class IcebergConnector implements FloecatConnector {
     return builder.build();
   }
 
-  private IcebergMetadata buildIcebergMetadata(String namespaceFq, String tableName, Table table) {
-    TableMetadata metadata = tableMetadata(table);
-    if (metadata == null) {
-      String fallbackLocation = tableMetadataLocation(table);
-      if (fallbackLocation == null || fallbackLocation.isBlank()) {
-        return null;
-      }
-      IcebergMetadata.Builder minimal =
-          IcebergMetadata.newBuilder()
-              .setMetadataLocation(fallbackLocation)
-              .setFormatVersion(2)
-              .setTableUuid(
-                  table
-                      .properties()
-                      .getOrDefault("table-uuid", tableName == null ? "" : tableName));
-      Optional.ofNullable(table.properties().get("current-snapshot-id"))
-          .map(this::safeLong)
-          .ifPresent(minimal::setCurrentSnapshotId);
-      return minimal.build();
-    }
-    return toIcebergMetadata(metadata);
-  }
-
   private TableMetadata tableMetadata(Table table) {
     if (!(table instanceof HasTableOperations hasOps)) {
       return null;
@@ -954,120 +925,13 @@ public abstract class IcebergConnector implements FloecatConnector {
     return hasOps.operations().current();
   }
 
-  private String tableMetadataLocation(Table table) {
-    Map<String, String> props = table.properties();
-    if (props == null || props.isEmpty()) {
+  private String currentMetadataLocation(Table table) {
+    TableMetadata metadata = tableMetadata(table);
+    if (metadata == null || metadata.metadataFileLocation() == null) {
       return null;
     }
-    return props.get("metadata-location");
-  }
-
-  private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {
-    IcebergMetadata.Builder builder =
-        IcebergMetadata.newBuilder()
-            .setTableUuid(metadata.uuid())
-            .setFormatVersion(metadata.formatVersion())
-            .setMetadataLocation(metadata.metadataFileLocation())
-            .setLastUpdatedMs(metadata.lastUpdatedMillis())
-            .setLastColumnId(metadata.lastColumnId())
-            .setCurrentSchemaId(metadata.currentSchemaId())
-            .setDefaultSpecId(metadata.defaultSpecId())
-            .setLastPartitionId(metadata.lastAssignedPartitionId())
-            .setDefaultSortOrderId(metadata.defaultSortOrderId())
-            .setLastSequenceNumber(metadata.lastSequenceNumber());
-
-    Snapshot currentSnapshot = metadata.currentSnapshot();
-    if (currentSnapshot != null) {
-      builder.setCurrentSnapshotId(currentSnapshot.snapshotId());
-    }
-
-    if (metadata.schemas() != null) {
-      for (Schema schema : metadata.schemas()) {
-        builder.addSchemas(
-            IcebergSchema.newBuilder()
-                .setSchemaId(schema.schemaId())
-                .setSchemaJson(SchemaParser.toJson(schema))
-                .addAllIdentifierFieldIds(schema.identifierFieldIds())
-                .setLastColumnId(schema.highestFieldId())
-                .build());
-      }
-    }
-
-    if (metadata.specsById() != null) {
-      for (PartitionSpec spec : metadata.specsById().values()) {
-        PartitionSpecInfo info = toPartitionSpecInfo(spec);
-        if (info != null) {
-          builder.addPartitionSpecs(info);
-        }
-      }
-    }
-
-    if (metadata.sortOrders() != null) {
-      for (SortOrder order : metadata.sortOrders()) {
-        IcebergSortOrder.Builder orderBuilder =
-            IcebergSortOrder.newBuilder().setSortOrderId(order.orderId());
-        for (SortField field : order.fields()) {
-          orderBuilder.addFields(
-              IcebergSortField.newBuilder()
-                  .setSourceFieldId(field.sourceId())
-                  .setTransform(
-                      field.transform() == null ? "identity" : field.transform().toString())
-                  .setDirection(field.direction().name())
-                  .setNullOrder(field.nullOrder().name())
-                  .build());
-        }
-        builder.addSortOrders(orderBuilder.build());
-      }
-    }
-
-    for (HistoryEntry entry : metadata.snapshotLog()) {
-      builder.addSnapshotLog(
-          IcebergSnapshotLogEntry.newBuilder()
-              .setSnapshotId(entry.snapshotId())
-              .setTimestampMs(entry.timestampMillis())
-              .build());
-    }
-
-    for (MetadataLogEntry entry : metadata.previousFiles()) {
-      builder.addMetadataLog(
-          IcebergMetadataLogEntry.newBuilder()
-              .setFile(entry.file())
-              .setTimestampMs(entry.timestampMillis())
-              .build());
-    }
-
-    metadata
-        .refs()
-        .forEach(
-            (name, ref) -> {
-              IcebergRef.Builder refBuilder =
-                  IcebergRef.newBuilder()
-                      .setSnapshotId(ref.snapshotId())
-                      .setType(ref.type().name());
-              if (ref.maxRefAgeMs() != null) {
-                refBuilder.setMaxReferenceAgeMs(ref.maxRefAgeMs());
-              }
-              if (ref.maxSnapshotAgeMs() != null) {
-                refBuilder.setMaxSnapshotAgeMs(ref.maxSnapshotAgeMs());
-              }
-              if (ref.minSnapshotsToKeep() != null) {
-                refBuilder.setMinSnapshotsToKeep(ref.minSnapshotsToKeep());
-              }
-              builder.putRefs(name, refBuilder.build());
-            });
-
-    return builder.build();
-  }
-
-  private Long safeLong(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
+    String location = metadata.metadataFileLocation().trim();
+    return location.isBlank() ? null : location;
   }
 
   @Override

@@ -202,20 +202,6 @@ final class TransactionCommitRequestSupport {
     if (refName == null || refName.isBlank()) {
       return false;
     }
-    try {
-      var metadata = tableSupport == null ? null : tableSupport.loadCurrentMetadata(table);
-      if (metadata != null) {
-        if (metadata.getRefsMap().containsKey(refName)
-            && metadata.getRefsOrThrow(refName).getSnapshotId() >= 0L) {
-          return true;
-        }
-        if ("main".equals(refName) && metadata.getCurrentSnapshotId() > 0L) {
-          return true;
-        }
-      }
-    } catch (RuntimeException ignored) {
-      // Fall back to table properties.
-    }
     if (table == null) {
       return false;
     }

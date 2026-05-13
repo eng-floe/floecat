@@ -128,7 +128,8 @@ public class TableRegisterService {
                 namespaceContext.namespacePath(),
                 tableName,
                 tableRegisterRequestBuilder.mergeImportedProperties(
-                    null, importedMetadata, metadataLocation, ioProperties),
+                    null, importedMetadata, ioProperties),
+                metadataLocation,
                 importedMetadata,
                 List.of(),
                 true),
@@ -169,7 +170,7 @@ public class TableRegisterService {
     List<Long> existingSnapshotIds = listSnapshotIds(tableId);
     Map<String, String> props =
         tableRegisterRequestBuilder.mergeImportedProperties(
-            existing.getPropertiesMap(), importedMetadata, metadataLocation, ioProperties);
+            existing.getPropertiesMap(), importedMetadata, ioProperties);
     Response response =
         transactionCommitService.commitRegister(
             namespaceContext.prefix(),
@@ -178,6 +179,7 @@ public class TableRegisterService {
                 namespaceContext.namespacePath(),
                 tableName,
                 props,
+                metadataLocation,
                 importedMetadata,
                 existingSnapshotIds,
                 false),

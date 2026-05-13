@@ -52,11 +52,8 @@ public class TableCommitMaterializationService {
           IcebergErrorResponses.validation("metadata is required for materialization"));
     }
     metadataLocation =
-        locationResolver.resolveOutputMetadataLocation(
-            namespace, table, tableRecord, metadata, metadataLocation);
-    metadata =
-        locationResolver.normalizeTableLocation(
-            namespace, table, tableRecord, metadata, metadataLocation);
+        locationResolver.resolveOutputMetadataLocation(tableRecord, metadata, metadataLocation);
+    metadata = locationResolver.normalizeTableLocation(tableRecord, metadata, metadataLocation);
     metadata = metadataNormalizer.normalizeRequiredMetadata(metadata);
     boolean requestedLocation = hasText(metadataLocation) || hasText(metadata.metadataLocation());
     try {

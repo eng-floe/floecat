@@ -102,7 +102,7 @@ class ReconcilerServiceInternalsTest {
   private static FloecatConnector.SnapshotBundle bundle(
       long snapshotId, long parentId, long createdAtMs) {
     return new FloecatConnector.SnapshotBundle(
-        snapshotId, parentId, createdAtMs, "", null, 0L, null, Map.of(), 0, Map.of());
+        snapshotId, parentId, createdAtMs, "", null, 0L, null, Map.of(), 0, null);
   }
 
   private static QueuedReconcileWorkerSupport.ProgressListener noopProgress() {

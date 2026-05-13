@@ -59,7 +59,7 @@ class SnapshotRepositoryTest {
     ptr = new InMemoryPointerStore();
     blobs = new InMemoryBlobStore();
     tableRepo = new TableRepository(ptr, blobs);
-    snapshotRepo = new SnapshotRepository(ptr, blobs);
+    snapshotRepo = new SnapshotRepository(ptr, blobs, tableRepo);
   }
 
   @Test
@@ -111,6 +111,9 @@ class SnapshotRepositoryTest {
         snapshotRepo, account, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
     seedSnapshot(
         snapshotRepo, account, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
+    tableRepo.update(
+        td.toBuilder().putProperties("current-snapshot-id", "200").build(),
+        tableRepo.metaFor(tableRid).getPointerVersion());
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -131,7 +134,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotPrefersHighestSnapshotIdWhenUpstreamTimestampTies() {
+  void getCurrentSnapshotUsesTableCurrentSnapshotId() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -139,6 +142,7 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
+    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 1L));
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
@@ -170,7 +174,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotPrefersNewestTimestampBucketOverOlderHigherIds() {
+  void getCurrentSnapshotIgnoresByTimeOrderingWhenTableCurrentSnapshotIsOlder() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -178,6 +182,7 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
+    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 999L));
 
     long newestCreatedMs = clock.millis() - 5_000;
     long olderCreatedMs = newestCreatedMs - 1_000;
@@ -187,12 +192,12 @@ class SnapshotRepositoryTest {
     seedSnapshot(snapshotRepo, account, tableRid, 999, clock.millis(), olderCreatedMs);
 
     Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
-    assertEquals(1L, current.getSnapshotId());
-    assertEquals(Timestamps.fromMillis(newestCreatedMs), current.getUpstreamCreatedAt());
+    assertEquals(999L, current.getSnapshotId());
+    assertEquals(Timestamps.fromMillis(olderCreatedMs), current.getUpstreamCreatedAt());
   }
 
   @Test
-  void getCurrentAndAsOfHandleTimestampTieAcrossPagination() {
+  void getCurrentSnapshotReturnsEmptyWithoutTableCurrentSnapshotId() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -200,24 +205,10 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
+    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, null));
+    seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
-    long tiedCreatedMs = clock.millis() - 10_000;
-    long olderCreatedMs = tiedCreatedMs - 1_000;
-
-    // Repository methods page by 200; seed 205 in the same timestamp bucket to span pages.
-    for (long snapshotId = 0; snapshotId <= 204; snapshotId++) {
-      seedSnapshot(snapshotRepo, account, tableRid, snapshotId, clock.millis(), tiedCreatedMs);
-    }
-    seedSnapshot(snapshotRepo, account, tableRid, 999, clock.millis(), olderCreatedMs);
-
-    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
-    assertEquals(204L, current.getSnapshotId());
-
-    Snapshot asOf =
-        snapshotRepo
-            .getAsOf(tableRid, Timestamps.fromMillis(tiedCreatedMs))
-            .orElseThrow(() -> new AssertionError("expected snapshot at as-of timestamp"));
-    assertEquals(204L, asOf.getSnapshotId());
+    assertTrue(snapshotRepo.getCurrentSnapshot(tableRid).isEmpty());
   }
 
   private void seedSnapshot(
@@ -238,6 +229,37 @@ class SnapshotRepositoryTest {
     snapshotRepo.create(snap);
   }
 
+  private Table tableWithCurrentSnapshot(
+      String account, ResourceId tableId, Long currentSnapshotId) {
+    Table.Builder builder =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("orders")
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(account)
+                    .setId(UUID.randomUUID().toString())
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .build())
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(account)
+                    .setId(UUID.randomUUID().toString())
+                    .setKind(ResourceKind.RK_NAMESPACE)
+                    .build())
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                    .setUri("s3://warehouse/orders/")
+                    .build())
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()));
+    if (currentSnapshotId != null) {
+      builder.putProperties("current-snapshot-id", Long.toString(currentSnapshotId));
+    }
+    return builder.build();
+  }
+
   private static boolean isExpectedRepoAbort(Throwable t) {
     return t instanceof BaseResourceRepository.AbortRetryableException
         && t.getMessage().contains("blob write verification failed");
@@ -253,6 +275,7 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
+    tableRepo.create(tableWithCurrentSnapshot(account, tblId, null));
 
     int WORKERS = 24;
     int OPS = 200;
@@ -310,8 +333,7 @@ class SnapshotRepositoryTest {
     assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
     assertTrue(conflicts.sum() >= 0, "should have some conflicts");
 
-    var cur = snapshotRepo.getCurrentSnapshot(tblId).orElseThrow();
-    assertTrue(cur.getSnapshotId() >= 160, "current snapshot must be in expected range");
+    assertTrue(snapshotRepo.getCurrentSnapshot(tblId).isEmpty());
 
     var next = new StringBuilder();
     var first = snapshotRepo.list(tblId, 5, "", next);

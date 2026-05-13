@@ -30,7 +30,6 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
@@ -40,7 +39,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
@@ -106,8 +104,6 @@ public class TableGatewaySupport {
     if (req.properties() != null && !req.properties().isEmpty()) {
       spec.putAllProperties(sanitizeCreateProperties(req.properties()));
     }
-    String metadataLocation = metadataLocationFromCreate(req);
-    addMetadataLocationProperties(spec, metadataLocation);
     return spec;
   }
 
@@ -122,10 +118,6 @@ public class TableGatewaySupport {
                 .setFormat(TableFormat.TF_ICEBERG)
                 .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                 .build());
-  }
-
-  public void addMetadataLocationProperties(TableSpec.Builder spec, String metadataLocation) {
-    MetadataLocationUtil.setMetadataLocation(spec::putProperties, metadataLocation);
   }
 
   private Map<String, String> sanitizeCreateProperties(Map<String, String> props) {
@@ -147,10 +139,6 @@ public class TableGatewaySupport {
           sanitized.put(key, value);
         });
     return sanitized;
-  }
-
-  public String metadataLocationFromCreate(TableRequests.Create req) {
-    return MetadataLocationUtil.metadataLocation(req == null ? null : req.properties());
   }
 
   public String resolveTableLocation(String requestedLocation, String metadataLocation) {
@@ -270,7 +258,7 @@ public class TableGatewaySupport {
     return credentials;
   }
 
-  public IcebergMetadata loadCurrentMetadata(Table table) {
+  public String loadCurrentMetadataLocation(Table table) {
     if (table == null || !table.hasResourceId()) {
       return null;
     }
@@ -282,39 +270,10 @@ public class TableGatewaySupport {
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
-      var snapshot = response.getSnapshot();
-      IcebergMetadata parsed = SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
-      return parsed;
-    } catch (StatusRuntimeException primaryFailure) {
-      return loadSnapshotByProperty(table);
-    }
-  }
-
-  private IcebergMetadata loadSnapshotByProperty(Table table) {
-    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-    if (snapshotId == null || snapshotId <= 0) {
+      return SnapshotMetadataUtil.metadataLocation(response.getSnapshot());
+    } catch (StatusRuntimeException e) {
       return null;
     }
-    try {
-      return loadSnapshotById(table.getResourceId(), snapshotId);
-    } catch (StatusRuntimeException ignored) {
-      return null;
-    }
-  }
-
-  private IcebergMetadata loadSnapshotById(ResourceId tableId, Long snapshotId) {
-    if (snapshotId == null || snapshotId <= 0) {
-      return null;
-    }
-    SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
-    var response =
-        grpcClient.getSnapshot(
-            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build());
-    if (response == null || !response.hasSnapshot()) {
-      return null;
-    }
-    var snapshot = response.getSnapshot();
-    return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
   }
 
   public ConnectorIntegrationConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {
@@ -329,18 +288,6 @@ public class TableGatewaySupport {
     }
     String resolved = CatalogResolver.resolveCatalog(gatewayConfig, prefix);
     return templates.get(resolved);
-  }
-
-  private static Long propertyLong(Map<String, String> props, String key) {
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException e) {
-      return null;
-    }
   }
 
   private static boolean isUsableIoValue(String value) {

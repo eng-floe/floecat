@@ -166,21 +166,22 @@ class QueryScanServiceIT {
             "table with metadata");
 
     var metadataLocation = "s3://bucket/meta/scan_meta.metadata.json";
-    FieldMask mask = FieldMask.newBuilder().addPaths("properties").build();
-    tbl =
-        table
-            .updateTable(
-                UpdateTableRequest.newBuilder()
-                    .setTableId(tbl.getResourceId())
-                    .setSpec(
-                        TableSpec.newBuilder().putProperties("metadata-location", metadataLocation))
-                    .setUpdateMask(mask)
-                    .build())
-            .getTable();
-
     var snap =
         TestSupport.createSnapshot(
             snapshot, tbl.getResourceId(), 602L, System.currentTimeMillis() - 2000L);
+    FieldMask mask = FieldMask.newBuilder().addPaths("metadata_location").build();
+    snap =
+        snapshot
+            .updateSnapshot(
+                UpdateSnapshotRequest.newBuilder()
+                    .setSpec(
+                        SnapshotSpec.newBuilder()
+                            .setTableId(tbl.getResourceId())
+                            .setSnapshotId(snap.getSnapshotId())
+                            .setMetadataLocation(metadataLocation))
+                    .setUpdateMask(mask)
+                    .build())
+            .getSnapshot();
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "meta");
     attachConnectorToTable(tbl.getResourceId(), connector);
@@ -218,8 +219,7 @@ class QueryScanServiceIT {
     assertEquals(tbl.getResourceId(), info.getTableId());
     assertEquals(tbl.getSchemaJson(), info.getSchemaJson());
     assertEquals(metadataLocation, info.getMetadataLocation());
-    assertEquals(1, info.getPropertiesCount());
-    assertEquals(metadataLocation, info.getPropertiesMap().get("metadata-location"));
+    assertFalse(info.getPropertiesMap().containsKey("metadata-location"));
   }
 
   /** Ensures FetchScanBundle rejects unpinned tables. */

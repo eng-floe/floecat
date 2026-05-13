@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -62,7 +61,7 @@ public class TableDropCleanupService {
           namespace, tableName, catalogName);
       return;
     }
-    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    String metadataLocation = tableGatewaySupport.loadCurrentMetadataLocation(table);
     if (metadataLocation == null || metadataLocation.isBlank()) {
       LOG.debugf(
           "Skipping purge for %s.%s in catalog %s because metadata-location was missing",
