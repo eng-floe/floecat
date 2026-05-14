@@ -743,9 +743,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                 : "OK: namespaces=" + namespaces.size())
                         .build();
                   } catch (Exception e) {
+                    LOG.error("ValidateConnector failed", e);
+                    StringBuilder sb = new StringBuilder("Validation failed:");
+                    for (Throwable t = e; t != null; t = t.getCause()) {
+                      sb.append(" [")
+                          .append(t.getClass().getSimpleName())
+                          .append(": ")
+                          .append(t.getMessage())
+                          .append("]");
+                      if (t.getCause() == t) break;
+                    }
                     return ValidateConnectorResponse.newBuilder()
                         .setOk(false)
-                        .setSummary("Validation failed")
+                        .setSummary(sb.toString())
                         .build();
                   }
                 }),

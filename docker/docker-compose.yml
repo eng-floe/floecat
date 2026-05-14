@@ -33,7 +33,7 @@ services:
       FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED: ${FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED:-true}
       FLOECAT_RECONCILER_MAX_PARALLELISM: ${FLOECAT_RECONCILER_MAX_PARALLELISM:-1}
       FLOECAT_RECONCILER_AUTO_ENABLED: ${FLOECAT_RECONCILER_AUTO_ENABLED:-true}
-      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
+      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/runtime-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
     healthcheck:
       test:
         - CMD-SHELL
@@ -48,7 +48,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
-      - ./polaris:/opt/floecat-certs:ro
+      - ./certs/runtime-truststore.p12:/opt/floecat-certs/runtime-truststore.p12:ro
   executor:
     image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
     pull_policy: ${FLOECAT_PULL_POLICY:-never}
@@ -70,7 +70,7 @@ services:
       FLOECAT_RECONCILER_BACKEND: "remote"
       FLOECAT_RECONCILER_AUTO_ENABLED: "false"
       FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED: ${FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED:-true}
-      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/polaris-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
+      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/runtime-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
       AWS_REGION: ${FLOECAT_EXECUTOR_AWS_REGION-${AWS_REGION:-us-east-1}}
       AWS_DEFAULT_REGION: ${FLOECAT_EXECUTOR_AWS_DEFAULT_REGION-${AWS_DEFAULT_REGION:-us-east-1}}
       AWS_ACCESS_KEY_ID: ${FLOECAT_EXECUTOR_AWS_ACCESS_KEY_ID-${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-test}}}
@@ -90,7 +90,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
-      - ./polaris:/opt/floecat-certs:ro
+      - ./certs/runtime-truststore.p12:/opt/floecat-certs/runtime-truststore.p12:ro
 
   iceberg-rest:
     image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
