@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -318,15 +319,19 @@ public class ReconcilerService {
               effectiveTask.sourceNamespace(),
               effectiveTask.sourceTable(),
               tableId,
-              fullRescan
-                  ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
-                  : FloecatConnector.SnapshotEnumerationOptions.incremental(
-                      enumerationKnownSnapshotIds, targetSnapshotIds));
+              snapshotEnumerationOptions(
+                  scope.snapshotSelection(),
+                  fullRescan,
+                  enumerationKnownSnapshotIds,
+                  targetSnapshotIds));
       if (bundles == null || bundles.isEmpty()) {
         return List.of();
       }
       return bundles.stream()
           .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
+          .filter(
+              bundle ->
+                  targetSnapshotIds.isEmpty() || targetSnapshotIds.contains(bundle.snapshotId()))
           .map(
               bundle ->
                   ReconcileSnapshotTask.of(
@@ -394,6 +399,37 @@ public class ReconcilerService {
       return Set.of();
     }
     return Set.copyOf(fullyCaptured);
+  }
+
+  static FloecatConnector.SnapshotEnumerationOptions snapshotEnumerationOptions(
+      ReconcileSnapshotSelection selection,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    Set<Long> known = knownSnapshotIds == null ? Set.of() : knownSnapshotIds;
+    return switch (effective.kind()) {
+      case CURRENT ->
+          fullRescan
+              ? FloecatConnector.SnapshotEnumerationOptions.fullCurrent(true)
+              : FloecatConnector.SnapshotEnumerationOptions.incrementalCurrent(known);
+      case LATEST_N ->
+          fullRescan
+              ? FloecatConnector.SnapshotEnumerationOptions.fullLatestN(true, effective.latestN())
+              : FloecatConnector.SnapshotEnumerationOptions.incrementalLatestN(
+                  known, effective.latestN());
+      case EXPLICIT ->
+          fullRescan
+              ? FloecatConnector.SnapshotEnumerationOptions.fullExplicit(
+                  true, Set.copyOf(effective.snapshotIds()))
+              : FloecatConnector.SnapshotEnumerationOptions.incrementalExplicit(
+                  known, Set.copyOf(effective.snapshotIds()));
+      case ALL, UNSPECIFIED ->
+          fullRescan
+              ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
+              : FloecatConnector.SnapshotEnumerationOptions.incremental(known, targetSnapshotIds);
+    };
   }
 
   static ReconcileCapturePolicy effectiveCapturePolicy(

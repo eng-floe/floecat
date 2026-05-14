@@ -73,26 +73,29 @@ connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <
     [--dest-ns <a.b[.c]>] [--dest-table <name>]
     [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
     [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
     [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
     [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
-connector trigger <display_name|id> [--full]
+connector trigger <display_name|id> (--full|--incremental)
     --mode metadata-only|metadata-and-capture|capture-only
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
-    [--snapshot <id>|--current] [--columns c1,#id2,...]
+    [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
 connector job <jobId> [--json]
 connector jobs [--connector <id|name>] [--state queued,running,...] [--json]
 connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,running,...] [--json]
@@ -144,9 +147,17 @@ Auth properties (generic options):
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
 - `--auth cache_path=<path>` – optional CLI cache path.
 
+Connector policy examples:
+- `connector create demo-iceberg ICEBERG ... --policy-enabled --policy-mode incremental --policy-current`
+- `connector update demo-iceberg --policy-latest-n 5`
+- `connector update demo-iceberg --policy-all`
+
 Trigger notes:
 - `--mode` is required on `connector trigger`.
 - `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
+  unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,
+  `--snapshot`, or `--all`).
 - Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 
 CLI cache examples:

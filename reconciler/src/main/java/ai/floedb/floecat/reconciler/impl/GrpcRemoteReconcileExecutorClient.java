@@ -29,6 +29,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -767,6 +768,32 @@ class GrpcRemoteReconcileExecutorClient
                     .toList());
     if (effectiveScope.hasCapturePolicy()) {
       builder.setCapturePolicy(toProtoCapturePolicy(effectiveScope.capturePolicy()));
+    }
+    if (effectiveScope.hasSnapshotSelection()) {
+      builder.setSnapshotSelection(toProtoSnapshotSelection(effectiveScope.snapshotSelection()));
+    }
+    return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.SnapshotSelection toProtoSnapshotSelection(
+      ReconcileSnapshotSelection selection) {
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    var builder = ai.floedb.floecat.reconciler.rpc.SnapshotSelection.newBuilder();
+    switch (effective.kind()) {
+      case CURRENT ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_CURRENT);
+      case LATEST_N ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_LATEST_N)
+              .setLatestN(effective.latestN());
+      case EXPLICIT ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_EXPLICIT)
+              .addAllSnapshotIds(effective.snapshotIds());
+      case ALL -> builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_ALL);
+      case UNSPECIFIED ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_UNSPECIFIED);
     }
     return builder.build();
   }

@@ -860,7 +860,7 @@ quit")
         "$compose_cmd" \
         "$label upstream iceberg ${scenario_key} connector" \
         "account t-0001
-connector trigger $scenario_connector_name --full --mode metadata-and-capture --capture stats,index
+connector trigger $scenario_connector_name --full --current --mode metadata-and-capture --capture stats,index
 quit" \
         120 \
         2
@@ -961,7 +961,7 @@ quit")
       "$compose_cmd" \
       "$label upstream delta unity connector" \
       "account t-0001
-connector trigger smoke-upstream-delta-unity --full --mode metadata-and-capture --capture stats,index
+connector trigger smoke-upstream-delta-unity --full --current --mode metadata-and-capture --capture stats,index
 quit" \
       120 \
       2

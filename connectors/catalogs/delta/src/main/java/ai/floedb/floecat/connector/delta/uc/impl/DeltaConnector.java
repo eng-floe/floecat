@@ -115,13 +115,22 @@ abstract class DeltaConnector implements FloecatConnector {
     final Table table = loadTable(tableRoot);
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
+    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
     final Snapshot latestSnapshot = table.getLatestSnapshot(engine);
     if (latestSnapshot == null) {
       return List.of();
     }
     final long latestVersion = latestSnapshot.getVersion();
 
-    List<Long> versions = versionsToEnumerate(latestVersion, fullRescan, knownSnapshotIds);
+    List<Long> versions =
+        versionsToEnumerate(
+            latestVersion,
+            fullRescan,
+            knownSnapshotIds,
+            targetSnapshotIds,
+            options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind(),
+            options == null ? Set.of() : options.selectionSnapshotIds(),
+            options == null ? 0 : options.latestN());
     if (versions.isEmpty()) {
       return List.of();
     }
@@ -421,10 +430,41 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   protected List<Long> versionsToEnumerate(
-      long latestVersion, boolean fullRescan, Set<Long> knownSnapshotIds) {
-    List<Long> versions = new ArrayList<>();
-    for (long version = 0L; version <= latestVersion; version++) {
+      long latestVersion,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      FloecatConnector.SnapshotSelectionKind selectionKind,
+      Set<Long> selectionSnapshotIds,
+      int latestN) {
+    List<Long> candidates = new ArrayList<>();
+    switch (selectionKind) {
+      case CURRENT -> candidates.add(latestVersion);
+      case LATEST_N -> {
+        long start = Math.max(0L, latestVersion - Math.max(0, latestN) + 1L);
+        for (long version = start; version <= latestVersion; version++) {
+          candidates.add(version);
+        }
+      }
+      case EXPLICIT ->
+          selectionSnapshotIds.stream()
+              .filter(version -> version >= 0L && version <= latestVersion)
+              .sorted()
+              .forEach(candidates::add);
+      case ALL -> {
+        for (long version = 0L; version <= latestVersion; version++) {
+          candidates.add(version);
+        }
+      }
+    }
+    List<Long> versions = new ArrayList<>(candidates.size());
+    for (long version : candidates) {
       if (!fullRescan && knownSnapshotIds.contains(version)) {
+        continue;
+      }
+      if (targetSnapshotIds != null
+          && !targetSnapshotIds.isEmpty()
+          && !targetSnapshotIds.contains(version)) {
         continue;
       }
       versions.add(version);

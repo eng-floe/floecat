@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
+import ai.floedb.floecat.connector.rpc.ReconcileSnapshotScope;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
@@ -116,6 +117,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.max_parallel",
           "policy.not_before",
           "policy.mode",
+          "policy.scope",
+          "policy.latest_n",
           "state");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
@@ -245,6 +248,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
+                  validateReconcilePolicy(spec.getPolicy(), corr);
 
                   if (!spec.hasDestination()
                       || (!spec.getDestination().hasCatalogId()
@@ -524,6 +528,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
+                  validateReconcilePolicy(desired.getPolicy(), corr);
                   String accountId = pc.getAccountId();
                   String secretId = connectorId.getId();
                   boolean authTouched =
@@ -709,6 +714,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           auth);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
+                  validateReconcilePolicy(spec.getPolicy(), corr);
 
                   var resolved = resolveCredentials(cfg, spec.getAuth());
                   try (var connector = ConnectorFactory.create(resolved)) {
@@ -937,6 +943,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     validateSecretBearingMap(auth.getPropertiesMap(), corr, "auth.properties");
     validateSecretBearingMap(auth.getHeaderHintsMap(), corr, "auth.header_hints");
+  }
+
+  private static void validateReconcilePolicy(ReconcilePolicy policy, String corr) {
+    if (policy == null) {
+      return;
+    }
+    if (policy.getScope() == ReconcileSnapshotScope.RSS_LATEST_N && policy.getLatestN() <= 0) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.latest_n"));
+    }
   }
 
   private static void validateSecretBearingMap(
@@ -1248,6 +1263,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       if (maskTargets(mask, "policy.mode")) {
         pb.setMode(inPol.getMode());
       }
+      if (maskTargets(mask, "policy.scope")) {
+        pb.setScope(inPol.getScope());
+      }
+      if (maskTargets(mask, "policy.latest_n")) {
+        pb.setLatestN(inPol.getLatestN());
+      }
       b.setPolicy(pb.build());
     }
 
@@ -1359,6 +1380,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("interval_seconds", policy.getInterval().getSeconds())
                 .scalar("interval_nanos", policy.getInterval().getNanos())
                 .scalar("mode", policy.getMode().name())
+                .scalar("scope", policy.getScope().name())
+                .scalar("latest_n", policy.getLatestN())
                 .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
                 .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
 

@@ -57,14 +57,14 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            new FloecatConnector.SnapshotEnumerationOptions(true, Set.of(), Set.of(3L, 5L)));
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L)));
 
     List<Long> snapshotIds =
         bundles.stream()
             .map(FloecatConnector.SnapshotBundle::snapshotId)
             .collect(Collectors.toList());
 
-    assertEquals(List.of(3L, 5L, 7L), snapshotIds);
+    assertEquals(List.of(3L, 5L), snapshotIds);
   }
 
   @Test
@@ -88,7 +88,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            new FloecatConnector.SnapshotEnumerationOptions(false, Set.of(1L, 4L), Set.of()));
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L)));
 
     List<Long> snapshotIds =
         bundles.stream()

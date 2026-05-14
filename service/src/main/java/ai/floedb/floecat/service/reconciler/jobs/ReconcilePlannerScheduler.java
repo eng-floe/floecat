@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -274,7 +275,13 @@ public class ReconcilePlannerScheduler {
           connector.getResourceId().getId(),
           fullRescan,
           CaptureMode.METADATA_AND_CAPTURE,
-          ReconcileScope.of(List.of(), null, null, List.of(), DEFAULT_CAPTURE_POLICY),
+          ReconcileScope.of(
+              List.of(),
+              null,
+              null,
+              List.of(),
+              DEFAULT_CAPTURE_POLICY,
+              effectiveSnapshotSelection(connector)),
           autoExecutionPolicy(),
           "");
       lastEnqueueMs.put(key, now);
@@ -306,6 +313,18 @@ public class ReconcilePlannerScheduler {
 
   private static boolean isAutoPolicyDisabled(Connector connector) {
     return connector != null && connector.hasPolicy() && !connector.getPolicy().getEnabled();
+  }
+
+  private static ReconcileSnapshotSelection effectiveSnapshotSelection(Connector connector) {
+    if (connector != null && connector.hasPolicy()) {
+      return switch (connector.getPolicy().getScope()) {
+        case RSS_CURRENT -> ReconcileSnapshotSelection.current();
+        case RSS_LATEST_N -> ReconcileSnapshotSelection.latestN(connector.getPolicy().getLatestN());
+        case RSS_ALL -> ReconcileSnapshotSelection.all();
+        case RSS_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.current();
+      };
+    }
+    return ReconcileSnapshotSelection.current();
   }
 
   private static ReconcileMode effectiveMode(Connector connector, ReconcileMode defaultMode) {

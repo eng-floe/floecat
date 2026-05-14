@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -1398,6 +1399,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             .reduce((a, b) -> a + "," + b)
             .orElse("");
     String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
+    String snapshotSelection = canonicalSnapshotSelection(scope.snapshotSelection());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
             ? ""
@@ -1469,6 +1471,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "scope.view=" + blankToEmpty(scope.destinationViewId()),
             "scope.capture_requests=" + captureRequests,
             "scope.capture_policy=" + capturePolicy,
+            "scope.snapshot_selection=" + snapshotSelection,
             "policy.execution_class=" + policy.executionClass().name(),
             "policy.lane=" + policy.lane(),
             "policy.attributes=" + canonicalAttributes(policy.attributes()),
@@ -1502,6 +1505,20 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     String outputs =
         policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
     return columns + "|" + outputs;
+  }
+
+  private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
+    if (selection == null || !selection.isSpecified()) {
+      return "";
+    }
+    return selection.kind().name()
+        + "|"
+        + selection.latestN()
+        + "|"
+        + selection.snapshotIds().stream()
+            .map(String::valueOf)
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {

@@ -207,6 +207,34 @@ class ConnectorCliSupportTest {
     }
   }
 
+  @Test
+  void connectorCreateRejectsPolicyLatestNWithoutPositiveValue() throws Exception {
+    try (Harness h = new Harness()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "create",
+                          "new-conn",
+                          "ICEBERG",
+                          "s3://bucket",
+                          "src.ns",
+                          "dest-cat",
+                          "--policy-latest-n",
+                          "0"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertEquals("--policy-latest-n requires a value greater than 0", ex.getMessage());
+    }
+  }
+
   // --- connector delete ---
 
   @Test
@@ -372,6 +400,8 @@ class ConnectorCliSupportTest {
           List.of(
               "trigger",
               CONNECTOR_UUID,
+              "--incremental",
+              "--current",
               "--mode",
               "metadata-and-capture",
               "--capture",
@@ -565,6 +595,7 @@ class ConnectorCliSupportTest {
           List.of(
               "trigger",
               CONNECTOR_UUID,
+              "--incremental",
               "--mode",
               "metadata-and-capture",
               "--capture",

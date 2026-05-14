@@ -219,14 +219,16 @@ within the same instance while continuing to repoll until worker slots are full.
 
 ## Examples & Scenarios
 - **Full metadata rescan**: operator triggers
-  `connector trigger demo-glue --full --mode metadata-only`. The job store enqueues a
+  `connector trigger demo-glue --full --all --mode metadata-only`. The job store enqueues a
   full `PLAN_CONNECTOR` job, the worker poller leases it, and the reconciler walks connector
   discovery and metadata planning across the full upstream history.
 - **Incremental capture run**: operator triggers
-  `connector trigger demo-glue --mode metadata-and-capture --capture stats`. The reconcile path
+  `connector trigger demo-glue --incremental --current --mode metadata-and-capture --capture stats`.
+  The reconcile path
   captures table/file/column stats for matching table work while still allowing metadata mutation.
-- **Incremental run**: without `--full`, `ReconcilerService` restricts its work to the connector's
-  configured `source.table` (if set) and only processes newly discovered snapshots.
+- **Incremental run**: `--incremental` restricts work to snapshots not already ingested, and the
+  explicit snapshot scope (`--current`, `--latest-n`, `--snapshot`, or `--all`) controls which
+  upstream snapshots are eligible for planning.
 
 ## Cross-References
 - Connector SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
