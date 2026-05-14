@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -1110,6 +1111,32 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .toList())
               .build());
     }
+    if (effectiveScope.hasSnapshotSelection()) {
+      builder.setSnapshotSelection(toProtoSnapshotSelection(effectiveScope.snapshotSelection()));
+    }
+    return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.SnapshotSelection toProtoSnapshotSelection(
+      ReconcileSnapshotSelection selection) {
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    var builder = ai.floedb.floecat.reconciler.rpc.SnapshotSelection.newBuilder();
+    switch (effective.kind()) {
+      case CURRENT ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_CURRENT);
+      case LATEST_N ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_LATEST_N)
+              .setLatestN(effective.latestN());
+      case EXPLICIT ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_EXPLICIT)
+              .addAllSnapshotIds(effective.snapshotIds());
+      case ALL -> builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_ALL);
+      case UNSPECIFIED ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_UNSPECIFIED);
+    }
     return builder.build();
   }
 
@@ -1159,7 +1186,26 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+            : ReconcileCapturePolicy.empty(),
+        scope.hasSnapshotSelection()
+            ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
+            : ReconcileSnapshotSelection.unspecified());
+  }
+
+  private static ReconcileSnapshotSelection fromProtoSnapshotSelection(
+      ai.floedb.floecat.reconciler.rpc.SnapshotSelection selection) {
+    if (selection == null) {
+      return ReconcileSnapshotSelection.unspecified();
+    }
+    return switch (selection.getKind()) {
+      case SSK_CURRENT -> ReconcileSnapshotSelection.current();
+      case SSK_LATEST_N -> ReconcileSnapshotSelection.latestN(selection.getLatestN());
+      case SSK_EXPLICIT ->
+          ReconcileSnapshotSelection.explicit(
+              selection.getSnapshotIdsList().stream().map(Long::valueOf).toList());
+      case SSK_ALL -> ReconcileSnapshotSelection.all();
+      case SSK_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.unspecified();
+    };
   }
 
   private static ReconcileTableTask fromProtoTableTask(

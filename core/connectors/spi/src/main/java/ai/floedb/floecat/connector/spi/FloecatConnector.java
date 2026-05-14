@@ -33,6 +33,13 @@ import java.util.Optional;
 import java.util.Set;
 
 public interface FloecatConnector extends Closeable {
+  enum SnapshotSelectionKind {
+    ALL,
+    CURRENT,
+    LATEST_N,
+    EXPLICIT
+  }
+
   String id();
 
   ConnectorFormat format();
@@ -255,27 +262,77 @@ public interface FloecatConnector extends Closeable {
   }
 
   record SnapshotEnumerationOptions(
-      boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      SnapshotSelectionKind selectionKind,
+      Set<Long> selectionSnapshotIds,
+      int latestN) {
     public SnapshotEnumerationOptions {
       knownSnapshotIds =
           knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
+      targetSnapshotIds =
+          targetSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(targetSnapshotIds));
+      selectionKind = selectionKind == null ? SnapshotSelectionKind.ALL : selectionKind;
+      selectionSnapshotIds =
+          selectionSnapshotIds == null
+              ? Set.of()
+              : Set.copyOf(new LinkedHashSet<>(selectionSnapshotIds));
+      latestN = Math.max(0, latestN);
     }
 
     public static SnapshotEnumerationOptions full(boolean fullRescan) {
-      return new SnapshotEnumerationOptions(fullRescan, Set.of(), Set.of());
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
-      return new SnapshotEnumerationOptions(fullRescan, Set.of(), targetSnapshotIds);
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions incremental(Set<Long> knownSnapshotIds) {
-      return new SnapshotEnumerationOptions(false, knownSnapshotIds, Set.of());
+      return new SnapshotEnumerationOptions(
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions incremental(
         Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-      return new SnapshotEnumerationOptions(false, knownSnapshotIds, targetSnapshotIds);
+      return new SnapshotEnumerationOptions(
+          false, knownSnapshotIds, targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+    }
+
+    public static SnapshotEnumerationOptions fullCurrent(boolean fullRescan) {
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+    }
+
+    public static SnapshotEnumerationOptions incrementalCurrent(Set<Long> knownSnapshotIds) {
+      return new SnapshotEnumerationOptions(
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+    }
+
+    public static SnapshotEnumerationOptions fullLatestN(boolean fullRescan, int latestN) {
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+    }
+
+    public static SnapshotEnumerationOptions incrementalLatestN(
+        Set<Long> knownSnapshotIds, int latestN) {
+      return new SnapshotEnumerationOptions(
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+    }
+
+    public static SnapshotEnumerationOptions fullExplicit(
+        boolean fullRescan, Set<Long> snapshotIds) {
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
+    }
+
+    public static SnapshotEnumerationOptions incrementalExplicit(
+        Set<Long> knownSnapshotIds, Set<Long> snapshotIds) {
+      return new SnapshotEnumerationOptions(
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
     }
   }
 

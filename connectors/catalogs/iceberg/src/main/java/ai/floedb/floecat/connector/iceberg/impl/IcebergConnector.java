@@ -243,7 +243,14 @@ public abstract class IcebergConnector implements FloecatConnector {
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
     Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
     List<Snapshot> snapshots =
-        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds);
+        snapshotsToEnumerate(
+            table,
+            fullRescan,
+            knownSnapshotIds,
+            targetSnapshotIds,
+            options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind(),
+            options == null ? Set.of() : options.selectionSnapshotIds(),
+            options == null ? 0 : options.latestN());
     if (shouldRetryEmptyIncrementalEnumeration(table, fullRescan, knownSnapshotIds, snapshots)) {
       throw new ConnectorNotReadyException(
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
@@ -628,42 +635,62 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
-      List<Snapshot> snapshots = new ArrayList<>();
-      for (Snapshot snapshot : table.snapshots()) {
-        if (snapshot == null) {
-          continue;
-        }
-        if (targetSnapshotIds != null
-            && !targetSnapshotIds.isEmpty()
-            && !targetSnapshotIds.contains(snapshot.snapshotId())) {
-          continue;
-        }
-        snapshots.add(snapshot);
-      }
-      return snapshots;
-    }
-    List<Snapshot> incremental = new ArrayList<>();
+      Table table,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      FloecatConnector.SnapshotSelectionKind selectionKind,
+      Set<Long> selectionSnapshotIds,
+      int latestN) {
+    List<Snapshot> eligible = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
       if (snapshot == null) {
         continue;
       }
-      long snapshotId = snapshot.snapshotId();
-      if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
+      if (selectionKind == FloecatConnector.SnapshotSelectionKind.EXPLICIT
+          && (selectionSnapshotIds == null
+              || selectionSnapshotIds.isEmpty()
+              || !selectionSnapshotIds.contains(snapshot.snapshotId()))) {
         continue;
       }
       if (targetSnapshotIds != null
           && !targetSnapshotIds.isEmpty()
-          && !targetSnapshotIds.contains(snapshotId)) {
+          && !targetSnapshotIds.contains(snapshot.snapshotId())) {
+        continue;
+      }
+      eligible.add(snapshot);
+    }
+    eligible.sort(
+        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
+            .thenComparingLong(Snapshot::timestampMillis)
+            .thenComparingLong(Snapshot::snapshotId));
+    if (selectionKind == FloecatConnector.SnapshotSelectionKind.CURRENT) {
+      Snapshot current = table.currentSnapshot();
+      if (current == null) {
+        return List.of();
+      }
+      eligible =
+          eligible.stream()
+              .filter(snapshot -> snapshot.snapshotId() == current.snapshotId())
+              .toList();
+    } else if (selectionKind == FloecatConnector.SnapshotSelectionKind.LATEST_N) {
+      int keep = Math.max(0, latestN);
+      if (keep == 0 || eligible.isEmpty()) {
+        return List.of();
+      }
+      int from = Math.max(0, eligible.size() - keep);
+      eligible = List.copyOf(eligible.subList(from, eligible.size()));
+    }
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      return eligible;
+    }
+    List<Snapshot> incremental = new ArrayList<>();
+    for (Snapshot snapshot : eligible) {
+      if (knownSnapshotIds.contains(snapshot.snapshotId())) {
         continue;
       }
       incremental.add(snapshot);
     }
-    incremental.sort(
-        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
-            .thenComparingLong(Snapshot::timestampMillis)
-            .thenComparingLong(Snapshot::snapshotId));
     return incremental;
   }
 

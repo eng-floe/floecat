@@ -886,8 +886,32 @@ public class SeedRunner {
       if (scope.destinationViewId() != null && !scope.destinationViewId().isBlank()) {
         builder.setDestinationViewId(scope.destinationViewId());
       }
+      if (scope.hasSnapshotSelection()) {
+        builder.setSnapshotSelection(toProtoSnapshotSelection(scope.snapshotSelection()));
+      }
     }
     return builder.setCapturePolicy(fixtureCapturePolicy()).build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.SnapshotSelection toProtoSnapshotSelection(
+      ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection selection) {
+    var builder = ai.floedb.floecat.reconciler.rpc.SnapshotSelection.newBuilder();
+    switch (selection.kind()) {
+      case CURRENT ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_CURRENT);
+      case LATEST_N ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_LATEST_N)
+              .setLatestN(selection.latestN());
+      case EXPLICIT ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_EXPLICIT)
+              .addAllSnapshotIds(selection.snapshotIds());
+      case ALL -> builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_ALL);
+      case UNSPECIFIED ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_UNSPECIFIED);
+    }
+    return builder.build();
   }
 
   private static CapturePolicy fixtureCapturePolicy() {

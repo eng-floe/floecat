@@ -143,11 +143,19 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --props iceberg.source=glue
   ```
 
+- **Configuring connector reconcile policy**
+
+  ```
+  connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
+  connector update glue-iceberg --policy-latest-n 5
+  connector update glue-iceberg --policy-all
+  ```
+
 - **Triggering a connector to read an upstream table**
 
   ```
-  connector trigger glue-iceberg --mode metadata-only
-  connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
+  connector trigger glue-iceberg --incremental --current --mode metadata-only
+  connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
   ```
 
 - **Creating a storage authority for Iceberg REST credential vending**

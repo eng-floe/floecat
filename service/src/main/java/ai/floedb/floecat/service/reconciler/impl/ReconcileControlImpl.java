@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -50,6 +51,7 @@ import ai.floedb.floecat.reconciler.rpc.JobState;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControl;
+import ai.floedb.floecat.reconciler.rpc.SnapshotSelection;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -607,7 +609,26 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileControlImpl::mapCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+            : ReconcileCapturePolicy.empty(),
+        scope.hasSnapshotSelection()
+            ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
+            : ReconcileSnapshotSelection.unspecified());
+  }
+
+  private static ReconcileSnapshotSelection fromProtoSnapshotSelection(
+      SnapshotSelection selection) {
+    if (selection == null) {
+      return ReconcileSnapshotSelection.unspecified();
+    }
+    return switch (selection.getKind()) {
+      case SSK_CURRENT -> ReconcileSnapshotSelection.current();
+      case SSK_LATEST_N -> ReconcileSnapshotSelection.latestN(selection.getLatestN());
+      case SSK_EXPLICIT ->
+          ReconcileSnapshotSelection.explicit(
+              selection.getSnapshotIdsList().stream().map(Long::valueOf).toList());
+      case SSK_ALL -> ReconcileSnapshotSelection.all();
+      case SSK_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.unspecified();
+    };
   }
 
   private static ReconcileCapturePolicy.Output mapCaptureOutput(

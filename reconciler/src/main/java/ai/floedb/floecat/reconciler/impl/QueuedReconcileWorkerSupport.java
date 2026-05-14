@@ -1035,6 +1035,7 @@ class QueuedReconcileWorkerSupport {
     MetadataPassOutcome outcome =
         processMetadataPass(
             ctx,
+            scope,
             tableId,
             connector,
             table.sourceNamespace(),
@@ -1263,6 +1264,7 @@ class QueuedReconcileWorkerSupport {
 
   private MetadataPassOutcome processMetadataPass(
       ReconcileContext ctx,
+      ReconcileScope scope,
       ResourceId tableId,
       FloecatConnector connector,
       String sourceNs,
@@ -1284,10 +1286,11 @@ class QueuedReconcileWorkerSupport {
             sourceNs,
             sourceTable,
             tableId,
-            fullRescan
-                ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
-                : FloecatConnector.SnapshotEnumerationOptions.incremental(
-                    enumerationKnownSnapshotIds, targetSnapshotIds));
+            ReconcilerService.snapshotEnumerationOptions(
+                scope.snapshotSelection(),
+                fullRescan,
+                enumerationKnownSnapshotIds,
+                targetSnapshotIds));
     List<FloecatConnector.SnapshotBundle> bundles =
         filterBundlesForMode(
             filterBundlesForSnapshotScope(upstreamBundles, targetSnapshotIds, progress),

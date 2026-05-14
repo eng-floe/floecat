@@ -2602,6 +2602,69 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorRejectsLatestNPolicyWithoutPositiveCount() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-create-invalid")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setScope(ReconcileSnapshotScope.RSS_LATEST_N)
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void updateConnectorRejectsLatestNPolicyWithoutPositiveCount() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-update-invalid")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setScope(ReconcileSnapshotScope.RSS_LATEST_N)
+                                        .build())
+                                .build())
+                        .setUpdateMask(FieldMask.newBuilder().addPaths("policy.scope").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
   void deleteConnectorIdempotent() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-del", "");
     var c =

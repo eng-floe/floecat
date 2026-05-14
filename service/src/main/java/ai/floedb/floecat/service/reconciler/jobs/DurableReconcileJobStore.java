@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -2633,6 +2634,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public List<ReconcileScope.ScopedCaptureRequest> destinationCaptureRequests = List.of();
     public List<ReconcileCapturePolicy.Column> capturePolicyColumns = List.of();
     public List<String> capturePolicyOutputs = List.of();
+    public String snapshotSelectionKind;
+    public List<Long> snapshotSelectionIds = List.of();
+    public int snapshotSelectionLatestN;
     public String state;
     public String message;
     public long startedAtMs;
@@ -2737,6 +2741,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.destinationCaptureRequests = scope.destinationCaptureRequests();
       rec.capturePolicyColumns = scope.capturePolicy().columns();
       rec.capturePolicyOutputs = scope.capturePolicy().outputs().stream().map(Enum::name).toList();
+      rec.snapshotSelectionKind = scope.snapshotSelection().kind().name();
+      rec.snapshotSelectionIds = scope.snapshotSelection().snapshotIds();
+      rec.snapshotSelectionLatestN = scope.snapshotSelection().latestN();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -2770,7 +2777,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               capturePolicyColumns,
               capturePolicyOutputs.stream()
                   .map(ReconcileCapturePolicy.Output::valueOf)
-                  .collect(java.util.stream.Collectors.toSet())));
+                  .collect(java.util.stream.Collectors.toSet())),
+          new ReconcileSnapshotSelection(
+              snapshotSelectionKind == null || snapshotSelectionKind.isBlank()
+                  ? ReconcileSnapshotSelection.Kind.UNSPECIFIED
+                  : ReconcileSnapshotSelection.Kind.valueOf(snapshotSelectionKind),
+              snapshotSelectionIds,
+              snapshotSelectionLatestN));
     }
 
     ReconcileJobKind jobKind() {

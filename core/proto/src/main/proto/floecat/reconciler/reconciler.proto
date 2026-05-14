@@ -42,6 +42,8 @@ message CaptureScope {
   // Explicit unified capture policy for reconcile execution. Required whenever capture outputs are
   // requested.
   CapturePolicy capture_policy = 6;
+  // Explicit upstream snapshot selection for enumeration/reconcile planning.
+  SnapshotSelection snapshot_selection = 7;
 }
 
 message ScopedCaptureRequest {
@@ -72,6 +74,20 @@ message CaptureColumnPolicy {
 message CapturePolicy {
   repeated CaptureColumnPolicy columns = 1;
   repeated CaptureOutput outputs = 2;
+}
+
+enum SnapshotSelectionKind {
+  SSK_UNSPECIFIED = 0;
+  SSK_CURRENT = 1;
+  SSK_LATEST_N = 2;
+  SSK_EXPLICIT = 3;
+  SSK_ALL = 4;
+}
+
+message SnapshotSelection {
+  SnapshotSelectionKind kind = 1;
+  repeated uint64 snapshot_ids = 2;
+  uint32 latest_n = 3;
 }
 
 // Controls whether reconcile should refresh metadata, run capture outputs, or both.
