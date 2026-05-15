@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
 import com.google.rpc.Status;
@@ -44,7 +45,7 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
-    PrincipalContext principal = InboundContextInterceptor.PC_KEY.get();
+    PrincipalContext principal = ContextStore.get(InboundContextInterceptor.PC_KEY);
 
     String tag = pickLocaleTag(headers, principal);
     final Locale locale =

@@ -138,4 +138,8 @@ public final class EngineContext {
   public boolean hasEngineHeaders() {
     return hasEngineKind;
   }
+
+  public boolean isEmpty() {
+    return !hasEngineKind && engineVersion.isBlank();
+  }
 }

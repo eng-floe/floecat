@@ -26,6 +26,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.service.context.impl.ContextStore;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -130,7 +132,8 @@ class UserObjectsServiceImplTest {
             .setSubject("tester")
             .addPermissions("catalog.read")
             .build();
-    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context grpcCtx =
+        ContextStore.set(Context.current(), InboundContextInterceptor.PC_KEY, principal);
     Context previous = grpcCtx.attach();
     try {
       List<UserObjectsBundleChunk> chunks =
@@ -218,7 +221,8 @@ class UserObjectsServiceImplTest {
             .setSubject("tester")
             .addPermissions("catalog.read")
             .build();
-    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context grpcCtx =
+        ContextStore.set(Context.current(), InboundContextInterceptor.PC_KEY, principal);
     Context previous = grpcCtx.attach();
     try {
       AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();

@@ -24,6 +24,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -75,7 +76,7 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                   () -> {
                     workStartNs.compareAndSet(0L, System.nanoTime());
                     var principalContext = principal.get();
-                    var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
+                    var contextCorrelationId = ContextStore.get(InboundContextInterceptor.CORR_KEY);
                     var principalCorrelationId = principalContext.getCorrelationId();
                     var correlationId =
                         contextCorrelationId != null && !contextCorrelationId.isBlank()

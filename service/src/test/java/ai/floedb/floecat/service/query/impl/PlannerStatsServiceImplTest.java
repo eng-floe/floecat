@@ -38,6 +38,8 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.service.context.impl.ContextStore;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -370,7 +372,7 @@ class PlannerStatsServiceImplTest {
   }
 
   private static <T> T withPrincipal(PrincipalContext principal, Supplier<T> action) {
-    Context ctx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context ctx = ContextStore.set(Context.current(), InboundContextInterceptor.PC_KEY, principal);
     Context previous = ctx.attach();
     try {
       return action.get();

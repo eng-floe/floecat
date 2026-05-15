@@ -17,14 +17,16 @@
 package ai.floedb.floecat.service.credentials;
 
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 
 public final class AuthResolutionContexts {
   private AuthResolutionContexts() {}
 
   public static AuthResolutionContext fromInboundContext() {
-    String sessionToken = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
-    String authorizationToken = InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
+    String sessionToken = ContextStore.get(InboundContextInterceptor.SESSION_HEADER_VALUE_KEY);
+    String authorizationToken =
+        ContextStore.get(InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY);
     return new AuthResolutionContext(
         sessionToken == null ? "" : sessionToken,
         authorizationToken == null ? "" : authorizationToken);

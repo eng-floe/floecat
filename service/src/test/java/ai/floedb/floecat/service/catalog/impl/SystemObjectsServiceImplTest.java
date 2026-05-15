@@ -27,6 +27,7 @@ import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -95,9 +96,10 @@ class SystemObjectsServiceImplTest {
             .addPermissions("system-objects.read")
             .build();
     Context context =
-        Context.current()
-            .withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx)
-            .withValue(PrincipalProvider.KEY, principal);
+        ContextStore.set(
+            Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx),
+            InboundContextInterceptor.PC_KEY,
+            principal);
     Context previous = context.attach();
     try {
       GetSystemObjectsResponse response =
@@ -132,9 +134,10 @@ class SystemObjectsServiceImplTest {
     PrincipalContext principal =
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("tester").build();
     Context context =
-        Context.current()
-            .withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx)
-            .withValue(PrincipalProvider.KEY, principal);
+        ContextStore.set(
+            Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx),
+            InboundContextInterceptor.PC_KEY,
+            principal);
     Context previous = context.attach();
     try {
       assertThatThrownBy(

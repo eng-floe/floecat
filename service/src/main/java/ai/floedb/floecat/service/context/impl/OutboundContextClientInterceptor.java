@@ -61,21 +61,23 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
       @Override
       public void start(Listener<RespT> responseListener, Metadata headers) {
-        String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
+        String sessionHeaderValue =
+            ContextStore.get(InboundContextInterceptor.SESSION_HEADER_VALUE_KEY);
         String authorizationHeaderValue =
-            InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
+            ContextStore.get(InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY);
         var queryId =
-            Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
+            Optional.ofNullable(ContextStore.get(InboundContextInterceptor.QUERY_KEY))
                 .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
 
-        EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+        EngineContext engineContext =
+            ContextStore.get(InboundContextInterceptor.ENGINE_CONTEXT_KEY);
 
         String engineKind =
             firstNonBlank(
                 engineContext != null && engineContext.hasEngineKind()
                     ? engineContext.engineKind()
                     : null,
-                InboundContextInterceptor.ENGINE_KIND_KEY.get(),
+                ContextStore.get(InboundContextInterceptor.ENGINE_KIND_KEY),
                 Baggage.current().getEntryValue("engine_kind"));
 
         // Only propagate an engine version if we are propagating an engine kind.
@@ -84,11 +86,11 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
                 ? null
                 : firstNonBlank(
                     engineContext != null ? engineContext.engineVersion() : null,
-                    InboundContextInterceptor.ENGINE_VERSION_KEY.get(),
+                    ContextStore.get(InboundContextInterceptor.ENGINE_VERSION_KEY),
                     Baggage.current().getEntryValue("engine_version"));
 
         var correlationId =
-            Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
+            Optional.ofNullable(ContextStore.get(InboundContextInterceptor.CORR_KEY))
                 .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
 
         if (sessionHeaderValue != null && sessionHeader.isPresent()) {

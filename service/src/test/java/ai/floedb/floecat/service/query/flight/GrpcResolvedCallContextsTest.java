@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import io.grpc.Context;
 import org.junit.jupiter.api.Test;
@@ -53,7 +54,8 @@ class GrpcResolvedCallContextsTest {
   void currentOrUnauthenticatedUsesDefaultsForMissingOptionalValues() {
     PrincipalContext principal =
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("subject-1").build();
-    Context callContext = Context.ROOT.withValue(InboundContextInterceptor.PC_KEY, principal);
+    Context callContext =
+        ContextStore.set(Context.ROOT, InboundContextInterceptor.PC_KEY, principal);
 
     Context previous = callContext.attach();
     try {
@@ -76,8 +78,7 @@ class GrpcResolvedCallContextsTest {
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("subject-1").build();
     EngineContext engineContext = EngineContext.of("floedb", "9.9.9");
     Context callContext =
-        Context.ROOT
-            .withValue(InboundContextInterceptor.PC_KEY, principal)
+        ContextStore.set(Context.ROOT, InboundContextInterceptor.PC_KEY, principal)
             .withValue(InboundContextInterceptor.QUERY_KEY, "query-1")
             .withValue(InboundContextInterceptor.CORR_KEY, "corr-1")
             .withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext)
