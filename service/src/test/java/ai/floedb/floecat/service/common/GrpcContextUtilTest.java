@@ -19,7 +19,8 @@ package ai.floedb.floecat.service.common;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.context.impl.ContextStore;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import io.grpc.Context;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -38,7 +39,8 @@ class GrpcContextUtilTest {
             .setCorrelationId("cid-123")
             .build();
 
-    Context contextWithPrincipal = Context.current().withValue(PrincipalProvider.KEY, expected);
+    Context contextWithPrincipal =
+        ContextStore.set(Context.current(), InboundContextInterceptor.PC_KEY, expected);
     ExecutorService executor = Executors.newSingleThreadExecutor();
     try {
       CompletableFuture<PrincipalContext> observed = new CompletableFuture<>();
@@ -46,7 +48,10 @@ class GrpcContextUtilTest {
           () -> {
             GrpcContextUtil captured = GrpcContextUtil.capture();
             executor.submit(
-                () -> captured.run(() -> observed.complete(PrincipalProvider.KEY.get())));
+                () ->
+                    captured.run(
+                        () ->
+                            observed.complete(ContextStore.get(InboundContextInterceptor.PC_KEY))));
           });
 
       assertEquals(expected, observed.get(5, TimeUnit.SECONDS));

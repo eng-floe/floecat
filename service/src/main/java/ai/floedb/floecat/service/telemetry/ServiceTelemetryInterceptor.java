@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.grpc.GrpcTelemetryServerInterceptor;
@@ -48,7 +49,7 @@ public final class ServiceTelemetryInterceptor implements ServerInterceptor {
             Objects.requireNonNull(observability, "observability"),
             "service",
             (__call, __headers) -> {
-              PrincipalContext pc = InboundContextInterceptor.PC_KEY.get();
+              PrincipalContext pc = ContextStore.get(InboundContextInterceptor.PC_KEY);
               return pc == null ? null : pc.getAccountId();
             });
   }
@@ -59,24 +60,24 @@ public final class ServiceTelemetryInterceptor implements ServerInterceptor {
     String operation = GrpcTelemetryServerInterceptor.simplifyOp(call.getMethodDescriptor());
     Span span = Span.current();
     if (span.getSpanContext().isValid()) {
-      String queryId = InboundContextInterceptor.QUERY_KEY.get();
+      String queryId = ContextStore.get(InboundContextInterceptor.QUERY_KEY);
       if (queryId != null && !queryId.isBlank()) {
         span.setAttribute("query_id", queryId);
       }
-      String correlationId = InboundContextInterceptor.CORR_KEY.get();
+      String correlationId = ContextStore.get(InboundContextInterceptor.CORR_KEY);
       if (correlationId != null && !correlationId.isBlank()) {
         span.setAttribute("correlation_id", correlationId);
       }
-      PrincipalContext principalContext = InboundContextInterceptor.PC_KEY.get();
+      PrincipalContext principalContext = ContextStore.get(InboundContextInterceptor.PC_KEY);
       if (principalContext != null) {
         span.setAttribute("floecat_account_id", principalContext.getAccountId());
         span.setAttribute("floecat_subject", principalContext.getSubject());
       }
-      String engineVersion = InboundContextInterceptor.ENGINE_VERSION_KEY.get();
+      String engineVersion = ContextStore.get(InboundContextInterceptor.ENGINE_VERSION_KEY);
       if (engineVersion != null && !engineVersion.isBlank()) {
         span.setAttribute("floecat_engine_version", engineVersion);
       }
-      String engineKind = InboundContextInterceptor.ENGINE_KIND_KEY.get();
+      String engineKind = ContextStore.get(InboundContextInterceptor.ENGINE_KIND_KEY);
       if (engineKind != null && !engineKind.isBlank()) {
         span.setAttribute("floecat_engine_kind", engineKind);
       }

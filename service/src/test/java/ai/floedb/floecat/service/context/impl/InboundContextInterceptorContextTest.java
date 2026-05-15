@@ -41,7 +41,7 @@ class InboundContextInterceptorContextTest {
 
     Context previous = callContext.attach();
     try {
-      assertEquals("acct-1", InboundContextInterceptor.PC_KEY.get().getAccountId());
+      assertEquals("acct-1", ContextStore.get(InboundContextInterceptor.PC_KEY).getAccountId());
       assertEquals("query-1", InboundContextInterceptor.QUERY_KEY.get());
       assertEquals("corr-1", InboundContextInterceptor.CORR_KEY.get());
       assertEquals("floedb", InboundContextInterceptor.ENGINE_KIND_KEY.get());

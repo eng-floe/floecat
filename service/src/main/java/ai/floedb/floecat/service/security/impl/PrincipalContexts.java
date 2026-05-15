@@ -17,17 +17,16 @@
 package ai.floedb.floecat.service.security.impl;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.service.context.impl.ContextStore;
-import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
-import io.grpc.Context;
-import jakarta.enterprise.context.ApplicationScoped;
 
-@ApplicationScoped
-public class PrincipalProvider {
-  public static final Context.Key<PrincipalContext> KEY = Context.key("principal");
+public final class PrincipalContexts {
+  private PrincipalContexts() {}
 
-  public PrincipalContext get() {
-    PrincipalContext principalContext = ContextStore.get(InboundContextInterceptor.PC_KEY);
-    return principalContext != null ? principalContext : PrincipalContext.getDefaultInstance();
+  public static boolean isEmpty(PrincipalContext principalContext) {
+    return principalContext == null
+        || (principalContext.getSubject().isBlank()
+            && principalContext.getAccountId().isBlank()
+            && principalContext.getPermissionsCount() == 0
+            && principalContext.getQueryId().isBlank()
+            && principalContext.getCorrelationId().isBlank());
   }
 }

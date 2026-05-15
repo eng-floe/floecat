@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.flight;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 
 /** Resolves Floecat Flight call context from the current shared gRPC request context. */
@@ -27,17 +28,18 @@ final class GrpcResolvedCallContexts {
   private GrpcResolvedCallContexts() {}
 
   static ResolvedCallContext currentOrUnauthenticated() {
-    PrincipalContext principal = InboundContextInterceptor.PC_KEY.get();
+    PrincipalContext principal = ContextStore.get(InboundContextInterceptor.PC_KEY);
     if (principal == null) {
       return ResolvedCallContext.unauthenticated();
     }
 
-    String queryId = InboundContextInterceptor.QUERY_KEY.get();
-    String correlationId = InboundContextInterceptor.CORR_KEY.get();
-    EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
-    String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
+    String queryId = ContextStore.get(InboundContextInterceptor.QUERY_KEY);
+    String correlationId = ContextStore.get(InboundContextInterceptor.CORR_KEY);
+    EngineContext engineContext = ContextStore.get(InboundContextInterceptor.ENGINE_CONTEXT_KEY);
+    String sessionHeaderValue =
+        ContextStore.get(InboundContextInterceptor.SESSION_HEADER_VALUE_KEY);
     String authorizationHeaderValue =
-        InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
+        ContextStore.get(InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY);
 
     return new ResolvedCallContext(
         principal,

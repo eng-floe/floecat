@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.context;
 
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
@@ -49,13 +50,15 @@ public final class EngineContextProvider {
   }
 
   public EngineContext engineContext() {
-    EngineContext ctx = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+    EngineContext ctx = ContextStore.get(InboundContextInterceptor.ENGINE_CONTEXT_KEY);
     if (ctx != null) {
       return ctx;
     }
-    String kind = Optional.ofNullable(InboundContextInterceptor.ENGINE_KIND_KEY.get()).orElse("");
+    String kind =
+        Optional.ofNullable(ContextStore.get(InboundContextInterceptor.ENGINE_KIND_KEY)).orElse("");
     String version =
-        Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get()).orElse("");
+        Optional.ofNullable(ContextStore.get(InboundContextInterceptor.ENGINE_VERSION_KEY))
+            .orElse("");
     return EngineContext.of(kind, version);
   }
 }

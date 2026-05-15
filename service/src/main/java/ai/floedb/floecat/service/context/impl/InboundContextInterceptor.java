@@ -134,6 +134,7 @@ public class InboundContextInterceptor {
             try {
               metadata.put(CORR, correlationId);
             } finally {
+              ContextStore.clear();
               clearMdc();
             }
             super.close(status, metadata);
@@ -165,20 +166,21 @@ public class InboundContextInterceptor {
     String sessionHeaderValue = resolved.sessionHeaderValue();
     String authorizationHeaderValue = resolved.authorizationHeaderValue();
 
-    Context context =
-        base.withValue(PC_KEY, principalContext)
+    ContextStore contextStore =
+        ContextStore.withValue(base, PC_KEY, principalContext)
             .withValue(QUERY_KEY, queryId)
             .withValue(ENGINE_VERSION_KEY, engineVersion)
             .withValue(ENGINE_KIND_KEY, engineKind)
             .withValue(ENGINE_CONTEXT_KEY, engineContext)
             .withValue(CORR_KEY, correlationId);
     if (sessionHeaderValue != null) {
-      context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
+      contextStore = contextStore.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
     }
     if (authorizationHeaderValue != null) {
-      context = context.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
+      contextStore =
+          contextStore.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
     }
-    return context;
+    return contextStore.context();
   }
 
   public static void populateMdc(ResolvedCallContext resolved) {

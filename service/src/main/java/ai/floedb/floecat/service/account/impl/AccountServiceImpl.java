@@ -33,6 +33,7 @@ import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -160,11 +161,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Override
   public Uni<CreateAccountResponse> createAccount(CreateAccountRequest request) {
     var L = LogHelper.start(LOG, "CreateAccount");
+    final var requestPrincipal = principal.get();
+    assertCreateAccountPrincipal(requestPrincipal);
 
     return mapFailures(
             runWithRetry(
                 () -> {
-                  final var pc = principal.get();
+                  final var pc = requestPrincipal;
                   final var corr = pc.getCorrelationId();
                   final var accountId = pc.getAccountId();
                   final var idempotencyAccount =
@@ -255,6 +258,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private static void assertCreateAccountPrincipal(PrincipalContext principalContext) {
+    if (principalContext.getSubject().isBlank() || principalContext.getPermissionsCount() == 0) {
+      throw new IllegalStateException(
+          "createAccount principal context missing required fields: subject="
+              + principalContext.getSubject()
+              + " permissions="
+              + principalContext.getPermissionsList());
+    }
   }
 
   private ResourceId resolveAccountId(

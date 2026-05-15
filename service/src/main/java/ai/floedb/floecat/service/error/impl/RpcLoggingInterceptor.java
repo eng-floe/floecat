@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.service.context.impl.ContextStore;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
@@ -57,8 +58,8 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
     final long startNanos = System.nanoTime();
     final String method = call.getMethodDescriptor().getFullMethodName();
 
-    String contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
-    String contextQueryId = InboundContextInterceptor.QUERY_KEY.get();
+    String contextCorrelationId = ContextStore.get(InboundContextInterceptor.CORR_KEY);
+    String contextQueryId = ContextStore.get(InboundContextInterceptor.QUERY_KEY);
     String headerCorrelationId = headers.get(CORRELATION_ID_KEY);
     String headerQueryId = headers.get(QUERY_ID_KEY);
     final String correlationId =
