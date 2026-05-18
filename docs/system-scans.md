@@ -51,8 +51,12 @@ default FLOECAT catalog ID where applicable.
 
 ## Optional statistics (shared behavior)
 
-Scanners receive a best-effort `StatsProvider` in scan context. Stats are optional and may be
-absent for system/unpinned relations; callers must treat them as advisory only.
+Scanners receive a best-effort `StatsProvider` in scan context.
+
+- System scans resolve table-level stats from the table's latest snapshot (snapshot-independent),
+  even when the query context pins a different snapshot.
+- Column stats still use query snapshot pins when present.
+- Missing stats are allowed and must be treated as advisory only.
 
 ## Memory and cancellation
 
