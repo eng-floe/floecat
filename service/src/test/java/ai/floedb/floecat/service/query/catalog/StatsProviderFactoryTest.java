@@ -314,6 +314,53 @@ class StatsProviderFactoryTest {
     assertEquals(1, repository.tableStatsCalls());
   }
 
+  @Test
+  void systemScanUsesLatestSnapshotStatsEvenWhenQueryPinsOlderSnapshot() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    SnapshotRepository snapshots =
+        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    StatsProviderFactory factory = factory(repository, store, snapshots);
+
+    long olderSnapshotId = 700L;
+    long latestSnapshotId = 701L;
+    snapshots.create(
+        Snapshot.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(olderSnapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_000L))
+            .build());
+    snapshots.create(
+        Snapshot.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(latestSnapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_100L))
+            .build());
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            olderSnapshotId,
+            TableValueStats.newBuilder().setRowCount(10).setTotalSizeBytes(100).build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            latestSnapshotId,
+            TableValueStats.newBuilder().setRowCount(20).setTotalSizeBytes(200).build(),
+            null));
+
+    QueryContext pinnedOld = queryContextWithPin(olderSnapshotId);
+    store.seed(pinnedOld);
+    var provider = factory.forSystemScan(pinnedOld, "corr");
+
+    var view = provider.tableStats(TABLE).orElseThrow();
+    assertEquals(latestSnapshotId, view.snapshotId());
+    assertEquals(20L, view.rowCountValue().orElseThrow());
+    assertEquals(200L, view.totalSizeBytesValue().orElseThrow());
+    assertEquals(1, repository.tableStatsCalls());
+  }
+
   private static QueryContext queryContextWithPin(long snapshotId) {
     return queryContextWithPin("query-" + snapshotId, snapshotId);
   }

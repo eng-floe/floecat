@@ -128,6 +128,9 @@ public final class StatsProviderFactory {
 
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
+      if (allowUnpinnedLatestSnapshotFallback) {
+        return latestSnapshotTableStats(tableId);
+      }
       Optional<StatsProvider.TableStatsView> pinnedStats =
           pinResolver.withPinnedSnapshot(
               tableId,
@@ -138,6 +141,10 @@ public final class StatsProviderFactory {
       if (pinnedStats.isPresent()) {
         return pinnedStats;
       }
+      return Optional.empty();
+    }
+
+    private Optional<StatsProvider.TableStatsView> latestSnapshotTableStats(ResourceId tableId) {
       if (!allowUnpinnedLatestSnapshotFallback || tableId == null || snapshotRepository == null) {
         return Optional.empty();
       }
