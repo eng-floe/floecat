@@ -149,8 +149,7 @@ public final class StatsProviderFactory {
         return Optional.empty();
       }
       OptionalLong latestSnapshotId =
-          latestSnapshotCache.computeIfAbsent(
-              tableId, id -> resolveLatestSnapshotId(id));
+          latestSnapshotCache.computeIfAbsent(tableId, id -> resolveLatestSnapshotId(id));
       if (latestSnapshotId.isEmpty()) {
         return Optional.empty();
       }

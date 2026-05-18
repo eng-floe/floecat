@@ -286,7 +286,8 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    SnapshotRepository snapshots = new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    SnapshotRepository snapshots =
+        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long snapshotId = 777L;
