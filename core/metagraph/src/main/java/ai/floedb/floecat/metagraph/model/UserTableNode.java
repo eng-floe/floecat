@@ -28,8 +28,8 @@ import java.util.Optional;
 /**
  * Immutable table node capturing logical schema and snapshot metadata.
  *
- * <p>The node purposefully limits heavyweight fields (statistics, resolved snapshot sets) to
- * optional references so the cache can keep large catalogs hot without unnecessary churn.
+ * <p>The node purposefully limits heavyweight fields (resolved snapshot sets) to optional
+ * references so the cache can keep large catalogs hot without unnecessary churn.
  */
 public record UserTableNode(
     ResourceId id,
@@ -46,7 +46,6 @@ public record UserTableNode(
     Optional<SnapshotRef> currentSnapshot,
     Optional<SnapshotRef> previousSnapshot,
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
-    Optional<TableStatsSummary> statsSummary,
     List<ResourceId> dependentViews,
     Map<EngineHintKey, EngineHint> engineHints,
     Map<Long, Map<EngineHintKey, EngineHint>> columnHints)
@@ -58,7 +57,6 @@ public record UserTableNode(
     currentSnapshot = currentSnapshot == null ? Optional.empty() : currentSnapshot;
     previousSnapshot = previousSnapshot == null ? Optional.empty() : previousSnapshot;
     resolvedSnapshots = resolvedSnapshots == null ? Optional.empty() : resolvedSnapshots;
-    statsSummary = statsSummary == null ? Optional.empty() : statsSummary;
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
     columnHints = RelationNode.normalizeColumnHints(columnHints);
