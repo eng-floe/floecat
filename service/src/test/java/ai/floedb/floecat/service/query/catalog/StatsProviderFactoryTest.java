@@ -286,11 +286,20 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
     SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+        new SnapshotRepository(
+            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long snapshotId = 777L;
+    when(snapshotTableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .putProperties("current-snapshot-id", Long.toString(snapshotId))
+                    .build()));
     snapshots.create(
         Snapshot.newBuilder()
             .setTableId(TABLE)
@@ -320,12 +329,21 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
     SnapshotRepository snapshots =
-        new SnapshotRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+        new SnapshotRepository(
+            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long olderSnapshotId = 700L;
     long latestSnapshotId = 701L;
+    when(snapshotTableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .putProperties("current-snapshot-id", Long.toString(latestSnapshotId))
+                    .build()));
     snapshots.create(
         Snapshot.newBuilder()
             .setTableId(TABLE)
