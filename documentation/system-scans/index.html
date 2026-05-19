@@ -1789,8 +1789,13 @@ default FLOECAT catalog ID where applicable.</p>
 <li>Projection order is preserved in output schema/batches.</li>
 </ul>
 <h2 id="optional-statistics-shared-behavior">Optional statistics (shared behavior)<a class="headerlink" href="#optional-statistics-shared-behavior" title="Permanent link">&para;</a></h2>
-<p>Scanners receive a best-effort <code>StatsProvider</code> in scan context. Stats are optional and may be
-absent for system/unpinned relations; callers must treat them as advisory only.</p>
+<p>Scanners receive a best-effort <code>StatsProvider</code> in scan context.</p>
+<ul>
+<li>System scans resolve table-level stats from the table's latest snapshot (snapshot-independent),
+  even when the query context pins a different snapshot.</li>
+<li>Column stats still use query snapshot pins when present.</li>
+<li>Missing stats are allowed and must be treated as advisory only.</li>
+</ul>
 <h2 id="memory-and-cancellation">Memory and cancellation<a class="headerlink" href="#memory-and-cancellation" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Per-stream allocators are child allocators with an explicit cap.</li>
