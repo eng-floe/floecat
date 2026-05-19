@@ -81,8 +81,8 @@ class StatsStoreOverrideTest {
 
     var result = orchestrator.resolve(request);
 
-    assertThat(result).isPresent();
-    assertThat(result.orElseThrow()).isEqualTo(columnRecord);
+    assertThat(result.stats()).isPresent();
+    assertThat(result.stats().orElseThrow()).isEqualTo(columnRecord);
     assertThat(TestOverrideStatsStore.putCount()).isEqualTo(1);
     assertThat(TestOverrideStatsStore.getCount()).isGreaterThan(0);
   }

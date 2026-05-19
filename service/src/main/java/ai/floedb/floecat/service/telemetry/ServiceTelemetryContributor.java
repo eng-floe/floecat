@@ -275,6 +275,19 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsRequired,
         statsAllowed,
         "Stats store miss count for batch resolution.");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYNC_OUTCOMES_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED,"
+            + " SKIPPED).");
+    add(
+        defs,
+        ServiceMetrics.Stats.SYNC_LATENCY,
+        statsRequired,
+        statsAllowed,
+        "End-to-end latency of a single sync-first resolution attempt including store reads.");
     return Collections.unmodifiableMap(defs);
   }
 

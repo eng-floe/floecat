@@ -740,6 +740,26 @@
     "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
   },
   {
+    "name": "floecat.service.stats.sync.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "End-to-end latency of a single sync-first resolution attempt including store reads.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.sync_outcomes.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED, SKIPPED).",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
     "name": "floecat.service.storage.account.bytes",
     "type": "GAUGE",
     "unit": "bytes",
