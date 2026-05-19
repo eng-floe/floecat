@@ -46,6 +46,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -228,13 +229,21 @@ public class PlannerStatsBundleService {
                           .connectorType(connectorType)
                           .build())
               .toList();
-      List<Optional<TargetStatsRecord>> resolved =
+      List<StatsResolutionResult> resolved =
           statsOrchestrator.resolveBatch(StatsCaptureBatchRequest.of(requests));
       Map<String, Optional<TargetStatsRecord>> byTarget = new LinkedHashMap<>();
       for (int i = 0; i < requests.size(); i++) {
+        StatsResolutionResult r = i < resolved.size() ? resolved.get(i) : null;
+        if (r != null && !r.hasStats() && r.outcome().name().startsWith("TIMEOUT")) {
+          LOG.debugf(
+              "planner_stats sync_timeout table=%s target=%s detail=%s",
+              requests.get(i).tableId(),
+              StatsTargetIdentity.storageId(requests.get(i).target()),
+              r.outcomeDetail());
+        }
         byTarget.put(
             StatsTargetIdentity.storageId(requests.get(i).target()),
-            i < resolved.size() ? resolved.get(i) : Optional.empty());
+            r != null ? r.stats() : Optional.empty());
       }
       return Map.copyOf(byTarget);
     };
