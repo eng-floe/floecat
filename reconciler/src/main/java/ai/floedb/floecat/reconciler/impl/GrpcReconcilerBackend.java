@@ -97,6 +97,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.types.Hashing;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
@@ -123,6 +124,8 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
+  private static final Set<String> PRESERVED_TABLE_PROPERTIES =
+      ManagedTableProperties.engineManagedKeys();
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -340,12 +343,15 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
           "Destination table display name mismatch for id: " + tableId.getId());
     }
 
+    Map<String, String> mergedProperties =
+        mergedTableProperties(before.getPropertiesMap(), safeProperties(descriptor));
+
     TableSpec spec =
         TableSpec.newBuilder()
             .setDisplayName(descriptor.displayName())
             .setSchemaJson(descriptor.schemaJson())
             .setUpstream(buildUpstream(descriptor))
-            .putAllProperties(safeProperties(descriptor))
+            .putAllProperties(mergedProperties)
             .build();
     var response =
         table(ctx)
@@ -1330,6 +1336,24 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {
     return descriptor.properties() != null ? descriptor.properties() : Map.of();
+  }
+
+  private Map<String, String> mergedTableProperties(
+      Map<String, String> existingProperties, Map<String, String> incomingProperties) {
+    Map<String, String> merged = new LinkedHashMap<>();
+    if (incomingProperties != null && !incomingProperties.isEmpty()) {
+      merged.putAll(incomingProperties);
+    }
+    if (existingProperties == null || existingProperties.isEmpty()) {
+      return merged;
+    }
+    for (String key : PRESERVED_TABLE_PROPERTIES) {
+      String value = existingProperties.get(key);
+      if (value != null && !value.isBlank()) {
+        merged.put(key, value);
+      }
+    }
+    return merged;
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor) {

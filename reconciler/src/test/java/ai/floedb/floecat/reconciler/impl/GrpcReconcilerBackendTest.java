@@ -44,6 +44,8 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -61,15 +63,18 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngine;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import io.grpc.Status;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -678,6 +683,91 @@ class GrpcReconcilerBackendTest {
             "base_relations",
             "creation_search_path",
             "output_columns");
+  }
+
+  @Test
+  void updateTableByIdPreservesManagedIcebergProperties() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns-1")
+            .build();
+
+    Map<String, String> existingManaged = new LinkedHashMap<>();
+    int index = 0;
+    for (String key : ManagedTableProperties.engineManagedKeys()) {
+      existingManaged.put(key, "existing-" + index++);
+    }
+    Map<String, String> incoming = new LinkedHashMap<>();
+    index = 0;
+    for (String key : ManagedTableProperties.engineManagedKeys()) {
+      incoming.put(key, "incoming-" + index++);
+    }
+    incoming.put("write.parquet.compression-codec", "zstd");
+
+    Table.Builder beforeBuilder =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("lineitem");
+    beforeBuilder.putAllProperties(existingManaged);
+    Table before = beforeBuilder.build();
+    Table after =
+        before.toBuilder().putProperties("write.parquet.compression-codec", "zstd").build();
+
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+    when(backend.table.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
+
+    TableSpecDescriptor descriptor =
+        new TableSpecDescriptor(
+            "tpch_1",
+            "lineitem",
+            "{}",
+            incoming,
+            List.of(),
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            ConnectorFormat.CF_ICEBERG,
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_CONNECTOR)
+                .setId("connector-1")
+                .build(),
+            "http://localhost:1234",
+            "tpch_1",
+            "lineitem");
+
+    boolean changed =
+        backend.updateTableById(
+            reconcileContext(),
+            tableId,
+            namespaceId,
+            NameRef.newBuilder().setName("lineitem").build(),
+            descriptor);
+
+    assertThat(changed).isTrue();
+    var updateCaptor = org.mockito.ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(backend.table).updateTable(updateCaptor.capture());
+    Map<String, String> props = updateCaptor.getValue().getSpec().getPropertiesMap();
+    for (Map.Entry<String, String> managed : existingManaged.entrySet()) {
+      assertThat(props.get(managed.getKey())).isEqualTo(managed.getValue());
+    }
+    assertThat(props.get("write.parquet.compression-codec")).isEqualTo("zstd");
   }
 
   private static ReconcileContext reconcileContext() {
