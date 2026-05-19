@@ -321,6 +321,56 @@ public interface ReconcileJobStore {
 
   boolean renewLease(String jobId, String leaseEpoch);
 
+  default ProgressUpdate reportProgress(
+      String jobId,
+      String leaseEpoch,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message) {
+    boolean leaseValid = renewLease(jobId, leaseEpoch);
+    if (leaseValid) {
+      markProgress(
+          jobId,
+          leaseEpoch,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          message);
+    }
+    return new ProgressUpdate(leaseValid, isCancellationRequested(jobId));
+  }
+
+  default ProgressUpdate reportProgress(
+      String jobId,
+      String leaseEpoch,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message) {
+    return reportProgress(
+        jobId,
+        leaseEpoch,
+        tablesScanned,
+        tablesChanged,
+        0L,
+        0L,
+        errors,
+        snapshotsProcessed,
+        statsProcessed,
+        message);
+  }
+
   void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId);
 
   void markProgress(
@@ -544,6 +594,48 @@ public interface ReconcileJobStore {
         statsProcessed);
   }
 
+  boolean applyLeaseOutcome(
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
+
+  default boolean completeLease(
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    return applyLeaseOutcome(
+        jobId,
+        leaseEpoch,
+        completionKind,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
+  }
+
   final class ReconcileJob {
     public final String jobId;
     public final String accountId;
@@ -561,6 +653,8 @@ public interface ReconcileJobStore {
     public final CaptureMode captureMode;
     public final long snapshotsProcessed;
     public final long statsProcessed;
+    public final long indexesProcessed;
+    public final boolean aggregateSummaryPresent;
     public final ReconcileScope scope;
     public final ReconcileExecutionPolicy executionPolicy;
     public final String pinnedExecutorId;
@@ -570,6 +664,12 @@ public interface ReconcileJobStore {
     public final ReconcileViewTask viewTask;
     public final ReconcileSnapshotTask snapshotTask;
     public final ReconcileFileGroupTask fileGroupTask;
+    public final long plannedFileGroups;
+    public final long plannedFiles;
+    public final long completedFileGroups;
+    public final long failedFileGroups;
+    public final long completedFiles;
+    public final long failedFiles;
     public final String parentJobId;
 
     public ReconcileJob(
@@ -651,6 +751,8 @@ public interface ReconcileJobStore {
           captureMode,
           snapshotsProcessed,
           statsProcessed,
+          0L,
+          false,
           scope,
           executionPolicy,
           pinnedExecutorId,
@@ -660,6 +762,12 @@ public interface ReconcileJobStore {
           ReconcileViewTask.empty(),
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
           "");
     }
 
@@ -678,6 +786,8 @@ public interface ReconcileJobStore {
         CaptureMode captureMode,
         long snapshotsProcessed,
         long statsProcessed,
+        long indexesProcessed,
+        boolean aggregateSummaryPresent,
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
         String pinnedExecutorId,
@@ -702,6 +812,8 @@ public interface ReconcileJobStore {
           captureMode,
           snapshotsProcessed,
           statsProcessed,
+          indexesProcessed,
+          aggregateSummaryPresent,
           scope,
           executionPolicy,
           pinnedExecutorId,
@@ -711,6 +823,12 @@ public interface ReconcileJobStore {
           ReconcileViewTask.empty(),
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
           parentJobId);
     }
 
@@ -783,6 +901,8 @@ public interface ReconcileJobStore {
         CaptureMode captureMode,
         long snapshotsProcessed,
         long statsProcessed,
+        long indexesProcessed,
+        boolean aggregateSummaryPresent,
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
         String pinnedExecutorId,
@@ -808,6 +928,8 @@ public interface ReconcileJobStore {
           captureMode,
           snapshotsProcessed,
           statsProcessed,
+          indexesProcessed,
+          aggregateSummaryPresent,
           scope,
           executionPolicy,
           pinnedExecutorId,
@@ -817,6 +939,12 @@ public interface ReconcileJobStore {
           viewTask,
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
           parentJobId);
     }
 
@@ -845,6 +973,12 @@ public interface ReconcileJobStore {
         ReconcileViewTask viewTask,
         ReconcileSnapshotTask snapshotTask,
         ReconcileFileGroupTask fileGroupTask,
+        long plannedFileGroups,
+        long plannedFiles,
+        long completedFileGroups,
+        long failedFileGroups,
+        long completedFiles,
+        long failedFiles,
         String parentJobId) {
       this(
           jobId,
@@ -863,6 +997,8 @@ public interface ReconcileJobStore {
           captureMode,
           snapshotsProcessed,
           statsProcessed,
+          0L,
+          false,
           scope,
           executionPolicy,
           "",
@@ -872,6 +1008,75 @@ public interface ReconcileJobStore {
           viewTask,
           snapshotTask,
           fileGroupTask,
+          plannedFileGroups,
+          plannedFiles,
+          completedFileGroups,
+          failedFileGroups,
+          completedFiles,
+          failedFiles,
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          0L,
+          false,
+          scope,
+          executionPolicy,
+          "",
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
           parentJobId);
     }
 
@@ -945,6 +1150,8 @@ public interface ReconcileJobStore {
         CaptureMode captureMode,
         long snapshotsProcessed,
         long statsProcessed,
+        long indexesProcessed,
+        boolean aggregateSummaryPresent,
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
         String pinnedExecutorId,
@@ -954,6 +1161,78 @@ public interface ReconcileJobStore {
         ReconcileViewTask viewTask,
         ReconcileSnapshotTask snapshotTask,
         ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          indexesProcessed,
+          aggregateSummaryPresent,
+          scope,
+          executionPolicy,
+          pinnedExecutorId,
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          parentJobId);
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        long indexesProcessed,
+        boolean aggregateSummaryPresent,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        long plannedFileGroups,
+        long plannedFiles,
+        long completedFileGroups,
+        long failedFileGroups,
+        long completedFiles,
+        long failedFiles,
         String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
@@ -971,6 +1250,8 @@ public interface ReconcileJobStore {
       this.captureMode = java.util.Objects.requireNonNull(captureMode, "captureMode");
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
+      this.indexesProcessed = indexesProcessed;
+      this.aggregateSummaryPresent = aggregateSummaryPresent;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
       this.executionPolicy =
           executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
@@ -981,8 +1262,96 @@ public interface ReconcileJobStore {
       this.viewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
       this.snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
       this.fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+      this.plannedFileGroups = plannedFileGroups;
+      this.plannedFiles = plannedFiles;
+      this.completedFileGroups = completedFileGroups;
+      this.failedFileGroups = failedFileGroups;
+      this.completedFiles = completedFiles;
+      this.failedFiles = failedFiles;
       this.parentJobId = parentJobId == null ? "" : parentJobId;
     }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          0L,
+          false,
+          scope,
+          executionPolicy,
+          pinnedExecutorId,
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          0L,
+          parentJobId);
+    }
+  }
+
+  final class ProgressUpdate {
+    public final boolean leaseValid;
+    public final boolean cancellationRequested;
+
+    public ProgressUpdate(boolean leaseValid, boolean cancellationRequested) {
+      this.leaseValid = leaseValid;
+      this.cancellationRequested = cancellationRequested;
+    }
+  }
+
+  enum CompletionKind {
+    SUCCEEDED,
+    FAILED_RETRYABLE,
+    FAILED_WAITING,
+    FAILED_TERMINAL,
+    CANCELLED
   }
 
   final class LeasedJob {

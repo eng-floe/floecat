@@ -87,6 +87,9 @@ final class ConnectorCliSupport {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
   private static final String TABLE_TARGET_SPEC = "table";
+  private static final boolean DEBUG_JOB_RENDER =
+      Boolean.getBoolean("floecat.debug.job.render")
+          || System.getenv("FLOECAT_DEBUG_JOB_RENDER") != null;
 
   private ConnectorCliSupport() {}
 
@@ -585,7 +588,7 @@ final class ConnectorCliSupport {
             || !destTable.isBlank()
             || !destView.isBlank()
             || (mode == CaptureMode.CM_CAPTURE_ONLY
-                && (!columns.isEmpty() || !snapshotToken.isBlank() || currentSnapshot))) {
+                && (!columns.isEmpty() || !snapshotToken.isBlank()))) {
           connector =
               connectors
                   .getConnector(
@@ -594,7 +597,7 @@ final class ConnectorCliSupport {
           addResolvedDestinationScope(scope, connector, destNs, destTable, destView, directory);
         }
         if (mode == CaptureMode.CM_CAPTURE_ONLY
-            && (!columns.isEmpty() || !snapshotToken.isBlank() || currentSnapshot)) {
+            && (!columns.isEmpty() || !snapshotToken.isBlank())) {
           if (mode == CaptureMode.CM_METADATA_ONLY) {
             throw new IllegalArgumentException(
                 !columns.isEmpty()
@@ -1237,7 +1240,7 @@ final class ConnectorCliSupport {
               + W_ERRORS
               + "d  %s%n",
           job.getJobId(),
-          formatJobState(job.getState()),
+          formatJobState(job),
           job.getFullRescan() ? "full" : "incremental",
           CliUtils.ts(job.getStartedAt()),
           formatDuration(job.getDurationMs()),
@@ -1247,7 +1250,7 @@ final class ConnectorCliSupport {
           job.getStatsProcessed(),
           job.getIndexesProcessed(),
           job.getErrors(),
-          truncate(singleLineMessage(job.getMessage()), 60));
+          truncate(singleLineMessage(displayJobMessage(job.getMessage())), 60));
     }
   }
 
@@ -1375,7 +1378,7 @@ final class ConnectorCliSupport {
             + errorsWidth
             + "d  %s%n",
         truncate(treeLabel, treeWidth),
-        formatJobState(job.getState()),
+        formatJobState(job),
         formatJobKind(job.getKind()),
         truncate(job.getExecutorId(), executorWidth),
         truncate(formatJobTarget(job), targetWidth),
@@ -1385,7 +1388,7 @@ final class ConnectorCliSupport {
         job.getStatsProcessed(),
         job.getIndexesProcessed(),
         job.getErrors(),
-        truncate(singleLineMessage(job.getMessage()), 60));
+        truncate(singleLineMessage(displayJobMessage(job.getMessage())), 60));
 
     List<GetReconcileJobResponse> children =
         byParent.getOrDefault(job.getJobId(), List.of()).stream()
@@ -1419,7 +1422,7 @@ final class ConnectorCliSupport {
     if (!job.getParentJobId().isBlank()) {
       out.printf("PARENT_JOB:   %s%n", job.getParentJobId());
     }
-    out.printf("STATE:        %s%n", formatJobState(job.getState()));
+    out.printf("STATE:        %s%n", formatJobState(job));
     out.printf("KIND:         %s%n", formatJobKind(job.getKind()));
     out.printf("MODE:         %s%n", job.getFullRescan() ? "full" : "incremental");
     if (!job.getExecutorId().isBlank()) {
@@ -1441,7 +1444,7 @@ final class ConnectorCliSupport {
     out.printf("INDEXES:      %d%n", job.getIndexesProcessed());
     out.printf("ERRORS:       %d%n", job.getErrors());
     if (job.getMessage() != null && !job.getMessage().isBlank()) {
-      var lines = splitErrorLines(job.getMessage());
+      var lines = splitErrorLines(displayJobMessage(job.getMessage()));
       if (lines.isEmpty()) {
         out.println("MESSAGE:");
       } else if (lines.size() == 1) {
@@ -1462,11 +1465,48 @@ final class ConnectorCliSupport {
     return kind.name().replace("RJK_", "").toLowerCase(Locale.ROOT);
   }
 
-  private static String formatJobState(JobState state) {
-    if (state == null || state == JobState.JS_UNSPECIFIED) {
+  private static String formatJobState(GetReconcileJobResponse job) {
+    if (job == null) {
       return "UNSPECIFIED";
     }
-    return state.name().replace("JS_", "");
+    String rendered =
+        switch (job.getStateValue()) {
+          case 0 -> "UNSPECIFIED";
+          case 1 -> "QUEUED";
+          case 2 -> "RUNNING";
+          case 3 -> "SUCCEEDED";
+          case 4 -> "FAILED";
+          case 5 -> "CANCELLING";
+          case 6 -> "CANCELLED";
+          case 7 -> "WAITING";
+          default -> "UNKNOWN(" + job.getStateValue() + ")";
+        };
+    if (DEBUG_JOB_RENDER) {
+      System.err.printf(
+          "DEBUG_JOB_RENDER state jobId=%s stateValue=%d stateEnum=%s rendered=%s message=%s%n",
+          job.getJobId(),
+          job.getStateValue(),
+          job.getState(),
+          rendered,
+          singleLineMessage(job.getMessage()));
+    }
+    return rendered;
+  }
+
+  private static String displayJobMessage(String message) {
+    if (message == null || message.isBlank()) {
+      return "";
+    }
+    String rendered =
+        message.replaceFirst(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:\\s+",
+            "");
+    if (DEBUG_JOB_RENDER) {
+      System.err.printf(
+          "DEBUG_JOB_RENDER message raw=%s rendered=%s%n",
+          singleLineMessage(message), singleLineMessage(rendered));
+    }
+    return rendered;
   }
 
   private static String formatJobTarget(GetReconcileJobResponse job) {
@@ -1849,6 +1889,7 @@ final class ConnectorCliSupport {
     if (s == null || s.isBlank()) return JobState.JS_UNSPECIFIED;
     return switch (s.trim().toUpperCase(Locale.ROOT)) {
       case "QUEUED", "JS_QUEUED" -> JobState.JS_QUEUED;
+      case "WAITING", "JS_WAITING" -> JobState.JS_WAITING;
       case "RUNNING", "JS_RUNNING" -> JobState.JS_RUNNING;
       case "SUCCEEDED", "SUCCESS", "JS_SUCCEEDED" -> JobState.JS_SUCCEEDED;
       case "FAILED", "JS_FAILED" -> JobState.JS_FAILED;

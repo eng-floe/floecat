@@ -25,22 +25,56 @@ public record ReconcileSnapshotTask(
     String sourceNamespace,
     String sourceTable,
     List<ReconcileFileGroupTask> fileGroups,
-    boolean fileGroupPlanRecorded) {
+    boolean fileGroupPlanRecorded,
+    CompletionMode completionMode,
+    String fileGroupPlanBlobUri,
+    int fileGroupCount) {
+
+  public enum CompletionMode {
+    FILE_GROUPS,
+    DIRECT_STATS;
+
+    public static CompletionMode fromString(String value) {
+      if (value == null || value.isBlank()) {
+        return FILE_GROUPS;
+      }
+      try {
+        return CompletionMode.valueOf(value.trim());
+      } catch (IllegalArgumentException ignored) {
+        return FILE_GROUPS;
+      }
+    }
+  }
 
   public ReconcileSnapshotTask {
     tableId = tableId == null ? "" : tableId.trim();
-    snapshotId = Math.max(0L, snapshotId);
+    snapshotId = snapshotId < -1L ? -1L : snapshotId;
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
     fileGroups =
         fileGroups == null
             ? List.of()
             : fileGroups.stream().filter(group -> group != null && !group.isEmpty()).toList();
+    completionMode = completionMode == null ? CompletionMode.FILE_GROUPS : completionMode;
+    fileGroupPlanBlobUri = fileGroupPlanBlobUri == null ? "" : fileGroupPlanBlobUri.trim();
+    fileGroupCount = Math.max(0, fileGroupCount);
+    if (fileGroupCount == 0 && !fileGroups.isEmpty()) {
+      fileGroupCount = fileGroups.size();
+    }
   }
 
   public static ReconcileSnapshotTask of(
       String tableId, long snapshotId, String sourceNamespace, String sourceTable) {
-    return of(tableId, snapshotId, sourceNamespace, sourceTable, List.of(), false);
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        List.of(),
+        false,
+        CompletionMode.FILE_GROUPS,
+        "",
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -49,7 +83,16 @@ public record ReconcileSnapshotTask(
       String sourceNamespace,
       String sourceTable,
       List<ReconcileFileGroupTask> fileGroups) {
-    return of(tableId, snapshotId, sourceNamespace, sourceTable, fileGroups, false);
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        false,
+        CompletionMode.FILE_GROUPS,
+        "",
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -59,29 +102,86 @@ public record ReconcileSnapshotTask(
       String sourceTable,
       List<ReconcileFileGroupTask> fileGroups,
       boolean fileGroupPlanRecorded) {
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        CompletionMode.FILE_GROUPS,
+        "",
+        fileGroups == null ? 0 : fileGroups.size());
+  }
+
+  public static ReconcileSnapshotTask of(
+      String tableId,
+      long snapshotId,
+      String sourceNamespace,
+      String sourceTable,
+      List<ReconcileFileGroupTask> fileGroups,
+      boolean fileGroupPlanRecorded,
+      CompletionMode completionMode) {
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        completionMode,
+        "",
+        fileGroups == null ? 0 : fileGroups.size());
+  }
+
+  public static ReconcileSnapshotTask of(
+      String tableId,
+      long snapshotId,
+      String sourceNamespace,
+      String sourceTable,
+      List<ReconcileFileGroupTask> fileGroups,
+      boolean fileGroupPlanRecorded,
+      CompletionMode completionMode,
+      String fileGroupPlanBlobUri,
+      int fileGroupCount) {
     if ((tableId == null || tableId.isBlank())
-        && snapshotId <= 0L
+        && snapshotId < 0L
         && (sourceNamespace == null || sourceNamespace.isBlank())
         && (sourceTable == null || sourceTable.isBlank())
         && (fileGroups == null || fileGroups.isEmpty())
-        && !fileGroupPlanRecorded) {
+        && !fileGroupPlanRecorded
+        && (completionMode == null || completionMode == CompletionMode.FILE_GROUPS)
+        && (fileGroupPlanBlobUri == null || fileGroupPlanBlobUri.isBlank())
+        && fileGroupCount <= 0) {
       return empty();
     }
     return new ReconcileSnapshotTask(
-        tableId, snapshotId, sourceNamespace, sourceTable, fileGroups, fileGroupPlanRecorded);
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        completionMode,
+        fileGroupPlanBlobUri,
+        fileGroupCount);
   }
 
   public static ReconcileSnapshotTask empty() {
-    return new ReconcileSnapshotTask("", 0L, "", "", List.of(), false);
+    return new ReconcileSnapshotTask(
+        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0);
   }
 
   @JsonIgnore
   public boolean isEmpty() {
     return tableId.isBlank()
-        && snapshotId == 0L
+        && snapshotId < 0L
         && sourceNamespace.isBlank()
         && sourceTable.isBlank()
         && fileGroups.isEmpty()
-        && !fileGroupPlanRecorded;
+        && !fileGroupPlanRecorded
+        && completionMode == CompletionMode.FILE_GROUPS
+        && fileGroupPlanBlobUri.isBlank()
+        && fileGroupCount <= 0;
   }
 }

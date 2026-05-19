@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -91,6 +92,7 @@ public record ReconcileSnapshotSelection(Kind kind, List<Long> snapshotIds, int 
     return ALL;
   }
 
+  @JsonIgnore
   public boolean isSpecified() {
     return kind != Kind.UNSPECIFIED;
   }

@@ -27,6 +27,8 @@ import jakarta.inject.Inject;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -248,28 +250,41 @@ public class RemoteReconcileExecutorPoller {
             config
                 .getOptionalValue("reconciler.lease-heartbeat-ms", Long.class)
                 .orElse(Math.max(DEFAULT_LEASE_HEARTBEAT_MS, suggestedHeartbeatMs)));
-    long[] nextHeartbeatAtMs = {started};
     long cancelCheckEveryMs = Math.max(MIN_CANCEL_CHECK_MS, heartbeatEveryMs / 2L);
     long[] nextCancelCheckAtMs = {started};
     AtomicBoolean leaseValid = new AtomicBoolean(true);
     AtomicBoolean cancellationRequested = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(false);
     ProgressSnapshot progress = new ProgressSnapshot();
-
-    BooleanSupplier heartbeat =
+    ScheduledExecutorService heartbeatExecutor =
+        Executors.newSingleThreadScheduledExecutor(
+            runnable -> {
+              Thread thread = new Thread(runnable, "reconcile-lease-heartbeat-" + lease.jobId);
+              thread.setDaemon(true);
+              return thread;
+            });
+    Runnable heartbeatTask =
         () -> {
           if (!leaseValid.get()) {
-            return false;
+            return;
           }
-          long now = System.currentTimeMillis();
-          if (now < nextHeartbeatAtMs[0]) {
-            return true;
+          try {
+            RemoteReconcileExecutorClient.LeaseHeartbeat response = client.renew(remoteLease);
+            if (!response.leaseValid()) {
+              LOG.warnf(
+                  "Remote reconcile lease heartbeat rejected for job %s executor=%s cancellationRequested=%s",
+                  lease.jobId, executor.id(), response.cancellationRequested());
+            }
+            leaseValid.set(response.leaseValid());
+            cancellationRequested.set(response.cancellationRequested());
+          } catch (RuntimeException e) {
+            leaseValid.set(false);
+            LOG.warnf(
+                e,
+                "Remote reconcile lease heartbeat failed for job %s executor=%s",
+                lease.jobId,
+                executor.id());
           }
-          RemoteReconcileExecutorClient.LeaseHeartbeat response = client.renew(remoteLease);
-          leaseValid.set(response.leaseValid());
-          cancellationRequested.set(response.cancellationRequested());
-          nextHeartbeatAtMs[0] = now + heartbeatEveryMs;
-          return response.leaseValid();
         };
 
     BooleanSupplier shouldStop =
@@ -278,7 +293,7 @@ public class RemoteReconcileExecutorPoller {
             interrupted.set(true);
             return true;
           }
-          if (!heartbeat.getAsBoolean()) {
+          if (!leaseValid.get()) {
             return true;
           }
           long now = System.currentTimeMillis();
@@ -291,6 +306,8 @@ public class RemoteReconcileExecutorPoller {
 
     try {
       client.start(remoteLease, executor.id());
+      heartbeatExecutor.scheduleAtFixedRate(
+          heartbeatTask, heartbeatEveryMs, heartbeatEveryMs, TimeUnit.MILLISECONDS);
       if (shouldStop.getAsBoolean()) {
         completeIfPossible(
             remoteLease,
@@ -342,11 +359,25 @@ public class RemoteReconcileExecutorPoller {
                             snapshotsProcessed,
                             statsProcessed,
                             message);
+                    if (!response.leaseValid()) {
+                      LOG.warnf(
+                          "Remote reconcile progress heartbeat rejected for job %s executor=%s cancellationRequested=%s",
+                          lease.jobId, executor.id(), response.cancellationRequested());
+                    }
                     leaseValid.set(response.leaseValid());
                     cancellationRequested.set(response.cancellationRequested());
                   }));
       if (!leaseValid.get()) {
         LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
+        return;
+      }
+      if (result.completionHandled) {
+        LOG.infof(
+            "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
+            lease.accountId,
+            lease.connectorId,
+            executor.id(),
+            Math.max(0L, System.currentTimeMillis() - started));
         return;
       }
       completeForOutcome(
@@ -402,6 +433,7 @@ public class RemoteReconcileExecutorPoller {
             executor.id());
       }
     } finally {
+      heartbeatExecutor.shutdownNow();
       Thread.interrupted();
     }
   }

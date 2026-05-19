@@ -143,7 +143,15 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             "standalone planner result submission was rejected",
             new IllegalStateException("planner result submission rejected"));
       }
-      return result;
+      return ExecutionResult.successHandled(
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
+          result.errors,
+          result.snapshotsProcessed,
+          result.statsProcessed,
+          result.message);
     }
 
     List<ReconcileSnapshotTask> snapshotTasks =
@@ -162,7 +170,15 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           "standalone planner result submission was rejected",
           new IllegalStateException("planner result submission rejected"));
     }
-    return result;
+    return ExecutionResult.successHandled(
+        result.tablesScanned,
+        result.tablesChanged,
+        result.viewsScanned,
+        result.viewsChanged,
+        result.errors,
+        result.snapshotsProcessed,
+        result.statsProcessed,
+        result.message);
   }
 
   private ExecutionResult executeView(ExecutionContext context, RemoteLeasedJob remoteLease) {
@@ -219,21 +235,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("planner result submission rejected"));
     }
     long viewsChanged = submit.viewsChanged();
-    if (planned.mutation() != null && progressListener != null) {
-      progressListener.onProgress(
-          0,
-          0,
-          1,
-          viewsChanged,
-          0,
-          0,
-          0,
-          "Finished view "
-              + payload.viewTask().sourceNamespace()
-              + "."
-              + payload.viewTask().sourceView());
-    }
-    return ExecutionResult.success(
+    return ExecutionResult.successHandled(
         result.tablesScanned,
         result.tablesChanged,
         result.viewsScanned,

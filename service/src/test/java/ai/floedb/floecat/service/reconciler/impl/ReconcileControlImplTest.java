@@ -39,6 +39,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -46,6 +48,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -56,6 +59,7 @@ import io.grpc.StatusRuntimeException;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class ReconcileControlImplTest {
   private ReconcileControlImpl service;
@@ -397,6 +401,36 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureDefaultsOmittedSnapshotSelectionToCurrent() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+
+    service
+        .startCapture(
+            ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_ONLY)
+                .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
+
+    assertEquals(
+        ReconcileSnapshotSelection.Kind.CURRENT, scopeCaptor.getValue().snapshotSelection().kind());
+  }
+
+  @Test
   void startCaptureRejectsCaptureOnlyScopedRequestsWithNamespaceScope() {
     StatusRuntimeException ex =
         assertThrows(
@@ -486,58 +520,34 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void captureNowCancelsActiveChildrenWhenPlanJobAlreadySucceeded() {
+  void captureNowReturnsSucceededParentWithoutDescendingIntoChildren() {
     var planJob = job("job-1", "JS_SUCCEEDED", 0, 0, 0, "");
     when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
-    when(service.jobs.get("acct", "job-1")).thenReturn(Optional.of(planJob), Optional.of(planJob));
-    when(service.jobs.cancel("acct", "job-1", "capture_now timed out while waiting for completion"))
-        .thenReturn(Optional.empty());
-    when(service.jobs.childJobs("acct", "job-1"))
-        .thenReturn(
-            java.util.List.of(
-                childJob("child-1", "JS_RUNNING", 0, 0, 0, "", "job-1"),
-                childJob("child-2", "JS_QUEUED", 0, 0, 0, "", "job-1")));
-    when(service.jobs.cancel(
-            "acct", "child-1", "capture_now timed out while waiting for completion"))
-        .thenReturn(
-            Optional.of(childJob("child-1", "JS_CANCELLING", 0, 0, 0, "timing out", "job-1")));
-    when(service.jobs.cancel(
-            "acct", "child-2", "capture_now timed out while waiting for completion"))
-        .thenReturn(
-            Optional.of(childJob("child-2", "JS_CANCELLED", 0, 0, 0, "timing out", "job-1")));
+    when(service.jobs.get("acct", "job-1")).thenReturn(Optional.of(planJob));
 
-    assertThrows(
-        StatusRuntimeException.class,
-        () ->
-            service
-                .captureNow(
-                    CaptureNowRequest.newBuilder()
-                        .setMode(
-                            ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
-                        .setScope(captureScope())
-                        .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
-                        .build())
-                .await()
-                .indefinitely());
+    var response =
+        service
+            .captureNow(
+                CaptureNowRequest.newBuilder()
+                    .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                    .setScope(captureScope())
+                    .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
+                    .build())
+            .await()
+            .indefinitely();
 
-    verify(service.jobs, times(1))
-        .cancel("acct", "child-1", "capture_now timed out while waiting for completion");
-    verify(service.jobs, times(1))
-        .cancel("acct", "child-2", "capture_now timed out while waiting for completion");
-    verify(service.cancellations, times(1)).requestCancel("child-1");
+    assertEquals(0L, response.getTablesScanned());
+    verify(service.jobs, never())
+        .cancel("acct", "job-1", "capture_now timed out while waiting for completion");
+    verify(service.jobs, never()).childJobs("acct", "job-1");
   }
 
   @Test
   void getReconcileJobPrefersFailedPlanStateOverQueuedChildren() {
     when(service.jobs.get("acct", "plan-1"))
-        .thenReturn(Optional.of(job("plan-1", "JS_FAILED", 0, 0, 0, "planning failed")));
-    when(service.jobs.childJobs("acct", "plan-1"))
-        .thenReturn(
-            java.util.List.of(
-                childJob("child-1", "JS_QUEUED", 1, 0, 0, "", "plan-1"),
-                childJob("child-2", "JS_RUNNING", 2, 0, 0, "", "plan-1")));
+        .thenReturn(Optional.of(job("plan-1", "JS_FAILED", 3, 0, 0, "planning failed")));
 
     var response =
         service
@@ -553,12 +563,7 @@ class ReconcileControlImplTest {
   @Test
   void getReconcileJobKeepsRunningPlanStateEvenWhenChildrenHaveSucceeded() {
     when(service.jobs.get("acct", "plan-1"))
-        .thenReturn(Optional.of(job("plan-1", "JS_RUNNING", 4, 0, 0, "")));
-    when(service.jobs.childJobs("acct", "plan-1"))
-        .thenReturn(
-            java.util.List.of(
-                childJob("child-1", "JS_SUCCEEDED", 2, 1, 0, "", "plan-1"),
-                childJob("child-2", "JS_SUCCEEDED", 3, 2, 0, "", "plan-1")));
+        .thenReturn(Optional.of(job("plan-1", "JS_RUNNING", 5, 3, 0, "")));
 
     var response =
         service
@@ -574,14 +579,7 @@ class ReconcileControlImplTest {
   @Test
   void getReconcileJobKeepsConnectorPlanRunningWhileNestedSnapshotChildrenRun() {
     when(service.jobs.get("acct", "plan-1"))
-        .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 0, 0, 0, "")));
-    when(service.jobs.childJobs("acct", "plan-1"))
-        .thenReturn(
-            java.util.List.of(childJob("table-plan-1", "JS_SUCCEEDED", 1, 1, 0, "", "plan-1")));
-    when(service.jobs.childJobs("acct", "table-plan-1"))
-        .thenReturn(
-            java.util.List.of(
-                snapshotChildJob("snapshot-1", "JS_RUNNING", 0, 0, 0, "", "table-plan-1")));
+        .thenReturn(Optional.of(job("plan-1", "JS_RUNNING", 1, 1, 0, "")));
 
     var response =
         service
@@ -639,9 +637,7 @@ class ReconcileControlImplTest {
   @Test
   void getReconcileJobDoesNotDoubleCountPlannerProgress() {
     when(service.jobs.get("acct", "plan-1"))
-        .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 7, 4, 0, "")));
-    when(service.jobs.childJobs("acct", "plan-1"))
-        .thenReturn(java.util.List.of(childJob("child-1", "JS_SUCCEEDED", 3, 2, 0, "", "plan-1")));
+        .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 3, 2, 0, "")));
 
     var response =
         service
@@ -656,12 +652,29 @@ class ReconcileControlImplTest {
 
   @Test
   void getReconcileJobReportsSnapshotFileGroupCompletionCounts() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            100L,
+            "ns",
+            "tbl",
+            java.util.List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/snapshot-1/snapshot-plan/plan.json",
+            2);
+    ReconcileFileGroupTask groupOne =
+        ReconcileFileGroupTask.of(
+            "snapshot-1", "group-1", "table-1", 100L, java.util.List.of("a.parquet"));
+    ReconcileFileGroupTask groupTwo =
+        ReconcileFileGroupTask.of(
+            "snapshot-1", "group-2", "table-1", 100L, java.util.List.of("b.parquet", "c.parquet"));
     var snapshotJob =
         new ReconcileJobStore.ReconcileJob(
             "snapshot-1",
             "acct",
             "connector-1",
-            "JS_SUCCEEDED",
+            "JS_FAILED",
             "",
             0L,
             0L,
@@ -680,28 +693,16 @@ class ReconcileControlImplTest {
             ReconcileJobKind.PLAN_SNAPSHOT,
             null,
             null,
-            ReconcileSnapshotTask.of(
-                "table-1",
-                100L,
-                "ns",
-                "tbl",
-                java.util.List.of(
-                    ReconcileFileGroupTask.of(
-                        "snapshot-1", "group-1", "table-1", 100L, java.util.List.of("a.parquet")),
-                    ReconcileFileGroupTask.of(
-                        "snapshot-1",
-                        "group-2",
-                        "table-1",
-                        100L,
-                        java.util.List.of("b.parquet", "c.parquet")))),
+            snapshotTask,
             ReconcileFileGroupTask.empty(),
+            2L,
+            3L,
+            1L,
+            1L,
+            1L,
+            2L,
             "plan-table-1");
     when(service.jobs.get("acct", "snapshot-1")).thenReturn(Optional.of(snapshotJob));
-    when(service.jobs.childJobs("acct", "snapshot-1"))
-        .thenReturn(
-            java.util.List.of(
-                fileGroupChildJob("group-job-1", "JS_SUCCEEDED", "snapshot-1", "group-1"),
-                fileGroupChildJob("group-job-2", "JS_FAILED", "snapshot-1", "group-2")));
 
     var response =
         service
@@ -720,6 +721,20 @@ class ReconcileControlImplTest {
 
   @Test
   void getReconcileJobUsesPerFileResultsForPartialFailureCounts() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            100L,
+            "ns",
+            "tbl",
+            java.util.List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/snapshot-2/snapshot-plan/plan.json",
+            1);
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "snapshot-2", "group-1", "table-1", 100L, java.util.List.of("a.parquet", "b.parquet"));
     var snapshotJob =
         new ReconcileJobStore.ReconcileJob(
             "snapshot-2",
@@ -744,63 +759,16 @@ class ReconcileControlImplTest {
             ReconcileJobKind.PLAN_SNAPSHOT,
             null,
             null,
-            ReconcileSnapshotTask.of(
-                "table-1",
-                100L,
-                "ns",
-                "tbl",
-                java.util.List.of(
-                    ReconcileFileGroupTask.of(
-                        "snapshot-2",
-                        "group-1",
-                        "table-1",
-                        100L,
-                        java.util.List.of("a.parquet", "b.parquet")))),
+            snapshotTask,
             ReconcileFileGroupTask.empty(),
+            1L,
+            2L,
+            0L,
+            1L,
+            1L,
+            1L,
             "plan-table-1");
     when(service.jobs.get("acct", "snapshot-2")).thenReturn(Optional.of(snapshotJob));
-    when(service.jobs.childJobs("acct", "snapshot-2"))
-        .thenReturn(
-            java.util.List.of(
-                new ReconcileJobStore.ReconcileJob(
-                    "group-job-1",
-                    "acct",
-                    "connector-1",
-                    "JS_FAILED",
-                    "",
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    false,
-                    ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode
-                        .METADATA_AND_CAPTURE,
-                    0L,
-                    0L,
-                    null,
-                    null,
-                    "executor-1",
-                    ReconcileJobKind.EXEC_FILE_GROUP,
-                    null,
-                    null,
-                    ReconcileSnapshotTask.empty(),
-                    ReconcileFileGroupTask.of(
-                        "snapshot-2",
-                        "group-1",
-                        "table-1",
-                        100L,
-                        java.util.List.of(),
-                        java.util.List.of(
-                            ReconcileFileResult.succeeded(
-                                "a.parquet",
-                                2L,
-                                ReconcileIndexArtifactResult.of(
-                                    "s3://bucket/index/a.parquet.index", "parquet", 1)),
-                            ReconcileFileResult.failed("b.parquet", "boom"))),
-                    "snapshot-2")));
 
     var response =
         service
@@ -811,6 +779,69 @@ class ReconcileControlImplTest {
     assertEquals(2L, response.getFilesTotal());
     assertEquals(1L, response.getFilesCompleted());
     assertEquals(1L, response.getFilesFailed());
+  }
+
+  @Test
+  void listReconcileJobsSkipsExpensiveSnapshotFileGroupCounts() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            100L,
+            "ns",
+            "tbl",
+            java.util.List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/snapshot-1/snapshot-plan/plan.json",
+            2);
+    var snapshotJob =
+        new ReconcileJobStore.ReconcileJob(
+            "snapshot-1",
+            "acct",
+            "connector-1",
+            "JS_RUNNING",
+            "",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            7L,
+            0L,
+            false,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+            1L,
+            2L,
+            null,
+            null,
+            "",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            null,
+            null,
+            snapshotTask,
+            ReconcileFileGroupTask.empty(),
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            "plan-table-1");
+    when(service.jobs.list("acct", 100, "", "", java.util.Set.of()))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(snapshotJob), ""));
+
+    var response =
+        service
+            .listReconcileJobs(ListReconcileJobsRequest.newBuilder().build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getJobsCount());
+    assertEquals(1L, response.getJobs(0).getSnapshotsProcessed());
+    assertEquals(2L, response.getJobs(0).getStatsProcessed());
+    assertEquals(0L, response.getJobs(0).getFileGroupsTotal());
+    assertEquals(0L, response.getJobs(0).getFilesTotal());
+    verify(service.jobs, never()).childJobs("acct", "snapshot-1");
   }
 
   @Test
@@ -867,36 +898,79 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void cancelReconcileJobCancelsActiveChildrenWhenPlanJobAlreadySucceeded() {
+  void cancelReconcileJobRejectsAlreadySucceededParentWhenStoreDidNotCancelIt() {
     var planJob = job("plan-1", "JS_SUCCEEDED", 0, 0, 0, "");
-    var childOne = childJob("child-1", "JS_RUNNING", 0, 0, 0, "", "plan-1");
-    var childTwo = childJob("child-2", "JS_QUEUED", 0, 0, 0, "", "plan-1");
     when(service.jobs.cancel("acct", "plan-1", "stop")).thenReturn(Optional.empty());
-    when(service.jobs.get("acct", "plan-1"))
-        .thenReturn(Optional.of(planJob), Optional.of(planJob), Optional.of(planJob));
-    when(service.jobs.childJobs("acct", "plan-1"))
-        .thenReturn(
-            java.util.List.of(childOne, childTwo),
-            java.util.List.of(
-                childJob("child-1", "JS_CANCELLING", 0, 0, 0, "stop", "plan-1"),
-                childJob("child-2", "JS_CANCELLED", 0, 0, 0, "stop", "plan-1")));
-    when(service.jobs.cancel("acct", "child-1", "stop"))
-        .thenReturn(Optional.of(childJob("child-1", "JS_CANCELLING", 0, 0, 0, "stop", "plan-1")));
-    when(service.jobs.cancel("acct", "child-2", "stop"))
-        .thenReturn(Optional.of(childJob("child-2", "JS_CANCELLED", 0, 0, 0, "stop", "plan-1")));
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(planJob));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .cancelReconcileJob(
+                        CancelReconcileJobRequest.newBuilder()
+                            .setJobId("plan-1")
+                            .setReason("stop")
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    verify(service.jobs, never()).childJobs("acct", "plan-1");
+  }
+
+  @Test
+  void getReconcileJobUsesPreAggregatedSummaryWithoutChildTraversal() {
+    var aggregateJob =
+        new ReconcileJobStore.ReconcileJob(
+            "plan-1",
+            "acct",
+            "connector-1",
+            "JS_FAILED",
+            "child-1: boom",
+            10L,
+            20L,
+            3L,
+            2L,
+            4L,
+            1L,
+            5L,
+            false,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+            6L,
+            7L,
+            8L,
+            true,
+            ReconcileScope.empty(),
+            null,
+            "",
+            "worker-1",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            null,
+            null,
+            ReconcileFileGroupTask.empty(),
+            "");
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(aggregateJob));
 
     var response =
         service
-            .cancelReconcileJob(
-                CancelReconcileJobRequest.newBuilder().setJobId("plan-1").setReason("stop").build())
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("plan-1").build())
             .await()
             .indefinitely();
 
-    assertEquals(
-        ai.floedb.floecat.reconciler.rpc.JobState.JS_CANCELLING, response.getJob().getState());
-    verify(service.jobs).cancel("acct", "child-1", "stop");
-    verify(service.jobs).cancel("acct", "child-2", "stop");
-    verify(service.cancellations).requestCancel("child-1");
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_FAILED, response.getState());
+    assertEquals(3L, response.getTablesScanned());
+    assertEquals(2L, response.getTablesChanged());
+    assertEquals(4L, response.getViewsScanned());
+    assertEquals(1L, response.getViewsChanged());
+    assertEquals(5L, response.getErrors());
+    assertEquals(6L, response.getSnapshotsProcessed());
+    assertEquals(7L, response.getStatsProcessed());
+    assertEquals(8L, response.getIndexesProcessed());
+    assertEquals("worker-1", response.getExecutorId());
+    verify(service.jobs, never()).childJobs("acct", "plan-1");
   }
 
   private static ResourceId connectorId() {
@@ -942,8 +1016,11 @@ class ReconcileControlImplTest {
         ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
+        0L,
+        true,
         null,
         null,
+        "",
         "",
         ReconcileJobKind.PLAN_CONNECTOR,
         null,

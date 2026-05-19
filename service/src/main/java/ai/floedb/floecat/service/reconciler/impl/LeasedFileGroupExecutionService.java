@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -58,6 +59,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
@@ -74,22 +76,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask =
-        FileGroupExecutionSupport.resolvePlannedTask(
-                jobs,
-                lease,
-                lease.fileGroupTask == null ? ReconcileFileGroupTask.empty() : lease.fileGroupTask)
-            .orElseThrow(
-                () ->
-                    Status.FAILED_PRECONDITION
-                        .withDescription(
-                            "planned file group could not be resolved from parent snapshot plan")
-                        .asRuntimeException());
+    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(lease.accountId)
@@ -139,17 +132,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask =
-        FileGroupExecutionSupport.resolvePlannedTask(
-                jobs,
-                lease,
-                lease.fileGroupTask == null ? ReconcileFileGroupTask.empty() : lease.fileGroupTask)
-            .orElseThrow(
-                () ->
-                    Status.FAILED_PRECONDITION
-                        .withDescription(
-                            "planned file group could not be resolved from parent snapshot plan")
-                        .asRuntimeException());
+    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(lease.accountId)
@@ -220,17 +203,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String message) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask =
-        FileGroupExecutionSupport.resolvePlannedTask(
-                jobs,
-                lease,
-                lease.fileGroupTask == null ? ReconcileFileGroupTask.empty() : lease.fileGroupTask)
-            .orElseThrow(
-                () ->
-                    Status.FAILED_PRECONDITION
-                        .withDescription(
-                            "planned file group could not be resolved from parent snapshot plan")
-                        .asRuntimeException());
+    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(lease.accountId)
@@ -450,6 +423,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
           .withDescription("reconcile job is not an EXEC_FILE_GROUP job")
           .asRuntimeException();
     }
+    if (!isActiveLeasedState(job.state)) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "reconcile job is no longer active for lease "
+                  + jobId
+                  + " state="
+                  + (job.state == null ? "" : job.state))
+          .asRuntimeException();
+    }
     return new ReconcileJobStore.LeasedJob(
         job.jobId,
         job.accountId,
@@ -495,11 +477,41 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return hashFingerprint(value.getBytes(StandardCharsets.UTF_8));
   }
 
+  private ReconcileFileGroupTask resolvePlannedTask(ReconcileJobStore.LeasedJob lease) {
+    ReconcileFileGroupTask task =
+        lease == null || lease.fileGroupTask == null
+            ? ReconcileFileGroupTask.empty()
+            : lease.fileGroupTask;
+    if (jobs == null
+        || lease == null
+        || lease.parentJobId == null
+        || lease.parentJobId.isBlank()
+        || lease.accountId == null
+        || lease.accountId.isBlank()) {
+      throw unresolvedPlannedTask();
+    }
+    return jobs.get(lease.accountId, lease.parentJobId)
+        .map(parent -> parent.snapshotTask)
+        .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
+        .flatMap(snapshotTask -> snapshotPlanBlobStore.findFileGroup(snapshotTask, task))
+        .orElseThrow(this::unresolvedPlannedTask);
+  }
+
+  private StatusRuntimeException unresolvedPlannedTask() {
+    return Status.FAILED_PRECONDITION
+        .withDescription("planned file group could not be resolved from parent snapshot plan")
+        .asRuntimeException();
+  }
+
   private static String targetStorageId(IndexTarget target) {
     return switch (target.getTargetCase()) {
       case FILE -> "file:" + target.getFile().getFilePath();
       case TARGET_NOT_SET ->
           throw new IllegalArgumentException("target must be set on IndexArtifactRecord");
     };
+  }
+
+  private static boolean isActiveLeasedState(String state) {
+    return "JS_RUNNING".equals(state) || "JS_CANCELLING".equals(state);
   }
 }

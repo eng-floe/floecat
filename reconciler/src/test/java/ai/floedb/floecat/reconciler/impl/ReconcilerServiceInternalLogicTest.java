@@ -132,6 +132,26 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   @Test
+  void filterPlannableSnapshotBundlesKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
+    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
+            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
+            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
+                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
+
+    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
+        ReconcilerService.filterPlannableSnapshotBundles(
+            bundles, false, ReconcilerService.CaptureMode.CAPTURE_ONLY, Set.of(10L, 12L));
+
+    assertThat(filtered)
+        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(10L, 12L);
+  }
+
+  @Test
   void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
     Set<Long> metadataOnly =
         ReconcilerService.knownSnapshotIdsForEnumeration(

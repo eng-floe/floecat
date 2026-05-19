@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
@@ -332,5 +333,89 @@ class RemotePlannerReconcileExecutorTest {
                         && "table-1".equals(strictScope.destinationTableId())
                         && strictScope.destinationCaptureRequests().equals(List.of(request))),
             eq("Bearer worker-token"));
+  }
+
+  @Test
+  void executePreservesSnapshotSelectionForScopedSingleTablePlanning() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    var executor =
+        new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            null,
+            List.of(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty(),
+            ReconcileSnapshotSelection.current());
+    ReconcileJobStore.LeasedJob lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            false,
+            ReconcilerService.CaptureMode.METADATA_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+            "");
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("connector-1")
+            .build();
+    when(workerClient.getPlanConnectorInput(remoteLease))
+        .thenReturn(
+            new StandalonePlanConnectorPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                connectorId,
+                ReconcilerService.CaptureMode.METADATA_ONLY,
+                false,
+                scope,
+                ReconcileExecutionPolicy.defaults(),
+                ""));
+    when(reconcilerService.planTableTasks(
+            any(), eq(connectorId), eq(scope), eq("Bearer worker-token")))
+        .thenReturn(List.of(ReconcileTableTask.of("src", "table", "ns", "table-1", "table-1")));
+    when(workerClient.submitPlanConnectorSuccess(
+            any(),
+            argThat(
+                tableJobs ->
+                    tableJobs != null
+                        && tableJobs.size() == 1
+                        && tableJobs.getFirst().scope().snapshotSelection().kind()
+                            == ReconcileSnapshotSelection.Kind.CURRENT),
+            any()))
+        .thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.ok());
+    verify(workerClient)
+        .submitPlanConnectorSuccess(
+            any(),
+            argThat(
+                tableJobs ->
+                    tableJobs != null
+                        && tableJobs.size() == 1
+                        && tableJobs.getFirst().scope().snapshotSelection().kind()
+                            == ReconcileSnapshotSelection.Kind.CURRENT),
+            any());
   }
 }

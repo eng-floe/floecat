@@ -113,6 +113,21 @@ public interface ReconcilerBackend {
     return CaptureEngineResult.empty();
   }
 
+  /**
+   * Captures snapshot stats directly from connector-native metadata without file-group execution.
+   *
+   * <p>Backends should return {@link Optional#empty()} when the connector cannot satisfy the
+   * request without reading files.
+   */
+  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+    return Optional.empty();
+  }
+
   /** Returns whether the snapshot has persisted stats for a specific target kind. */
   boolean statsAlreadyCapturedForTargetKind(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind);

@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Objects;
 
@@ -53,13 +55,15 @@ public final class ReconcileScope {
     }
   }
 
+  @JsonCreator
   private ReconcileScope(
-      List<String> destinationNamespaceIds,
-      String destinationTableId,
-      String destinationViewId,
-      List<ScopedCaptureRequest> destinationCaptureRequests,
-      ReconcileCapturePolicy capturePolicy,
-      ReconcileSnapshotSelection snapshotSelection) {
+      @JsonProperty("destinationNamespaceIds") List<String> destinationNamespaceIds,
+      @JsonProperty("destinationTableId") String destinationTableId,
+      @JsonProperty("destinationViewId") String destinationViewId,
+      @JsonProperty("destinationCaptureRequests")
+          List<ScopedCaptureRequest> destinationCaptureRequests,
+      @JsonProperty("capturePolicy") ReconcileCapturePolicy capturePolicy,
+      @JsonProperty("snapshotSelection") ReconcileSnapshotSelection snapshotSelection) {
     if (destinationNamespaceIds == null || destinationNamespaceIds.isEmpty()) {
       this.destinationNamespaceIds = List.of();
     } else {
@@ -232,26 +236,32 @@ public final class ReconcileScope {
         snapshotSelection);
   }
 
+  @JsonProperty("destinationNamespaceIds")
   public List<String> destinationNamespaceIds() {
     return destinationNamespaceIds;
   }
 
+  @JsonProperty("destinationTableId")
   public String destinationTableId() {
     return destinationTableId;
   }
 
+  @JsonProperty("destinationViewId")
   public String destinationViewId() {
     return destinationViewId;
   }
 
+  @JsonProperty("destinationCaptureRequests")
   public List<ScopedCaptureRequest> destinationCaptureRequests() {
     return destinationCaptureRequests;
   }
 
+  @JsonProperty("capturePolicy")
   public ReconcileCapturePolicy capturePolicy() {
     return capturePolicy;
   }
 
+  @JsonProperty("snapshotSelection")
   public ReconcileSnapshotSelection snapshotSelection() {
     return snapshotSelection;
   }

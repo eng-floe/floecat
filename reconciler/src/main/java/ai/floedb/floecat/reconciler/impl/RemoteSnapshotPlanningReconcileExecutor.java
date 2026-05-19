@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -31,11 +32,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -155,8 +158,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     try {
       snapshot = fetchSnapshot(lease, task).orElse(null);
     } catch (Exception e) {
+      String failureDetail = failureDetail(e);
+      LOG.errorf(
+          e,
+          "Failed to fetch snapshot jobId=%s tableId=%s snapshotId=%d",
+          lease.jobId,
+          task.tableId(),
+          task.snapshotId());
       workerClient.submitPlanSnapshotFailure(
-          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), e.getMessage());
+          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), failureDetail);
       return ExecutionResult.failure(
           0,
           0,
@@ -195,11 +205,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     }
 
     try {
-      List<ReconcileFileGroupTask> fileGroupTasks =
-          !task.fileGroups().isEmpty() ? task.fileGroups() : buildFileGroupTasks(lease, task);
+      PlannedSnapshotCapture plannedCapture = planSnapshotCapture(lease, payload, task);
+      List<ReconcileFileGroupTask> fileGroupTasks = plannedCapture.fileGroupTasks();
       LOG.infof(
-          "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
-          lease.jobId, task.tableId(), task.snapshotId(), fileGroupTasks.size());
+          "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d completionMode=%s fileGroups=%d",
+          lease.jobId,
+          task.tableId(),
+          task.snapshotId(),
+          plannedCapture.snapshotTask().completionMode(),
+          fileGroupTasks.size());
       List<PlannedFileGroupJob> fileGroupJobs =
           fileGroupTasks.stream()
               .map(
@@ -207,7 +221,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                       new PlannedFileGroupJob(
                           effectiveFileGroupScope(payload.scope(), group), group))
               .toList();
-      if (!workerClient.submitPlanSnapshotSuccess(remoteLease, fileGroupJobs)) {
+      if (!workerClient.submitPlanSnapshotSuccess(
+          remoteLease, plannedCapture.snapshotTask(), fileGroupJobs)) {
         return ExecutionResult.failure(
             0,
             0,
@@ -219,26 +234,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             "standalone planner result submission was rejected",
             new IllegalStateException("planner result submission rejected"));
       }
-      context
-          .progressListener()
-          .onProgress(
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              "Planned snapshot "
-                  + task.snapshotId()
-                  + " for "
-                  + task.sourceNamespace()
-                  + "."
-                  + task.sourceTable()
-                  + " into "
-                  + fileGroupTasks.size()
-                  + " file group(s)");
-      return ExecutionResult.success(
+      return ExecutionResult.successHandled(
           0,
           0,
           0,
@@ -254,8 +250,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
               + fileGroupTasks.size()
               + " file group(s)");
     } catch (RuntimeException e) {
+      String failureDetail = failureDetail(e);
+      LOG.errorf(
+          e,
+          "Snapshot planning failed jobId=%s tableId=%s snapshotId=%d",
+          lease.jobId,
+          task.tableId(),
+          task.snapshotId());
       workerClient.submitPlanSnapshotFailure(
-          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), e.getMessage());
+          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), failureDetail);
       if (isObsoleteFailureKind(failureKindOf(e))) {
         return ExecutionResult.obsolete(
             0,
@@ -353,6 +356,40 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         || failureKind == ExecutionResult.FailureKind.VIEW_MISSING;
   }
 
+  private static String failureDetail(Throwable error) {
+    if (error == null) {
+      return "unknown error";
+    }
+    var seen = new HashSet<Throwable>();
+    var parts = new ArrayList<String>();
+    Throwable current = error;
+    while (current != null && seen.add(current)) {
+      parts.add(renderThrowable(current));
+      current = current.getCause();
+    }
+    return String.join(" | caused by: ", parts);
+  }
+
+  private static String renderThrowable(Throwable error) {
+    if (error instanceof StatusRuntimeException statusError) {
+      var status = statusError.getStatus();
+      String description = status.getDescription();
+      if (description == null || description.isBlank()) {
+        description = statusError.getMessage();
+      }
+      if (description == null || description.isBlank()) {
+        return "grpc=" + status.getCode();
+      }
+      return "grpc=" + status.getCode() + " desc=" + description;
+    }
+    String type = error.getClass().getSimpleName();
+    String message = error.getMessage();
+    if (message == null || message.isBlank()) {
+      return type;
+    }
+    return type + ": " + message;
+  }
+
   private List<ReconcileFileGroupTask> buildFileGroupTasks(
       ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
     Optional<FloecatConnector.SnapshotFilePlan> planned = fetchSnapshotFilePlan(lease, task);
@@ -371,6 +408,101 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return List.of();
     }
     return List.of();
+  }
+
+  private PlannedSnapshotCapture planSnapshotCapture(
+      ReconcileJobStore.LeasedJob lease,
+      StandalonePlanSnapshotPayload payload,
+      ReconcileSnapshotTask task) {
+    Optional<ReconcileSnapshotTask> directSnapshotTask =
+        tryDirectStatsCapture(lease, payload, task);
+    if (directSnapshotTask.isPresent()) {
+      return PlannedSnapshotCapture.direct(directSnapshotTask.get());
+    }
+    List<ReconcileFileGroupTask> fileGroupTasks = buildFileGroupTasks(lease, task);
+    return PlannedSnapshotCapture.fileGroups(
+        ReconcileSnapshotTask.of(
+            task.tableId(),
+            task.snapshotId(),
+            task.sourceNamespace(),
+            task.sourceTable(),
+            fileGroupTasks,
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS),
+        fileGroupTasks);
+  }
+
+  private Optional<ReconcileSnapshotTask> tryDirectStatsCapture(
+      ReconcileJobStore.LeasedJob lease,
+      StandalonePlanSnapshotPayload payload,
+      ReconcileSnapshotTask task) {
+    SnapshotDirectStatsRequest request = directStatsRequest(payload, task);
+    if (!request.eligible()) {
+      return Optional.empty();
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(task.tableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ReconcileContext reconcileContext = reconcileContext(lease);
+    Optional<List<TargetStatsRecord>> directStats =
+        backend.captureSnapshotTargetStatsDirect(
+            reconcileContext,
+            tableId,
+            task.snapshotId(),
+            request.includeColumns(),
+            request.includeTargetKinds());
+    if (directStats.isEmpty()) {
+      return Optional.empty();
+    }
+    if (!directStats.get().isEmpty()) {
+      backend.putTargetStats(reconcileContext, directStats.get());
+    }
+    return Optional.of(
+        ReconcileSnapshotTask.of(
+            task.tableId(),
+            task.snapshotId(),
+            task.sourceNamespace(),
+            task.sourceTable(),
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS));
+  }
+
+  private SnapshotDirectStatsRequest directStatsRequest(
+      StandalonePlanSnapshotPayload payload, ReconcileSnapshotTask task) {
+    ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
+    ReconcileCapturePolicy capturePolicy =
+        scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
+    if (!isDirectStatsEligible(payload.captureMode(), capturePolicy)) {
+      return SnapshotDirectStatsRequest.ineligible();
+    }
+    return new SnapshotDirectStatsRequest(
+        true,
+        capturePolicy.selectorsForStats(),
+        FileGroupExecutionSupport.requestedStatsTargetKinds(capturePolicy));
+  }
+
+  private static boolean isDirectStatsEligible(
+      ReconcilerService.CaptureMode captureMode, ReconcileCapturePolicy capturePolicy) {
+    if (captureMode == ReconcilerService.CaptureMode.METADATA_ONLY || capturePolicy == null) {
+      return false;
+    }
+    if (capturePolicy.outputs().isEmpty()
+        || capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)) {
+      return false;
+    }
+    for (ReconcileCapturePolicy.Output output : capturePolicy.outputs()) {
+      switch (output) {
+        case TABLE_STATS, FILE_STATS, COLUMN_STATS -> {}
+        default -> {
+          return false;
+        }
+      }
+    }
+    return capturePolicy.requestsStats() && !capturePolicy.requestsIndexes();
   }
 
   private static boolean isParquetFile(FloecatConnector.SnapshotFileEntry file) {
@@ -459,6 +591,32 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         capturePolicy);
   }
 
+  private static ReconcileScope effectiveSnapshotScope(
+      ReconcileScope baseScope, ReconcileSnapshotTask snapshotTask) {
+    if (baseScope == null
+        || !baseScope.hasCaptureRequestFilter()
+        || snapshotTask == null
+        || snapshotTask.isEmpty()) {
+      return baseScope == null ? ReconcileScope.empty() : baseScope;
+    }
+    List<ReconcileScope.ScopedCaptureRequest> snapshotRequests =
+        baseScope.destinationCaptureRequests().stream()
+            .filter(request -> request != null)
+            .filter(request -> snapshotTask.tableId().equals(request.tableId()))
+            .filter(request -> snapshotTask.snapshotId() == request.snapshotId())
+            .toList();
+    if (snapshotRequests.isEmpty()) {
+      return baseScope;
+    }
+    return ReconcileScope.of(
+        baseScope.destinationNamespaceIds(),
+        baseScope.destinationTableId(),
+        baseScope.destinationViewId(),
+        snapshotRequests,
+        mergeCapturePolicy(baseScope.capturePolicy(), snapshotRequests),
+        baseScope.snapshotSelection());
+  }
+
   private static ReconcileCapturePolicy mergeCapturePolicy(
       ReconcileCapturePolicy basePolicy,
       List<ReconcileScope.ScopedCaptureRequest> snapshotRequests) {
@@ -524,5 +682,27 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return Optional.empty();
     }
     return Optional.of(new ReconcileCapturePolicy.Column(normalized, captureStats, captureIndex));
+  }
+
+  private record PlannedSnapshotCapture(
+      ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> fileGroupTasks) {
+    private static PlannedSnapshotCapture direct(ReconcileSnapshotTask snapshotTask) {
+      return new PlannedSnapshotCapture(snapshotTask, List.of());
+    }
+
+    private static PlannedSnapshotCapture fileGroups(
+        ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> fileGroupTasks) {
+      return new PlannedSnapshotCapture(
+          snapshotTask, fileGroupTasks == null ? List.of() : List.copyOf(fileGroupTasks));
+    }
+  }
+
+  private record SnapshotDirectStatsRequest(
+      boolean eligible,
+      Set<String> includeColumns,
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+    private static SnapshotDirectStatsRequest ineligible() {
+      return new SnapshotDirectStatsRequest(false, Set.of(), Set.of());
+    }
   }
 }

@@ -848,6 +848,7 @@ public class SeedRunner {
         case JS_CANCELLING:
           throw new IllegalStateException(formatSeedJobFailure("cancelled", response));
         case JS_QUEUED:
+        case JS_WAITING:
         case JS_RUNNING:
         case JS_UNSPECIFIED:
         case UNRECOGNIZED:

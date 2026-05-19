@@ -49,9 +49,11 @@ import io.delta.kernel.Table;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
+import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -196,6 +198,71 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
+  public Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    EnumSet<StatsTargetKind> requestedKinds =
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? EnumSet.noneOf(StatsTargetKind.class)
+            : EnumSet.copyOf(includeTargetKinds);
+    requestedKinds.remove(StatsTargetKind.EXPRESSION);
+    if (requestedKinds.isEmpty()) {
+      return Optional.of(List.of());
+    }
+
+    final String tableRoot = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+
+    final StructType kernelSchema = snapshot.getSchema();
+    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final Set<String> includeNames =
+        (includeColumns == null || includeColumns.isEmpty())
+            ? new LinkedHashSet<>(nameToType.keySet())
+            : includeColumns.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+    try (var planner =
+        new DeltaPlanner(
+            this.engine,
+            this.parquetInput,
+            tableRoot,
+            snapshotId,
+            includeNames,
+            Set.of(),
+            nameToType,
+            null,
+            true,
+            false)) {
+      if (planner.missingLogStats() || planner.hasDeletionVectors()) {
+        return Optional.empty();
+      }
+    }
+    return Optional.of(
+        buildTargetStats(
+            tableRoot,
+            destinationTableId,
+            includeColumns,
+            snapshotId,
+            snapshot,
+            requestedKinds,
+            Set.of(),
+            false));
+  }
+
+  @Override
   public FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
@@ -247,7 +314,16 @@ abstract class DeltaConnector implements FloecatConnector {
 
     try (var planner =
         new DeltaPlanner(
-            engine, parquetInput, tableRoot, snapshotId, Set.of(), Set.of(), null, null, false)) {
+            engine,
+            parquetInput,
+            tableRoot,
+            snapshotId,
+            Set.of(),
+            Set.of(),
+            null,
+            null,
+            false,
+            true)) {
       List<SnapshotFileEntry> dataFiles = new ArrayList<>();
       for (PlannedFile<String> planned : planner) {
         dataFiles.add(toDataScanFile(planned));
@@ -261,22 +337,22 @@ abstract class DeltaConnector implements FloecatConnector {
 
   @Override
   public Optional<SnapshotConstraints> snapshotConstraints(
-      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
-    if (snapshotId < 0) {
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      SnapshotBundle snapshotBundle) {
+    if (snapshotBundle == null
+        || snapshotBundle.snapshotId() < 0
+        || snapshotBundle.schemaJson() == null
+        || snapshotBundle.schemaJson().isBlank()) {
       return Optional.empty();
     }
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
-    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
-    if (snapshot == null) {
-      return Optional.empty();
-    }
-    Map<String, String> tableProperties =
-        mergeConstraintProperties(
-            fallbackTablePropertiesForConstraints(namespaceFq, tableName),
-            snapshotTableProperties(snapshot));
+    StructType schema = DataTypeJsonSerDe.deserializeStructType(snapshotBundle.schemaJson());
     List<ConstraintDefinition> constraints =
-        mapDeltaConstraints(snapshot.getSchema(), tableProperties);
+        mapDeltaConstraints(
+            schema,
+            fallbackTablePropertiesForConstraints(namespaceFq, tableName),
+            snapshotBundle.schemaJson());
     if (constraints.isEmpty()) {
       return Optional.empty();
     }
@@ -286,34 +362,13 @@ abstract class DeltaConnector implements FloecatConnector {
   protected abstract String storageLocation(String namespaceFq, String tableName);
 
   /**
-   * Snapshot-scoped properties used for constraint extraction.
-   *
-   * <p>Default behavior reads Delta snapshot metadata when available.
-   */
-  protected Map<String, String> snapshotTableProperties(Snapshot snapshot) {
-    return extractTableProperties(snapshot);
-  }
-
-  /**
    * Best-effort catalog-level fallback when snapshot metadata does not expose properties.
    *
-   * <p>Returned values are merged with {@link #snapshotTableProperties(Snapshot)}. Snapshot
-   * properties win on key collisions.
+   * <p>Returned values are used for connector-level CHECK constraint extraction.
    */
   protected Map<String, String> fallbackTablePropertiesForConstraints(
       String namespaceFq, String tableName) {
     return Map.of();
-  }
-
-  private static Map<String, String> mergeConstraintProperties(
-      Map<String, String> fallbackProperties, Map<String, String> snapshotProperties) {
-    if (fallbackProperties.isEmpty() && snapshotProperties.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> merged = new LinkedHashMap<>(fallbackProperties);
-    // Snapshot metadata is preferred when both sources expose the same property key.
-    merged.putAll(snapshotProperties);
-    return Map.copyOf(merged);
   }
 
   private static SnapshotFileEntry toDataScanFile(PlannedFile<String> planned) {
@@ -384,7 +439,8 @@ abstract class DeltaConnector implements FloecatConnector {
       long version,
       Set<String> includeNames,
       Set<String> plannedFilePaths,
-      Map<String, LogicalType> nameToType) {
+      Map<String, LogicalType> nameToType,
+      boolean allowFooterFallback) {
 
     NdvProvider bootstrap = null;
 
@@ -409,7 +465,8 @@ abstract class DeltaConnector implements FloecatConnector {
             plannedFilePaths,
             nameToType,
             ndvProvider,
-            true)) {
+            true,
+            allowFooterFallback)) {
 
       var columnNames = planner.columnNamesByKey();
       var logicalTypes = planner.logicalTypesByKey();
@@ -472,25 +529,18 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(versions);
   }
 
-  static List<ConstraintDefinition> mapDeltaConstraints(StructType schema) {
-    return mapDeltaConstraints(schema, Map.of());
+  static List<ConstraintDefinition> mapDeltaConstraints(StructType schema, String schemaJson) {
+    return mapDeltaConstraints(schema, Map.of(), schemaJson);
   }
 
   static List<ConstraintDefinition> mapDeltaConstraints(
-      StructType schema, Map<String, String> tableProperties) {
+      StructType schema, Map<String, String> tableProperties, String schemaJson) {
     if (schema == null) {
       return List.of();
     }
-    // Compute path → ordinal map so NOT NULL constraints carry stable CID_PATH_ORDINAL column IDs,
-    // consistent with how column stats are keyed for Delta tables.
-    Map<String, Integer> ordinals = Map.of();
-    try {
-      ordinals =
-          LogicalSchemaMapper.buildColumnOrdinals(
-              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schema.toJson());
-    } catch (Exception ignored) {
-      // Fall back to columnId=0 if schema JSON conversion fails.
-    }
+    Map<String, Integer> ordinals =
+        LogicalSchemaMapper.buildColumnOrdinals(
+            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
     List<ConstraintDefinition> out = new ArrayList<>();
     collectDeltaNotNullConstraints(schema.fields(), "", out, ordinals);
     out.addAll(mapDeltaCheckConstraints(tableProperties));
@@ -502,7 +552,7 @@ abstract class DeltaConnector implements FloecatConnector {
     final long parent = Math.max(0L, version - 1L);
 
     final StructType kernelSchema = snapshot.getSchema();
-    final String schemaJson = kernelSchema.toJson();
+    final String schemaJson = snapshotSchemaJson(snapshot);
     final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
     return new SnapshotBundle(
         version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, null);
@@ -516,6 +566,26 @@ abstract class DeltaConnector implements FloecatConnector {
       Snapshot snapshot,
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths) {
+    return buildTargetStats(
+        tableRoot,
+        destinationTableId,
+        includeColumns,
+        version,
+        snapshot,
+        includeTargetKinds,
+        plannedFilePaths,
+        true);
+  }
+
+  private List<TargetStatsRecord> buildTargetStats(
+      String tableRoot,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      long version,
+      Snapshot snapshot,
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths,
+      boolean allowFooterFallback) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -525,7 +595,7 @@ abstract class DeltaConnector implements FloecatConnector {
 
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
-    final String schemaJson = kernelSchema.toJson();
+    final String schemaJson = snapshotSchemaJson(snapshot);
     final Set<String> includeNames =
         (includeColumns == null || includeColumns.isEmpty())
             ? new LinkedHashSet<>(nameToType.keySet())
@@ -534,7 +604,9 @@ abstract class DeltaConnector implements FloecatConnector {
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-    EngineOut engineOut = runEngine(tableRoot, version, includeNames, plannedFilePaths, nameToType);
+    EngineOut engineOut =
+        runEngine(
+            tableRoot, version, includeNames, plannedFilePaths, nameToType, allowFooterFallback);
     if (engineOut.hasInlineDeletionVectors()) {
       throw new UnsupportedOperationException(
           "Delta table uses inline deletion vectors; not supported for snapshot " + version);
@@ -630,6 +702,16 @@ abstract class DeltaConnector implements FloecatConnector {
     return table.getLatestSnapshot(engine);
   }
 
+  protected String snapshotSchemaJson(Snapshot snapshot) {
+    if (snapshot instanceof SnapshotImpl snapshotImpl && snapshotImpl.getMetadata() != null) {
+      String schemaJson = snapshotImpl.getMetadata().getSchemaString();
+      if (schemaJson != null && !schemaJson.isBlank()) {
+        return schemaJson;
+      }
+    }
+    throw new IllegalStateException("Delta snapshot metadata schema JSON is required");
+  }
+
   protected static PartitionSpecInfo toPartitionSpecInfo(Snapshot snapshot) {
     if (snapshot == null) {
       return null;
@@ -719,12 +801,5 @@ abstract class DeltaConnector implements FloecatConnector {
                       .build());
             });
     return List.copyOf(checks);
-  }
-
-  private static Map<String, String> extractTableProperties(Snapshot snapshot) {
-    if (snapshot instanceof SnapshotImpl snapshotImpl && snapshotImpl.getMetadata() != null) {
-      return snapshotImpl.getMetadata().getConfiguration();
-    }
-    return Map.of();
   }
 }

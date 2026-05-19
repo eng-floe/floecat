@@ -23,6 +23,8 @@ import ai.floedb.floecat.types.TemporalCoercions;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -47,6 +49,8 @@ import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimestampLogicalTypeAnnotation;
 
 public final class ParquetFooterStats {
+  private static final long JULIAN_EPOCH_OFFSET_DAYS = 2_440_588L;
+  private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
   public static final class ColAgg {
     public long nulls = 0;
@@ -188,10 +192,10 @@ public final class ParquetFooterStats {
         return timeStatValue(lta, v);
       }
       if (logical.kind() == LogicalKind.TIMESTAMP) {
-        return timestampStatValue(lta, v, false);
+        return timestampStatValue(lta, v, false, true);
       }
       if (logical.kind() == LogicalKind.TIMESTAMPTZ) {
-        return timestampStatValue(lta, v, true);
+        return timestampStatValue(lta, v, true, true);
       }
     }
 
@@ -255,28 +259,68 @@ public final class ParquetFooterStats {
     return LocalTime.ofNanoOfDay(nanos);
   }
 
-  private static Object timestampStatValue(Object lta, Object v, boolean adjustedToUtc) {
-    if (!(lta instanceof TimestampLogicalTypeAnnotation tsAnno)) {
-      throw new IllegalArgumentException(
-          "TIMESTAMP stats require Parquet TIMESTAMP logical annotation");
+  private static Object timestampStatValue(
+      Object lta, Object v, boolean adjustedToUtc, boolean allowMicrosFallback) {
+    if (v instanceof Number n) {
+      if (!(lta instanceof TimestampLogicalTypeAnnotation tsAnno)) {
+        if (!allowMicrosFallback) {
+          throw new IllegalArgumentException(
+              "TIMESTAMP stats require Parquet TIMESTAMP logical annotation");
+        }
+        return timestampValueFromMicros(n.longValue(), adjustedToUtc);
+      }
+      if (tsAnno.isAdjustedToUTC() != adjustedToUtc) {
+        throw new IllegalArgumentException(
+            "TIMESTAMP stats annotation mismatch: adjustedToUTC="
+                + tsAnno.isAdjustedToUTC()
+                + " expected="
+                + adjustedToUtc);
+      }
+      Instant instant = instantFromUnit(n.longValue(), tsAnno.getUnit());
+      return timestampValue(instant, adjustedToUtc);
     }
-    if (tsAnno.isAdjustedToUTC() != adjustedToUtc) {
-      throw new IllegalArgumentException(
-          "TIMESTAMP stats annotation mismatch: adjustedToUTC="
-              + tsAnno.isAdjustedToUTC()
-              + " expected="
-              + adjustedToUtc);
+
+    if (v instanceof Binary binary) {
+      return timestampValue(parseInt96Timestamp(binary), adjustedToUtc);
     }
-    if (!(v instanceof Number n)) {
-      throw new IllegalArgumentException("TIMESTAMP stats must be numeric, got " + v.getClass());
-    }
-    Instant instant = instantFromUnit(n.longValue(), tsAnno.getUnit());
+
+    throw new IllegalArgumentException("TIMESTAMP stats must be numeric, got " + v.getClass());
+  }
+
+  private static Object timestampValueFromMicros(long value, boolean adjustedToUtc) {
+    long secs = Math.floorDiv(value, 1_000_000L);
+    long micros = Math.floorMod(value, 1_000_000L);
+    Instant instant = Instant.ofEpochSecond(secs, micros * 1_000L);
+    return timestampValue(instant, adjustedToUtc);
+  }
+
+  private static Object timestampValue(Instant instant, boolean adjustedToUtc) {
     if (adjustedToUtc) {
       return instant;
     }
     // Parquet TIMESTAMP without UTC normalization is encoded as epoch-based counts.
     // We interpret those counts as UTC wall-clock when constructing LocalDateTime.
     return LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+  }
+
+  private static Instant parseInt96Timestamp(Binary binary) {
+    byte[] bytes = binary.getBytes();
+    if (bytes.length != 12) {
+      throw new IllegalArgumentException(
+          "TIMESTAMP INT96 stats must be 12 bytes, got " + bytes.length);
+    }
+
+    ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+    long nanosOfDay = buffer.getLong();
+    int julianDay = buffer.getInt();
+    long epochDay = julianDay - JULIAN_EPOCH_OFFSET_DAYS;
+    long secondsOfDay = Math.floorDiv(nanosOfDay, NANOS_PER_SECOND);
+    long nanosRemainder = Math.floorMod(nanosOfDay, NANOS_PER_SECOND);
+    return LocalDate.ofEpochDay(epochDay)
+        .atStartOfDay()
+        .toInstant(ZoneOffset.UTC)
+        .plusSeconds(secondsOfDay)
+        .plusNanos(nanosRemainder);
   }
 
   private static long toTimeNanos(long value, TimeUnit unit) {

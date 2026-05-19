@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
@@ -31,6 +32,7 @@ import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
 import io.delta.kernel.exceptions.TableNotFoundException;
+import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StructType;
 import java.io.IOException;
 import java.util.List;
@@ -42,6 +44,15 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 class DeltaConnectorTest {
+  private static final String TEST_SCHEMA_JSON =
+      """
+      {
+        "type": "struct",
+        "fields": [
+          {"name": "id", "type": "long", "nullable": false, "metadata": {}}
+        ]
+      }
+      """;
 
   @Test
   void enumerateSnapshotsHonorsExplicitTargetVersions() {
@@ -104,6 +115,23 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void enumerateSnapshotsRequiresSnapshotMetadataSchemaJson() {
+    Snapshot latest = snapshot(2L, 2000L);
+    Table table = new StubTable(latest, Map.of(2L, latest));
+
+    StrictSchemaConnector connector = new StrictSchemaConnector(table);
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            connector.enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L))));
+  }
+
+  @Test
   void snapshotConstraintsUsesFallbackTablePropertiesWhenSnapshotPropertiesUnavailable() {
     Snapshot latest = snapshot(7L, 7000L);
     Table table = new StubTable(latest, Map.of(7L, latest));
@@ -112,12 +140,20 @@ class DeltaConnectorTest {
     connector.setFallbackTableProperties(Map.of("delta.constraints.ck_id_positive", "id > 0"));
 
     Optional<SnapshotConstraints> constraints =
-        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 7L);
+        connector.snapshotConstraints(
+            "ns", "tbl", ResourceId.getDefaultInstance(), snapshotBundle(7L, TEST_SCHEMA_JSON));
 
     assertTrue(constraints.isPresent());
-    assertEquals(1, constraints.get().getConstraintsCount());
-    assertEquals(ConstraintType.CT_CHECK, constraints.get().getConstraints(0).getType());
-    assertEquals("ck_id_positive", constraints.get().getConstraints(0).getName());
+    assertEquals(2, constraints.get().getConstraintsCount());
+    assertEquals(
+        List.of(ConstraintType.CT_CHECK, ConstraintType.CT_NOT_NULL),
+        constraints.get().getConstraintsList().stream().map(c -> c.getType()).sorted().toList());
+    assertTrue(
+        constraints.get().getConstraintsList().stream()
+            .anyMatch(
+                c ->
+                    c.getType() == ConstraintType.CT_CHECK
+                        && c.getName().equals("ck_id_positive")));
   }
 
   @Test
@@ -126,41 +162,65 @@ class DeltaConnectorTest {
     Table table = new StubTable(latest, Map.of(8L, latest));
 
     TestDeltaConnector connector = new TestDeltaConnector(table);
-    connector.setSnapshotTableProperties(Map.of("delta.constraints.ck_snapshot", "id > 0"));
-    connector.setFallbackTableProperties(Map.of("delta.constraints.ck_fallback", "id < 100"));
+    connector.setFallbackTableProperties(
+        Map.of(
+            "delta.constraints.ck_fallback", "id < 100",
+            "delta.constraints.ck_snapshot", "id > 0"));
 
     Optional<SnapshotConstraints> constraints =
-        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 8L);
+        connector.snapshotConstraints(
+            "ns", "tbl", ResourceId.getDefaultInstance(), snapshotBundle(8L, TEST_SCHEMA_JSON));
 
     assertTrue(constraints.isPresent());
-    assertEquals(2, constraints.get().getConstraintsCount());
+    assertEquals(3, constraints.get().getConstraintsCount());
+    assertTrue(
+        constraints.get().getConstraintsList().stream()
+            .map(c -> c.getName())
+            .anyMatch(name -> name.startsWith("nn_")));
     assertEquals(
         List.of("ck_fallback", "ck_snapshot"),
-        constraints.get().getConstraintsList().stream().map(c -> c.getName()).toList());
-    assertTrue(
-        connector.fallbackCalled.get(), "fallback source should be merged with snapshot metadata");
+        constraints.get().getConstraintsList().stream()
+            .map(c -> c.getName())
+            .filter(name -> !name.startsWith("nn_"))
+            .sorted()
+            .toList());
+    assertTrue(connector.fallbackCalled.get(), "fallback properties should still be consulted");
   }
 
   @Test
-  void snapshotConstraintsSnapshotExpressionWinsOnKeyCollision() {
-    // Same constraint name in both fallback and snapshot — snapshot expression must win.
+  void snapshotConstraintsDoesNotReopenSnapshotWhenBundleIsProvided() {
     Snapshot latest = snapshot(9L, 9000L);
-    Table table = new StubTable(latest, Map.of(9L, latest));
+    StubTable table = new StubTable(latest, Map.of(9L, latest));
 
     TestDeltaConnector connector = new TestDeltaConnector(table);
     connector.setFallbackTableProperties(Map.of("delta.constraints.ck_amount", "amount > 0"));
-    connector.setSnapshotTableProperties(Map.of("delta.constraints.ck_amount", "amount >= 1"));
 
     Optional<SnapshotConstraints> constraints =
-        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 9L);
+        connector.snapshotConstraints(
+            "ns", "tbl", ResourceId.getDefaultInstance(), snapshotBundle(9L, TEST_SCHEMA_JSON));
 
     assertTrue(constraints.isPresent());
-    List<ai.floedb.floecat.catalog.rpc.ConstraintDefinition> checks =
-        constraints.get().getConstraintsList().stream()
-            .filter(c -> c.getType() == ai.floedb.floecat.catalog.rpc.ConstraintType.CT_CHECK)
-            .toList();
-    assertEquals(1, checks.size(), "duplicate key should produce exactly one CHECK constraint");
-    assertEquals("amount >= 1", checks.get(0).getCheckExpression(), "snapshot expression wins");
+    assertEquals(0, table.snapshotAsOfVersionCalls);
+  }
+
+  @Test
+  void snapshotConstraintsBundleKeepsStableTopLevelColumnIdWithoutSnapshotReload() {
+    Snapshot latest = snapshot(10L, 10000L, new StructType().add("id", LongType.LONG, false));
+    StubTable table = new StubTable(latest, Map.of(10L, latest));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+
+    Optional<SnapshotConstraints> constraints =
+        connector.snapshotConstraints(
+            "ns", "tbl", ResourceId.getDefaultInstance(), snapshotBundle(10L, TEST_SCHEMA_JSON));
+
+    assertTrue(constraints.isPresent());
+    assertEquals(1, constraints.get().getConstraintsCount());
+    assertEquals("id", constraints.get().getConstraints(0).getColumns(0).getColumnName());
+    assertTrue(
+        constraints.get().getConstraints(0).getColumns(0).getColumnId() != 0L,
+        "top-level non-null constraint should retain a stable column id");
+    assertEquals(0, table.snapshotAsOfVersionCalls);
   }
 
   @Test
@@ -178,6 +238,10 @@ class DeltaConnectorTest {
   }
 
   private static Snapshot snapshot(long version, long timestampMs) {
+    return snapshot(version, timestampMs, new StructType());
+  }
+
+  private static Snapshot snapshot(long version, long timestampMs, StructType schema) {
     return new Snapshot() {
       @Override
       public long getVersion() {
@@ -196,7 +260,7 @@ class DeltaConnectorTest {
 
       @Override
       public StructType getSchema() {
-        return new StructType();
+        return schema;
       }
 
       @Override
@@ -211,9 +275,15 @@ class DeltaConnectorTest {
     };
   }
 
+  private static FloecatConnector.SnapshotBundle snapshotBundle(
+      long snapshotId, String schemaJson) {
+    return new FloecatConnector.SnapshotBundle(
+        snapshotId, 0L, 0L, schemaJson, null, 0L, null, Map.of(), 0, null);
+  }
+
   private static final class TestDeltaConnector extends DeltaConnector {
     private final Table table;
-    private Map<String, String> snapshotTableProperties = Map.of();
+    private String snapshotSchemaJson = TEST_SCHEMA_JSON;
     private Map<String, String> fallbackTableProperties = Map.of();
     private final AtomicBoolean fallbackCalled = new AtomicBoolean(false);
 
@@ -233,8 +303,8 @@ class DeltaConnectorTest {
     }
 
     @Override
-    protected Map<String, String> snapshotTableProperties(Snapshot snapshot) {
-      return snapshotTableProperties;
+    protected String snapshotSchemaJson(Snapshot snapshot) {
+      return snapshotSchemaJson;
     }
 
     @Override
@@ -259,18 +329,53 @@ class DeltaConnectorTest {
       throw new UnsupportedOperationException();
     }
 
-    void setSnapshotTableProperties(Map<String, String> snapshotTableProperties) {
-      this.snapshotTableProperties = snapshotTableProperties;
-    }
-
     void setFallbackTableProperties(Map<String, String> fallbackTableProperties) {
       this.fallbackTableProperties = fallbackTableProperties;
+    }
+
+    void setSnapshotSchemaJson(String snapshotSchemaJson) {
+      this.snapshotSchemaJson = snapshotSchemaJson;
+    }
+  }
+
+  private static final class StrictSchemaConnector extends DeltaConnector {
+    private final Table table;
+
+    StrictSchemaConnector(Table table) {
+      super("delta-test-strict", null, path -> null, false, 0.0d, 0L);
+      this.table = table;
+    }
+
+    @Override
+    protected String storageLocation(String namespaceFq, String tableName) {
+      return "ignored";
+    }
+
+    @Override
+    protected Table loadTable(String tableRoot) {
+      return table;
+    }
+
+    @Override
+    public List<String> listTables(String namespaceFq) {
+      return List.of();
+    }
+
+    @Override
+    public List<String> listNamespaces() {
+      return List.of();
+    }
+
+    @Override
+    public TableDescriptor describe(String namespaceFq, String tableName) {
+      throw new UnsupportedOperationException();
     }
   }
 
   private static final class StubTable implements Table {
     private final Snapshot latest;
     private final Map<Long, Snapshot> snapshots;
+    private int snapshotAsOfVersionCalls;
 
     private StubTable(Snapshot latest, Map<Long, Snapshot> snapshots) {
       this.latest = latest;
@@ -290,6 +395,7 @@ class DeltaConnectorTest {
     @Override
     public Snapshot getSnapshotAsOfVersion(Engine engine, long version)
         throws TableNotFoundException {
+      snapshotAsOfVersionCalls++;
       return snapshots.get(version);
     }
 

@@ -67,8 +67,10 @@ final class DeltaPlanner implements Planner<String> {
   private final NdvProvider ndvProvider;
   private final Set<String> columnSet;
   private final Set<String> plannedFilePaths;
+  private final boolean allowFooterFallback;
   private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
   private boolean hasInlineDeletionVectors = false;
+  private boolean missingLogStats = false;
 
   DeltaPlanner(
       Engine engine,
@@ -79,9 +81,11 @@ final class DeltaPlanner implements Planner<String> {
       Set<String> plannedFilePaths,
       Map<String, LogicalType> nameToType,
       NdvProvider ndvProvider,
-      boolean includeStats) {
+      boolean includeStats,
+      boolean allowFooterFallback) {
 
     this.ndvProvider = ndvProvider;
+    this.allowFooterFallback = allowFooterFallback;
     this.plannedFilePaths =
         plannedFilePaths == null || plannedFilePaths.isEmpty()
             ? Collections.emptySet()
@@ -199,6 +203,10 @@ final class DeltaPlanner implements Planner<String> {
                   }
                 }
               } else {
+                if (!this.allowFooterFallback) {
+                  missingLogStats = true;
+                  continue;
+                }
                 var in = parquetInput.apply(path);
 
                 var bfs = ParquetFooterStats.read(in, columnSet, nameToLogical);
@@ -251,6 +259,10 @@ final class DeltaPlanner implements Planner<String> {
 
   boolean hasDeletionVectors() {
     return !diskDeletionVectors.isEmpty() || hasInlineDeletionVectors;
+  }
+
+  boolean missingLogStats() {
+    return missingLogStats;
   }
 
   boolean hasInlineDeletionVectors() {

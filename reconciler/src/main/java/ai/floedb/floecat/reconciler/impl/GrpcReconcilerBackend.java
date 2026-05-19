@@ -554,6 +554,30 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         });
   }
 
+  @Override
+  public Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+    if (tableId == null || snapshotId < 0) {
+      return Optional.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        Optional.<List<TargetStatsRecord>>empty(),
+        (source, sourceCtx) ->
+            source.captureSnapshotTargetStatsDirect(
+                sourceCtx.sourceNamespace(),
+                sourceCtx.sourceTable(),
+                tableId,
+                snapshotId,
+                includeColumns == null ? Set.of() : Set.copyOf(includeColumns),
+                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds)));
+  }
+
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     try {
       var response =

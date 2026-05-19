@@ -29,6 +29,70 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class DeltaConstraintMappingTest {
+  private static final String SIMPLE_SCHEMA_JSON =
+      """
+      {
+        "type": "struct",
+        "fields": [
+          {"name": "id", "type": "long", "nullable": false, "metadata": {}},
+          {"name": "name", "type": "string", "nullable": true, "metadata": {}},
+          {
+            "name": "address",
+            "type": {
+              "type": "struct",
+              "fields": [
+                {"name": "zip", "type": "string", "nullable": false, "metadata": {}},
+                {"name": "line2", "type": "string", "nullable": true, "metadata": {}}
+              ]
+            },
+            "nullable": false,
+            "metadata": {}
+          }
+        ]
+      }
+      """;
+
+  private static final String NULLABLE_PARENT_SCHEMA_JSON =
+      """
+      {
+        "type": "struct",
+        "fields": [
+          {"name": "id", "type": "long", "nullable": false, "metadata": {}},
+          {
+            "name": "address",
+            "type": {
+              "type": "struct",
+              "fields": [
+                {"name": "zip", "type": "string", "nullable": false, "metadata": {}},
+                {"name": "line2", "type": "string", "nullable": true, "metadata": {}}
+              ]
+            },
+            "nullable": true,
+            "metadata": {}
+          }
+        ]
+      }
+      """;
+
+  private static final String AMOUNT_SCHEMA_JSON =
+      """
+      {
+        "type": "struct",
+        "fields": [
+          {"name": "amount", "type": "long", "nullable": false, "metadata": {}}
+        ]
+      }
+      """;
+
+  private static final String ID_SCHEMA_JSON =
+      """
+      {
+        "type": "struct",
+        "fields": [
+          {"name": "id", "type": "long", "nullable": false, "metadata": {}}
+        ]
+      }
+      """;
 
   @Test
   void mapDeltaConstraintsEmitsNotNullForNonNullableLeafColumns() {
@@ -43,7 +107,8 @@ class DeltaConstraintMappingTest {
                     .add("line2", StringType.STRING, true),
                 false);
 
-    List<ConstraintDefinition> constraints = DeltaConnector.mapDeltaConstraints(schema);
+    List<ConstraintDefinition> constraints =
+        DeltaConnector.mapDeltaConstraints(schema, SIMPLE_SCHEMA_JSON);
 
     assertThat(constraints).allMatch(c -> c.getType() == ConstraintType.CT_NOT_NULL);
     assertThat(constraints).allMatch(c -> c.getEnforcement() == ConstraintEnforcement.CE_ENFORCED);
@@ -79,7 +144,8 @@ class DeltaConstraintMappingTest {
                     .add("line2", StringType.STRING, true),
                 true); // address is nullable
 
-    List<ConstraintDefinition> constraints = DeltaConnector.mapDeltaConstraints(schema);
+    List<ConstraintDefinition> constraints =
+        DeltaConnector.mapDeltaConstraints(schema, NULLABLE_PARENT_SCHEMA_JSON);
 
     assertThat(constraints).allMatch(c -> c.getType() == ConstraintType.CT_NOT_NULL);
     assertThat(constraints).hasSize(1);
@@ -100,7 +166,8 @@ class DeltaConstraintMappingTest {
             Map.of(
                 "delta.constraints.positive_amount", "amount > 0",
                 "delta.constraints.valid_amount", "amount < 1000",
-                "delta.appendOnly", "true"));
+                "delta.appendOnly", "true"),
+            AMOUNT_SCHEMA_JSON);
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();
@@ -124,7 +191,8 @@ class DeltaConstraintMappingTest {
             schema,
             Map.of(
                 "delta.constraints. ", "id > 0",
-                "delta.constraints.ck_id", "id > 0"));
+                "delta.constraints.ck_id", "id > 0"),
+            ID_SCHEMA_JSON);
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();
@@ -142,7 +210,8 @@ class DeltaConstraintMappingTest {
             schema,
             Map.of(
                 "delta.constraints.ck_blank", "   ",
-                "delta.constraints.ck_id", "id > 0"));
+                "delta.constraints.ck_id", "id > 0"),
+            ID_SCHEMA_JSON);
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();

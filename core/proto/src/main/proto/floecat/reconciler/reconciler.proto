@@ -168,6 +168,12 @@ message ReconcileViewTask {
 
 // One snapshot-scoped planning unit emitted after metadata detection.
 message ReconcileSnapshotTask {
+  enum CompletionMode {
+    RSCM_UNSPECIFIED = 0;
+    RSCM_FILE_GROUPS = 1;
+    RSCM_DIRECT_STATS = 2;
+  }
+
   // Stable destination table id for the snapshot being planned.
   string table_id = 1;
   // Snapshot to plan.
@@ -181,6 +187,12 @@ message ReconcileSnapshotTask {
   // True when the snapshot planner explicitly persisted the file-group plan, including a
   // legitimate zero-group plan.
   bool file_group_plan_recorded = 6;
+  // How snapshot capture is expected to complete after PLAN_SNAPSHOT.
+  CompletionMode completion_mode = 7;
+  // Optional blob URI for the persisted expanded file-group plan.
+  string file_group_plan_blob_uri = 8;
+  // Number of grouped file executions in the persisted expanded file-group plan.
+  uint32 file_group_count = 9;
 }
 
 // One grouped file execution unit emitted by snapshot planning.
@@ -599,14 +611,9 @@ message GetLeasedPlanSnapshotInputResponse {
   LeasedPlanSnapshotInput input = 1;
 }
 
-message PlannedFileGroupExecutionJob {
-  CaptureScope scope = 1;
-  ReconcileFileGroupTask file_group_task = 2;
-}
-
 message SubmitLeasedPlanSnapshotResultRequest {
   message Success {
-    repeated PlannedFileGroupExecutionJob file_group_jobs = 1;
+    ReconcileSnapshotTask snapshot_task = 1;
   }
 
   message Failure {
@@ -775,6 +782,7 @@ enum JobState {
   JS_FAILED = 4;
   JS_CANCELLING = 5;
   JS_CANCELLED = 6;
+  JS_WAITING = 7;
 }
 
 message GetReconcilerSettingsRequest {}

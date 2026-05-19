@@ -20,13 +20,18 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
+  private static final Logger LOG = Logger.getLogger(RemoteFileGroupReconcileExecutor.class);
+
   private final boolean enabled;
   private final RemoteFileGroupWorkerClient workerClient;
   private final StandaloneJavaFileGroupExecutionRunner runner;
@@ -189,10 +194,41 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.success(
           0, 0, 0, 0, 0, 0, statsProcessed, "Executed file group " + payload.groupId());
     } catch (RuntimeException e) {
-      workerClient.submitFailure(remoteLease, failureResultId(lease, payload), e.getMessage());
+      String failureDetail = failureDetail(e);
+      LOG.errorf(
+          e,
+          "File-group capture failed planId=%s groupId=%s tableId=%s snapshotId=%d",
+          payload.planId(),
+          payload.groupId(),
+          payload.tableId() == null ? "" : payload.tableId().getId(),
+          payload.snapshotId());
+      workerClient.submitFailure(remoteLease, failureResultId(lease, payload), failureDetail);
       return ExecutionResult.failure(
-          0, 0, 0, 0, 1, 0, 0, "File-group capture failed: " + e.getMessage(), e);
+          0, 0, 0, 0, 1, 0, 0, "File-group capture failed: " + failureDetail, e);
     }
+  }
+
+  private static String failureDetail(Throwable error) {
+    if (error == null) {
+      return "unknown error";
+    }
+    var seen = new HashSet<Throwable>();
+    var parts = new ArrayList<String>();
+    Throwable current = error;
+    while (current != null && seen.add(current)) {
+      parts.add(renderThrowable(current));
+      current = current.getCause();
+    }
+    return String.join(" | caused by: ", parts);
+  }
+
+  private static String renderThrowable(Throwable error) {
+    String type = error.getClass().getSimpleName();
+    String message = error.getMessage();
+    if (message == null || message.isBlank()) {
+      return type;
+    }
+    return type + ": " + message;
   }
 
   private static String successResultId(

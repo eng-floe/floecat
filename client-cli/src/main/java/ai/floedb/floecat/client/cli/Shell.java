@@ -47,6 +47,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringTokenizer;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -649,11 +650,18 @@ public class Shell implements Runnable {
   }
 
   private void configureGrpcChannel() {
-    if (grpcHost == null && grpcPort == null) {
+    GrpcEndpointOverride endpointOverride =
+        resolveGrpcEndpointOverride(
+            grpcHost,
+            grpcPort,
+            System.getenv("FLOECAT_GRPC_HOST"),
+            System.getenv("FLOECAT_GRPC_PORT"),
+            System.getProperty("sun.java.command", ""));
+    if (endpointOverride == null) {
       return;
     }
-    String host = grpcHost == null || grpcHost.isBlank() ? "localhost" : grpcHost.trim();
-    int port = grpcPort == null ? 9100 : grpcPort;
+    String host = endpointOverride.host();
+    int port = endpointOverride.port();
     overrideChannel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
     catalogs = CatalogServiceGrpc.newBlockingStub(overrideChannel);
     namespaces = NamespaceServiceGrpc.newBlockingStub(overrideChannel);
@@ -671,6 +679,85 @@ public class Shell implements Runnable {
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
   }
+
+  static GrpcEndpointOverride resolveGrpcEndpointOverride(
+      String optionHost, Integer optionPort, String envHost, String envPort, String launchCommand) {
+    String host = firstNonBlank(optionHost, launchArgValue(launchCommand, "--host"), envHost);
+    Integer port =
+        firstNonNull(
+            optionPort, parsePort(launchArgValue(launchCommand, "--port")), parsePort(envPort));
+    if (host == null && port == null) {
+      return null;
+    }
+    return new GrpcEndpointOverride(host == null ? "localhost" : host, port == null ? 9100 : port);
+  }
+
+  static String launchArgValue(String launchCommand, String optionName) {
+    if (launchCommand == null
+        || launchCommand.isBlank()
+        || optionName == null
+        || optionName.isBlank()) {
+      return null;
+    }
+    List<String> tokens = tokenizeLaunchCommand(launchCommand);
+    for (int i = 0; i < tokens.size(); i++) {
+      String token = tokens.get(i);
+      if (optionName.equals(token)) {
+        if (i + 1 < tokens.size()) {
+          return blankToNull(tokens.get(i + 1));
+        }
+        return null;
+      }
+      String prefix = optionName + "=";
+      if (token.startsWith(prefix)) {
+        return blankToNull(token.substring(prefix.length()));
+      }
+    }
+    return null;
+  }
+
+  static List<String> tokenizeLaunchCommand(String launchCommand) {
+    List<String> tokens = new ArrayList<>();
+    if (launchCommand == null || launchCommand.isBlank()) {
+      return tokens;
+    }
+    StringTokenizer tokenizer = new StringTokenizer(launchCommand);
+    while (tokenizer.hasMoreTokens()) {
+      tokens.add(tokenizer.nextToken());
+    }
+    return tokens;
+  }
+
+  private static String firstNonBlank(String... values) {
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private static Integer firstNonNull(Integer... values) {
+    for (Integer value : values) {
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private static Integer parsePort(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    return Integer.parseInt(value.trim());
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
+  }
+
+  record GrpcEndpointOverride(String host, int port) {}
 
   private void initAuthConfig() {
     if (authToken == null || authToken.isBlank()) {

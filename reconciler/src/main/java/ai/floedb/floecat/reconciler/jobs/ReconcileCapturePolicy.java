@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -46,7 +49,9 @@ public final class ReconcileCapturePolicy {
   private final List<Column> columns;
   private final Set<Output> outputs;
 
-  private ReconcileCapturePolicy(List<Column> columns, Set<Output> outputs) {
+  @JsonCreator
+  private ReconcileCapturePolicy(
+      @JsonProperty("columns") List<Column> columns, @JsonProperty("outputs") Set<Output> outputs) {
     this.columns =
         columns == null
             ? List.of()
@@ -72,14 +77,17 @@ public final class ReconcileCapturePolicy {
     return new ReconcileCapturePolicy(columns, outputs);
   }
 
+  @JsonProperty("columns")
   public List<Column> columns() {
     return columns;
   }
 
+  @JsonProperty("outputs")
   public Set<Output> outputs() {
     return outputs;
   }
 
+  @JsonIgnore
   public boolean isEmpty() {
     return columns.isEmpty() && outputs.isEmpty();
   }

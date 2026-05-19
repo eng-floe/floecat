@@ -188,6 +188,23 @@ public interface FloecatConnector extends Closeable {
         namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
   }
 
+  /**
+   * Captures snapshot stats directly from snapshot metadata without reading data files.
+   *
+   * <p>Implementations must return {@link Optional#empty()} when the requested targets cannot be
+   * satisfied exclusively from snapshot-native metadata (for example missing file stats, delete
+   * vectors, or any feature that requires file reads).
+   */
+  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    return Optional.empty();
+  }
+
   /** Captures requested outputs for one planned file-group within a snapshot. */
   FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,

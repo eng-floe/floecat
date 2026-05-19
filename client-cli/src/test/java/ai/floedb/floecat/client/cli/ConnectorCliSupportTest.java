@@ -17,6 +17,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -59,6 +60,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.rpc.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.rpc.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.ScopedCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -499,20 +501,8 @@ class ConnectorCliSupportTest {
   }
 
   @Test
-  void connectorTriggerCurrentWithoutColumnsStillScopesCapture() throws Exception {
+  void connectorTriggerCurrentWithoutColumnsUsesSnapshotSelection() throws Exception {
     try (Harness h = new Harness()) {
-      h.connectorsService.connectorToReturn =
-          Connector.newBuilder()
-              .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
-              .build();
-      h.directoryService.tableDisplayName = "events";
-      h.snapshotService.currentSnapshotId = 42L;
-
       ConnectorCliSupport.handle(
           "connector",
           List.of(
@@ -531,9 +521,10 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
-      assertEquals(1, request.getScope().getDestinationCaptureRequestsCount());
-      assertEquals(42L, request.getScope().getDestinationCaptureRequests(0).getSnapshotId());
-      assertEquals("table", request.getScope().getDestinationCaptureRequests(0).getTargetSpec());
+      assertEquals(0, request.getScope().getDestinationCaptureRequestsCount());
+      assertEquals(
+          SnapshotSelectionKind.SSK_CURRENT, request.getScope().getSnapshotSelection().getKind());
+      assertEquals(0, h.connectorsService.getConnectorCalls.get());
     }
   }
 
@@ -752,6 +743,102 @@ class ConnectorCliSupportTest {
       assertTrue(buf.toString().contains("\\- job-snapshot-1"));
       assertTrue(buf.toString().contains("plan_snapshot"));
       assertTrue(buf.toString().contains("2           65"));
+    }
+  }
+
+  @Test
+  void connectorJobsRendersWaitingStateAndSanitizesUuidPrefixedMessage() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-waiting-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_SNAPSHOT)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_WAITING)
+                      .setMessage(
+                          "123e4567-e89b-12d3-a456-426614174000: Waiting for snapshot file groups")
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      String output = buf.toString();
+      assertTrue(output.contains("WAITING"));
+      assertFalse(output.contains("UNRECOGNIZED"));
+      assertTrue(output.contains("Waiting for snapshot file groups"));
+      assertFalse(output.contains("123e4567-e89b-12d3-a456-426614174000: Waiting"));
+    }
+  }
+
+  @Test
+  void connectorJobsRendersWaitingFromRawStateValue() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-waiting-raw-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_SNAPSHOT)
+                      .setStateValue(7)
+                      .setMessage(
+                          "123e4567-e89b-12d3-a456-426614174000: Waiting for snapshot file groups")
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      String output = buf.toString();
+      assertTrue(output.contains("WAITING"));
+      assertFalse(output.contains("UNRECOGNIZED"));
+      assertTrue(output.contains("Waiting for snapshot file groups"));
+      assertFalse(output.contains("123e4567-e89b-12d3-a456-426614174000: Waiting"));
+    }
+  }
+
+  @Test
+  void connectorJobsRendersUnknownEnumFallback() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-unknown-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
+                      .setStateValue(99)
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(buf.toString().contains("UNKNOWN(99)"));
     }
   }
 

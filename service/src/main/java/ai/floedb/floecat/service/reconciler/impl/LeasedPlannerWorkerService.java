@@ -20,8 +20,9 @@ import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -41,6 +42,7 @@ import java.util.Optional;
 public class LeasedPlannerWorkerService {
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   record PlanConnectorPayload(
       String jobId,
@@ -116,6 +118,32 @@ public class LeasedPlannerWorkerService {
             jobId,
             leaseEpoch,
             ReconcileJobKind.PLAN_CONNECTOR);
+    long plannedTableJobs =
+        nullToEmpty(tableJobs).stream()
+            .filter(job -> job != null && !job.tableTask().isEmpty())
+            .count();
+    long plannedViewJobs =
+        nullToEmpty(viewJobs).stream()
+            .filter(job -> job != null && !job.viewTask().isEmpty())
+            .count();
+    boolean accepted =
+        completePlanSuccess(
+            jobId,
+            leaseEpoch,
+            "Planned "
+                + plannedTableJobs
+                + " table job(s)"
+                + (plannedViewJobs == 0L ? "" : " and " + plannedViewJobs + " view job(s)"),
+            plannedTableJobs,
+            0L,
+            plannedViewJobs,
+            0L,
+            0L,
+            0L,
+            0L);
+    if (!accepted) {
+      return false;
+    }
     for (PlannedViewJob viewJob : nullToEmpty(viewJobs)) {
       if (viewJob == null || viewJob.viewTask().isEmpty()) {
         continue;
@@ -188,6 +216,25 @@ public class LeasedPlannerWorkerService {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
+    long plannedSnapshotJobs =
+        nullToEmpty(snapshotJobs).stream()
+            .filter(job -> job != null && !job.snapshotTask().isEmpty())
+            .count();
+    boolean accepted =
+        completePlanSuccess(
+            jobId,
+            leaseEpoch,
+            "Planned " + plannedSnapshotJobs + " snapshot job(s)",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L);
+    if (!accepted) {
+      return false;
+    }
     for (PlannedSnapshotJob snapshotJob : nullToEmpty(snapshotJobs)) {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
@@ -263,7 +310,10 @@ public class LeasedPlannerWorkerService {
                     mutation.viewSpec(),
                     mutation.idempotencyKey() == null ? "" : mutation.idempotencyKey())
                 .changed();
-    return new PlanViewPersistResult(true, changed ? 1L : 0L);
+    boolean accepted =
+        completePlanSuccess(
+            jobId, leaseEpoch, "Planned view", 0L, 0L, 1L, changed ? 1L : 0L, 0L, 0L, 0L);
+    return new PlanViewPersistResult(accepted, changed ? 1L : 0L);
   }
 
   public boolean persistPlanViewFailure(
@@ -301,27 +351,52 @@ public class LeasedPlannerWorkerService {
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
-      List<PlannedFileGroupJob> fileGroupJobs) {
+      ReconcileSnapshotTask plannedSnapshotTask) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
-    List<ReconcileFileGroupTask> plannedGroups =
-        nullToEmpty(fileGroupJobs).stream()
-            .filter(fileGroupJob -> fileGroupJob != null && !fileGroupJob.fileGroupTask().isEmpty())
-            .map(PlannedFileGroupJob::fileGroupTask)
-            .toList();
     ReconcileSnapshotTask baseSnapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
     ReconcileSnapshotTask finalizedSnapshotTask =
-        ReconcileSnapshotTask.of(
-            baseSnapshotTask.tableId(),
-            baseSnapshotTask.snapshotId(),
-            baseSnapshotTask.sourceNamespace(),
-            baseSnapshotTask.sourceTable(),
-            plannedGroups,
-            true);
+        plannedSnapshotTask == null || plannedSnapshotTask.isEmpty()
+            ? ReconcileSnapshotTask.of(
+                baseSnapshotTask.tableId(),
+                baseSnapshotTask.snapshotId(),
+                baseSnapshotTask.sourceNamespace(),
+                baseSnapshotTask.sourceTable(),
+                List.of(),
+                true,
+                baseSnapshotTask.completionMode(),
+                baseSnapshotTask.fileGroupPlanBlobUri(),
+                baseSnapshotTask.fileGroupCount())
+            : plannedSnapshotTask;
+    List<PlannedFileGroupJob> plannedJobs =
+        snapshotPlanBlobStore.loadPlanJobs(finalizedSnapshotTask);
+    long plannedFileGroupJobs =
+        plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
+    boolean accepted =
+        completePlanSuccess(
+            jobId,
+            leaseEpoch,
+            "Snapshot plan recorded for "
+                + finalizedSnapshotTask.sourceNamespace()
+                + "."
+                + finalizedSnapshotTask.sourceTable()
+                + " with "
+                + plannedFileGroupJobs
+                + " file group(s)",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L);
+    if (!accepted) {
+      return false;
+    }
     jobs.persistSnapshotPlan(lease.jobId, finalizedSnapshotTask);
-    for (PlannedFileGroupJob fileGroupJob : nullToEmpty(fileGroupJobs)) {
+    for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
       }
@@ -370,8 +445,6 @@ public class LeasedPlannerWorkerService {
 
   record PlannedSnapshotJob(ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {}
 
-  record PlannedFileGroupJob(ReconcileScope scope, ReconcileFileGroupTask fileGroupTask) {}
-
   private ReconcileJobStore.LeasedJob requireLeasedJob(
       String corr, String jobId, String leaseEpoch, ReconcileJobKind expectedKind) {
     boolean renewed = jobs.renewLease(jobId, leaseEpoch);
@@ -390,6 +463,15 @@ public class LeasedPlannerWorkerService {
     if (job.jobKind != expectedKind) {
       throw Status.FAILED_PRECONDITION
           .withDescription("reconcile job is not a " + expectedKind + " job")
+          .asRuntimeException();
+    }
+    if (!isActiveLeasedState(job.state)) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "reconcile job is no longer active for lease "
+                  + jobId
+                  + " state="
+                  + blankToEmpty(job.state))
           .asRuntimeException();
     }
     return new ReconcileJobStore.LeasedJob(
@@ -424,16 +506,78 @@ public class LeasedPlannerWorkerService {
     if (retryDisposition
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
             .TERMINAL) {
-      jobs.markFailedTerminal(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
+      jobs.applyLeaseOutcome(
+          jobId,
+          leaseEpoch,
+          ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+          finishedAtMs,
+          message,
+          0L,
+          0L,
+          0L,
+          0L,
+          1L,
+          0L,
+          0L);
       return;
     }
     if (retryClass
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
             .DEPENDENCY_NOT_READY) {
-      jobs.markWaiting(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
+      jobs.applyLeaseOutcome(
+          jobId,
+          leaseEpoch,
+          ReconcileJobStore.CompletionKind.FAILED_WAITING,
+          finishedAtMs,
+          message,
+          0L,
+          0L,
+          0L,
+          0L,
+          1L,
+          0L,
+          0L);
       return;
     }
-    jobs.markFailed(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 1L, 0L, 0L);
+    jobs.applyLeaseOutcome(
+        jobId,
+        leaseEpoch,
+        ReconcileJobStore.CompletionKind.FAILED_RETRYABLE,
+        finishedAtMs,
+        message,
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+  }
+
+  private boolean completePlanSuccess(
+      String jobId,
+      String leaseEpoch,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    return jobs.applyLeaseOutcome(
+        jobId,
+        leaseEpoch,
+        ReconcileJobStore.CompletionKind.SUCCEEDED,
+        System.currentTimeMillis(),
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
   }
 
   private static ResourceId connectorId(ReconcileJobStore.LeasedJob lease) {
@@ -457,6 +601,10 @@ public class LeasedPlannerWorkerService {
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
+  }
+
+  private static boolean isActiveLeasedState(String state) {
+    return "JS_RUNNING".equals(state) || "JS_CANCELLING".equals(state);
   }
 
   private static <T> List<T> nullToEmpty(List<T> values) {

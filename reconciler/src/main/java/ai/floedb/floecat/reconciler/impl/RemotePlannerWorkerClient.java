@@ -57,7 +57,10 @@ interface RemotePlannerWorkerClient {
 
   StandalonePlanSnapshotPayload getPlanSnapshotInput(RemoteLeasedJob lease);
 
-  boolean submitPlanSnapshotSuccess(RemoteLeasedJob lease, List<PlannedFileGroupJob> fileGroupJobs);
+  boolean submitPlanSnapshotSuccess(
+      RemoteLeasedJob lease,
+      ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> fileGroupJobs);
 
   boolean submitPlanSnapshotFailure(
       RemoteLeasedJob lease,

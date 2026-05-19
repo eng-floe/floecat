@@ -135,6 +135,8 @@ class GrpcRemoteReconcileExecutorClient
   @GrpcClient("floecat")
   ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub executorControl;
 
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+
   @Override
   public Optional<RemoteLeasedJob> lease(
       ReconcileJobStore.LeaseRequest request, String leaseClientId) {
@@ -499,20 +501,15 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   public boolean submitPlanSnapshotSuccess(
-      RemoteLeasedJob lease, List<PlannedFileGroupJob> fileGroupJobs) {
+      RemoteLeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> fileGroupJobs) {
+    ReconcileSnapshotTask persistedSnapshotTask =
+        snapshotPlanBlobStore.persistPlan(
+            lease.lease().accountId, lease.lease().jobId, snapshotTask, fileGroupJobs);
     SubmitLeasedPlanSnapshotResultRequest.Success.Builder success =
         SubmitLeasedPlanSnapshotResultRequest.Success.newBuilder();
-    for (PlannedFileGroupJob fileGroupJob :
-        fileGroupJobs == null ? List.<PlannedFileGroupJob>of() : fileGroupJobs) {
-      if (fileGroupJob == null || fileGroupJob.fileGroupTask() == null) {
-        continue;
-      }
-      success.addFileGroupJobs(
-          ai.floedb.floecat.reconciler.rpc.PlannedFileGroupExecutionJob.newBuilder()
-              .setScope(toProtoScope(fileGroupJob.scope(), lease.lease()))
-              .setFileGroupTask(toProtoFileGroupTask(fileGroupJob.fileGroupTask()))
-              .build());
-    }
+    success.setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask));
     return withHeaders(executorControl, correlationId(lease))
         .submitLeasedPlanSnapshotResult(
             SubmitLeasedPlanSnapshotResultRequest.newBuilder()
@@ -704,7 +701,26 @@ class GrpcRemoteReconcileExecutorClient
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+            : ReconcileCapturePolicy.empty(),
+        scope.hasSnapshotSelection()
+            ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
+            : ReconcileSnapshotSelection.unspecified());
+  }
+
+  private static ReconcileSnapshotSelection fromProtoSnapshotSelection(
+      ai.floedb.floecat.reconciler.rpc.SnapshotSelection selection) {
+    if (selection == null) {
+      return ReconcileSnapshotSelection.unspecified();
+    }
+    return switch (selection.getKind()) {
+      case SSK_CURRENT -> ReconcileSnapshotSelection.current();
+      case SSK_LATEST_N -> ReconcileSnapshotSelection.latestN(selection.getLatestN());
+      case SSK_EXPLICIT ->
+          ReconcileSnapshotSelection.explicit(
+              selection.getSnapshotIdsList().stream().map(Long::valueOf).toList());
+      case SSK_ALL -> ReconcileSnapshotSelection.all();
+      case SSK_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.unspecified();
+    };
   }
 
   private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(
@@ -873,6 +889,17 @@ class GrpcRemoteReconcileExecutorClient
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+        .setFileGroupCount(effective.fileGroupCount())
+        .setCompletionMode(
+            switch (effective.completionMode()) {
+              case DIRECT_STATS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_DIRECT_STATS;
+              case FILE_GROUPS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_FILE_GROUPS;
+            })
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(GrpcRemoteReconcileExecutorClient::toProtoFileGroupTask)
@@ -1060,7 +1087,14 @@ class GrpcRemoteReconcileExecutorClient
         snapshotTask.getFileGroupsList().stream()
             .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupTask)
             .toList(),
-        snapshotTask.getFileGroupPlanRecorded());
+        snapshotTask.getFileGroupPlanRecorded(),
+        switch (snapshotTask.getCompletionMode()) {
+          case RSCM_DIRECT_STATS -> ReconcileSnapshotTask.CompletionMode.DIRECT_STATS;
+          case RSCM_FILE_GROUPS, RSCM_UNSPECIFIED, UNRECOGNIZED ->
+              ReconcileSnapshotTask.CompletionMode.FILE_GROUPS;
+        },
+        snapshotTask.getFileGroupPlanBlobUri(),
+        snapshotTask.getFileGroupCount());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(
@@ -1073,6 +1107,7 @@ class GrpcRemoteReconcileExecutorClient
         fileGroupTask.getGroupId(),
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
+        0,
         fileGroupTask.getFilePathsList(),
         fileGroupTask.getFileResultsList().stream()
             .map(GrpcRemoteReconcileExecutorClient::fromProtoFileResult)

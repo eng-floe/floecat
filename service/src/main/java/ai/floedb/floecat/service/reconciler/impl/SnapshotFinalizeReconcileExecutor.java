@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
@@ -50,6 +51,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   @Override
   public String id() {
@@ -115,6 +117,17 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
+    if (coverage.state() == PlannedCoverageState.DIRECT_STATS) {
+      return ExecutionResult.success(
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          "Finalized snapshot capture " + snapshotTask.snapshotId() + " from direct stats");
+    }
     if (coverage.state() == PlannedCoverageState.EXPLICIT_EMPTY) {
       List<String> unexpectedChildren =
           fileGroupChildDescriptions(lease.accountId, parentJobId, lease.jobId);
@@ -444,17 +457,19 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           List.of(),
           "snapshot finalization requires explicit snapshot coverage metadata");
     }
+    if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
+      return new ExpectedCoverage(PlannedCoverageState.DIRECT_STATS, List.of(), List.of(), "");
+    }
+    List<ReconcileFileGroupTask> plannedGroups = snapshotPlanBlobStore.loadFileGroups(snapshotTask);
     LinkedHashSet<String> expectedFiles = new LinkedHashSet<>();
-    for (ReconcileFileGroupTask fileGroup : snapshotTask.fileGroups()) {
+    for (ReconcileFileGroupTask fileGroup : plannedGroups) {
       if (fileGroup == null) {
         continue;
       }
       expectedFiles.addAll(fileGroup.filePaths());
     }
     List<ReconcileFileGroupTask> expectedGroups =
-        snapshotTask.fileGroups().stream()
-            .filter(group -> group != null && !group.isEmpty())
-            .toList();
+        plannedGroups.stream().filter(group -> group != null && !group.isEmpty()).toList();
     if (expectedGroups.isEmpty()) {
       return new ExpectedCoverage(
           PlannedCoverageState.EXPLICIT_EMPTY, List.of(), List.copyOf(expectedFiles), "");
@@ -619,6 +634,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
   private enum PlannedCoverageState {
     UNKNOWN,
+    DIRECT_STATS,
     EXPLICIT_EMPTY,
     NON_EMPTY
   }

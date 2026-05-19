@@ -186,23 +186,21 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
-              boolean leaseValid = jobs.renewLease(jobId, leaseEpoch);
-              if (leaseValid) {
-                jobs.markProgress(
-                    jobId,
-                    leaseEpoch,
-                    request.getTablesScanned(),
-                    request.getTablesChanged(),
-                    request.getViewsScanned(),
-                    request.getViewsChanged(),
-                    request.getErrors(),
-                    request.getSnapshotsProcessed(),
-                    request.getStatsProcessed(),
-                    request.getMessage());
-              }
+              var update =
+                  jobs.reportProgress(
+                      jobId,
+                      leaseEpoch,
+                      request.getTablesScanned(),
+                      request.getTablesChanged(),
+                      request.getViewsScanned(),
+                      request.getViewsChanged(),
+                      request.getErrors(),
+                      request.getSnapshotsProcessed(),
+                      request.getStatsProcessed(),
+                      request.getMessage());
               return ReportReconcileProgressResponse.newBuilder()
-                  .setLeaseValid(leaseValid)
-                  .setCancellationRequested(jobs.isCancellationRequested(jobId))
+                  .setLeaseValid(update.leaseValid)
+                  .setCancellationRequested(update.cancellationRequested)
                   .build();
             }),
         correlationId());
@@ -223,71 +221,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   || request.getState() == ReconcileCompletionState.UNRECOGNIZED) {
                 throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "state"));
               }
-              boolean leaseValid = jobs.renewLease(jobId, leaseEpoch);
-              if (!leaseValid) {
-                return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(false).build();
-              }
-              long finishedAtMs = System.currentTimeMillis();
-              switch (request.getState()) {
-                case RCS_SUCCEEDED ->
-                    jobs.markSucceeded(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                case RCS_FAILED -> {
-                  if (isDependencyNotReady(request)) {
-                    jobs.markWaiting(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                  } else if (isTerminalFailure(request)) {
-                    jobs.markFailedTerminal(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                    cancelChildJobs(jobId, request.getMessage());
-                  } else {
-                    jobs.markFailed(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                  }
-                }
-                case RCS_CANCELLED -> {
-                  jobs.markCancelled(
+              var completionKind = completionKind(request);
+              boolean accepted =
+                  jobs.applyLeaseOutcome(
                       jobId,
                       leaseEpoch,
-                      finishedAtMs,
+                      completionKind,
+                      System.currentTimeMillis(),
                       request.getMessage(),
                       request.getTablesScanned(),
                       request.getTablesChanged(),
@@ -296,11 +236,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       request.getErrors(),
                       request.getSnapshotsProcessed(),
                       request.getStatsProcessed());
-                  cancelChildJobs(jobId, request.getMessage());
-                }
-                case RCS_UNSPECIFIED, UNRECOGNIZED ->
-                    throw GrpcErrors.invalidArgument(
-                        corr, null, java.util.Map.of("field", "state"));
+              if (!accepted) {
+                return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(false).build();
+              }
+              switch (completionKind) {
+                case FAILED_TERMINAL, CANCELLED -> cancelChildJobs(jobId, request.getMessage());
+                case SUCCEEDED, FAILED_RETRYABLE, FAILED_WAITING -> {}
               }
               return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build();
             }),
@@ -355,6 +296,28 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return request != null
         && request.getFailureRetryDisposition() == ReconcileFailureRetryDisposition.RFRD_RETRYABLE
         && request.getFailureRetryClass() == ReconcileFailureRetryClass.RFRC_DEPENDENCY_NOT_READY;
+  }
+
+  private static ReconcileJobStore.CompletionKind completionKind(
+      CompleteLeasedReconcileJobRequest request) {
+    if (request == null) {
+      return ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
+    }
+    return switch (request.getState()) {
+      case RCS_SUCCEEDED -> ReconcileJobStore.CompletionKind.SUCCEEDED;
+      case RCS_CANCELLED -> ReconcileJobStore.CompletionKind.CANCELLED;
+      case RCS_FAILED -> {
+        if (isDependencyNotReady(request)) {
+          yield ReconcileJobStore.CompletionKind.FAILED_WAITING;
+        }
+        if (isTerminalFailure(request)) {
+          yield ReconcileJobStore.CompletionKind.FAILED_TERMINAL;
+        }
+        yield ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
+      }
+      case RCS_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("completion state is required");
+    };
   }
 
   private static ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
@@ -712,13 +675,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         principalContext,
                         jobId,
                         leaseEpoch,
-                        request.getSuccess().getFileGroupJobsList().stream()
-                            .map(
-                                job ->
-                                    new LeasedPlannerWorkerService.PlannedFileGroupJob(
-                                        fromProtoScope(job.getScope()),
-                                        fromProtoFileGroupTask(job.getFileGroupTask())))
-                            .toList());
+                        fromProtoSnapshotTask(request.getSuccess().getSnapshotTask()));
                 return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -968,6 +925,17 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+        .setFileGroupCount(effective.fileGroupCount())
+        .setCompletionMode(
+            switch (effective.completionMode()) {
+              case DIRECT_STATS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_DIRECT_STATS;
+              case FILE_GROUPS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_FILE_GROUPS;
+            })
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(ReconcileExecutorControlImpl::toProtoFileGroupTask)
@@ -1263,7 +1231,14 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         snapshotTask.getFileGroupsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileGroupTask)
             .toList(),
-        snapshotTask.getFileGroupPlanRecorded());
+        snapshotTask.getFileGroupPlanRecorded(),
+        switch (snapshotTask.getCompletionMode()) {
+          case RSCM_DIRECT_STATS -> ReconcileSnapshotTask.CompletionMode.DIRECT_STATS;
+          case RSCM_FILE_GROUPS, RSCM_UNSPECIFIED, UNRECOGNIZED ->
+              ReconcileSnapshotTask.CompletionMode.FILE_GROUPS;
+        },
+        snapshotTask.getFileGroupPlanBlobUri(),
+        snapshotTask.getFileGroupCount());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(
@@ -1276,6 +1251,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         fileGroupTask.getGroupId(),
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
+        0,
         fileGroupTask.getFilePathsList(),
         fileGroupTask.getFileResultsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileResult)

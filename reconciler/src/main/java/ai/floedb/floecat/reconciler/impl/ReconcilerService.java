@@ -327,7 +327,9 @@ public class ReconcilerService {
       if (bundles == null || bundles.isEmpty()) {
         return List.of();
       }
-      return bundles.stream()
+      List<FloecatConnector.SnapshotBundle> plannableBundles =
+          filterPlannableSnapshotBundles(bundles, fullRescan, captureMode, knownSnapshotIds);
+      return plannableBundles.stream()
           .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
           .filter(
               bundle ->
@@ -347,6 +349,22 @@ public class ReconcilerService {
       throw new RuntimeException(
           "Failed to plan snapshot tasks for connector " + connectorId.getId(), e);
     }
+  }
+
+  static List<FloecatConnector.SnapshotBundle> filterPlannableSnapshotBundles(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      Set<Long> knownSnapshotIds) {
+    if (bundles == null || bundles.isEmpty() || fullRescan || includesMetadata(captureMode)) {
+      return bundles == null ? List.of() : bundles;
+    }
+    if (knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      return List.of();
+    }
+    return bundles.stream()
+        .filter(bundle -> bundle != null && knownSnapshotIds.contains(bundle.snapshotId()))
+        .toList();
   }
 
   static Optional<String> validateScopeCombinations(

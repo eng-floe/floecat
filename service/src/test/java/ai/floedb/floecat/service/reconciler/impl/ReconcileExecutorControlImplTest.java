@@ -225,7 +225,8 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void reportReconcileProgressActsAsHeartbeat() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.reportProgress("job-1", "lease-1", 4L, 2L, 0L, 0L, 1L, 3L, 5L, "working"))
+        .thenReturn(new ReconcileJobStore.ProgressUpdate(true, false));
 
     var response =
         service
@@ -244,12 +245,25 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(response.getLeaseValid());
-    verify(service.jobs).markProgress("job-1", "lease-1", 4, 2, 0, 0, 1, 3, 5, "working");
+    verify(service.jobs).reportProgress("job-1", "lease-1", 4L, 2L, 0L, 0L, 1L, 3L, 5L, "working");
   }
 
   @Test
   void completeLeasedReconcileJobMarksSucceeded() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq(""),
+            eq(7L),
+            eq(3L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(2L),
+            eq(9L)))
+        .thenReturn(true);
 
     var response =
         service
@@ -268,13 +282,37 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markSucceeded(
-            eq("job-1"), eq("lease-1"), anyLong(), eq(7L), eq(3L), eq(0L), eq(0L), eq(2L), eq(9L));
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq(""),
+            eq(7L),
+            eq(3L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(2L),
+            eq(9L));
   }
 
   @Test
   void completeLeasedReconcileJobLeavesDescendantsIntactOnRetryableFailure() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE),
+            anyLong(),
+            eq("boom"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
     when(service.jobs.get(null, "job-1"))
         .thenReturn(Optional.of(job("job-1", "acct", ReconcileJobKind.PLAN_CONNECTOR, "")));
     var response =
@@ -292,9 +330,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markFailed(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE),
             anyLong(),
             eq("boom"),
             eq(0L),
@@ -308,7 +347,20 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void completeLeasedReconcileJobRequeuesDependencyNotReadyWithoutPenalty() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            anyLong(),
+            eq("waiting on file-group children"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
 
     var response =
         service
@@ -326,9 +378,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markWaiting(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
             anyLong(),
             eq("waiting on file-group children"),
             eq(0L),
@@ -342,7 +395,20 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void completeLeasedReconcileJobMarksStructuredTerminalFailureTerminal() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_TERMINAL),
+            anyLong(),
+            eq("deterministic invariant failure"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
     when(service.jobs.get(null, "job-1"))
         .thenReturn(
             Optional.of(job("job-1", "acct", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, "")));
@@ -362,9 +428,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markFailedTerminal(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_TERMINAL),
             anyLong(),
             eq("deterministic invariant failure"),
             eq(0L),
