@@ -308,6 +308,11 @@ class StatsProviderFactoryTest {
               public boolean enabled() {
                 return false;
               }
+
+              @Override
+              public Duration maxLatencyBudget() {
+                return Duration.ofSeconds(10);
+              }
             });
 
     long snapshotId = 500L;
@@ -333,6 +338,59 @@ class StatsProviderFactoryTest {
     Mockito.verify(orchestrator).resolve(requestCaptor.capture());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
+  }
+
+  @Test
+  void syncLatencyBudgetIsClampedToConfiguredMax() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            store,
+            null,
+            new StatsProviderFactory.StatsProviderFactoryConfig() {
+              @Override
+              public Duration latencyBudget() {
+                return Duration.ofSeconds(30);
+              }
+
+              @Override
+              public boolean enabled() {
+                return true;
+              }
+
+              @Override
+              public Duration maxLatencyBudget() {
+                return Duration.ofSeconds(10);
+              }
+            });
+
+    long snapshotId = 500L;
+    QueryContext ctx = queryContextWithPin(snapshotId);
+    store.seed(ctx);
+    when(tableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setFormat(TableFormat.TF_ICEBERG)
+                            .build())
+                    .build()));
+    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+
+    var provider = factory.forQuery(ctx, "corr");
+    provider.tableStats(TABLE);
+
+    ArgumentCaptor<StatsCaptureRequest> requestCaptor =
+        ArgumentCaptor.forClass(StatsCaptureRequest.class);
+    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    assertEquals(Duration.ofSeconds(10), requestCaptor.getValue().latencyBudget().orElseThrow());
   }
 
   @Test
@@ -464,6 +522,11 @@ class StatsProviderFactoryTest {
       @Override
       public boolean enabled() {
         return true;
+      }
+
+      @Override
+      public Duration maxLatencyBudget() {
+        return Duration.ofSeconds(10);
       }
     };
   }

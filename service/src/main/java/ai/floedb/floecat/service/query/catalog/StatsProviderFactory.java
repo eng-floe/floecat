@@ -56,6 +56,7 @@ public final class StatsProviderFactory {
   private final QueryContextStore queryStore;
   private final SnapshotRepository snapshotRepository;
   private final Duration syncLatencyBudget;
+  private final Duration syncMaxLatencyBudget;
   private final boolean syncEnabled;
 
   @Inject
@@ -69,7 +70,8 @@ public final class StatsProviderFactory {
     this.tableRepository = tableRepository;
     this.queryStore = queryStore;
     this.snapshotRepository = snapshotRepository;
-    this.syncLatencyBudget = config.syncLatencyBudget();
+    this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
+    this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
   }
 
@@ -355,12 +357,19 @@ public final class StatsProviderFactory {
     @WithDefault("true")
     boolean enabled();
 
+    @WithDefault("10s")
+    Duration maxLatencyBudget();
+
     default Duration syncLatencyBudget() {
       return latencyBudget();
     }
 
     default boolean syncEnabled() {
       return enabled();
+    }
+
+    default Duration syncMaxLatencyBudget() {
+      return maxLatencyBudget();
     }
   }
 
@@ -375,6 +384,21 @@ public final class StatsProviderFactory {
       public boolean enabled() {
         return true;
       }
+
+      @Override
+      public Duration maxLatencyBudget() {
+        return Duration.ofSeconds(10);
+      }
     };
+  }
+
+  private static Duration clampToMax(Duration requested, Duration max) {
+    if (requested == null) {
+      return max;
+    }
+    if (max == null || max.isZero() || max.isNegative()) {
+      return requested;
+    }
+    return requested.compareTo(max) > 0 ? max : requested;
   }
 }
