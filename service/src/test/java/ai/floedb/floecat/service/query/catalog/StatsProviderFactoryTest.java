@@ -44,10 +44,13 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -265,7 +268,7 @@ class StatsProviderFactoryTest {
                     .build()));
     when(orchestrator.resolve(any()))
         .thenReturn(
-            Optional.of(
+            StatsResolutionResult.hit(
                 TargetStatsRecords.tableRecord(
                     TABLE,
                     snapshotId,
@@ -279,6 +282,57 @@ class StatsProviderFactoryTest {
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
     Mockito.verify(orchestrator).resolve(requestCaptor.capture());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
+    assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
+    assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
+  }
+
+  @Test
+  void syncDisabledFactoryRequestsAsyncModeWithNoBudget() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            store,
+            null,
+            new StatsProviderFactory.StatsProviderFactoryConfig() {
+              @Override
+              public Duration latencyBudget() {
+                return Duration.ofSeconds(1);
+              }
+
+              @Override
+              public boolean enabled() {
+                return false;
+              }
+            });
+
+    long snapshotId = 500L;
+    QueryContext ctx = queryContextWithPin(snapshotId);
+    store.seed(ctx);
+    when(tableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setFormat(TableFormat.TF_ICEBERG)
+                            .build())
+                    .build()));
+    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+
+    var provider = factory.forQuery(ctx, "corr");
+    provider.tableStats(TABLE);
+
+    ArgumentCaptor<StatsCaptureRequest> requestCaptor =
+        ArgumentCaptor.forClass(StatsCaptureRequest.class);
+    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
+    assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
   }
 
   @Test
@@ -396,7 +450,22 @@ class StatsProviderFactoryTest {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     StatsOrchestrator orchestrator = new StatsOrchestrator(repository, jobStore, tableRepository);
-    return new StatsProviderFactory(orchestrator, tableRepository, store, snapshots);
+    return new StatsProviderFactory(
+        orchestrator, tableRepository, store, snapshots, defaultSyncConfig());
+  }
+
+  private static StatsProviderFactory.StatsProviderFactoryConfig defaultSyncConfig() {
+    return new StatsProviderFactory.StatsProviderFactoryConfig() {
+      @Override
+      public Duration latencyBudget() {
+        return Duration.ofSeconds(1);
+      }
+
+      @Override
+      public boolean enabled() {
+        return true;
+      }
+    };
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
