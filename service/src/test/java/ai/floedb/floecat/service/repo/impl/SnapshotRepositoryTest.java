@@ -197,7 +197,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotReturnsEmptyWithoutTableCurrentSnapshotId() {
+  void getCurrentSnapshotFallsBackToLatestSnapshotWhenTableCurrentSnapshotIdMissing() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -208,7 +208,25 @@ class SnapshotRepositoryTest {
     tableRepo.create(tableWithCurrentSnapshot(account, tableRid, null));
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
-    assertTrue(snapshotRepo.getCurrentSnapshot(tableRid).isEmpty());
+    Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(204L, fallback.getSnapshotId());
+  }
+
+  @Test
+  void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsDangling() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 999_999L));
+    seedSnapshot(snapshotRepo, account, tableRid, 101, clock.millis(), clock.millis() - 20_000);
+    seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
+
+    Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(204L, fallback.getSnapshotId());
   }
 
   private void seedSnapshot(
@@ -333,7 +351,10 @@ class SnapshotRepositoryTest {
     assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
     assertTrue(conflicts.sum() >= 0, "should have some conflicts");
 
-    assertTrue(snapshotRepo.getCurrentSnapshot(tblId).isEmpty());
+    Snapshot current = snapshotRepo.getCurrentSnapshot(tblId).orElse(null);
+    if (current != null) {
+      assertTrue(current.getSnapshotId() >= 160 && current.getSnapshotId() <= 209);
+    }
 
     var next = new StringBuilder();
     var first = snapshotRepo.list(tblId, 5, "", next);
