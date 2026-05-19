@@ -179,7 +179,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
                         context.correlationId(),
                         QUERY_NOT_FOUND,
                         Map.of("query_id", effectiveQueryId)));
-    StatsProvider statsProvider = statsFactory.forQuery(queryCtx, context.correlationId());
+    StatsProvider statsProvider = statsFactory.forSystemScan(queryCtx, context.correlationId());
     SystemObjectScanner scanner = resolveScanner(resolvedTableId, context);
     List<String> requiredColumns = command.getRequiredColumnsList();
     List<Predicate> predicates = command.getPredicatesList();

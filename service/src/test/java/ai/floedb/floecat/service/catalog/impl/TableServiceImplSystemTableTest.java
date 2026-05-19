@@ -349,7 +349,6 @@ class TableServiceImplSystemTableTest {
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
-        Optional.empty(),
         List.of(),
         Map.of(),
         Map.<Long, Map<EngineHintKey, ai.floedb.floecat.metagraph.model.EngineHint>>of());

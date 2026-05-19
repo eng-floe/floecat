@@ -23,6 +23,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
@@ -45,6 +47,7 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -278,16 +281,122 @@ class StatsProviderFactoryTest {
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
   }
 
+  @Test
+  void systemScanFallsBackToLatestSnapshotStatsWhenTableIsUnpinned() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
+    SnapshotRepository snapshots =
+        new SnapshotRepository(
+            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    StatsProviderFactory factory = factory(repository, store, snapshots);
+
+    long snapshotId = 777L;
+    when(snapshotTableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .putProperties("current-snapshot-id", Long.toString(snapshotId))
+                    .build()));
+    snapshots.create(
+        Snapshot.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(snapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_000L))
+            .build());
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(123).setTotalSizeBytes(456).build(),
+            null));
+
+    QueryContext noPin = queryContextWithoutPin();
+    store.seed(noPin);
+    var provider = factory.forSystemScan(noPin, "corr");
+
+    var view = provider.tableStats(TABLE).orElseThrow();
+    assertEquals(snapshotId, view.snapshotId());
+    assertEquals(123L, view.rowCountValue().orElseThrow());
+    assertEquals(456L, view.totalSizeBytesValue().orElseThrow());
+    assertEquals(1, repository.tableStatsCalls());
+  }
+
+  @Test
+  void systemScanUsesLatestSnapshotStatsEvenWhenQueryPinsOlderSnapshot() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
+    SnapshotRepository snapshots =
+        new SnapshotRepository(
+            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    StatsProviderFactory factory = factory(repository, store, snapshots);
+
+    long olderSnapshotId = 700L;
+    long latestSnapshotId = 701L;
+    when(snapshotTableRepository.getById(TABLE))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(TABLE)
+                    .putProperties("current-snapshot-id", Long.toString(latestSnapshotId))
+                    .build()));
+    snapshots.create(
+        Snapshot.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(olderSnapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_000L))
+            .build());
+    snapshots.create(
+        Snapshot.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(latestSnapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_100L))
+            .build());
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            olderSnapshotId,
+            TableValueStats.newBuilder().setRowCount(10).setTotalSizeBytes(100).build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            latestSnapshotId,
+            TableValueStats.newBuilder().setRowCount(20).setTotalSizeBytes(200).build(),
+            null));
+
+    QueryContext pinnedOld = queryContextWithPin(olderSnapshotId);
+    store.seed(pinnedOld);
+    var provider = factory.forSystemScan(pinnedOld, "corr");
+
+    var view = provider.tableStats(TABLE).orElseThrow();
+    assertEquals(latestSnapshotId, view.snapshotId());
+    assertEquals(20L, view.rowCountValue().orElseThrow());
+    assertEquals(200L, view.totalSizeBytesValue().orElseThrow());
+    assertEquals(1, repository.tableStatsCalls());
+  }
+
   private static QueryContext queryContextWithPin(long snapshotId) {
     return queryContextWithPin("query-" + snapshotId, snapshotId);
   }
 
   private static StatsProviderFactory factory(
       CountingStatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
+    return factory(repository, store, null);
+  }
+
+  private static StatsProviderFactory factory(
+      CountingStatsRepository repository,
+      UserObjectBundleTestSupport.TestQueryContextStore store,
+      SnapshotRepository snapshots) {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     StatsOrchestrator orchestrator = new StatsOrchestrator(repository, jobStore, tableRepository);
-    return new StatsProviderFactory(orchestrator, tableRepository, store);
+    return new StatsProviderFactory(orchestrator, tableRepository, store, snapshots);
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
