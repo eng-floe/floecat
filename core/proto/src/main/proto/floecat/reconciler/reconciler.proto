@@ -519,6 +519,11 @@ message PlannedSnapshotPlanJob {
 message SubmitLeasedPlanTableResultRequest {
   message Success {
     repeated PlannedSnapshotPlanJob snapshot_jobs = 1;
+    uint64 tables_scanned = 2;
+    uint64 tables_changed = 3;
+    uint64 errors = 4;
+    uint64 snapshots_processed = 5;
+    uint64 stats_processed = 6;
   }
 
   message Failure {

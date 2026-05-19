@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
@@ -90,7 +91,8 @@ class ReconcileControlImplTest {
             .build();
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
-    when(service.jobs.childJobs(anyString(), anyString())).thenReturn(java.util.List.of());
+    when(service.jobs.childJobsPage(anyString(), anyString(), anyInt(), anyString()))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(), ""));
   }
 
   @Test
@@ -541,7 +543,7 @@ class ReconcileControlImplTest {
     assertEquals(0L, response.getTablesScanned());
     verify(service.jobs, never())
         .cancel("acct", "job-1", "capture_now timed out while waiting for completion");
-    verify(service.jobs, never()).childJobs("acct", "job-1");
+    verify(service.jobs, never()).childJobsPage("acct", "job-1", 200, "");
   }
 
   @Test
@@ -841,7 +843,7 @@ class ReconcileControlImplTest {
     assertEquals(2L, response.getJobs(0).getStatsProcessed());
     assertEquals(0L, response.getJobs(0).getFileGroupsTotal());
     assertEquals(0L, response.getJobs(0).getFilesTotal());
-    verify(service.jobs, never()).childJobs("acct", "snapshot-1");
+    verify(service.jobs, never()).childJobsPage("acct", "snapshot-1", 200, "");
   }
 
   @Test
@@ -917,7 +919,7 @@ class ReconcileControlImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
-    verify(service.jobs, never()).childJobs("acct", "plan-1");
+    verify(service.jobs, never()).childJobsPage("acct", "plan-1", 200, "");
   }
 
   @Test
@@ -970,7 +972,7 @@ class ReconcileControlImplTest {
     assertEquals(7L, response.getStatsProcessed());
     assertEquals(8L, response.getIndexesProcessed());
     assertEquals("worker-1", response.getExecutorId());
-    verify(service.jobs, never()).childJobs("acct", "plan-1");
+    verify(service.jobs, never()).childJobsPage("acct", "plan-1", 200, "");
   }
 
   private static ResourceId connectorId() {

@@ -80,7 +80,9 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 
 @GrpcService
@@ -261,7 +263,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       return;
     }
     String message = (reason == null || reason.isBlank()) ? "Parent plan job terminated" : reason;
-    for (var child : jobs.childJobs(accountId, job.jobId)) {
+    for (var child : childJobsFor(accountId, job.jobId)) {
       var storedChild = jobs.get(accountId, child.jobId).orElse(child);
       var cancelled = jobs.cancel(accountId, child.jobId, message);
       if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
@@ -279,6 +281,24 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return jobKind == ReconcileJobKind.PLAN_CONNECTOR
         || jobKind == ReconcileJobKind.PLAN_TABLE
         || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> childJobsFor(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
+    }
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
   }
 
   private static boolean isTerminalState(String state) {
@@ -518,6 +538,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         principalContext,
                         jobId,
                         leaseEpoch,
+                        request.getSuccess().getTablesScanned(),
+                        request.getSuccess().getTablesChanged(),
+                        request.getSuccess().getErrors(),
+                        request.getSuccess().getSnapshotsProcessed(),
+                        request.getSuccess().getStatsProcessed(),
                         request.getSuccess().getSnapshotJobsList().stream()
                             .map(
                                 job ->

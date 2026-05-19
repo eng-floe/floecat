@@ -355,13 +355,22 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     HashMap<String, ReconcileJobStore.ReconcileJob> childByGroupKey = new HashMap<>();
     LinkedHashSet<String> duplicateGroups = new LinkedHashSet<>();
-    for (ReconcileJobStore.ReconcileJob child : jobs.childJobs(accountId, parentJobId)) {
+    for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
       if (child == null
           || child.jobId == null
           || child.jobId.equals(finalizerJobId)
           || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
         continue;
       }
+      LOG.warnf(
+          "finalizer child readback childJobId=%s state=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d",
+          child.jobId,
+          child.state,
+          child.fileGroupTask == null ? "" : child.fileGroupTask.planId(),
+          child.fileGroupTask == null ? "" : child.fileGroupTask.groupId(),
+          child.fileGroupTask == null ? "" : child.fileGroupTask.tableId(),
+          child.fileGroupTask == null ? -1L : child.fileGroupTask.snapshotId(),
+          child.fileGroupTask == null ? 0 : child.fileGroupTask.fileCount());
       String groupKey = groupKey(child.fileGroupTask);
       if (groupKey.isBlank()) {
         duplicateGroups.add("unkeyed-child:" + child.jobId);
@@ -421,7 +430,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return List.of();
     }
     LinkedHashSet<String> childDescriptions = new LinkedHashSet<>();
-    for (ReconcileJobStore.ReconcileJob child : jobs.childJobs(accountId, parentJobId)) {
+    for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
       if (child == null
           || child.jobId == null
           || child.jobId.equals(finalizerJobId)
@@ -448,6 +457,24 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return List.copyOf(out);
   }
 
+  private List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
+    }
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
   private ExpectedCoverage expectedCoverage(ReconcileSnapshotTask snapshotTask) {
     snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     if (!snapshotTask.fileGroupPlanRecorded()) {
@@ -460,7 +487,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
       return new ExpectedCoverage(PlannedCoverageState.DIRECT_STATS, List.of(), List.of(), "");
     }
-    List<ReconcileFileGroupTask> plannedGroups = snapshotPlanBlobStore.loadFileGroups(snapshotTask);
+    List<ReconcileFileGroupTask> plannedGroups =
+        snapshotTask.fileGroups() == null ? List.of() : snapshotTask.fileGroups();
     LinkedHashSet<String> expectedFiles = new LinkedHashSet<>();
     for (ReconcileFileGroupTask fileGroup : plannedGroups) {
       if (fileGroup == null) {

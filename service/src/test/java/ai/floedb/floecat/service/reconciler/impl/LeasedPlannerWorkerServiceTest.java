@@ -158,6 +158,17 @@ class LeasedPlannerWorkerServiceTest {
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
             1);
+    ReconcileSnapshotTask durableSnapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(fullGroup),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
     when(snapshotPlanBlobStore.loadPlanJobs(submittedSnapshotTask))
         .thenReturn(List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
     when(jobs.applyLeaseOutcome(
@@ -197,7 +208,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong(),
             anyLong(),
             anyLong());
-    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(submittedSnapshotTask));
+    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(durableSnapshotTask));
     inOrder
         .verify(jobs)
         .enqueueFileGroupExecution(
@@ -218,7 +229,7 @@ class LeasedPlannerWorkerServiceTest {
             eq(false),
             eq(CaptureMode.METADATA_AND_CAPTURE),
             any(),
-            eq(submittedSnapshotTask),
+            eq(durableSnapshotTask),
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             eq("remote-executor"));
@@ -275,7 +286,7 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   @Test
-  void persistPlanTableSuccessDoesNotCountPlannedTableAsScannedOrChanged() {
+  void persistPlanTableSuccessCarriesWorkerCountersIntoStoredJob() {
     when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.get("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
@@ -285,8 +296,8 @@ class LeasedPlannerWorkerServiceTest {
             eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
             anyLong(),
             eq("Planned 0 snapshot job(s)"),
-            eq(0L),
-            eq(0L),
+            eq(1L),
+            eq(1L),
             eq(0L),
             eq(0L),
             eq(0L),
@@ -294,7 +305,9 @@ class LeasedPlannerWorkerServiceTest {
             eq(0L)))
         .thenReturn(true);
 
-    boolean accepted = service.persistPlanTableSuccess(principal, "job-1", "lease-1", List.of());
+    boolean accepted =
+        service.persistPlanTableSuccess(
+            principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, List.of());
 
     assertTrue(accepted);
     verify(jobs)
@@ -304,8 +317,8 @@ class LeasedPlannerWorkerServiceTest {
             eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
             anyLong(),
             eq("Planned 0 snapshot job(s)"),
-            eq(0L),
-            eq(0L),
+            eq(1L),
+            eq(1L),
             eq(0L),
             eq(0L),
             eq(0L),
@@ -347,7 +360,6 @@ class LeasedPlannerWorkerServiceTest {
                     snapshotTask,
                     ReconcileFileGroupTask.empty(),
                     "parent-1")));
-    when(snapshotPlanBlobStore.loadPlanJobs(snapshotTask)).thenReturn(List.of());
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
@@ -575,6 +587,48 @@ class LeasedPlannerWorkerServiceTest {
             eq(ReconcileExecutionPolicy.defaults()),
             eq("job-1"),
             eq("remote-executor"));
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessUsesInlineDurableFileGroupsWithoutPlannerBlobReload() {
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask submittedSnapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(fullGroup),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.get("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_SNAPSHOT)));
+    when(jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(true);
+
+    boolean accepted =
+        service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", submittedSnapshotTask);
+
+    assertTrue(accepted);
+    verify(snapshotPlanBlobStore, never()).loadPlanJobs(any());
+    verify(jobs).persistSnapshotPlan(eq("job-1"), eq(submittedSnapshotTask));
   }
 
   @Test

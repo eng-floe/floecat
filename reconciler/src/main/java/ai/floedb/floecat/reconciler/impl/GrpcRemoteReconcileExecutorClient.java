@@ -364,9 +364,20 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   public boolean submitPlanTableSuccess(
-      RemoteLeasedJob lease, List<PlannedSnapshotJob> snapshotJobs) {
+      RemoteLeasedJob lease,
+      List<PlannedSnapshotJob> snapshotJobs,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
     SubmitLeasedPlanTableResultRequest.Success.Builder success =
-        SubmitLeasedPlanTableResultRequest.Success.newBuilder();
+        SubmitLeasedPlanTableResultRequest.Success.newBuilder()
+            .setTablesScanned(tablesScanned)
+            .setTablesChanged(tablesChanged)
+            .setErrors(errors)
+            .setSnapshotsProcessed(snapshotsProcessed)
+            .setStatsProcessed(statsProcessed);
     for (PlannedSnapshotJob snapshotJob :
         snapshotJobs == null ? List.<PlannedSnapshotJob>of() : snapshotJobs) {
       if (snapshotJob == null || snapshotJob.snapshotTask() == null) {

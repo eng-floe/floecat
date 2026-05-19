@@ -38,11 +38,11 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
-import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
@@ -76,7 +76,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -493,8 +492,20 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return jobs.get(lease.accountId, lease.parentJobId)
         .map(parent -> parent.snapshotTask)
         .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
-        .flatMap(snapshotTask -> snapshotPlanBlobStore.findFileGroup(snapshotTask, task))
+        .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))
         .orElseThrow(this::unresolvedPlannedTask);
+  }
+
+  private static java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(
+      ReconcileSnapshotTask snapshotTask, ReconcileFileGroupTask task) {
+    if (snapshotTask == null || snapshotTask.isEmpty() || task == null || task.isEmpty()) {
+      return java.util.Optional.empty();
+    }
+    return snapshotTask.fileGroups().stream()
+        .filter(group -> group != null && !group.isEmpty())
+        .filter(group -> group.groupId().equals(task.groupId()))
+        .filter(group -> group.planId().equals(task.planId()))
+        .findFirst();
   }
 
   private StatusRuntimeException unresolvedPlannedTask() {

@@ -93,17 +93,15 @@ class SnapshotFinalizeReconcileExecutorTest {
   private static ReconcileSnapshotTask persistedSnapshotPlan(
       SnapshotPlanBlobStore store, ReconcileScope scope, ReconcileFileGroupTask... groups) {
     String blobUri = "/accounts/acct/reconcile/jobs/plan-1/snapshot-plan/plan.json";
-    SNAPSHOT_PLAN_GROUPS
-        .get(store)
-        .put(
-            blobUri,
-            List.of(groups).stream().filter(group -> group != null && !group.isEmpty()).toList());
+    List<ReconcileFileGroupTask> plannedGroups =
+        List.of(groups).stream().filter(group -> group != null && !group.isEmpty()).toList();
+    SNAPSHOT_PLAN_GROUPS.get(store).put(blobUri, plannedGroups);
     return ReconcileSnapshotTask.of(
         TABLE_ID,
         SNAPSHOT_ID,
         "db",
         "events",
-        List.of(),
+        plannedGroups,
         true,
         ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
         blobUri,
@@ -1330,8 +1328,9 @@ class SnapshotFinalizeReconcileExecutorTest {
             plannedGroup,
             "snapshot-plan-1");
     when(jobs.get(ACCOUNT_ID, "snapshot-plan-1")).thenReturn(Optional.of(parentJob));
-    when(jobs.childJobs(ACCOUNT_ID, "snapshot-plan-1"))
-        .thenReturn(List.of(duplicateOne, duplicateTwo));
+    when(jobs.childJobsPage(ACCOUNT_ID, "snapshot-plan-1", 200, ""))
+        .thenReturn(
+            new ReconcileJobStore.ReconcileJobPage(List.of(duplicateOne, duplicateTwo), ""));
 
     ExecutionResult result =
         executor.execute(

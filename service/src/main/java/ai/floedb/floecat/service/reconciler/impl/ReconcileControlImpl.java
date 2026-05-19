@@ -77,6 +77,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -932,7 +933,18 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (planJob == null || !supportsChildAggregation(planJob.jobKind)) {
       return List.of();
     }
-    return jobs.childJobs(accountId, planJob.jobId);
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, planJob.jobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
   }
 
   private void cancelChildJobs(
@@ -993,7 +1005,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setFullRescan(job.fullRescan)
         .setSnapshotsProcessed(job.snapshotsProcessed)
         .setStatsProcessed(job.statsProcessed)
-        .setIndexesProcessed(indexesProcessed(accountId, job))
+        .setIndexesProcessed(indexesProcessed(job))
         .setDurationMs(durationMs(job))
         .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
         .setExecutorId(job.executorId == null ? "" : job.executorId)
@@ -1012,28 +1024,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .build();
   }
 
-  private long indexesProcessed(String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job == null) {
-      return 0L;
-    }
-    if (job.aggregateSummaryPresent || supportsChildAggregation(job.jobKind)) {
-      return job.indexesProcessed;
-    }
-    return indexesProcessedSelf(job);
-  }
-
-  private long indexesProcessedSelf(ReconcileJobStore.ReconcileJob job) {
-    if (job == null || job.fileGroupTask == null) {
-      return 0L;
-    }
-    return job.fileGroupTask.fileResults().stream()
-        .filter(result -> result != null && result.indexArtifact() != null)
-        .filter(
-            result ->
-                !result.indexArtifact().artifactUri().isBlank()
-                    || !result.indexArtifact().artifactFormat().isBlank()
-                    || result.indexArtifact().artifactFormatVersion() > 0)
-        .count();
+  private long indexesProcessed(ReconcileJobStore.ReconcileJob job) {
+    return job == null ? 0L : job.indexesProcessed;
   }
 
   private FileGroupCounts fileGroupCounts(String accountId, ReconcileJobStore.ReconcileJob job) {

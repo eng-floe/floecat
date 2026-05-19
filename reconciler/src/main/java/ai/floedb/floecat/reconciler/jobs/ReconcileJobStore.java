@@ -54,6 +54,46 @@ public interface ReconcileJobStore {
       String parentJobId,
       String pinnedExecutorId);
 
+  default BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
+    if (specs == null || specs.isEmpty()) {
+      return new BulkEnqueueResult(List.of());
+    }
+    List<BulkEnqueueItemResult> items = new java.util.ArrayList<>(specs.size());
+    for (int index = 0; index < specs.size(); index++) {
+      BulkEnqueueSpec spec = specs.get(index);
+      try {
+        String jobId =
+            enqueue(
+                spec.accountId,
+                spec.connectorId,
+                spec.fullRescan,
+                spec.captureMode,
+                spec.scope,
+                spec.jobKind,
+                spec.tableTask,
+                spec.viewTask,
+                spec.snapshotTask,
+                spec.fileGroupTask,
+                spec.executionPolicy,
+                spec.parentJobId,
+                spec.pinnedExecutorId);
+        items.add(new BulkEnqueueItemResult(index, jobId, true, ""));
+      } catch (IllegalArgumentException e) {
+        items.add(
+            new BulkEnqueueItemResult(
+                index, "", false, e.getMessage() == null ? "" : e.getMessage(), true));
+      } catch (RuntimeException e) {
+        items.add(
+            new BulkEnqueueItemResult(
+                index,
+                "",
+                false,
+                e.getMessage() == null ? e.getClass().getName() : e.getMessage()));
+      }
+    }
+    return new BulkEnqueueResult(items);
+  }
+
   default String enqueue(
       String accountId,
       String connectorId,
@@ -290,25 +330,30 @@ public interface ReconcileJobStore {
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
-  default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
+  default ReconcileJobPage childJobsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
     if (parentJobId == null || parentJobId.isBlank()) {
-      return List.of();
+      return new ReconcileJobPage(List.of(), "");
     }
     List<ReconcileJob> out = new java.util.ArrayList<>();
-    String nextToken = "";
+    String nextToken = pageToken == null ? "" : pageToken;
+    int limit = Math.max(1, pageSize);
     do {
-      ReconcileJobPage page = list(accountId, 200, nextToken, "", Set.of());
-      if (page == null || page.jobs == null) {
-        break;
+      ReconcileJobPage page = list(accountId, Math.max(200, limit), nextToken, "", Set.of());
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        return new ReconcileJobPage(out, "");
       }
       for (ReconcileJob candidate : page.jobs) {
         if (parentJobId.equals(candidate.parentJobId)) {
           out.add(candidate);
+          if (out.size() >= limit) {
+            return new ReconcileJobPage(out, page.nextPageToken);
+          }
         }
       }
       nextToken = page.nextPageToken;
     } while (nextToken != null && !nextToken.isBlank());
-    return List.copyOf(out);
+    return new ReconcileJobPage(out, "");
   }
 
   QueueStats queueStats();
@@ -634,6 +679,150 @@ public interface ReconcileJobStore {
         errors,
         snapshotsProcessed,
         statsProcessed);
+  }
+
+  final class BulkEnqueueSpec {
+    public final String accountId;
+    public final String connectorId;
+    public final boolean fullRescan;
+    public final CaptureMode captureMode;
+    public final ReconcileScope scope;
+    public final ReconcileJobKind jobKind;
+    public final ReconcileTableTask tableTask;
+    public final ReconcileViewTask viewTask;
+    public final ReconcileSnapshotTask snapshotTask;
+    public final ReconcileFileGroupTask fileGroupTask;
+    public final ReconcileExecutionPolicy executionPolicy;
+    public final String parentJobId;
+    public final String pinnedExecutorId;
+
+    public BulkEnqueueSpec(
+        String accountId,
+        String connectorId,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        ReconcileScope scope,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        ReconcileExecutionPolicy executionPolicy,
+        String parentJobId,
+        String pinnedExecutorId) {
+      this.accountId = accountId;
+      this.connectorId = connectorId;
+      this.fullRescan = fullRescan;
+      this.captureMode = java.util.Objects.requireNonNull(captureMode, "captureMode");
+      this.scope = scope == null ? ReconcileScope.empty() : scope;
+      this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
+      this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+      this.viewTask = viewTask == null ? ReconcileViewTask.empty() : viewTask;
+      this.snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+      this.fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+      this.executionPolicy =
+          executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+      this.parentJobId = parentJobId == null ? "" : parentJobId;
+      this.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId;
+    }
+
+    public static BulkEnqueueSpec of(
+        String accountId,
+        String connectorId,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        ReconcileScope scope,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        ReconcileExecutionPolicy executionPolicy,
+        String parentJobId,
+        String pinnedExecutorId) {
+      return new BulkEnqueueSpec(
+          accountId,
+          connectorId,
+          fullRescan,
+          captureMode,
+          scope,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          executionPolicy,
+          parentJobId,
+          pinnedExecutorId);
+    }
+  }
+
+  final class BulkEnqueueItemResult {
+    public final int index;
+    public final String jobId;
+    public final boolean created;
+    public final String error;
+    public final boolean invalidRequest;
+
+    public BulkEnqueueItemResult(int index, String jobId, boolean created, String error) {
+      this(index, jobId, created, error, false);
+    }
+
+    public BulkEnqueueItemResult(
+        int index, String jobId, boolean created, String error, boolean invalidRequest) {
+      this.index = Math.max(0, index);
+      this.jobId = jobId == null ? "" : jobId;
+      this.created = created;
+      this.error = error == null ? "" : error;
+      this.invalidRequest = invalidRequest;
+    }
+
+    public boolean succeeded() {
+      return error.isBlank() && !jobId.isBlank();
+    }
+  }
+
+  final class BulkEnqueueResult {
+    public final List<BulkEnqueueItemResult> items;
+
+    public BulkEnqueueResult(List<BulkEnqueueItemResult> items) {
+      this.items = items == null ? List.of() : List.copyOf(items);
+    }
+
+    public boolean hasFailures() {
+      return items.stream().anyMatch(item -> item == null || !item.succeeded());
+    }
+
+    public void requireAllSucceeded(String operation) {
+      if (!hasFailures()) {
+        return;
+      }
+      String reason =
+          items.stream()
+              .filter(item -> item == null || !item.succeeded())
+              .map(
+                  item ->
+                      item == null
+                          ? "unknown"
+                          : "#" + item.index + "=" + (item.error == null ? "" : item.error))
+              .reduce((left, right) -> left + ", " + right)
+              .orElse("unknown bulk enqueue failure");
+      throw new IllegalStateException(operation + " failed: " + reason);
+    }
+
+    public String singleJobId() {
+      if (items.size() != 1) {
+        throw new IllegalStateException("Expected exactly one bulk enqueue result");
+      }
+      BulkEnqueueItemResult item = items.get(0);
+      if (!item.succeeded()) {
+        if (item.invalidRequest) {
+          throw new IllegalArgumentException(item.error);
+        }
+        throw new IllegalStateException(item.error);
+      }
+      return item.jobId;
+    }
   }
 
   final class ReconcileJob {

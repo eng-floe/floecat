@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -212,6 +213,11 @@ public class LeasedPlannerWorkerService {
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
       List<PlannedSnapshotJob> snapshotJobs) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
@@ -225,13 +231,13 @@ public class LeasedPlannerWorkerService {
             jobId,
             leaseEpoch,
             "Planned " + plannedSnapshotJobs + " snapshot job(s)",
+            tablesScanned,
+            tablesChanged,
             0L,
             0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L);
+            errors,
+            snapshotsProcessed,
+            statsProcessed);
     if (!accepted) {
       return false;
     }
@@ -370,8 +376,9 @@ public class LeasedPlannerWorkerService {
                 baseSnapshotTask.fileGroupPlanBlobUri(),
                 baseSnapshotTask.fileGroupCount())
             : plannedSnapshotTask;
-    List<PlannedFileGroupJob> plannedJobs =
-        snapshotPlanBlobStore.loadPlanJobs(finalizedSnapshotTask);
+    List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
+    ReconcileSnapshotTask durableSnapshotTask =
+        durableSnapshotTask(finalizedSnapshotTask, plannedJobs);
     long plannedFileGroupJobs =
         plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
     boolean accepted =
@@ -395,7 +402,7 @@ public class LeasedPlannerWorkerService {
     if (!accepted) {
       return false;
     }
-    jobs.persistSnapshotPlan(lease.jobId, finalizedSnapshotTask);
+    jobs.persistSnapshotPlan(lease.jobId, durableSnapshotTask);
     for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
@@ -417,11 +424,55 @@ public class LeasedPlannerWorkerService {
         lease.fullRescan,
         lease.captureMode,
         effectiveScope(lease),
-        finalizedSnapshotTask,
+        durableSnapshotTask,
         effectiveExecutionPolicy(lease),
         lease.jobId,
         lease.pinnedExecutorId);
     return true;
+  }
+
+  private List<PlannedFileGroupJob> plannedFileGroupJobs(ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        || !effective.fileGroupPlanRecorded()) {
+      return List.of();
+    }
+    if (!effective.fileGroups().isEmpty()) {
+      return effective.fileGroups().stream()
+          .filter(group -> group != null && !group.isEmpty())
+          .map(group -> new PlannedFileGroupJob(ReconcileScope.empty(), group))
+          .toList();
+    }
+    return snapshotPlanBlobStore.loadPlanJobs(effective);
+  }
+
+  private static ReconcileSnapshotTask durableSnapshotTask(
+      ReconcileSnapshotTask snapshotTask, List<PlannedFileGroupJob> plannedJobs) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        || !effective.fileGroupPlanRecorded()) {
+      return effective;
+    }
+    List<ReconcileFileGroupTask> fileGroups =
+        plannedJobs == null
+            ? List.of()
+            : plannedJobs.stream()
+                .filter(job -> job != null && job.fileGroupTask() != null)
+                .map(PlannedFileGroupJob::fileGroupTask)
+                .filter(task -> !task.isEmpty())
+                .toList();
+    return ReconcileSnapshotTask.of(
+        effective.tableId(),
+        effective.snapshotId(),
+        effective.sourceNamespace(),
+        effective.sourceTable(),
+        fileGroups,
+        true,
+        effective.completionMode(),
+        "",
+        fileGroups.size());
   }
 
   public boolean persistPlanSnapshotFailure(

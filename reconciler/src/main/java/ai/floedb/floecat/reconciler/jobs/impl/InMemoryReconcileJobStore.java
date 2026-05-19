@@ -289,24 +289,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return new ReconcileJobPage(filtered.subList(offset, end), next);
   }
 
-  @Override
-  public List<ReconcileJob> childJobs(String accountId, String parentJobId) {
-    if (parentJobId == null || parentJobId.isBlank()) {
-      return List.of();
-    }
-    return jobs.values().stream()
-        .filter(j -> accountId == null || accountId.isBlank() || accountId.equals(j.accountId))
-        .filter(j -> parentJobId.equals(j.parentJobId))
-        .sorted(
-            (a, b) ->
-                Long.compare(
-                    b.startedAtMs == 0L ? b.finishedAtMs : b.startedAtMs,
-                    a.startedAtMs == 0L ? a.finishedAtMs : a.startedAtMs))
-        .map(this::withPinnedExecutor)
-        .map(this::aggregateJobView)
-        .collect(Collectors.toUnmodifiableList());
-  }
-
   private ReconcileJob withPinnedExecutor(ReconcileJob job) {
     if (job == null) {
       return null;

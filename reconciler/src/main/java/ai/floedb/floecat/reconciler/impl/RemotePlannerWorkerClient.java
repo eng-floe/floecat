@@ -35,7 +35,14 @@ interface RemotePlannerWorkerClient {
 
   StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease);
 
-  boolean submitPlanTableSuccess(RemoteLeasedJob lease, List<PlannedSnapshotJob> snapshotJobs);
+  boolean submitPlanTableSuccess(
+      RemoteLeasedJob lease,
+      List<PlannedSnapshotJob> snapshotJobs,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
 
   boolean submitPlanTableFailure(
       RemoteLeasedJob lease,

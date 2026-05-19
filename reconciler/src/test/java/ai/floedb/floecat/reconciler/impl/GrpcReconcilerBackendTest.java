@@ -44,6 +44,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -68,6 +69,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -687,5 +689,77 @@ class GrpcReconcilerBackendTest {
         "svc",
         Instant.now(),
         Optional.empty());
+  }
+
+  @Test
+  void updateTableByIdRetriesFailedPreconditionAndSucceeds() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns-1")
+            .build();
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    Table before =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .build();
+    Table after = before.toBuilder().putProperties("reconciled", "true").build();
+
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+    when(backend.table.updateTable(any()))
+        .thenThrow(
+            new StatusRuntimeException(
+                Status.FAILED_PRECONDITION.withDescription("Version mismatch")))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
+
+    boolean changed =
+        backend.updateTableById(
+            reconcileContext(),
+            tableId,
+            namespaceId,
+            NameRef.newBuilder().setCatalog("cat").addPath("main").setName("orders").build(),
+            new ReconcilerBackend.TableSpecDescriptor(
+                "main",
+                "orders",
+                "{}",
+                Map.of("reconciled", "true"),
+                List.of(),
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                ConnectorFormat.CF_ICEBERG,
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_CONNECTOR)
+                    .setId("conn-1")
+                    .build(),
+                "uri",
+                "src.ns",
+                "orders"));
+
+    assertThat(changed).isTrue();
+    verify(backend.table).updateTable(any());
+    verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
   }
 }

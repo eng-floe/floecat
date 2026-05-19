@@ -122,6 +122,8 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class GrpcReconcilerBackend implements ReconcilerBackend {
+  private static final int UPDATE_OCC_RETRIES = 4;
+
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
 
   private static final Metadata.Key<String> AUTHORIZATION =
@@ -328,18 +330,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       ResourceId namespaceId,
       NameRef tableRef,
       TableSpecDescriptor descriptor) {
-    var before =
-        table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
-    if (!before.getNamespaceId().equals(namespaceId)) {
-      throw new IllegalArgumentException(
-          "Destination table namespace mismatch for id: " + tableId.getId());
-    }
     NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
-    if (!before.getDisplayName().equals(normalizedTable.getName())) {
-      throw new IllegalArgumentException(
-          "Destination table display name mismatch for id: " + tableId.getId());
-    }
-
     TableSpec spec =
         TableSpec.newBuilder()
             .setDisplayName(descriptor.displayName())
@@ -347,21 +338,42 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .setUpstream(buildUpstream(descriptor))
             .putAllProperties(safeProperties(descriptor))
             .build();
-    var response =
-        table(ctx)
-            .updateTable(
-                UpdateTableRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSpec(spec)
-                    .setUpdateMask(
-                        FieldMask.newBuilder()
-                            .addPaths("schema_json")
-                            .addPaths("upstream")
-                            .addPaths("properties")
-                            .build())
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(spec)
+            .setUpdateMask(
+                FieldMask.newBuilder()
+                    .addPaths("schema_json")
+                    .addPaths("upstream")
+                    .addPaths("properties")
                     .build())
-            .getTable();
-    return !response.equals(before);
+            .build();
+
+    for (int attempt = 0; attempt < UPDATE_OCC_RETRIES; attempt++) {
+      var before =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      if (!before.getNamespaceId().equals(namespaceId)) {
+        throw new IllegalArgumentException(
+            "Destination table namespace mismatch for id: " + tableId.getId());
+      }
+      if (!before.getDisplayName().equals(normalizedTable.getName())) {
+        throw new IllegalArgumentException(
+            "Destination table display name mismatch for id: " + tableId.getId());
+      }
+      try {
+        var response = table(ctx).updateTable(request).getTable();
+        return !response.equals(before);
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION
+            || attempt + 1 >= UPDATE_OCC_RETRIES) {
+          throw e;
+        }
+      }
+    }
+    throw Status.FAILED_PRECONDITION
+        .withDescription("table update precondition failed after retries")
+        .asRuntimeException();
   }
 
   @Override

@@ -419,21 +419,21 @@ public class ConnectorIT {
 
     var tablePlanJobs =
         awaitJobsTerminal(
-            jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+            childJobs(accountId.getId(), planJob.jobId).stream()
                 .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
     var snapshotPlanJobs =
         awaitJobsTerminal(
             tablePlanJobs.stream()
-                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                 .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
     var fileGroupJobs =
         awaitJobsTerminal(
             snapshotPlanJobs.stream()
-                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                 .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -1113,7 +1113,7 @@ public class ConnectorIT {
     assertEquals(1L, aggregatedJob.viewsScanned, "expected 1 executed view");
     assertEquals(1L, aggregatedJob.viewsChanged, "expected one newly created destination view");
 
-    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    var childJobs = childJobs(accountId.getId(), planJob.jobId);
     assertEquals(3, childJobs.size(), "expected child jobs for 2 tables plus 1 view");
     assertEquals(
         2L,
@@ -1176,7 +1176,7 @@ public class ConnectorIT {
         aggregatedJob.state,
         () -> "aggregate job failed: " + aggregatedJob.message);
     assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
-    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    var childJobs = childJobs(accountId.getId(), planJob.jobId);
     assertEquals(2, childJobs.size(), "expected only table planning jobs under PLAN_CONNECTOR");
     assertEquals(
         2L,
@@ -1191,7 +1191,7 @@ public class ConnectorIT {
         childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).toList();
     var snapshotPlanJobs =
         tablePlanJobs.stream()
-            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
             .toList();
     var completedSnapshotPlanJobs =
@@ -1205,7 +1205,7 @@ public class ConnectorIT {
 
     var fileGroupJobs =
         completedSnapshotPlanJobs.stream()
-            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
             .toList();
     var completedFileGroupJobs =
@@ -1328,21 +1328,21 @@ public class ConnectorIT {
 
       var tablePlanJobs =
           awaitJobsTerminal(
-              jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+              childJobs(accountId.getId(), planJob.jobId).stream()
                   .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
       var snapshotPlanJobs =
           awaitJobsTerminal(
               tablePlanJobs.stream()
-                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                   .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
       var fileGroupJobs =
           awaitJobsTerminal(
               snapshotPlanJobs.stream()
-                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                   .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -2791,6 +2791,21 @@ public class ConnectorIT {
         SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
         pageSize,
         timeout);
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {

@@ -781,6 +781,14 @@ public final class Keys {
 
   // ===== Reconcile Jobs =====
 
+  public static String reconcileJobStateRowById(String accountId, String jobId) {
+    return reconcileJobPointerById(accountId, jobId);
+  }
+
+  public static String reconcileJobStateRowByIdPrefix(String accountId) {
+    return reconcileJobPointerByIdPrefix(accountId);
+  }
+
   public static String reconcileJobPointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
@@ -820,6 +828,126 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/by-parent/" + encode(pid) + "/";
   }
 
+  public static String reconcileJobContributionPointer(
+      String accountId, String parentJobId, String childJobId) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String cid = req("child_job_id", childJobId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/job-contributions/by-parent/"
+        + encode(pid)
+        + "/"
+        + encode(cid);
+  }
+
+  public static String reconcileJobContributionPointerPrefix(String accountId, String parentJobId) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/job-contributions/by-parent/"
+        + encode(pid)
+        + "/";
+  }
+
+  public static String reconcileJobContributionBlobUri(
+      String accountId, String parentJobId, String childJobId, String versionToken) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String cid = req("child_job_id", childJobId);
+    String token = req("version_token", versionToken);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/"
+        + encode(pid)
+        + "/contributions/"
+        + encode(cid)
+        + "/contribution-"
+        + encode(token)
+        + ".json";
+  }
+
+  public static String reconcileJobByConnectorPointer(
+      String accountId, String connectorId, String sortableJobToken) {
+    String tid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    String token = req("sortable_job_token", sortableJobToken);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/by-connector/"
+        + encode(cid)
+        + "/"
+        + encode(token);
+  }
+
+  public static String reconcileJobByConnectorPointerPrefix(String accountId, String connectorId) {
+    String tid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-connector/" + encode(cid) + "/";
+  }
+
+  public static String reconcileJobByStatePointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/by-state/";
+  }
+
+  public static String reconcileJobByStatePointerPrefix(String state) {
+    String jobState = req("state", state);
+    return reconcileJobByStatePointerPrefix() + encode(jobState) + "/";
+  }
+
+  public static String reconcileJobByStatePointer(
+      String state, long sortableTimestampMs, String accountId, String jobId) {
+    String jobState = req("state", state);
+    long ts = reqNonNegative("sortable_timestamp_ms", sortableTimestampMs);
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s/%s", reconcileJobByStatePointerPrefix(jobState), ts, encode(tid), encode(jid));
+  }
+
+  public static String reconcileJobByAccountStatePointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-state/";
+  }
+
+  public static String reconcileJobByAccountStatePointerPrefix(String accountId, String state) {
+    String jobState = req("state", state);
+    return reconcileJobByAccountStatePointerPrefix(accountId) + encode(jobState) + "/";
+  }
+
+  public static String reconcileJobByAccountStatePointer(
+      String accountId, String state, long sortableTimestampMs, String jobId) {
+    long ts = reqNonNegative("sortable_timestamp_ms", sortableTimestampMs);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s", reconcileJobByAccountStatePointerPrefix(accountId, state), ts, encode(jid));
+  }
+
+  public static String reconcileJobByConnectorStatePointerPrefix(
+      String accountId, String connectorId) {
+    String tid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-connector-state/" + encode(cid) + "/";
+  }
+
+  public static String reconcileJobByConnectorStatePointerPrefix(
+      String accountId, String connectorId, String state) {
+    String jobState = req("state", state);
+    return reconcileJobByConnectorStatePointerPrefix(accountId, connectorId)
+        + encode(jobState)
+        + "/";
+  }
+
+  public static String reconcileJobByConnectorStatePointer(
+      String accountId, String connectorId, String state, long sortableTimestampMs, String jobId) {
+    long ts = reqNonNegative("sortable_timestamp_ms", sortableTimestampMs);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s",
+        reconcileJobByConnectorStatePointerPrefix(accountId, connectorId, state), ts, encode(jid));
+  }
+
   public static String reconcileJobBlobUri(String accountId, String jobId, String suffix) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
@@ -833,19 +961,19 @@ public final class Keys {
         + ".json";
   }
 
-  public static String reconcileJobRefBlobUri(String accountId, String jobId) {
+  public static String reconcileJobLeasePointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/ref.json";
+    return "/accounts/" + encode(tid) + "/reconcile/job-leases/by-id/" + encode(jid);
   }
 
-  public static String reconcileLeaseStatePointer(String accountId, String jobId) {
+  public static String reconcileJobResultPointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/leases/" + encode(jid);
+    return "/accounts/" + encode(tid) + "/reconcile/job-results/by-id/" + encode(jid);
   }
 
-  public static String reconcileLeaseStateBlobUri(String accountId, String jobId, String suffix) {
+  public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     String s = req("suffix", suffix);
@@ -853,7 +981,7 @@ public final class Keys {
         + encode(tid)
         + "/reconcile/jobs/"
         + encode(jid)
-        + "/lease-"
+        + "/result-"
         + encode(s)
         + ".json";
   }
@@ -875,42 +1003,83 @@ public final class Keys {
         due, encode(tid), encode(lane), encode(jid));
   }
 
-  public static String reconcileLaneQueuePointerPrefix(String accountId, String laneKey) {
-    String tid = req("account_id", accountId);
-    String lane = req("lane_key", laneKey);
-    return "/accounts/" + encode(tid) + "/reconcile/lane-queues/" + encode(lane) + "/";
+  public static String reconcileReadyByExecutionClassPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/ready/by-execution-class/";
   }
 
-  public static String reconcileLaneQueuePointerByDue(
-      long dueAtMs, String accountId, String laneKey, String jobId) {
+  public static String reconcileReadyByExecutionClassPointerPrefix(String executionClass) {
+    String executionClassValue = req("execution_class", executionClass);
+    return reconcileReadyByExecutionClassPointerPrefix() + encode(executionClassValue) + "/";
+  }
+
+  public static String reconcileReadyByExecutionClassPointerByDue(
+      long dueAtMs, String executionClass, String accountId, String jobId) {
     long due = reqNonNegative("due_at_ms", dueAtMs);
     String tid = req("account_id", accountId);
-    String lane = req("lane_key", laneKey);
     String jid = req("job_id", jobId);
     return String.format(
-        "/accounts/%s/reconcile/lane-queues/%s/%019d/%s",
-        encode(tid), encode(lane), due, encode(jid));
+        "%s%019d/%s/%s",
+        reconcileReadyByExecutionClassPointerPrefix(executionClass), due, encode(tid), encode(jid));
   }
 
-  public static String reconcileLaneHeadPointer(String accountId, String laneKey) {
-    String tid = req("account_id", accountId);
-    String lane = req("lane_key", laneKey);
-    return "/accounts/" + encode(tid) + "/reconcile/lane-heads/" + encode(lane);
+  public static String reconcileReadyByExecutionLanePointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/ready/by-execution-lane/";
   }
 
-  public static String reconcileRunnableLanePointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/runnable-lanes/";
+  public static String reconcileReadyByExecutionLanePointerPrefix(String executionLane) {
+    String executionLaneValue = req("execution_lane", executionLane);
+    return reconcileReadyByExecutionLanePointerPrefix() + encode(executionLaneValue) + "/";
   }
 
-  public static String reconcileRunnableLanePointerByDue(
-      long dueAtMs, String accountId, String laneKey, String jobId) {
+  public static String reconcileReadyByExecutionLanePointerByDue(
+      long dueAtMs, String executionLane, String accountId, String jobId) {
     long due = reqNonNegative("due_at_ms", dueAtMs);
     String tid = req("account_id", accountId);
-    String lane = req("lane_key", laneKey);
     String jid = req("job_id", jobId);
     return String.format(
-        "/accounts/by-id/reconcile/jobs/runnable-lanes/%019d/%s/%s/%s",
-        due, encode(tid), encode(lane), encode(jid));
+        "%s%019d/%s/%s",
+        reconcileReadyByExecutionLanePointerPrefix(executionLane), due, encode(tid), encode(jid));
+  }
+
+  public static String reconcileReadyByPinnedExecutorPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/ready/by-pinned-executor/";
+  }
+
+  public static String reconcileReadyByPinnedExecutorPointerPrefix(String pinnedExecutorId) {
+    String pinnedExecutorValue = req("pinned_executor_id", pinnedExecutorId);
+    return reconcileReadyByPinnedExecutorPointerPrefix() + encode(pinnedExecutorValue) + "/";
+  }
+
+  public static String reconcileReadyByPinnedExecutorPointerByDue(
+      long dueAtMs, String pinnedExecutorId, String accountId, String jobId) {
+    long due = reqNonNegative("due_at_ms", dueAtMs);
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s/%s",
+        reconcileReadyByPinnedExecutorPointerPrefix(pinnedExecutorId),
+        due,
+        encode(tid),
+        encode(jid));
+  }
+
+  public static String reconcileReadyByJobKindPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/ready/by-job-kind/";
+  }
+
+  public static String reconcileReadyByJobKindPointerPrefix(String jobKind) {
+    String jobKindValue = req("job_kind", jobKind);
+    return reconcileReadyByJobKindPointerPrefix() + encode(jobKindValue) + "/";
+  }
+
+  public static String reconcileReadyByJobKindPointerByDue(
+      long dueAtMs, String jobKind, String accountId, String jobId) {
+    long due = reqNonNegative("due_at_ms", dueAtMs);
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s/%s",
+        reconcileReadyByJobKindPointerPrefix(jobKind), due, encode(tid), encode(jid));
   }
 
   public static String reconcileDedupePointer(String accountId, String dedupeKeyHash) {
@@ -924,17 +1093,18 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
   }
 
-  public static String reconcileSnapshotLeasePointer(
-      String accountId, String tableId, long snapshotId) {
-    String aid = req("account_id", accountId);
+  public static String reconcileSnapshotLeasePointer(String tableId, long snapshotId) {
     String tid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
-    return "/accounts/"
-        + encode(aid)
-        + "/reconcile/snapshot-leases/"
+    return "/accounts/by-id/reconcile/snapshot-leases/"
         + encode(tid)
         + "/"
         + String.format("%019d", sid);
+  }
+
+  public static String reconcileSnapshotLeasePointer(
+      String accountId, String tableId, long snapshotId) {
+    return reconcileSnapshotLeasePointer(tableId, snapshotId);
   }
 
   public static String reconcileLaneLeasePointer(String accountId, String laneKey) {
@@ -943,73 +1113,10 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/lanes/" + encode(lane);
   }
 
-  public static String reconcileLeaseExpiryPointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/lease-expiry/";
-  }
-
-  public static String reconcileLeaseExpiryPointerByDue(
-      long dueAtMs, String accountId, String jobId) {
-    long due = reqNonNegative("due_at_ms", dueAtMs);
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    return String.format(
-        "/accounts/by-id/reconcile/jobs/lease-expiry/%019d/%s/%s", due, encode(tid), encode(jid));
-  }
-
   public static String reconcileJobBlobPrefix(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
-  }
-
-  public static String reconcileAggregateRollupPointer(String accountId, String jobId) {
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/aggregates/rollups/" + encode(jid);
-  }
-
-  public static String reconcileAggregateRollupPointerPrefix(String accountId) {
-    String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/aggregates/rollups/";
-  }
-
-  public static String reconcileAggregateRollupBlobUri(
-      String accountId, String jobId, String suffix) {
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    String s = req("suffix", suffix);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/aggregates/rollups/"
-        + encode(jid)
-        + "/rollup-"
-        + encode(s)
-        + ".json";
-  }
-
-  public static String reconcileAggregateSummaryPointer(String accountId, String jobId) {
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/aggregates/summaries/" + encode(jid);
-  }
-
-  public static String reconcileAggregateSummaryPointerPrefix(String accountId) {
-    String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/aggregates/summaries/";
-  }
-
-  public static String reconcileAggregateSummaryBlobUri(
-      String accountId, String jobId, String suffix) {
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    String s = req("suffix", suffix);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/aggregates/summaries/"
-        + encode(jid)
-        + "/summary-"
-        + encode(s)
-        + ".json";
   }
 
   public static String reconcileAggregateContributionPointer(
