@@ -10,13 +10,9 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/statistics-engine-spi/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/stats-sync-policy/">
       
       
-        <link rel="prev" href="../proto/">
-      
-      
-        <link rel="next" href="../storage-layout/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +20,7 @@
     
     
       
-        <title>Statistics Engine SPI - Floecat Documentation</title>
+        <title>Stats Sync-First Resolution Policy - Floecat Documentation</title>
       
     
     
@@ -78,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#statistics-engine-spi" class="md-skip">
+        <a href="#stats-sync-first-resolution-policy" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Statistics Engine SPI
+              Stats Sync-First Resolution Policy
             
           </span>
         </div>
@@ -1001,8 +997,6 @@
       
   
   
-    
-  
   
   
     
@@ -1015,11 +1009,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
           <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
@@ -1035,7 +1031,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             Types and Builtins
@@ -1115,32 +1111,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Statistics Engine SPI
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
         
   
   
@@ -1151,116 +1125,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#why-this-exists" class="md-nav__link">
-    <span class="md-ellipsis">
-      Why this exists
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-is-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      What is added
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-this-does-not-do-yet" class="md-nav__link">
-    <span class="md-ellipsis">
-      What this does not do yet
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#capability-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      Capability model
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#routing-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      Routing behavior
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#batch-contract-for-engine-implementors" class="md-nav__link">
-    <span class="md-ellipsis">
-      Batch contract for engine implementors
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-to-add-a-new-engine" class="md-nav__link">
-    <span class="md-ellipsis">
-      How to add a new engine
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#existing-baseline-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      Existing baseline behavior
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#plugging-your-own-statsstore" class="md-nav__link">
-    <span class="md-ellipsis">
-      Plugging your own StatsStore
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#typical-extensions" class="md-nav__link">
-    <span class="md-ellipsis">
-      Typical extensions
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1657,90 +1521,54 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-this-exists" class="md-nav__link">
+  <a href="#resolution-flow" class="md-nav__link">
     <span class="md-ellipsis">
-      Why this exists
+      Resolution flow
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-is-added" class="md-nav__link">
+  <a href="#outcome-reference" class="md-nav__link">
     <span class="md-ellipsis">
-      What is added
+      Outcome reference
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-this-does-not-do-yet" class="md-nav__link">
+  <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      What this does not do yet
+      Configuration
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#capability-model" class="md-nav__link">
+  <a href="#planner-integration" class="md-nav__link">
     <span class="md-ellipsis">
-      Capability model
+      Planner integration
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#routing-behavior" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
-      Routing behavior
+      Metrics
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#batch-contract-for-engine-implementors" class="md-nav__link">
+  <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
-      Batch contract for engine implementors
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-to-add-a-new-engine" class="md-nav__link">
-    <span class="md-ellipsis">
-      How to add a new engine
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#existing-baseline-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      Existing baseline behavior
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#plugging-your-own-statsstore" class="md-nav__link">
-    <span class="md-ellipsis">
-      Plugging your own StatsStore
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#typical-extensions" class="md-nav__link">
-    <span class="md-ellipsis">
-      Typical extensions
+      Troubleshooting
     </span>
   </a>
   
@@ -1762,7 +1590,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/main/docs/statistics-engine-spi.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/main/docs/stats-sync-policy.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1770,225 +1598,166 @@
   
 
 
-<h1 id="statistics-engine-spi">Statistics Engine SPI<a class="headerlink" href="#statistics-engine-spi" title="Permanent link">&para;</a></h1>
-<p>This document describes the Floecat-side statistics engine SPI, what it does
-today, and how to extend it safely.</p>
-<h2 id="why-this-exists">Why this exists<a class="headerlink" href="#why-this-exists" title="Permanent link">&para;</a></h2>
-<p>Historically, statistics reads/writes were wired directly to repository and service code paths.
-That worked for persisted table/column stats, but did not provide a generic provider-selection
-layer for:</p>
+<h1 id="stats-sync-first-resolution-policy">Stats Sync-First Resolution Policy<a class="headerlink" href="#stats-sync-first-resolution-policy" title="Permanent link">&para;</a></h1>
+<p><code>StatsOrchestrator.resolve()</code> follows a sync-first policy: on a store miss it attempts a
+bounded synchronous capture before falling back to an async reconcile job. This lets queries
+receive fresh statistics within a latency budget rather than always degrading to no-stats-available
+on a cold cache.</p>
+<h2 id="resolution-flow">Resolution flow<a class="headerlink" href="#resolution-flow" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>resolve(StatsCaptureRequest)
+   │
+   ├─ store read ──────────────────────────────────────── HIT  (stats returned, no capture)
+   │
+   └─ miss
+       │
+       ├─ executionMode == SYNC
+       │  &amp;&amp; latencyBudget present
+       │  &amp;&amp; floecat.stats.sync.enabled == true
+       │      │
+       │      ├─ enqueue CAPTURE_ONLY reconcile job
+       │      │   poll every 100 ms until terminal or budget exceeded
+       │      │      │
+       │      │      ├─ job succeeded → re-read store
+       │      │      │       ├─ record present ───────── CAPTURED (stats returned, no follow-up)
+       │      │      │       └─ record absent ─────────  PARTIAL  (async follow-up enqueued)
+       │      │      │
+       │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
+       │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
+       │
+       └─ otherwise (ASYNC mode / no budget / sync disabled)
+               └────────────────────────────────────── SKIPPED  (async job enqueued)
+</code></pre></div>
+<h2 id="outcome-reference">Outcome reference<a class="headerlink" href="#outcome-reference" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Outcome</th>
+<th style="text-align: center;">Stats present</th>
+<th style="text-align: center;">Async follow-up</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HIT</code></td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">no</td>
+<td>Record already in store</td>
+</tr>
+<tr>
+<td><code>CAPTURED</code></td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">no</td>
+<td>Sync capture succeeded; record now in store</td>
+</tr>
+<tr>
+<td><code>PARTIAL</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture succeeded but record not yet visible</td>
+</tr>
+<tr>
+<td><code>TIMEOUT</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture exceeded latency budget</td>
+</tr>
+<tr>
+<td><code>FAILED</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture error or no upstream connector</td>
+</tr>
+<tr>
+<td><code>SKIPPED</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>ASYNC mode, no budget, or sync disabled</td>
+</tr>
+</tbody>
+</table>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>floecat.stats.sync.enabled</code></td>
+<td><code>true</code></td>
+<td>Master switch for sync-first resolution</td>
+</tr>
+<tr>
+<td><code>floecat.stats.sync.latency-budget</code></td>
+<td><code>1s</code></td>
+<td>Per-request sync capture budget</td>
+</tr>
+<tr>
+<td><code>floecat.stats.sync.max-latency-budget</code></td>
+<td><code>10s</code></td>
+<td>Hard ceiling applied to any request budget</td>
+</tr>
+</tbody>
+</table>
+<p>Environment variable overrides follow the pattern <code>FLOECAT_STATS_SYNC_ENABLED</code>,
+<code>FLOECAT_STATS_SYNC_LATENCY_BUDGET</code>, <code>FLOECAT_STATS_SYNC_MAX_LATENCY_BUDGET</code>.</p>
+<h2 id="planner-integration">Planner integration<a class="headerlink" href="#planner-integration" title="Permanent link">&para;</a></h2>
+<p><code>StatsProviderFactory</code> reads <code>floecat.stats.sync.enabled</code> and <code>floecat.stats.sync.latency-budget</code>
+at startup and sets <code>executionMode(SYNC)</code> + <code>latencyBudget(...)</code> on every
+<code>StatsCaptureRequest</code> it creates for query-time resolution. Set <code>enabled=false</code> to revert to
+async-only for all queries without changing other behavior.</p>
+<p><code>PlannerStatsBundleService</code> maps <code>StatsResolutionResult</code> outcomes to planner quality:</p>
 <ul>
-<li>capability-based provider selection</li>
-<li>sync vs async capture routing</li>
-<li>connector-specific strategies</li>
-<li>expression-target compute providers</li>
+<li><code>HIT</code> / <code>CAPTURED</code> → <code>FOUND</code></li>
+<li><code>TIMEOUT</code> / <code>FAILED</code> / <code>SKIPPED</code> → <code>NOT_FOUND</code> (planner proceeds without stats)</li>
 </ul>
-<p>This SPI introduces that layer while keeping current planner contracts stable.</p>
-<h2 id="what-is-added">What is added<a class="headerlink" href="#what-is-added" title="Permanent link">&para;</a></h2>
-<p>Core interfaces and models:</p>
-<ul>
-<li><code>StatsCaptureEngine</code></li>
-<li><code>StatsStore</code></li>
-<li><code>StatsCapabilities</code></li>
-<li><code>StatsCaptureRequest</code></li>
-<li><code>StatsCaptureResult</code></li>
-<li><code>StatsEngineRegistry</code></li>
-</ul>
-<p>Module boundaries:</p>
-<ul>
-<li><code>core/stats</code> defines SPI contracts and capability/request/result models.</li>
-<li><code>service</code> owns runtime orchestration (<code>StatsEngineRegistry</code>) and provider implementations.</li>
-</ul>
-<p>Current runtime engines:</p>
-<ul>
-<li><code>IcebergNativeStatsCaptureEngine</code> (source-native capture for Iceberg/Glue connectors)</li>
-<li><code>DeltaNativeStatsCaptureEngine</code> (source-native capture for Delta/Unity connectors)</li>
-</ul>
-<p>Current target support in native engines:</p>
-<ul>
-<li><code>TABLE</code></li>
-<li><code>COLUMN</code></li>
-<li><code>FILE</code></li>
-</ul>
-<p><code>EXPRESSION</code> capture engines are not implemented.</p>
-<p><code>StatsCaptureRequest.columnSelectors</code>:</p>
-<ul>
-<li>optional connector-native selector hints</li>
-<li>explicit target selection uses batch requests (<code>StatsCaptureBatchRequest</code>) and per-item
-  <code>StatsTarget</code> payloads</li>
-</ul>
-<p>Default store:</p>
-<ul>
-<li><code>StatsRepository</code> (default OSS <code>StatsStore</code> implementation)</li>
-</ul>
-<p>Service wiring:</p>
-<ul>
-<li><code>StatsOrchestrator</code> is the internal resolution entrypoint for planner/query reads.</li>
-<li><code>StatsEngineRegistry</code> handles capability/priority engine selection for compute capture.</li>
-<li><code>StatsCaptureControlPlane</code> is the explicit capture entrypoint for control-plane callers
-  (for example reconciler <code>CAPTURE_ONLY</code> routing); current service implementation delegates to
-  <code>StatsOrchestrator.triggerBatch(batchRequest)</code>.</li>
-<li>Public read/list RPCs remain <code>StatsStore</code> authoritative reads.</li>
-</ul>
-<p>Authoritative model:</p>
-<ul>
-<li>Providers produce stats records through the SPI.</li>
-<li>Floecat defines canonical stats record semantics and serves authoritative reads; storage backend
-  is pluggable (default OSS deployment uses Floecat-managed persistence).</li>
-<li>Floecat serves persisted authoritative stats through public APIs.</li>
-</ul>
-<h2 id="what-this-does-not-do-yet">What this does not do yet<a class="headerlink" href="#what-this-does-not-do-yet" title="Permanent link">&para;</a></h2>
-<p>This SPI does <strong>not</strong> implement by itself:</p>
-<ul>
-<li>target-native planner payload evolution</li>
-<li>compute expression engines</li>
-<li>multi-provider field-level composition</li>
-</ul>
-<p>This is intentionally a thin orchestration layer; engine quality/policy evolves independently.</p>
-<p>See <a href="../stats-sync-policy/">stats-sync-policy.md</a> for the sync-first resolution policy and
-config knobs.</p>
-<h2 id="capability-model">Capability model<a class="headerlink" href="#capability-model" title="Permanent link">&para;</a></h2>
-<p>Each <code>StatsCaptureEngine</code> advertises:</p>
-<ul>
-<li>supported connectors (<code>connectors</code>)</li>
-<li>supported target types (<code>TABLE</code>, <code>FILE</code>, <code>COLUMN</code>, <code>EXPRESSION</code>)</li>
-<li>supported statistic kinds per target (<code>statisticKindsByTarget</code>)</li>
-<li>supported execution modes (<code>SYNC</code>, <code>ASYNC</code>)</li>
-<li>sampling support (<code>NONE</code>, <code>RANDOM_ROW_GROUP</code>, <code>METADATA_GUIDED</code>)</li>
-</ul>
-<p>Kind routing note:</p>
-<ul>
-<li><code>StatsEngineCapabilities.statisticKindsByTarget</code> is target-specific.</li>
-<li>Engine selection checks requested kinds against the map entry for the requested target type.</li>
-<li>Engines should provide a mapping entry for each declared target type.</li>
-</ul>
-<p><code>StatsEngineRegistry</code> uses these capabilities plus <code>priority()</code> to select candidate engines in
-order.</p>
-<h2 id="routing-behavior">Routing behavior<a class="headerlink" href="#routing-behavior" title="Permanent link">&para;</a></h2>
-<p><code>StatsOrchestrator.resolve(request)</code>:</p>
-<p>Returns a <code>StatsResolutionResult</code> carrying an outcome enum and optional stats payload.</p>
-<ol>
-<li>Reads <code>StatsStore</code> → <strong>HIT</strong>: returns stats immediately, no capture triggered.</li>
-<li>On miss, if <code>executionMode == SYNC</code> and a <code>latencyBudget</code> is present and
-   <code>floecat.stats.sync.enabled=true</code>:</li>
-<li>Enqueues a <code>CAPTURE_ONLY</code> reconcile job and polls every 100 ms until the job reaches a
-     terminal state or the budget expires.</li>
-<li>On success, re-reads the store → <strong>CAPTURED</strong>: returns stats + schedules no follow-up.</li>
-<li>On timeout (budget exceeded) → <strong>TIMEOUT</strong>: enqueues async follow-up, returns empty.</li>
-<li>On failure (no connector, job error) → <strong>FAILED</strong>: enqueues async follow-up, returns empty.</li>
-<li>Otherwise (ASYNC mode, no budget, or sync disabled) → <strong>SKIPPED</strong>: enqueues async reconcile job
-   and returns empty.</li>
-</ol>
-<p><code>StatsOrchestrator.resolveBatch(batchRequest)</code>:</p>
-<p>Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
-Each item is a store read; misses fall back to async enqueue with <code>SKIPPED</code> outcome.</p>
-<p>Async enqueue policy:</p>
-<ul>
-<li>Enqueue scope is table-scoped using <code>ReconcileScope.ScopedCaptureRequest</code> payloads:
-  <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code>.</li>
-<li><code>columnSelectors</code> from the original request are preserved unchanged in follow-up enqueues
-  (no scope widening).</li>
-<li>Follow-up enqueues are tagged with a reason: <code>sync_followup_timeout</code>, <code>sync_followup_failed</code>,
-  <code>sync_followup_partial</code>, or <code>async_mode</code> / <code>no_budget</code> / <code>sync_disabled</code> for SKIPPED outcomes.</li>
-</ul>
-<p>See <a href="../stats-sync-policy/">stats-sync-policy.md</a> for configuration, tuning, and troubleshooting.</p>
-<p><code>StatsEngineRegistry.captureBatch(batchRequest)</code>:</p>
-<ol>
-<li>filters candidates per request by <code>supports(request)</code> / capabilities</li>
-<li>applies deterministic priority ordering (<code>priority()</code> then <code>id()</code>)</li>
-<li>routes batched stage groups per engine and preserves request order in results</li>
-<li>returns per-item outcomes (<code>CAPTURED</code>, <code>UNCAPTURABLE</code>, <code>DEGRADED</code>, <code>QUEUED</code>)</li>
-</ol>
-<p>The registry is selection-only and does not merge multi-engine outputs.</p>
-<p><code>StatsCaptureControlPlane.triggerBatch(batchRequest)</code>:</p>
-<ol>
-<li>serves as the explicit capture control-plane entrypoint (non-query callers)</li>
-<li>in service runtime, delegates to <code>StatsOrchestrator.triggerBatch(...)</code></li>
-<li>executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)</li>
-</ol>
-<p>Reconciler policy on top of control-plane results:</p>
-<ul>
-<li>all items non-captured (<code>UNCAPTURABLE</code> / <code>DEGRADED</code>) =&gt; reconcile table execution fails</li>
-<li>mixed captured + non-captured =&gt; reconcile table execution succeeds in degraded state</li>
-<li><code>statsProcessed</code> counts captured snapshots, not attempted requests</li>
-</ul>
-<p>Result model:</p>
-<ul>
-<li><code>StatsCaptureResult</code> returns one canonical <code>TargetStatsRecord</code> plus engine attributes.</li>
-<li>Column and expression targets share the same canonical <code>ScalarStats</code> payload.</li>
-<li>Canonical metadata for all targets is stored at <code>TargetStatsRecord.metadata</code>.</li>
-<li><code>ScalarStats.display_name</code> is presentation-only (column name/alias) and not part of identity.</li>
-<li>Target/payload compatibility is strict at persistence boundaries:</li>
-<li><code>TABLE</code> target must carry <code>table</code> payload</li>
-<li><code>COLUMN</code> and <code>EXPRESSION</code> targets must carry <code>scalar</code> payload</li>
-<li><code>FILE</code> target must carry <code>file</code> payload with matching canonical file path</li>
-<li>Table targets use <code>TableValueStats</code> (value only) with metadata at record level.</li>
-<li>Single request API is target-native (<code>StatsCaptureRequest</code>).</li>
-<li>Batch API is first-class (<code>StatsCaptureBatchRequest</code>) and is the primary path for reconciler/query
-  orchestration so engines can process multiple targets in one pass.</li>
-</ul>
-<h2 id="batch-contract-for-engine-implementors">Batch contract for engine implementors<a class="headerlink" href="#batch-contract-for-engine-implementors" title="Permanent link">&para;</a></h2>
-<p>Implementations of <code>StatsCaptureEngine.captureBatch()</code> must:</p>
-<ol>
-<li><strong>Size invariant</strong>: <code>results().size() == batchRequest.requests().size()</code> in all cases.</li>
-<li><strong>Order invariant</strong>: <code>result[i]</code> must correspond to <code>requests.get(i)</code>.</li>
-<li><strong>No throws</strong>: represent failures as per-item outcomes (typically <code>DEGRADED</code>) instead of
-   throwing exceptions.</li>
-<li><strong>Item independence</strong>: failure for one item must not prevent attempts for remaining items.</li>
-<li><strong>UNCAPTURABLE semantics</strong>: use <code>UNCAPTURABLE</code> only for capability mismatches. Registry routing
-   retries <code>UNCAPTURABLE</code> items with the next candidate engine; <code>DEGRADED</code> is final.</li>
-</ol>
-<h2 id="how-to-add-a-new-engine">How to add a new engine<a class="headerlink" href="#how-to-add-a-new-engine" title="Permanent link">&para;</a></h2>
-<ol>
-<li>Implement <code>StatsCaptureEngine</code>.</li>
-<li>Define accurate <code>StatsCapabilities</code>.</li>
-<li>Set <code>priority()</code> (lower is higher priority).</li>
-<li>Return <code>Optional.empty()</code> when unsupported/unavailable for a specific request.</li>
-<li>Register as CDI bean (<code>@ApplicationScoped</code>), no manual registry wiring needed.</li>
-</ol>
-<p>Guidelines:</p>
-<ul>
-<li>Keep <code>capture()</code> deterministic for a given snapshot/target.</li>
-<li>Do not return stats from a different snapshot.</li>
-<li>Prefer <code>Optional.empty()</code> over throwing for normal "not available" outcomes.</li>
-<li>Use <code>attributes</code> in <code>StatsCaptureResult</code> for lightweight diagnostics.</li>
-</ul>
-<h2 id="existing-baseline-behavior">Existing baseline behavior<a class="headerlink" href="#existing-baseline-behavior" title="Permanent link">&para;</a></h2>
-<p><code>StatsRepository</code> is the default OSS authoritative <code>StatsStore</code> implementation.
-Both native engines persist captured records back into <code>StatsStore</code> before returning.
-This keeps reads and writes aligned to one authoritative store contract.</p>
-<p>When a TABLE request is included in a native engine batch, the engine may opportunistically persist
-additional COLUMN/FILE records returned in the same connector capture bundle. This is intentional
-to avoid extra source scans for follow-up target requests.</p>
-<p>Native connector target-kind expansion:</p>
-<ul>
-<li>when <code>StatsTargetKind.TABLE</code> is requested, native engines may also request <code>COLUMN</code> and <code>FILE</code>
-  from <code>captureSnapshotTargetStats(...)</code> so full-bundle persistence can happen in one connector
-  pass</li>
-</ul>
-<h2 id="plugging-your-own-statsstore">Plugging your own StatsStore<a class="headerlink" href="#plugging-your-own-statsstore" title="Permanent link">&para;</a></h2>
-<p>You can replace the default store with your own CDI bean implementing
-<code>ai.floedb.floecat.stats.spi.StatsStore</code>.</p>
-<p>Requirements:</p>
-<ul>
-<li>implement all <code>StatsStore</code> operations (<code>put</code>, <code>get</code>, <code>list</code>, <code>count</code>, <code>delete</code>, metadata)</li>
-<li>enforce the same target identity semantics (<code>StatsTargetIdentity.storageId(...)</code>)</li>
-<li>keep record-level metadata intact (<code>TargetStatsRecord.metadata</code>)</li>
-<li>preserve snapshot consistency (<code>table_id + snapshot_id + target</code>)</li>
-</ul>
-<p>CDI guidance:</p>
-<ul>
-<li>register your implementation as <code>@ApplicationScoped</code></li>
-<li>ensure only one active <code>StatsStore</code> bean is selected (use alternatives if needed)</li>
-<li>no changes are required in service code; all public reads/listing and capture fallback already
-  resolve through <code>StatsStore</code></li>
-</ul>
-<h2 id="typical-extensions">Typical extensions<a class="headerlink" href="#typical-extensions" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Add compute-backed expression engines through this SPI.</li>
-<li>Tune sync capture budgets via <code>floecat.stats.sync.latency-budget</code> (see
-  <a href="../stats-sync-policy/">stats-sync-policy.md</a>).</li>
-</ul>
+<h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Tags</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>floecat.service.stats.sync_outcomes.total</code></td>
+<td>counter</td>
+<td><code>result</code>, <code>component</code>, <code>operation</code></td>
+<td>Count per sync outcome</td>
+</tr>
+<tr>
+<td><code>floecat.service.stats.sync.latency</code></td>
+<td>timer (ms)</td>
+<td><code>result</code>, <code>component</code>, <code>operation</code></td>
+<td>End-to-end resolve latency</td>
+</tr>
+</tbody>
+</table>
+<p><code>result</code> values match <code>StatsSyncOutcome</code> names: <code>HIT</code>, <code>CAPTURED</code>, <code>PARTIAL</code>, <code>TIMEOUT</code>,
+<code>FAILED</code>, <code>SKIPPED</code>.</p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<p><strong>High TIMEOUT rate</strong></p>
+<p>The most common cause is the capture budget being shorter than actual connector round-trip time.
+Check <code>floecat.service.stats.sync.latency</code> (p95) against <code>floecat.stats.sync.latency-budget</code>.
+Increase the budget (up to <code>max-latency-budget</code>) or set <code>floecat.stats.sync.enabled=false</code> to
+stop blocking queries on sync attempts.</p>
+<p><strong>FAILED outcomes with no connector</strong></p>
+<p>Tables without an upstream connector cannot be captured synchronously. The orchestrator returns
+<code>FAILED</code> immediately and enqueues an async follow-up. This is expected for system tables and
+non-connected tables.</p>
+<p><strong>Disabling sync globally</strong></p>
+<p>Set <code>floecat.stats.sync.enabled=false</code> (or <code>FLOECAT_STATS_SYNC_ENABLED=false</code>). All queries
+fall back to <code>SKIPPED</code> + async enqueue, which matches the pre-sync-policy behavior.</p>
+<p><strong>Verifying counters</strong></p>
+<p>Query <code>/q/metrics</code> after triggering a stats miss. Look for lines containing
+<code>floecat_service_stats_sync_outcomes_total</code>.</p>
 
 
 

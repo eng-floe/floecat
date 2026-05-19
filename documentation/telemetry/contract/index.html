@@ -2430,6 +2430,24 @@
 <td>component, mode, operation, reason, resource, result, scope, trigger</td>
 </tr>
 <tr>
+<td>floecat.service.stats.sync.latency</td>
+<td>TIMER</td>
+<td>ms</td>
+<td>v1</td>
+<td>End-to-end latency of a single sync-first resolution attempt including store reads.</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.sync_outcomes.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED, SKIPPED).</td>
+<td>component, operation</td>
+<td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
 <td>floecat.service.storage.account.bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>
