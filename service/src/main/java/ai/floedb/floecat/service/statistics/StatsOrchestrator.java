@@ -29,7 +29,9 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -37,6 +39,7 @@ import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -46,6 +49,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
@@ -58,7 +62,9 @@ import org.jboss.logging.Logger;
  *   <li>explicit capture execution via {@link #triggerBatch(StatsCaptureBatchRequest)}
  * </ul>
  *
- * <p>Resolution is store-first, then async enqueue fallback when data is still missing.
+ * <p>Resolution is sync-first when {@code floecat.stats.sync.enabled=true} (default): on a store
+ * miss the orchestrator attempts a bounded synchronous capture before falling back to async
+ * enqueue. The outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
  */
 @ApplicationScoped
 public class StatsOrchestrator {
@@ -69,6 +75,8 @@ public class StatsOrchestrator {
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
   private final TableRepository tableRepository;
+  private final StatsSyncCapture statsSyncCapture;
+  private final boolean syncEnabled;
   private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
 
@@ -77,31 +85,83 @@ public class StatsOrchestrator {
       StatsStore statsStore,
       ReconcileJobStore reconcileJobStore,
       TableRepository tableRepository,
+      StatsSyncCapture statsSyncCapture,
+      @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
+          boolean syncEnabled,
       Instance<Observability> observability) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
+    this.statsSyncCapture = statsSyncCapture;
+    this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
   }
 
   public StatsOrchestrator(
       StatsStore statsStore, ReconcileJobStore reconcileJobStore, TableRepository tableRepository) {
-    this(statsStore, reconcileJobStore, tableRepository, null);
+    this(
+        statsStore,
+        reconcileJobStore,
+        tableRepository,
+        new StatsSyncCapture(reconcileJobStore),
+        true,
+        null);
   }
 
   /**
    * Unified query-time resolution path.
    *
-   * <p>Order: persisted store hit, then async enqueue fallback for misses.
+   * <p>Order: persisted store hit → bounded sync capture (if enabled and budget present) → async
+   * enqueue fallback. The returned {@link StatsResolutionResult} always carries a {@link
+   * StatsSyncOutcome} so callers can inspect quality without inspecting the Optional payload.
    */
-  public Optional<TargetStatsRecord> resolve(StatsCaptureRequest request) {
+  public StatsResolutionResult resolve(StatsCaptureRequest request) {
+    long startNanos = System.nanoTime();
     Optional<TargetStatsRecord> stored = readStore(request);
     if (stored.isPresent()) {
-      return stored;
+      observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
+      return StatsResolutionResult.hit(stored.get());
     }
+
+    if (syncEnabled
+        && request.executionMode() == StatsExecutionMode.SYNC
+        && request.latencyBudget().isPresent()) {
+      StatsSyncOutcome syncOutcome = attemptSyncCapture(request);
+      observeSyncOutcome(syncOutcome, startNanos);
+
+      if (syncOutcome == StatsSyncOutcome.CAPTURED) {
+        Optional<TargetStatsRecord> afterCapture = readStore(request);
+        if (afterCapture.isPresent()) {
+          return StatsResolutionResult.captured(afterCapture.get());
+        }
+        // Capture succeeded per job store but record not yet visible — schedule follow-up.
+        enqueueAsyncFollowUp(request, "sync_followup_partial");
+        return StatsResolutionResult.partial(
+            "sync capture succeeded but store record not visible; async follow-up enqueued");
+      }
+
+      String followUpReason =
+          syncOutcome == StatsSyncOutcome.TIMEOUT
+              ? "sync_followup_timeout"
+              : "sync_followup_failed";
+      enqueueAsyncFollowUp(request, followUpReason);
+      String detail =
+          syncOutcome == StatsSyncOutcome.TIMEOUT
+              ? "sync capture timed out; async follow-up enqueued"
+              : "sync capture failed; async follow-up enqueued";
+      return syncOutcome == StatsSyncOutcome.TIMEOUT
+          ? StatsResolutionResult.timeout(detail)
+          : StatsResolutionResult.failed(detail);
+    }
+
     enqueueAsyncCaptureBatch(List.of(request));
-    return Optional.empty();
+    String skipReason =
+        request.executionMode() != StatsExecutionMode.SYNC
+            ? "async_mode"
+            : request.latencyBudget().isEmpty() ? "no_budget" : "sync_disabled";
+    observeSyncOutcome(StatsSyncOutcome.SKIPPED, startNanos);
+    return StatsResolutionResult.skipped(skipReason);
   }
 
   /**
@@ -109,22 +169,25 @@ public class StatsOrchestrator {
    *
    * <p>Requests are resolved in-order with the same semantics as single-item resolve.
    */
-  public List<Optional<TargetStatsRecord>> resolveBatch(StatsCaptureBatchRequest batchRequest) {
+  public List<StatsResolutionResult> resolveBatch(StatsCaptureBatchRequest batchRequest) {
     List<StatsCaptureRequest> requests = batchRequest.requests();
     incrementCounter(
         ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
         requests.size(),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    List<Optional<TargetStatsRecord>> resolved = new ArrayList<>(requests.size());
+    List<StatsResolutionResult> resolved = new ArrayList<>(requests.size());
     ArrayList<StatsCaptureRequest> unresolvedForAsync = new ArrayList<>();
 
     for (StatsCaptureRequest request : requests) {
       Optional<TargetStatsRecord> stored = readStore(request);
-      resolved.add(stored);
       if (stored.isPresent()) {
+        resolved.add(StatsResolutionResult.hit(stored.get()));
         continue;
       }
+      // Sync is not attempted in batch mode — individual sync would serialize all requests.
+      // Callers needing sync semantics should use the single-item resolve().
       unresolvedForAsync.add(request);
+      resolved.add(StatsResolutionResult.skipped("batch_async_fallback"));
     }
 
     if (!unresolvedForAsync.isEmpty()) {
@@ -136,6 +199,54 @@ public class StatsOrchestrator {
       enqueueAsyncCaptureBatch(unresolvedForAsync);
     }
     return List.copyOf(resolved);
+  }
+
+  private StatsSyncOutcome attemptSyncCapture(StatsCaptureRequest request) {
+    try {
+      Optional<Table> table = tableRepository.getById(request.tableId());
+      if (table.isEmpty()) {
+        LOG.debugf("stats_sync_capture skipped: missing table=%s", request.tableId());
+        return StatsSyncOutcome.FAILED;
+      }
+      if (!table.get().hasUpstream() || !table.get().getUpstream().hasConnectorId()) {
+        LOG.debugf("stats_sync_capture skipped: no upstream connector table=%s", request.tableId());
+        return StatsSyncOutcome.FAILED;
+      }
+      String connectorId = table.get().getUpstream().getConnectorId().getId();
+      if (connectorId == null || connectorId.isBlank()) {
+        LOG.debugf("stats_sync_capture skipped: blank connectorId table=%s", request.tableId());
+        return StatsSyncOutcome.FAILED;
+      }
+
+      ReconcileScope.ScopedCaptureRequest scopedReq =
+          new ReconcileScope.ScopedCaptureRequest(
+              table.get().getResourceId().getId(),
+              request.snapshotId(),
+              ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
+              List.copyOf(request.columnSelectors()));
+      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request));
+      ReconcileScope scope =
+          ReconcileScope.of(
+              List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
+
+      return statsSyncCapture.capture(
+          request.tableId().getAccountId(), connectorId, scope, request.latencyBudget().get());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "stats_sync_capture attempt threw for table=%s", request.tableId());
+      return StatsSyncOutcome.FAILED;
+    }
+  }
+
+  private void enqueueAsyncFollowUp(StatsCaptureRequest request, String reason) {
+    LOG.debugf(
+        "stats_async_followup reason=%s table=%s snapshot=%d",
+        reason, request.tableId(), request.snapshotId());
+    incrementCounter(
+        ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+        1,
+        Tag.of(TagKey.TRIGGER, reason),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
+    enqueueAsyncCaptureBatch(List.of(request));
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -377,6 +488,24 @@ public class StatsOrchestrator {
       counts.merge(item.outcome().name(), 1L, Long::sum);
     }
     return counts.toString();
+  }
+
+  private void observeSyncOutcome(StatsSyncOutcome outcome, long startNanos) {
+    incrementCounter(
+        ServiceMetrics.Stats.SYNC_OUTCOMES_TOTAL,
+        1,
+        Tag.of(TagKey.RESULT, outcome.name()),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
+    if (observability != null) {
+      Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+      Tag[] baseTags = {
+        Tag.of(TagKey.COMPONENT, COMPONENT),
+        Tag.of(TagKey.OPERATION, OPERATION),
+        Tag.of(TagKey.RESULT, outcome.name()),
+        Tag.of(TagKey.SCOPE, "orchestrator")
+      };
+      observability.timer(ServiceMetrics.Stats.SYNC_LATENCY, elapsed, baseTags);
+    }
   }
 
   private void incrementCounter(MetricId metric, double amount, Tag... tags) {

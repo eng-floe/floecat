@@ -45,7 +45,10 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -55,29 +58,119 @@ import org.mockito.Mockito;
 
 class StatsOrchestratorTest {
 
+  // ---------------------------------------------------------------------------
+  // Store-hit path
+  // ---------------------------------------------------------------------------
+
   @Test
   void returnsStoreHitDirectly() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
-    TargetStatsRecord record =
-        TargetStatsRecord.newBuilder()
-            .setTableId(request.tableId())
-            .setSnapshotId(request.snapshotId())
-            .setTarget(request.target())
-            .setTable(TableValueStats.newBuilder().setRowCount(7).setTotalSizeBytes(11).build())
-            .build();
+    TargetStatsRecord record = record(request);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.of(record));
 
-    Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
+    StatsResolutionResult result = orchestrator.resolve(request);
 
-    assertThat(resolved).contains(record);
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.HIT);
+    assertThat(result.stats()).contains(record);
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sync-first path
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void syncMissThenCaptureSucceeds() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
+
+    StatsCaptureRequest request =
+        tableRequest(StatsExecutionMode.SYNC, Optional.of(Duration.ofSeconds(1)));
+    TargetStatsRecord record = record(request);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty()) // first read: miss
+        .thenReturn(Optional.of(record)); // second read after capture: hit
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+        .thenReturn(StatsSyncOutcome.CAPTURED);
+
+    StatsResolutionResult result = orchestrator.resolve(request);
+
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.CAPTURED);
+    assertThat(result.stats()).contains(record);
+    // No async enqueue because sync succeeded.
     verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
+
+  @Test
+  void syncMissTimeoutEnqueuesAsyncFollowUp() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
+
+    StatsCaptureRequest request =
+        tableRequest(StatsExecutionMode.SYNC, Optional.of(Duration.ofSeconds(1)));
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+        .thenReturn(StatsSyncOutcome.TIMEOUT);
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+        .thenReturn("job-followup");
+
+    StatsResolutionResult result = orchestrator.resolve(request);
+
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.TIMEOUT);
+    assertThat(result.stats()).isEmpty();
+    assertThat(result.outcomeDetail()).contains("async follow-up enqueued");
+    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  void syncMissFailedEnqueuesAsyncFollowUp() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
+
+    StatsCaptureRequest request =
+        tableRequest(StatsExecutionMode.SYNC, Optional.of(Duration.ofSeconds(1)));
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+        .thenReturn(StatsSyncOutcome.FAILED);
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+        .thenReturn("job-followup");
+
+    StatsResolutionResult result = orchestrator.resolve(request);
+
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.FAILED);
+    assertThat(result.stats()).isEmpty();
+    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Async-only fallback (sync not attempted)
+  // ---------------------------------------------------------------------------
 
   @Test
   void missEnqueuesUnifiedCaptureJob() {
@@ -93,9 +186,10 @@ class StatsOrchestratorTest {
     when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
         .thenReturn("job-1");
 
-    Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
+    StatsResolutionResult result = orchestrator.resolve(request);
 
-    assertThat(resolved).isEmpty();
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(result.stats()).isEmpty();
     ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
     verify(jobStore)
         .enqueue(
@@ -114,6 +208,10 @@ class StatsOrchestratorTest {
         .containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
   }
+
+  // ---------------------------------------------------------------------------
+  // triggerBatch path (unchanged semantics)
+  // ---------------------------------------------------------------------------
 
   @Test
   void triggerBatchGroupsRequestsIntoSingleTableJob() {
@@ -401,7 +499,24 @@ class StatsOrchestratorTest {
         .hasMessageContaining("snapshotId must be non-negative");
   }
 
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private static StatsOrchestrator orchestrator(
+      StatsStore statsStore,
+      ReconcileJobStore jobStore,
+      TableRepository tableRepository,
+      StatsSyncCapture syncCapture) {
+    return new StatsOrchestrator(statsStore, jobStore, tableRepository, syncCapture, true, null);
+  }
+
   private static StatsCaptureRequest tableRequest(StatsExecutionMode mode) {
+    return tableRequest(mode, Optional.empty());
+  }
+
+  private static StatsCaptureRequest tableRequest(
+      StatsExecutionMode mode, Optional<Duration> budget) {
     return StatsCaptureRequest.builder(
             ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
             42L,
@@ -410,6 +525,16 @@ class StatsOrchestratorTest {
         .executionMode(mode)
         .connectorType("iceberg")
         .correlationId("cid-1")
+        .latencyBudget(budget)
+        .build();
+  }
+
+  private static TargetStatsRecord record(StatsCaptureRequest request) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(request.tableId())
+        .setSnapshotId(request.snapshotId())
+        .setTarget(request.target())
+        .setTable(TableValueStats.newBuilder().setRowCount(7).setTotalSizeBytes(11).build())
         .build();
   }
 
