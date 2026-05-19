@@ -500,6 +500,45 @@ class StatsOrchestratorTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Async follow-up scope preservation
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void syncFollowUpPreservesColumnSelectorsFromOriginalRequest() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+                42L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .columnSelectors(Set.of("col_a", "col_b"))
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("cid-1")
+            .latencyBudget(Optional.of(Duration.ofSeconds(1)))
+            .build();
+    when(statsStore.getTargetStats(any(), Mockito.anyLong(), any())).thenReturn(Optional.empty());
+    when(tableRepository.getById(any())).thenReturn(Optional.of(upstreamTable()));
+    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+        .thenReturn(StatsSyncOutcome.TIMEOUT);
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+        .thenReturn("job-followup");
+
+    orchestrator.resolve(request);
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), scopeCaptor.capture());
+    // Selectors from the original request must be preserved in the follow-up scope.
+    assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats())
+        .containsExactlyInAnyOrder("col_a", "col_b");
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
