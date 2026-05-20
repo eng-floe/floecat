@@ -20,8 +20,10 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
@@ -229,8 +231,20 @@ public class StatsOrchestrator {
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
 
+      // P0_SYNC: query-time bounded capture. This is the only code path that assigns P0.
+      // The lane key (accountId:tableId) serializes concurrent sync requests for the same table.
+      String laneKey =
+          statsLaneKey(request.tableId().getAccountId(), table.get().getResourceId().getId());
+      ReconcileExecutionPolicy syncPolicy =
+          ReconcileExecutionPolicy.of(
+              StatsPriorityClass.P0_SYNC, laneKey, Map.of("enqueue_reason", "sync_capture"));
+
       return statsSyncCapture.capture(
-          request.tableId().getAccountId(), connectorId, scope, request.latencyBudget().get());
+          request.tableId().getAccountId(),
+          connectorId,
+          scope,
+          request.latencyBudget().get(),
+          syncPolicy);
     } catch (RuntimeException e) {
       LOG.warnf(e, "stats_sync_capture attempt threw for table=%s", request.tableId());
       return StatsSyncOutcome.FAILED;
@@ -246,7 +260,9 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    enqueueAsyncCaptureBatch(List.of(request));
+    // P2_REPAIR: async follow-up after a sync outcome of PARTIAL, TIMEOUT, or FAILED.
+    // These jobs fill missing coverage without blocking the planner again.
+    enqueueAsyncCaptureBatch(List.of(request), StatsPriorityClass.P2_REPAIR, reason);
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -262,8 +278,20 @@ public class StatsOrchestrator {
     return out;
   }
 
+  /**
+   * Enqueues a batch of async capture requests.
+   *
+   * <p>Callers that need P3_BACKGROUND (the default for background and batch-trigger paths) should
+   * use the single-argument overload. The {@link #enqueueAsyncFollowUp} path passes P2_REPAIR.
+   */
   private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
       List<StatsCaptureRequest> requests) {
+    // P3_BACKGROUND: routine background refresh and explicit trigger paths.
+    return enqueueAsyncCaptureBatch(requests, StatsPriorityClass.P3_BACKGROUND, "background_async");
+  }
+
+  private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
+      List<StatsCaptureRequest> requests, StatsPriorityClass priorityClass, String enqueueReason) {
     if (requests == null || requests.isEmpty()) {
       return List.of();
     }
@@ -291,7 +319,8 @@ public class StatsOrchestrator {
           .add(new IndexedRequest(i, toAsyncRequest(request)));
     }
     for (List<IndexedRequest> groupedRequests : groupedByTable.values()) {
-      for (IndexedResult result : enqueueAsyncGroup(groupedRequests)) {
+      for (IndexedResult result :
+          enqueueAsyncGroup(groupedRequests, priorityClass, enqueueReason)) {
         results.set(result.index(), result.result());
       }
     }
@@ -322,7 +351,10 @@ public class StatsOrchestrator {
     };
   }
 
-  private List<IndexedResult> enqueueAsyncGroup(List<IndexedRequest> groupedRequests) {
+  private List<IndexedResult> enqueueAsyncGroup(
+      List<IndexedRequest> groupedRequests,
+      StatsPriorityClass priorityClass,
+      String enqueueReason) {
     if (groupedRequests == null || groupedRequests.isEmpty()) {
       return List.of();
     }
@@ -369,16 +401,27 @@ public class StatsOrchestrator {
               table.get().getResourceId().getId(),
               List.copyOf(captureRequests),
               capturePolicy);
+
+      // Build the execution policy: lane key serialises concurrent jobs for the same table;
+      // enqueue_reason carries the scheduling intent for metrics and debugging.
+      String laneKey =
+          statsLaneKey(first.tableId().getAccountId(), table.get().getResourceId().getId());
+      ReconcileExecutionPolicy executionPolicy =
+          ReconcileExecutionPolicy.of(
+              priorityClass, laneKey, Map.of("enqueue_reason", enqueueReason));
+
       String jobId =
           reconcileJobStore.enqueue(
               first.tableId().getAccountId(),
               table.get().getUpstream().getConnectorId().getId(),
               false,
               ReconcilerService.CaptureMode.CAPTURE_ONLY,
-              scope);
+              scope,
+              executionPolicy,
+              "");
       lastEnqueuedJobByTable.put(tableKey(first), jobId);
       LOG.infof(
-          "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s group_size=%d job=%s",
+          "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s priority=%s group_size=%d job=%s",
           first.tableId(),
           (int)
               captureRequests.stream()
@@ -386,7 +429,8 @@ public class StatsOrchestrator {
                   .distinct()
                   .count(),
           captureRequests.size(),
-          "missing_or_degraded_sync_capture",
+          enqueueReason,
+          priorityClass,
           groupedRequests.size(),
           jobId);
       return groupedRequests.stream()
@@ -447,6 +491,17 @@ public class StatsOrchestrator {
 
   private static TableKey tableKey(StatsCaptureRequest request) {
     return new TableKey(request.tableId().getAccountId(), request.tableId().getId());
+  }
+
+  /**
+   * Returns the scheduling lane key for a stats-driven enqueue.
+   *
+   * <p>The lane key ({@code accountId:tableId}) is used to serialise concurrent jobs that target
+   * the same table, and to enable WRR fairness across tables within the same priority class (phase
+   * 2). It is stored in {@link ReconcileExecutionPolicy#lane()} and is visible in metrics.
+   */
+  private static String statsLaneKey(String accountId, String tableId) {
+    return accountId + ":" + tableId;
   }
 
   private StatsCaptureRequest toAsyncRequest(StatsCaptureRequest request) {
@@ -519,6 +574,14 @@ public class StatsOrchestrator {
     observability.counter(metric, amount, merged);
   }
 
+  /**
+   * Builds the capture policy for a list of stats requests.
+   *
+   * <p>{@link ReconcileCapturePolicy.Output#PARQUET_PAGE_INDEX} is intentionally never included
+   * here. Parquet page-index construction (Floescan) is always async (EXEC_FILE_GROUP scoped) and
+   * is enqueued separately. Including it in a sync-capture policy would violate the latency budget
+   * contract.
+   */
   private static ReconcileCapturePolicy capturePolicyFor(List<StatsCaptureRequest> requests) {
     LinkedHashSet<ReconcileCapturePolicy.Output> outputs = new LinkedHashSet<>();
     LinkedHashMap<String, ReconcileCapturePolicy.Column> columns = new LinkedHashMap<>();
