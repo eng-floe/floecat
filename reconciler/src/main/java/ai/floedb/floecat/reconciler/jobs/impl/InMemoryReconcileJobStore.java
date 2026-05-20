@@ -1479,6 +1479,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     currentBand.set(band);
   }
 
+  /** Package-private for testing: backdate a job's creation timestamp to simulate aging. */
+  void backdateCreatedAtForTest(String jobId, long createdAtMs) {
+    this.createdAtMs.put(jobId, createdAtMs);
+  }
+
   private static long agingThresholdMs(StatsPriorityClass cls) {
     return switch (cls) {
       case P3_BACKGROUND -> P3_AGING_THRESHOLD_MS;
