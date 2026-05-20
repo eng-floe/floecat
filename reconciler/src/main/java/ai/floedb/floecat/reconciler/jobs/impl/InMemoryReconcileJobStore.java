@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -33,6 +34,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 @ApplicationScoped
@@ -72,6 +77,31 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
+  // ---------------------------------------------------------------------------
+  // Health band thresholds
+  // ---------------------------------------------------------------------------
+  private static final long P0_RED_BUDGET_MS = 1_000L;
+  private static final long P2_ORANGE_THRESHOLD = 200L;
+  private static final long P3_YELLOW_THRESHOLD = 500L;
+
+  // ---------------------------------------------------------------------------
+  // Starvation aging constants
+  // ---------------------------------------------------------------------------
+  static final long P3_AGING_THRESHOLD_MS = 300_000L; // 5 min
+  static final long P2_AGING_THRESHOLD_MS = 120_000L; // 2 min
+  static final long P1_AGING_THRESHOLD_MS = Long.MAX_VALUE; // never ages (already high priority)
+  static final long AGING_COOLDOWN_MS = 60_000L;
+
+  // ---------------------------------------------------------------------------
+  // Admission control constants
+  // ---------------------------------------------------------------------------
+  private static final long DEFER_DELAY_MS = 5_000L;
+
+  // ---------------------------------------------------------------------------
+  // WRR constants
+  // ---------------------------------------------------------------------------
+  private static final int MAX_WRR_SCAN = 8;
+
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
@@ -93,7 +123,34 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private volatile long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private volatile long lastReclaimAtMs;
 
+  // ---------------------------------------------------------------------------
+  // Health band state
+  // ---------------------------------------------------------------------------
+  private final AtomicReference<SchedulerHealthBand> currentBand =
+      new AtomicReference<>(SchedulerHealthBand.GREEN);
+
+  // ---------------------------------------------------------------------------
+  // Starvation aging state
+  // ---------------------------------------------------------------------------
+  private final Map<String, Long> promotedJobIds =
+      new ConcurrentHashMap<>(); // jobId → promotion-expiry-ms
+  private final AtomicLong agingPromotionsTotal = new AtomicLong();
+
+  // ---------------------------------------------------------------------------
+  // Admission control state
+  // ---------------------------------------------------------------------------
+  private final Map<StatsPriorityClass, AtomicLong> admissionDeferred =
+      new EnumMap<>(StatsPriorityClass.class);
+
+  // ---------------------------------------------------------------------------
+  // WRR state
+  // ---------------------------------------------------------------------------
+  private final Map<String, Long> laneServiceCounts = new ConcurrentHashMap<>();
+
   public InMemoryReconcileJobStore() {
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      admissionDeferred.put(cls, new AtomicLong());
+    }
     reloadConfig();
   }
 
@@ -258,6 +315,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveParentJobId);
     jobs.put(id, job);
     pinnedExecutors.put(id, effectivePinnedExecutorId);
+    long deferMs = admissionDeferMs(effectivePolicy.priorityClass(), currentBand.get());
+    if (deferMs > 0) {
+      nextAttemptAtMs.put(id, now + deferMs);
+      admissionDeferred.get(effectivePolicy.priorityClass()).incrementAndGet();
+    }
     readyQueue.enqueue(id, effectivePolicy.priorityClass(), effectivePolicy.priorityScore());
     return id;
   }
@@ -366,6 +428,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     long running = 0L;
     long cancelling = 0L;
     long oldestQueued = 0L;
+    long oldestP0QueuedCreatedAtMs = 0L;
+    long now = System.currentTimeMillis();
     for (ReconcileJob job : jobs.values()) {
       if (job == null || job.state == null) {
         continue;
@@ -377,13 +441,52 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           if (created > 0L && (oldestQueued == 0L || created < oldestQueued)) {
             oldestQueued = created;
           }
+          if (job.executionPolicy != null
+              && job.executionPolicy.priorityClass() == StatsPriorityClass.P0_SYNC) {
+            if (created > 0L
+                && (oldestP0QueuedCreatedAtMs == 0L || created < oldestP0QueuedCreatedAtMs)) {
+              oldestP0QueuedCreatedAtMs = created;
+            }
+          }
         }
         case "JS_RUNNING" -> running++;
         case "JS_CANCELLING" -> cancelling++;
         default -> {}
       }
     }
-    return new QueueStats(queued, running, cancelling, oldestQueued, readyQueue.sizeByAllClasses());
+    Map<StatsPriorityClass, Long> byClass = readyQueue.sizeByAllClasses();
+    long p0Count = byClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L);
+    long p2Count = byClass.getOrDefault(StatsPriorityClass.P2_REPAIR, 0L);
+    long p3Count = byClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L);
+
+    SchedulerHealthBand band;
+    if (p0Count > 0
+        && oldestP0QueuedCreatedAtMs > 0L
+        && now - oldestP0QueuedCreatedAtMs > P0_RED_BUDGET_MS) {
+      band = SchedulerHealthBand.RED;
+    } else if (p2Count > P2_ORANGE_THRESHOLD) {
+      band = SchedulerHealthBand.ORANGE;
+    } else if (p3Count > P3_YELLOW_THRESHOLD) {
+      band = SchedulerHealthBand.YELLOW;
+    } else {
+      band = SchedulerHealthBand.GREEN;
+    }
+    currentBand.set(band);
+
+    Map<StatsPriorityClass, Long> deferredSnapshot = new EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      deferredSnapshot.put(cls, admissionDeferred.get(cls).get());
+    }
+
+    return new QueueStats(
+        queued,
+        running,
+        cancelling,
+        oldestQueued,
+        byClass,
+        band,
+        agingPromotionsTotal.get(),
+        deferredSnapshot);
   }
 
   @Override
@@ -468,29 +571,38 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     reclaimExpiredLeasesIfDue(now);
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
 
+    // Lazily clean expired aging promotions
+    if (!promotedJobIds.isEmpty()) {
+      promotedJobIds.entrySet().removeIf(e -> e.getValue() < now);
+    }
+
     // Dispatch loop: iterate priority classes from most- to least-urgent.
     //
-    // For each class we scan at most sizeByClass(cls) candidates (the size at the top of this
-    // class's iteration.  Jobs that pass all checks are leased and returned.  Jobs that fail a
-    // check are requeued at their original priority so they are not lost.
+    // For each class we run a bounded WRR tournament (up to MAX_WRR_SCAN candidates). Jobs that
+    // pass all checks compete on the lane's virtual service count; the job from the least-served
+    // lane wins. Losers are requeued. The winner is leased and returned.
     //
     // P0_SYNC guard: if any P0 job was requeued (genuinely deferred, not merely discarded as
-    // stale/terminal), we return empty rather than falling through to P1/P2/P3.  Sync-capture
+    // stale/terminal), we return empty rather than falling through to P1/P2/P3. Sync-capture
     // jobs must not wait behind async work.
     //
-    // Intentional tradeoff: a single lane-blocked P0 job will prevent all P1/P2/P3 dispatch for
-    // that lease call, even for unrelated lanes.  This is a strict SLO guarantee — sync latency
-    // is bounded at the cost of async throughput for a single call.  Worker pools typically retry
-    // leaseNext() on empty immediately, so the practical impact is one skipped poll cycle.
-    // Stale or terminal P0 entries (job removed/finished) are discarded without triggering the
-    // guard; only live-but-deferred P0 jobs block lower-priority dispatch.
+    // Known limitation: laneServiceCounts can overflow for very long-lived deployments.
+    // Phase 3 will introduce periodic reset or virtual-time modulo to address this.
     boolean anyP0Requeued = false;
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
       long classSize = readyQueue.sizeByClass(cls);
       if (classSize == 0) {
         continue;
       }
-      for (long i = 0; i < classSize; i++) {
+
+      String bestJobId = null;
+      ReconcileJob bestJob = null;
+      String bestLaneKey = null;
+      String bestWrrLane = null;
+      long bestVirtualTime = Long.MAX_VALUE;
+
+      long scanLimit = Math.min(classSize, MAX_WRR_SCAN);
+      for (long i = 0; i < scanLimit; i++) {
         String jobId = readyQueue.pollHighest(cls);
         if (jobId == null) {
           break;
@@ -536,66 +648,115 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           continue;
         }
 
-        if (leased.add(jobId)) {
-          String leaseEpoch = UUID.randomUUID().toString();
-          leaseEpochs.put(jobId, leaseEpoch);
-          leaseExpiresAtMs.put(jobId, now + leaseMs);
-          if (!laneKey.isBlank()) {
-            activeJobIdByLaneKey.put(laneKey, jobId);
+        // WRR: use executionPolicy.lane() when non-blank (honors TODO(phase2)), else computed key
+        String wrrLane =
+            job.executionPolicy.lane().isBlank() ? laneKey : job.executionPolicy.lane();
+        long vt = laneServiceCounts.getOrDefault(wrrLane, 0L);
+
+        if (bestJobId == null || vt < bestVirtualTime) {
+          // Displace previous best candidate (if any) back to queue
+          if (bestJobId != null) {
+            releaseSnapshotLease(bestJobId);
+            readyQueue.requeue(
+                bestJobId,
+                cls,
+                jobs.get(bestJobId) != null
+                    ? jobs.get(bestJobId).executionPolicy.priorityScore()
+                    : 0L);
+            if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
           }
-          jobs.computeIfPresent(
-              jobId,
-              (id, current) ->
-                  new ReconcileJob(
-                      current.jobId,
-                      current.accountId,
-                      current.connectorId,
-                      "JS_CANCELLING".equals(current.state) ? "JS_CANCELLING" : "JS_RUNNING",
-                      "JS_CANCELLING".equals(current.state) ? current.message : "Leased",
-                      current.startedAtMs > 0L ? current.startedAtMs : now,
-                      0L,
-                      current.tablesScanned,
-                      current.tablesChanged,
-                      current.viewsScanned,
-                      current.viewsChanged,
-                      current.errors,
-                      current.fullRescan,
-                      current.captureMode,
-                      current.snapshotsProcessed,
-                      current.statsProcessed,
-                      current.scope,
-                      current.executionPolicy,
-                      current.executorId,
-                      current.jobKind,
-                      current.tableTask,
-                      current.viewTask,
-                      current.snapshotTask,
-                      current.fileGroupTask,
-                      current.parentJobId));
-          ReconcileJob leasedJob = jobs.get(jobId);
-          return Optional.of(
-              new LeasedJob(
-                  leasedJob.jobId,
-                  leasedJob.accountId,
-                  leasedJob.connectorId,
-                  leasedJob.fullRescan,
-                  leasedJob.captureMode,
-                  leasedJob.scope,
-                  leasedJob.executionPolicy,
-                  leaseEpoch,
-                  pinnedExecutors.getOrDefault(jobId, ""),
-                  leasedJob.executorId,
-                  leasedJob.jobKind,
-                  leasedJob.tableTask,
-                  leasedJob.viewTask,
-                  leasedJob.snapshotTask,
-                  leasedJob.fileGroupTask,
-                  leasedJob.parentJobId));
+          bestJobId = jobId;
+          bestJob = job;
+          bestLaneKey = laneKey;
+          bestWrrLane = wrrLane;
+          bestVirtualTime = vt;
+        } else {
+          // This candidate loses; requeue it
+          releaseSnapshotLease(jobId);
+          readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
         }
-        releaseSnapshotLease(jobId);
       }
 
-      // P0 guard: stop after the P0 class scan if any live P0 job was deferred.
+      if (bestJobId == null) {
+        // P0 guard: stop after the P0 class scan if any live P0 job was deferred.
+        if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
+          return Optional.empty();
+        }
+        continue;
+      }
+
+      // Apply starvation aging (just track promotion; effectiveCls for WRR accounting in Phase 3+)
+      long ageMs = now - createdAtMs.getOrDefault(bestJobId, now);
+      if (!promotedJobIds.containsKey(bestJobId) && ageMs > agingThresholdMs(cls)) {
+        promotedJobIds.put(bestJobId, now + AGING_COOLDOWN_MS);
+        agingPromotionsTotal.incrementAndGet();
+      }
+
+      final String finalBestJobId = bestJobId;
+      final String finalBestLaneKey = bestLaneKey;
+      final String finalBestWrrLane = bestWrrLane;
+
+      if (leased.add(finalBestJobId)) {
+        String leaseEpoch = UUID.randomUUID().toString();
+        leaseEpochs.put(finalBestJobId, leaseEpoch);
+        leaseExpiresAtMs.put(finalBestJobId, now + leaseMs);
+        if (!finalBestLaneKey.isBlank()) {
+          activeJobIdByLaneKey.put(finalBestLaneKey, finalBestJobId);
+        }
+        laneServiceCounts.merge(finalBestWrrLane, 1L, Long::sum);
+        jobs.computeIfPresent(
+            finalBestJobId,
+            (id, current) ->
+                new ReconcileJob(
+                    current.jobId,
+                    current.accountId,
+                    current.connectorId,
+                    "JS_CANCELLING".equals(current.state) ? "JS_CANCELLING" : "JS_RUNNING",
+                    "JS_CANCELLING".equals(current.state) ? current.message : "Leased",
+                    current.startedAtMs > 0L ? current.startedAtMs : now,
+                    0L,
+                    current.tablesScanned,
+                    current.tablesChanged,
+                    current.viewsScanned,
+                    current.viewsChanged,
+                    current.errors,
+                    current.fullRescan,
+                    current.captureMode,
+                    current.snapshotsProcessed,
+                    current.statsProcessed,
+                    current.scope,
+                    current.executionPolicy,
+                    current.executorId,
+                    current.jobKind,
+                    current.tableTask,
+                    current.viewTask,
+                    current.snapshotTask,
+                    current.fileGroupTask,
+                    current.parentJobId));
+        ReconcileJob leasedJob = jobs.get(finalBestJobId);
+        return Optional.of(
+            new LeasedJob(
+                leasedJob.jobId,
+                leasedJob.accountId,
+                leasedJob.connectorId,
+                leasedJob.fullRescan,
+                leasedJob.captureMode,
+                leasedJob.scope,
+                leasedJob.executionPolicy,
+                leaseEpoch,
+                pinnedExecutors.getOrDefault(finalBestJobId, ""),
+                leasedJob.executorId,
+                leasedJob.jobKind,
+                leasedJob.tableTask,
+                leasedJob.viewTask,
+                leasedJob.snapshotTask,
+                leasedJob.fileGroupTask,
+                leasedJob.parentJobId));
+      }
+      releaseSnapshotLease(finalBestJobId);
+
+      // P0 guard check after attempting to lease
       if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
         return Optional.empty();
       }
@@ -1311,6 +1472,32 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     if (dedupeKey != null && !dedupeKey.isBlank()) {
       activeJobIdByDedupeKey.remove(dedupeKey, jobId);
     }
+  }
+
+  /** Package-private for testing: force the current health band. */
+  void setCurrentBandForTest(SchedulerHealthBand band) {
+    currentBand.set(band);
+  }
+
+  private static long agingThresholdMs(StatsPriorityClass cls) {
+    return switch (cls) {
+      case P3_BACKGROUND -> P3_AGING_THRESHOLD_MS;
+      case P2_REPAIR -> P2_AGING_THRESHOLD_MS;
+      default -> Long.MAX_VALUE; // P0/P1 never age
+    };
+  }
+
+  private static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
+    return switch (cls) {
+      case P0_SYNC, P1_FRESHNESS -> 0L; // always admit
+      case P2_REPAIR -> band == SchedulerHealthBand.RED ? DEFER_DELAY_MS : 0L;
+      case P3_BACKGROUND ->
+          switch (band) {
+            case GREEN -> 0L;
+            case YELLOW -> ThreadLocalRandom.current().nextBoolean() ? 0L : DEFER_DELAY_MS;
+            case ORANGE, RED -> DEFER_DELAY_MS;
+          };
+    };
   }
 
   private long backoffMs(int attempts) {
