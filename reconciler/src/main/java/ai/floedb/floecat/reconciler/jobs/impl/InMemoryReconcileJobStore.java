@@ -59,13 +59,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   //
   //  QUEUED      → RUNNING     leaseNext() succeeds
   //  RUNNING     → CANCELLING  explicit cancel() call while job is running;
-  //                             preemption (phase 4, enabled via feature flag)
+  //                             preemption (not yet implemented; requires feature flag)
   //  RUNNING     → SUCCEEDED   markSucceeded()
   //  RUNNING     → QUEUED      lease expired (reclaimExpiredLeasesIfDue); markFailed() retry
   //  RUNNING     → FAILED      markFailed() after maxAttempts exceeded; markFailedTerminal()
   //  CANCELLING  → RUNNING     leaseNext() re-leases CANCELLING job so executor can observe it
-  //  CANCELLING  → QUEUED      markCancelled() with fileResults checkpoint (phase 4 resume path)
-  //  CANCELLING  → CANCELLED   markCancelled() completes cancellation
+  //  CANCELLING  → QUEUED      (not yet implemented; would require fileResults checkpoint support)
+  //  CANCELLING  → CANCELLED   markCancelled() — current behavior
   //  CANCELLING  → FAILED      lease expired while CANCELLING before executor responded
   //  QUEUED      → CANCELLED   cancel() on a job that has never started
   // ---------------------------------------------------------------------------
@@ -95,12 +95,26 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   // ---------------------------------------------------------------------------
   // Admission control constants
   // ---------------------------------------------------------------------------
-  private static final long DEFER_DELAY_MS = 5_000L;
+  // Package-private so that AdmissionControlTest can reference the same constant rather than
+  // duplicating the value (which would silently diverge if the default changed).
+  static final long DEFER_DELAY_MS = 5_000L;
 
   // ---------------------------------------------------------------------------
   // WRR constants
   // ---------------------------------------------------------------------------
-  private static final int MAX_WRR_SCAN = 8;
+  /**
+   * Maximum number of <em>eligible</em> candidates compared in one WRR tournament per priority
+   * class. Ineligible jobs (backoff, filter mismatch, lane-blocked, snapshot-blocked) do not count
+   * against this limit — they are skipped until {@link #MAX_TOTAL_POLL} is reached.
+   */
+  private static final int MAX_WRR_CANDIDATES = 8;
+
+  /**
+   * Hard cap on total {@link PriorityReadyQueue#pollHighest} calls per priority class per {@code
+   * leaseNext()} invocation. Bounds the worst case when many jobs are ineligible (e.g. all lanes
+   * blocked during a burst). Must be larger than {@link #MAX_WRR_CANDIDATES}.
+   */
+  private static final int MAX_TOTAL_POLL = 64;
 
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
@@ -121,13 +135,24 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private volatile long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
   private volatile long leaseMs = DEFAULT_LEASE_MS;
   private volatile long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
-  private volatile long lastReclaimAtMs;
+  // Accessed only inside synchronized reclaimExpiredLeasesIfDue(); volatile is not needed.
+  private long lastReclaimAtMs;
 
   // ---------------------------------------------------------------------------
   // Health band state
   // ---------------------------------------------------------------------------
   private final AtomicReference<SchedulerHealthBand> currentBand =
       new AtomicReference<>(SchedulerHealthBand.GREEN);
+
+  /**
+   * Timestamp of the last {@link #maybeRefreshBand} execution, stored as an {@link AtomicLong} so
+   * that a CAS can elect exactly one thread to run the refresh body per TTL period. This prevents
+   * concurrent O(n) jobs-map scans when many threads call {@code enqueue()} simultaneously during a
+   * P0 backlog.
+   */
+  private final AtomicLong lastBandRefreshMs = new AtomicLong(0L);
+
+  private static final long BAND_REFRESH_INTERVAL_MS = 1_000L;
 
   // ---------------------------------------------------------------------------
   // Starvation aging state
@@ -270,14 +295,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     nextAttemptAtMs.put(id, now);
     dedupeKeysByJobId.put(id, dedupeKey);
     activeJobIdByDedupeKey.put(dedupeKey, id);
-    // Lane key is derived from scope + job-kind, not from executionPolicy.lane().
-    // executionPolicy.lane() is stored on the job record and propagated to LeasedJob for future
-    // use (Phase 2 WRR fairness), but the actual lane-mutex assignment uses the computed key
-    // below.  Both approaches produce per-table serialization, so runtime behaviour is correct;
-    // the divergence only matters when a caller wants to override the lane with a custom key.
-    // TODO(phase2): honour executionPolicy.lane() when non-blank, falling back to the computed key.
-    laneKeysByJobId.put(
-        id,
+    // Canonical lane key: prefer the caller-supplied policy lane when non-blank (allows the
+    // orchestrator to override fairness grouping, e.g. "accountId:tableId"), otherwise fall back
+    // to the computed scope+job-kind key.  The same key drives both the lane-mutex
+    // (activeJobIdByLaneKey) and the WRR virtual-time counter (laneServiceCounts), so the two
+    // sub-systems are always in agreement.
+    String computedLane =
         laneKey(
             connectorId,
             effectiveScope,
@@ -285,7 +308,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveTableTask,
             effectiveViewTask,
             effectiveSnapshotTask,
-            effectiveFileGroupTask));
+            effectiveFileGroupTask);
+    String policyLane = effectivePolicy.lane();
+    laneKeysByJobId.put(id, policyLane.isBlank() ? computedLane : policyLane);
     var job =
         new ReconcileJob(
             id,
@@ -315,6 +340,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveParentJobId);
     jobs.put(id, job);
     pinnedExecutors.put(id, effectivePinnedExecutorId);
+    maybeRefreshBand(now);
     long deferMs = admissionDeferMs(effectivePolicy.priorityClass(), currentBand.get());
     if (deferMs > 0) {
       nextAttemptAtMs.put(id, now + deferMs);
@@ -454,11 +480,22 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         default -> {}
       }
     }
+    // Note: `queued` (above) counts JS_QUEUED entries in the jobs map; `byClass` counts entries in
+    // the skip-list buckets.  These are different views of the same logical set: the jobs map is
+    // the authoritative record, the skip-list is the dispatch index.  They can momentarily diverge
+    // under concurrent enqueue/lease, so callers should not expect exact equality.
     Map<StatsPriorityClass, Long> byClass = readyQueue.sizeByAllClasses();
     long p0Count = byClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L);
     long p2Count = byClass.getOrDefault(StatsPriorityClass.P2_REPAIR, 0L);
     long p3Count = byClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L);
 
+    // Note on P0 RED condition: p0Count comes from the skip-list (approximate AtomicLong) while
+    // oldestP0QueuedCreatedAtMs comes from the jobs-map scan above (authoritative).  A P0 job that
+    // has just been polled from the skip-list but not yet marked JS_RUNNING can briefly make
+    // p0Count == 0 while still appearing as JS_QUEUED in the map.  In that window the condition
+    // below is false and queueStats() will compute GREEN/YELLOW/ORANGE instead of RED.  The next
+    // maybeRefreshBand() call (within 1 s) will re-escalate to RED if the job is still waiting.
+    // This one-cycle inconsistency is an accepted trade-off for avoiding a second O(n) map scan.
     SchedulerHealthBand band;
     if (p0Count > 0
         && oldestP0QueuedCreatedAtMs > 0L
@@ -471,6 +508,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     } else {
       band = SchedulerHealthBand.GREEN;
     }
+    // Hard-set is intentional: queueStats() is the authoritative full-state snapshot and owns
+    // YELLOW/ORANGE downgrade (which requires a full jobs-map scan).  maybeRefreshBand() and
+    // maybeClearP0RedBand() only escalate / clear RED; they never downgrade YELLOW or ORANGE.
+    // The asymmetry is by design: fast escalation, measured relaxation.
+    //
+    // Known transient: if maybeRefreshBand() concurrently CAS-escalates to RED between the p0Count
+    // snapshot above and this set(), the hard-set will overwrite RED with the band computed here
+    // (potentially ORANGE or YELLOW).  The next maybeRefreshBand() call (within 1 s) re-escalates.
+    // This one-cycle window is an accepted trade-off; a CAS-only downgrade approach would require
+    // a loop and does not eliminate the root cause (the two snapshots are not atomic).
     currentBand.set(band);
 
     Map<StatsPriorityClass, Long> deferredSnapshot = new EnumMap<>(StatsPriorityClass.class);
@@ -578,31 +625,45 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
     // Dispatch loop: iterate priority classes from most- to least-urgent.
     //
-    // For each class we run a bounded WRR tournament (up to MAX_WRR_SCAN candidates). Jobs that
-    // pass all checks compete on the lane's virtual service count; the job from the least-served
-    // lane wins. Losers are requeued. The winner is leased and returned.
+    // For each class we run a bounded WRR tournament. Two independent limits are applied:
+    //   • MAX_WRR_CANDIDATES: max eligible jobs that enter the WRR comparison.
+    //   • MAX_TOTAL_POLL:     hard cap on total pollHighest() calls, so ineligible jobs
+    //                         (backoff, filter, lane-blocked, snapshot-blocked) cannot cause
+    //                         head-of-line blocking when they pile up at the queue head.
     //
-    // P0_SYNC guard: if any P0 job was requeued (genuinely deferred, not merely discarded as
-    // stale/terminal), we return empty rather than falling through to P1/P2/P3. Sync-capture
-    // jobs must not wait behind async work.
+    // The lane key stored in laneKeysByJobId is the canonical key for both the lane-mutex and the
+    // WRR virtual-time counter.  It is set at enqueue time (caller-supplied policy lane when
+    // non-blank, otherwise computed from scope+job-kind), so both sub-systems always agree.
     //
-    // Known limitation: laneServiceCounts can overflow for very long-lived deployments.
-    // Phase 3 will introduce periodic reset or virtual-time modulo to address this.
+    // P0_SYNC guard: if any P0 job was requeued (backoff-deferred, lane-blocked, filter-rejected,
+    // snapshot-lease-blocked, or displaced as a WRR loser), we return empty rather than falling
+    // through to P1/P2/P3.  Sync-capture jobs must not wait behind async work — even a P0 job
+    // that is temporarily lane-blocked holds the dispatch slot open until the blocker clears.
+    //
+    // anyP0Requeued is set for WRR displacement too (when a second P0 candidate loses the
+    // tournament to a better-virtual-time lane). This is intentional: we never dispatch P1/P2/P3
+    // while any P0 job is visible in the queue, regardless of why it wasn't dispatched this tick.
+    //
+    // Known limitation: laneServiceCounts values can overflow for very long-lived deployments
+    // (long wraps at ~9.2 × 10^18 increments). A periodic reset or virtual-time modulo would
+    // address this; current deployment lifetimes make it unrealistic in practice.
     boolean anyP0Requeued = false;
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
-      long classSize = readyQueue.sizeByClass(cls);
-      if (classSize == 0) {
+      if (readyQueue.sizeByClass(cls) == 0) {
         continue;
       }
 
       String bestJobId = null;
       ReconcileJob bestJob = null;
       String bestLaneKey = null;
-      String bestWrrLane = null;
       long bestVirtualTime = Long.MAX_VALUE;
 
-      long scanLimit = Math.min(classSize, MAX_WRR_SCAN);
-      for (long i = 0; i < scanLimit; i++) {
+      // Sample class depth once. This caps the poll loop at the number of jobs that actually
+      // existed when the scan began, preventing re-polls of requeued WRR losers from inflating
+      // the iteration count and scrambling FIFO order within a tied-score group.
+      int scanLimit = (int) Math.min(readyQueue.sizeByClass(cls), MAX_TOTAL_POLL);
+      int candidatesFound = 0;
+      for (int i = 0; i < scanLimit && candidatesFound < MAX_WRR_CANDIDATES; i++) {
         String jobId = readyQueue.pollHighest(cls);
         if (jobId == null) {
           break;
@@ -648,10 +709,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           continue;
         }
 
-        // WRR: use executionPolicy.lane() when non-blank (honors TODO(phase2)), else computed key
-        String wrrLane =
-            job.executionPolicy.lane().isBlank() ? laneKey : job.executionPolicy.lane();
-        long vt = laneServiceCounts.getOrDefault(wrrLane, 0L);
+        // Eligible candidate: enter WRR tournament.
+        // laneKey is the canonical key for both lane-mutex and WRR virtual-time (unified at
+        // enqueue).
+        candidatesFound++;
+        long vt = laneServiceCounts.getOrDefault(laneKey, 0L);
 
         if (bestJobId == null || vt < bestVirtualTime) {
           // Displace previous best candidate (if any) back to queue
@@ -668,7 +730,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           bestJobId = jobId;
           bestJob = job;
           bestLaneKey = laneKey;
-          bestWrrLane = wrrLane;
           bestVirtualTime = vt;
         } else {
           // This candidate loses; requeue it
@@ -686,7 +747,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         continue;
       }
 
-      // Apply starvation aging (just track promotion; effectiveCls for WRR accounting in Phase 3+)
+      // Starvation aging: record that a long-waiting job was dispatched (or is about to be).
+      // agingPromotionsTotal counts jobs that exceeded the aging threshold — it does NOT represent
+      // queue reordering. The side map (promotedJobIds) tracks which jobs have already been counted
+      // to avoid double-counting within the cooldown window. A future enhancement could apply a
+      // temporary class override in WRR accounting to give these jobs a real dispatch-order boost.
       long ageMs = now - createdAtMs.getOrDefault(bestJobId, now);
       if (!promotedJobIds.containsKey(bestJobId) && ageMs > agingThresholdMs(cls)) {
         promotedJobIds.put(bestJobId, now + AGING_COOLDOWN_MS);
@@ -695,7 +760,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
       final String finalBestJobId = bestJobId;
       final String finalBestLaneKey = bestLaneKey;
-      final String finalBestWrrLane = bestWrrLane;
 
       if (leased.add(finalBestJobId)) {
         String leaseEpoch = UUID.randomUUID().toString();
@@ -704,7 +768,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         if (!finalBestLaneKey.isBlank()) {
           activeJobIdByLaneKey.put(finalBestLaneKey, finalBestJobId);
         }
-        laneServiceCounts.merge(finalBestWrrLane, 1L, Long::sum);
+        // Only update WRR virtual time for jobs that carry a lane key; blank-lane jobs
+        // (e.g. internal PLAN_CONNECTOR jobs with no scope table) have no fairness unit and must
+        // not accumulate in laneServiceCounts, which would cause unbounded map growth.
+        if (!finalBestLaneKey.isBlank()) {
+          laneServiceCounts.merge(finalBestLaneKey, 1L, Long::sum);
+        }
         jobs.computeIfPresent(
             finalBestJobId,
             (id, current) ->
@@ -735,6 +804,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                     current.fileGroupTask,
                     current.parentJobId));
         ReconcileJob leasedJob = jobs.get(finalBestJobId);
+        maybeClearP0RedBand();
         return Optional.of(
             new LeasedJob(
                 leasedJob.jobId,
@@ -753,8 +823,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 leasedJob.snapshotTask,
                 leasedJob.fileGroupTask,
                 leasedJob.parentJobId));
+      } else {
+        // leased.add() returned false: another executor still holds the original lease (e.g. a
+        // JS_CANCELLING job that was re-enqueued by cancel() before its lease expires).  Requeue
+        // so the job stays in the skip-list and will be dispatched again once the lease expires and
+        // reclaimExpiredLeasesIfDue() clears it — or immediately if the lease expires first.
+        // Silently discarding here would cause a ~6 s cancel-poke latency gap.
+        releaseSnapshotLease(finalBestJobId);
+        readyQueue.requeue(finalBestJobId, cls, bestJob.executionPolicy.priorityScore());
+        if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
       }
-      releaseSnapshotLease(finalBestJobId);
 
       // P0 guard check after attempting to lease
       if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
@@ -1320,6 +1398,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis());
   }
 
+  // synchronized here prevents concurrent sweeps from doing redundant O(n) work; it is NOT the
+  // correctness guard.  Correctness comes from the CAS on leased.remove(id) inside the loop:
+  // even without this modifier, each jobId would be re-enqueued at most once because
+  // leased.remove() is atomic and returns false for a second concurrent caller.
   private synchronized void reclaimExpiredLeasesIfDue(long nowMs) {
     if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
       return;
@@ -1484,12 +1566,145 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     this.createdAtMs.put(jobId, createdAtMs);
   }
 
+  /** Package-private for testing: reset the band-refresh TTL so the next enqueue triggers it. */
+  void resetBandRefreshForTest() {
+    this.lastBandRefreshMs.set(0L);
+  }
+
+  /**
+   * Package-private for testing: immediately expire all active leases so that the next {@link
+   * #leaseNext()} call will trigger {@link #reclaimExpiredLeasesIfDue} and re-queue them. Simulates
+   * the passage of the full lease duration without sleeping.
+   */
+  void forceExpireAllLeasesForTest() {
+    leaseExpiresAtMs.replaceAll((id, expiry) -> 1L); // epoch 1 ms is always in the past
+    lastReclaimAtMs = 0L; // ensure the reclaim runs on the next leaseNext() call
+  }
+
+  /**
+   * Package-private for testing: return the current WRR virtual-time counter for the given lane
+   * key, or 0 if the lane has never been dispatched.
+   */
+  long laneServiceCountForTest(String laneKey) {
+    return laneServiceCounts.getOrDefault(laneKey, 0L);
+  }
+
   private static long agingThresholdMs(StatsPriorityClass cls) {
     return switch (cls) {
       case P3_BACKGROUND -> P3_AGING_THRESHOLD_MS;
       case P2_REPAIR -> P2_AGING_THRESHOLD_MS;
-      default -> Long.MAX_VALUE; // P0/P1 never age
+      case P1_FRESHNESS -> P1_AGING_THRESHOLD_MS; // effectively disabled (Long.MAX_VALUE)
+      default -> Long.MAX_VALUE; // P0_SYNC never ages
     };
+  }
+
+  /**
+   * Lightweight health-band escalation check called on every {@code enqueue()} invocation.
+   *
+   * <p>Evaluates three conditions and CAS-escalates {@link #currentBand} if any is met:
+   *
+   * <ol>
+   *   <li><b>P2 depth &gt; threshold</b> ({@link #P2_ORANGE_THRESHOLD}) → at least ORANGE. Read
+   *       from {@link PriorityReadyQueue#sizeByAllClasses()} — four {@link
+   *       java.util.concurrent.atomic.AtomicLong} reads.
+   *   <li><b>P3 depth &gt; threshold</b> ({@link #P3_YELLOW_THRESHOLD}) → at least YELLOW. Same
+   *       source.
+   *   <li><b>P0 timeout</b>: any P0 job has been queued longer than {@link #P0_RED_BUDGET_MS} → RED
+   *       immediately. Checked only when {@code sizeByClass(P0) &gt; 0} (gate avoids scan cost in
+   *       the common case). When gated-in, scans the {@code jobs} map for the oldest JS_QUEUED P0
+   *       entry; this is O(n) over all jobs but is bounded by the 1-second TTL and by the rarity of
+   *       P0 backlog during normal operation.
+   * </ol>
+   *
+   * <p>Downgrade is intentionally <em>not</em> performed here — that requires a full state snapshot
+   * and is handled by {@link #queueStats()}, which runs every ~15 s. The asymmetry produces the
+   * desired hysteresis: fast escalation under load, measured relaxation when load clears.
+   *
+   * <p>A 1-second TTL ({@link #BAND_REFRESH_INTERVAL_MS}) limits the refresh rate. {@link
+   * #lastBandRefreshMs} is an {@link AtomicLong}; a CAS claims exactly one thread to run the
+   * refresh body per interval, preventing concurrent O(n) jobs-map scans under burst load.
+   *
+   * <p>RED clearance is <em>not</em> done here. It happens in {@link #maybeClearP0RedBand()},
+   * called after every successful dispatch in {@link #leaseNext}, matching the spec: "RED drops as
+   * soon as P0 queue clears."
+   *
+   * @param now current wall-clock time in milliseconds
+   */
+  private void maybeRefreshBand(long now) {
+    long last = lastBandRefreshMs.get();
+    if (now - last < BAND_REFRESH_INTERVAL_MS) {
+      return;
+    }
+    // CAS to claim this refresh slot — only one thread runs the body per TTL period.
+    if (!lastBandRefreshMs.compareAndSet(last, now)) {
+      return;
+    }
+
+    Map<StatsPriorityClass, Long> depths = readyQueue.sizeByAllClasses();
+    long p0Depth = depths.getOrDefault(StatsPriorityClass.P0_SYNC, 0L);
+    long p2Depth = depths.getOrDefault(StatsPriorityClass.P2_REPAIR, 0L);
+    long p3Depth = depths.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L);
+
+    // Compute the minimum band warranted by current state.
+    SchedulerHealthBand required = SchedulerHealthBand.GREEN;
+    if (p3Depth > P3_YELLOW_THRESHOLD) required = SchedulerHealthBand.YELLOW;
+    if (p2Depth > P2_ORANGE_THRESHOLD) required = SchedulerHealthBand.ORANGE;
+
+    // P0 timeout check: if any P0 job has been waiting longer than the sync budget, go RED
+    // immediately. The jobs-map scan is O(n) but is gated on p0Depth > 0 (uncommon) and further
+    // rate-limited by the 1-second TTL above.
+    // executionPolicy is guaranteed non-null by ReconcileExecutionPolicy's compact constructor.
+    if (p0Depth > 0) {
+      long oldestP0CreatedAt =
+          jobs.values().stream()
+              .filter(
+                  j ->
+                      "JS_QUEUED".equals(j.state)
+                          && j.executionPolicy.priorityClass() == StatsPriorityClass.P0_SYNC)
+              .mapToLong(j -> createdAtMs.getOrDefault(j.jobId, now))
+              .min()
+              .orElse(now);
+      if (now - oldestP0CreatedAt > P0_RED_BUDGET_MS) {
+        required = SchedulerHealthBand.RED;
+      }
+    }
+
+    // CAS-escalate only. Downgrade for YELLOW/ORANGE uses the 30s dwell in queueStats().
+    // RED clearance uses maybeClearP0RedBand() after dispatch.
+    SchedulerHealthBand current;
+    while ((current = currentBand.get()).ordinal() < required.ordinal()) {
+      if (currentBand.compareAndSet(current, required)) {
+        break;
+      }
+      // Another thread concurrently escalated; re-read and check again.
+    }
+  }
+
+  /**
+   * Clears a P0-timeout RED band immediately when the P0 ready queue empties.
+   *
+   * <p>Called after every successful dispatch in {@link #leaseNext}. Cost is O(1) on the common
+   * path (band not RED): one {@link AtomicReference#get()} returns non-RED and the method returns.
+   * When RED and the P0 queue is empty, recomputes the required band from P2/P3 depth counters
+   * (four {@link AtomicLong} reads) and CAS-downgrades rather than snapping straight to GREEN, so
+   * any remaining async backlog is reflected correctly.
+   */
+  private void maybeClearP0RedBand() {
+    if (currentBand.get() != SchedulerHealthBand.RED) return;
+    if (readyQueue.sizeByClass(StatsPriorityClass.P0_SYNC) > 0) return;
+    // P0 queue is empty — the only trigger for RED is gone.
+    // Bounded TOCTOU: a new P0 job could be enqueued between the size check above and the CAS
+    // below.  If that happens, the CAS will succeed and momentarily set a non-RED band even though
+    // a P0 job just arrived.  The next maybeRefreshBand() call (within 1 s) will re-escalate to
+    // RED, bounding the window to one band-refresh TTL.  This is acceptable: RED admission control
+    // has already suppressed P3 deferrals during that window.
+    Map<StatsPriorityClass, Long> depths = readyQueue.sizeByAllClasses();
+    long p2Depth = depths.getOrDefault(StatsPriorityClass.P2_REPAIR, 0L);
+    long p3Depth = depths.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L);
+    SchedulerHealthBand required = SchedulerHealthBand.GREEN;
+    if (p3Depth > P3_YELLOW_THRESHOLD) required = SchedulerHealthBand.YELLOW;
+    if (p2Depth > P2_ORANGE_THRESHOLD) required = SchedulerHealthBand.ORANGE;
+    currentBand.compareAndSet(SchedulerHealthBand.RED, required);
   }
 
   private static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
@@ -1723,6 +1938,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "scope.view=" + blankToEmpty(scope.destinationViewId()),
             "scope.capture_requests=" + captureRequests,
             "scope.capture_policy=" + capturePolicy,
+            // policy.lane is included in the dedupe key so that two callers requesting the same
+            // logical work but routing it to different fairness lanes produce distinct job entries.
+            // Without this, a background P3 enqueue could silently absorb a caller-supplied P0
+            // lane override and route the dispatch through the wrong WRR bucket.
             "policy.execution_class=" + policy.executionClass().name(),
             "policy.lane=" + policy.lane(),
             "policy.attributes=" + canonicalAttributes(policy.attributes()),

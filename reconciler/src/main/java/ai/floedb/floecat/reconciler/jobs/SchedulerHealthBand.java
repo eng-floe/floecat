@@ -20,8 +20,8 @@ package ai.floedb.floecat.reconciler.jobs;
  * Coarse health indicator for the reconcile scheduler, derived from queue-depth thresholds.
  *
  * <p>The band transitions are computed on every {@code queueStats()} call and are stored in {@code
- * InMemoryReconcileJobStore.currentBand}. Dwell hysteresis (preventing flapping) is deferred to
- * Phase 3.
+ * InMemoryReconcileJobStore.currentBand}. Dwell hysteresis (preventing flapping) is not yet
+ * implemented.
  *
  * <h2>Band semantics</h2>
  *
@@ -41,7 +41,7 @@ package ai.floedb.floecat.reconciler.jobs;
  *
  * {@link #escalate()} moves to the next more-severe band; {@link #relax()} moves to the next
  * less-severe band. Both are bounded: escalating from RED stays RED, relaxing from GREEN stays
- * GREEN. These helpers are provided for future hysteresis logic (Phase 3) and for unit tests.
+ * GREEN. These helpers are provided for future hysteresis logic and for unit tests.
  */
 public enum SchedulerHealthBand {
   GREEN,

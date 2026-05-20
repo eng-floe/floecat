@@ -255,4 +255,125 @@ class WrrFairnessTest {
     var l1 = store.leaseNext().orElseThrow();
     assertEquals(p0Job, l1.jobId, "P0 job must be dispatched before P3");
   }
+
+  // ---------------------------------------------------------------------------
+  // P0 lane-blocked → leaseNext() returns empty (no fallthrough to P1/P2/P3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The P0 guard must block dispatch of lower-priority jobs even when the P0 job itself cannot run
+   * yet due to its lane being occupied by a running job.
+   *
+   * <p>Sequence:
+   *
+   * <ol>
+   *   <li>Enqueue a P3 job on lane-alpha; lease it (lane-alpha is now occupied).
+   *   <li>Enqueue a P0 job on the same lane-alpha — it is immediately lane-blocked.
+   *   <li>Enqueue a P1 job on a different lane (lane-beta).
+   *   <li>{@code leaseNext()} must return empty: the P0 job is visible in the queue but blocked, so
+   *       the guard prevents the P1 job from being dispatched.
+   * </ol>
+   *
+   * <p>This is the core correctness invariant for Phase 2: no async work may proceed while any P0
+   * job is waiting, even if the P0 job cannot run this instant.
+   */
+  @Test
+  void p0LaneBlockedPreventsP1Dispatch() {
+    var store = new InMemoryReconcileJobStore();
+
+    // Step 1: Enqueue and lease a P3 job on lane-alpha, occupying the lane.
+    String p3Job =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3-lane-alpha"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-alpha", java.util.Map.of()),
+            "");
+    var p3Lease = store.leaseNext().orElseThrow(() -> new AssertionError("P3 should lease"));
+    assertEquals(p3Job, p3Lease.jobId);
+
+    // Step 2: Enqueue a P0 job on the same lane — it is lane-blocked by the running P3.
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p0-lane-alpha"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "lane-alpha", java.util.Map.of()),
+        "");
+
+    // Step 3: Enqueue a P1 job on a different lane — not blocked.
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p1-lane-beta"),
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS, "lane-beta", java.util.Map.of()),
+        "");
+
+    // Step 4: leaseNext() must return empty — the P0 guard blocks fallthrough to P1.
+    assertTrue(
+        store.leaseNext().isEmpty(),
+        "leaseNext() must return empty when a P0 job is lane-blocked; "
+            + "dispatch must not fall through to P1 or lower");
+  }
+
+  /**
+   * Contrasting case: once the lane is freed (P3 succeeds), the P0 job is dispatched on the next
+   * call, and only then is the P1 job eligible.
+   */
+  @Test
+  void p0DispatchedAfterLaneClearsBeforeP1() {
+    var store = new InMemoryReconcileJobStore();
+
+    String p3Job =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3-clear"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-alpha", java.util.Map.of()),
+            "");
+    var p3Lease = store.leaseNext().orElseThrow();
+
+    String p0Job =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p0-clear"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P0_SYNC, "lane-alpha", java.util.Map.of()),
+            "");
+    String p1Job =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p1-clear"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P1_FRESHNESS, "lane-beta", java.util.Map.of()),
+            "");
+
+    // Release the lane
+    store.markSucceeded(p3Job, p3Lease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    // P0 must come first
+    var next = store.leaseNext().orElseThrow(() -> new AssertionError("P0 should dispatch"));
+    assertEquals(p0Job, next.jobId, "P0 must be dispatched before P1 once its lane is free");
+
+    // P1 next
+    store.markSucceeded(p0Job, next.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+    var afterP0 = store.leaseNext().orElseThrow();
+    assertEquals(p1Job, afterP0.jobId, "P1 dispatched after P0 completes");
+  }
 }

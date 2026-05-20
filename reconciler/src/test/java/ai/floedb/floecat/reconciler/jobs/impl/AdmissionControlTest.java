@@ -39,7 +39,8 @@ import org.junit.jupiter.api.Test;
  */
 class AdmissionControlTest {
 
-  private static final long DEFER_DELAY_MS = 5_000L;
+  // Reference the store constant directly so a change in the default defer delay is caught here.
+  private static final long DEFER_DELAY_MS = InMemoryReconcileJobStore.DEFER_DELAY_MS;
 
   // ---------------------------------------------------------------------------
   // P3 + GREEN → immediate admission
@@ -256,5 +257,112 @@ class AdmissionControlTest {
             .queueStats()
             .admissionDeferredByClass
             .getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L));
+  }
+
+  // ---------------------------------------------------------------------------
+  // P0 timeout path: stale P0 triggers RED escalation in maybeRefreshBand
+  // ---------------------------------------------------------------------------
+
+  /**
+   * When a P0 job has been waiting longer than the P0 sync budget (1 s), the next {@code enqueue()}
+   * call must escalate the band to RED via {@code maybeRefreshBand}, causing subsequently enqueued
+   * P3 jobs to be deferred.
+   *
+   * <p>The test backdates the P0 job's creation timestamp to simulate a 2-second wait, then forces
+   * a band-refresh by resetting {@link InMemoryReconcileJobStore#lastBandRefreshMs} via the
+   * package-private test helper before the P3 enqueue.
+   */
+  @Test
+  void p0TimeoutEscalatesToRedDeferringSubsequentP3() {
+    var store = new InMemoryReconcileJobStore();
+
+    // Enqueue a P0 job and immediately backdate it so it appears to have been waiting 2s.
+    String p0JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p0-timeout"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", java.util.Map.of()),
+            "");
+    store.backdateCreatedAtForTest(p0JobId, System.currentTimeMillis() - 2_000L);
+
+    // Reset the refresh TTL so the next enqueue() will run maybeRefreshBand.
+    store.resetBandRefreshForTest();
+
+    // Now enqueue a P3 job — maybeRefreshBand should detect the stale P0 and escalate to RED.
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p3-after-p0-timeout"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of()),
+        "");
+
+    var stats = store.queueStats();
+    assertEquals(
+        SchedulerHealthBand.RED, stats.healthBand, "band should be RED due to stale P0 job");
+    assertEquals(
+        1L,
+        stats.admissionDeferredByClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L),
+        "P3 job should have been deferred by RED-band admission control");
+  }
+
+  // ---------------------------------------------------------------------------
+  // RED clears immediately when P0 queue empties (spec: "RED drops as soon as P0 queue clears")
+  // ---------------------------------------------------------------------------
+
+  /**
+   * After a P0 job is dispatched and the P0 ready queue becomes empty, {@code leaseNext()} calls
+   * {@code maybeClearP0RedBand()}, which must downgrade the band from RED to the depth-based
+   * required band (GREEN when there is no P2/P3 backlog). Subsequent P3 admissions must not be
+   * deferred.
+   */
+  @Test
+  void redBandClearsImmediatelyAfterP0QueueEmpties() {
+    var store = new InMemoryReconcileJobStore();
+
+    // Force RED externally (simulates a state set by queueStats() due to P0 timeout).
+    store.setCurrentBandForTest(SchedulerHealthBand.RED);
+
+    // Enqueue a P0 job. maybeRefreshBand is escalation-only — RED stays.
+    String p0Id =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p0-red-clear"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", java.util.Map.of()),
+            "");
+
+    // P0 must dispatch even in RED.
+    var p0Lease =
+        store.leaseNext().orElseThrow(() -> new AssertionError("P0 must dispatch in RED"));
+    assertEquals(p0Id, p0Lease.jobId);
+    // After dispatch, maybeClearP0RedBand() fires: P0 queue empty → band drops to GREEN.
+
+    // Enqueue a P3 job within the 1s maybeRefreshBand TTL window — so the band visible at
+    // admission time is whatever maybeClearP0RedBand() set, not a re-escalation from the scan.
+    String p3Id =
+        store.enqueue(
+            "acct",
+            "conn2",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3-after-p0-clear"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of()),
+            "");
+
+    var p3Lease = store.leaseNext();
+    assertTrue(p3Lease.isPresent(), "P3 must be admitted after RED clears");
+    assertEquals(p3Id, p3Lease.get().jobId);
+    var stats = store.queueStats();
+    assertEquals(
+        0L,
+        stats.admissionDeferredByClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L),
+        "P3 should not have been deferred — band cleared before its enqueue");
   }
 }

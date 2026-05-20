@@ -32,16 +32,16 @@ import java.util.TreeMap;
 public record ReconcileExecutionPolicy(
     ReconcileExecutionClass executionClass,
     /**
-     * Advisory fairness lane key set by the caller (e.g. {@code "accountId:tableId"}).
+     * Fairness lane key set by the caller (e.g. {@code "accountId:tableId"}).
      *
-     * <p><b>Phase 1 note:</b> {@link
-     * ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore} currently ignores this
-     * field when assigning the actual lane mutex. The store derives its own lane key from the job's
-     * scope and job-kind, which achieves equivalent per-table serialisation. This field is carried
-     * on the job record for Phase 2, where the weighted-round-robin fairness layer will use it as
-     * the WRR unit. Do not rely on this value for correctness decisions in Phase 1.
+     * <p>When non-blank, this value is used by {@link
+     * ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore} as both the lane-mutex key
+     * (per-lane job serialisation) and the WRR virtual-time key (weighted round-robin fairness).
+     * When blank, the store derives a lane key from the job scope and job-kind, which provides
+     * equivalent per-table serialisation without requiring the caller to supply an explicit key.
      *
-     * <p>TODO(phase2): wire this into the store's lane assignment when non-blank.
+     * <p>Callers that need to route dispatch through a specific WRR bucket (e.g. the stats
+     * orchestrator using {@code "accountId:tableId"}) should always set this field explicitly.
      */
     String lane,
     Map<String, String> attributes,
@@ -112,11 +112,7 @@ public record ReconcileExecutionPolicy(
         ReconcileExecutionClass.DEFAULT, lane, attributes, priorityClass, priorityScore);
   }
 
-  /**
-   * Convenience factory for cases where only the priority class and lane matter (score = 0).
-   *
-   * <p>Primarily used in the orchestrator before scoring is live (phase 1).
-   */
+  /** Convenience factory for cases where only the priority class and lane matter (score = 0). */
   public static ReconcileExecutionPolicy of(
       StatsPriorityClass priorityClass, String lane, Map<String, String> attributes) {
     return of(priorityClass, lane, attributes, 0L);

@@ -44,8 +44,10 @@ public class ReconcileQueueMetrics {
   private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
       new EnumMap<>(StatsPriorityClass.class);
 
-  // Phase 2 metrics
   private final AtomicLong healthBand = new AtomicLong();
+  // lastAgingPromotionsTotal and lastAdmissionDeferred are plain (non-volatile) fields used only
+  // inside refresh(), which is @Scheduled and therefore called on a single thread by Quarkus.
+  // They must NOT be accessed outside of refresh() without adding synchronization.
   private long lastAgingPromotionsTotal = 0L;
   private final Map<StatsPriorityClass, Long> lastAdmissionDeferred =
       new EnumMap<>(StatsPriorityClass.class);
@@ -92,6 +94,10 @@ public class ReconcileQueueMetrics {
           operation,
           Tag.of("priority_class", cls.name().toLowerCase()));
     }
+    // Value is SchedulerHealthBand.ordinal(): 0=GREEN 1=YELLOW 2=ORANGE 3=RED.
+    // This mapping is part of the metrics contract — dashboards and autoscaler rules depend on it.
+    // If SchedulerHealthBand enum order ever changes, this gauge and all dependent alerts must be
+    // updated together.  See SchedulerHealthBand for the authoritative ordering.
     observability.gauge(
         ServiceMetrics.Reconcile.HEALTH_BAND,
         healthBand::get,
@@ -122,10 +128,8 @@ public class ReconcileQueueMetrics {
         }
       }
 
-      // Phase 2: health band gauge
       healthBand.set(stats.healthBand.ordinal());
 
-      // Phase 2: aging promotions delta counter
       long newPromotions = stats.agingPromotionsTotal;
       long promotionsDelta = newPromotions - lastAgingPromotionsTotal;
       if (promotionsDelta > 0) {
@@ -134,7 +138,6 @@ public class ReconcileQueueMetrics {
         lastAgingPromotionsTotal = newPromotions;
       }
 
-      // Phase 2: admission deferred delta counters per class
       for (StatsPriorityClass cls : StatsPriorityClass.values()) {
         long newDeferred = stats.admissionDeferredByClass.getOrDefault(cls, 0L);
         long deferredDelta = newDeferred - lastAdmissionDeferred.getOrDefault(cls, 0L);
@@ -149,7 +152,9 @@ public class ReconcileQueueMetrics {
         }
       }
     } catch (RuntimeException e) {
-      LOG.debugf(e, "Failed to refresh reconcile queue metrics");
+      // Warn rather than debug: a silent metrics failure leaves all gauges stale and is invisible
+      // to on-call unless warn-level logging is enabled.
+      LOG.warnf(e, "Failed to refresh reconcile queue metrics");
     }
   }
 }
