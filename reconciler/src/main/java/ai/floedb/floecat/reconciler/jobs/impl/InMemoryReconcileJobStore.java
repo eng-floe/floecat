@@ -213,6 +213,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     nextAttemptAtMs.put(id, now);
     dedupeKeysByJobId.put(id, dedupeKey);
     activeJobIdByDedupeKey.put(dedupeKey, id);
+    // Lane key is derived from scope + job-kind, not from executionPolicy.lane().
+    // executionPolicy.lane() is stored on the job record and propagated to LeasedJob for future
+    // use (Phase 2 WRR fairness), but the actual lane-mutex assignment uses the computed key
+    // below.  Both approaches produce per-table serialization, so runtime behaviour is correct;
+    // the divergence only matters when a caller wants to override the lane with a custom key.
+    // TODO(phase2): honour executionPolicy.lane() when non-blank, falling back to the computed key.
     laneKeysByJobId.put(
         id,
         laneKey(
@@ -465,18 +471,25 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     // Dispatch loop: iterate priority classes from most- to least-urgent.
     //
     // For each class we scan at most sizeByClass(cls) candidates (the size at the top of this
-    // class's iteration).  Jobs that pass all checks are leased and returned.  Jobs that fail a
+    // class's iteration.  Jobs that pass all checks are leased and returned.  Jobs that fail a
     // check are requeued at their original priority so they are not lost.
     //
-    // P0_SYNC guard: if the P0 bucket was non-empty at scan time but we could not dispatch any
-    // P0 job (all were lane-blocked or otherwise deferred), we return empty rather than falling
-    // through to P1/P2/P3.  Sync-capture jobs must never be made to wait behind async work.
+    // P0_SYNC guard: if any P0 job was requeued (genuinely deferred, not merely discarded as
+    // stale/terminal), we return empty rather than falling through to P1/P2/P3.  Sync-capture
+    // jobs must not wait behind async work.
+    //
+    // Intentional tradeoff: a single lane-blocked P0 job will prevent all P1/P2/P3 dispatch for
+    // that lease call, even for unrelated lanes.  This is a strict SLO guarantee — sync latency
+    // is bounded at the cost of async throughput for a single call.  Worker pools typically retry
+    // leaseNext() on empty immediately, so the practical impact is one skipped poll cycle.
+    // Stale or terminal P0 entries (job removed/finished) are discarded without triggering the
+    // guard; only live-but-deferred P0 jobs block lower-priority dispatch.
+    boolean anyP0Requeued = false;
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
       long classSize = readyQueue.sizeByClass(cls);
       if (classSize == 0) {
         continue;
       }
-      boolean p0ClassAttempted = (cls == StatsPriorityClass.P0_SYNC);
       for (long i = 0; i < classSize; i++) {
         String jobId = readyQueue.pollHighest(cls);
         if (jobId == null) {
@@ -485,23 +498,25 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
         var job = jobs.get(jobId);
         if (job == null) {
-          // Job was removed from the store; discard.
+          // Job was removed from the store; discard without triggering the P0 guard.
           continue;
         }
 
         if (!"JS_QUEUED".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
-          // Terminal or already-running: discard without requeue.
+          // Terminal or already-running: discard without triggering the P0 guard.
           continue;
         }
 
         if (nextAttemptAtMs.getOrDefault(jobId, 0L) > now) {
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
           continue;
         }
 
         if (!effective.matches(
             job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""), job.jobKind)) {
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
           continue;
         }
 
@@ -510,12 +525,14 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           String laneOwner = activeJobIdByLaneKey.get(laneKey);
           if (laneOwner != null && !laneOwner.equals(jobId) && hasLiveLaneLease(laneOwner, now)) {
             readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+            if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
             continue;
           }
         }
 
         if (!tryAcquireSnapshotLease(job, jobId, now)) {
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
           continue;
         }
 
@@ -578,9 +595,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         releaseSnapshotLease(jobId);
       }
 
-      // P0 guard: if we just scanned the P0 bucket and found no dispatchable job, stop here.
-      // Letting P1/P2/P3 work slip ahead of a blocked P0 job would violate the sync SLO.
-      if (p0ClassAttempted) {
+      // P0 guard: stop after the P0 class scan if any live P0 job was deferred.
+      if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
         return Optional.empty();
       }
     }

@@ -31,6 +31,18 @@ import java.util.TreeMap;
  */
 public record ReconcileExecutionPolicy(
     ReconcileExecutionClass executionClass,
+    /**
+     * Advisory fairness lane key set by the caller (e.g. {@code "accountId:tableId"}).
+     *
+     * <p><b>Phase 1 note:</b> {@link
+     * ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore} currently ignores this
+     * field when assigning the actual lane mutex. The store derives its own lane key from the job's
+     * scope and job-kind, which achieves equivalent per-table serialisation. This field is carried
+     * on the job record for Phase 2, where the weighted-round-robin fairness layer will use it as
+     * the WRR unit. Do not rely on this value for correctness decisions in Phase 1.
+     *
+     * <p>TODO(phase2): wire this into the store's lane assignment when non-blank.
+     */
     String lane,
     Map<String, String> attributes,
     StatsPriorityClass priorityClass,

@@ -20,6 +20,7 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -32,19 +33,31 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <h2>Data structure</h2>
  *
- * Each bucket is a {@link ConcurrentSkipListMap}{@code <Long, String>}. The map key is a composite
- * long that encodes both priority and insertion order:
+ * Each bucket is a {@link ConcurrentSkipListMap}{@code <QKey, String>}. {@link QKey} is a two-field
+ * comparable record:
  *
  * <pre>
- *   key = (Integer.MAX_VALUE - clampedScore) &lt;&lt; 32  |  (seqNum &amp; 0xFFFFFFFFL)
+ *   QKey(invertedScore = Integer.MAX_VALUE - clamp(score, 0, Integer.MAX_VALUE),
+ *        seq          = seqGen.getAndIncrement())
  * </pre>
  *
  * <ul>
- *   <li>Upper 32 bits: {@code Integer.MAX_VALUE - clampedScore}. A higher score produces a
- *       <em>smaller</em> upper value, placing it at the map head.
- *   <li>Lower 32 bits: a monotonically increasing global sequence number. Earlier-enqueued jobs
- *       with the same score appear before later-enqueued ones (FIFO tie-break).
+ *   <li>{@code invertedScore}: a higher job score produces a <em>smaller</em> inverted value,
+ *       placing the entry at the map head.
+ *   <li>{@code seq}: a monotonically increasing 64-bit global sequence. Because {@code long} holds
+ *       2<sup>63</sup> positive values, this counter cannot realistically overflow in any
+ *       deployment (1 billion enqueues per second would take 292 years). Sequence is never masked
+ *       or truncated.
  * </ul>
+ *
+ * <h2>Why QKey instead of a bit-packed Long</h2>
+ *
+ * An earlier design packed {@code (invertedScore << 32 | seq & 0xFFFFFFFFL)} into a single {@code
+ * long}. That approach silently overwrites existing entries after 2<sup>32</sup> enqueues for the
+ * same score bucket, because {@link ConcurrentSkipListMap#put} replaces the value on key collision.
+ * At Floescan scale (10M+ EXEC_FILE_GROUP jobs per large snapshot) this is a realistic correctness
+ * risk. {@link QKey} eliminates it: the 64-bit {@code seq} field guarantees a unique key for every
+ * enqueue regardless of score.
  *
  * <h2>Dispatch operation</h2>
  *
@@ -81,10 +94,28 @@ public final class PriorityReadyQueue {
   private final AtomicLong seqGen = new AtomicLong(0);
 
   /**
-   * One skip-list map per priority class. Each entry: key = composite priority long (see class
-   * Javadoc), value = job identifier.
+   * Collision-safe ordering key for a single entry in a priority bucket.
+   *
+   * <p>Ordering: smaller {@code invertedScore} = higher job score = dispatched first. Ties broken
+   * by {@code seq} (earlier enqueue = smaller seq = dispatched first).
+   *
+   * <p>Java records generate correct {@code equals}/{@code hashCode} from both fields, though
+   * {@link ConcurrentSkipListMap} uses only {@link Comparable#compareTo} for ordering and does not
+   * call {@code equals}.
    */
-  private final EnumMap<StatsPriorityClass, ConcurrentSkipListMap<Long, String>> buckets;
+  record QKey(long invertedScore, long seq) implements Comparable<QKey> {
+    @Override
+    public int compareTo(QKey o) {
+      int c = Long.compare(invertedScore, o.invertedScore);
+      return c != 0 ? c : Long.compare(seq, o.seq);
+    }
+  }
+
+  /**
+   * One skip-list map per priority class. Each entry: key = {@link QKey} (see class Javadoc), value
+   * = job identifier.
+   */
+  private final EnumMap<StatsPriorityClass, ConcurrentSkipListMap<QKey, String>> buckets;
 
   /** Approximate size counter per class. Used for metrics only. */
   private final EnumMap<StatsPriorityClass, AtomicLong> sizes;
@@ -93,7 +124,7 @@ public final class PriorityReadyQueue {
     buckets = new EnumMap<>(StatsPriorityClass.class);
     sizes = new EnumMap<>(StatsPriorityClass.class);
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
-      buckets.put(cls, new ConcurrentSkipListMap<>());
+      buckets.put(cls, new ConcurrentSkipListMap<QKey, String>());
       sizes.put(cls, new AtomicLong(0));
     }
   }
@@ -109,7 +140,7 @@ public final class PriorityReadyQueue {
    * @param score non-negative urgency score; higher = dispatched first
    */
   public void enqueue(String jobId, StatsPriorityClass cls, long score) {
-    buckets.get(cls).put(compositeKey(score), jobId);
+    buckets.get(cls).put(qKey(score), jobId);
     sizes.get(cls).incrementAndGet();
   }
 
@@ -124,7 +155,7 @@ public final class PriorityReadyQueue {
    * @return a job identifier, or {@code null} if the class bucket is empty
    */
   public String pollHighest(StatsPriorityClass cls) {
-    Map.Entry<Long, String> entry = buckets.get(cls).pollFirstEntry();
+    Entry<QKey, String> entry = buckets.get(cls).pollFirstEntry();
     if (entry != null) {
       sizes.get(cls).decrementAndGet();
       return entry.getValue();
@@ -187,21 +218,15 @@ public final class PriorityReadyQueue {
   // ---------------------------------------------------------------------------
 
   /**
-   * Builds the composite skip-list key for a given score.
+   * Builds a collision-safe {@link QKey} for the given score.
    *
-   * <pre>
-   *   upper 32 bits = Integer.MAX_VALUE - clamp(score, 0, Integer.MAX_VALUE)
-   *   lower 32 bits = next sequence number (monotonically increasing)
-   * </pre>
-   *
-   * <p>A higher {@code score} produces a smaller upper value, so the resulting key is smaller and
-   * {@link ConcurrentSkipListMap#pollFirstEntry()} returns it first. The sequence number breaks
-   * ties in insertion order (FIFO).
+   * <p>A higher {@code score} produces a smaller {@code invertedScore}, placing the entry at the
+   * skip-list head so that {@link ConcurrentSkipListMap#pollFirstEntry()} returns it first. The
+   * {@code seq} field is the raw 64-bit value from {@link #seqGen} — it is never masked or
+   * truncated, so keys are globally unique for the lifetime of this queue instance.
    */
-  private long compositeKey(long score) {
+  private QKey qKey(long score) {
     long clamped = Math.max(0L, Math.min(score, Integer.MAX_VALUE));
-    long upper = (long) Integer.MAX_VALUE - clamped;
-    long lower = seqGen.getAndIncrement() & 0xFFFFFFFFL;
-    return (upper << 32) | lower;
+    return new QKey((long) Integer.MAX_VALUE - clamped, seqGen.getAndIncrement());
   }
 }
