@@ -44,10 +44,19 @@ public class ReconcileQueueMetrics {
   private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
       new EnumMap<>(StatsPriorityClass.class);
 
+  // Phase 2 metrics
+  private final AtomicLong healthBand = new AtomicLong();
+  private long lastAgingPromotionsTotal = 0L;
+  private final Map<StatsPriorityClass, Long> lastAdmissionDeferred =
+      new EnumMap<>(StatsPriorityClass.class);
+
+  private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
+  private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
+
   @PostConstruct
   void init() {
-    Tag component = Tag.of(TagKey.COMPONENT, "service");
-    Tag operation = Tag.of(TagKey.OPERATION, "job_queue");
+    Tag component = COMPONENT;
+    Tag operation = OPERATION;
     observability.gauge(
         ServiceMetrics.Reconcile.JOBS_QUEUED,
         queued::get,
@@ -83,6 +92,15 @@ public class ReconcileQueueMetrics {
           operation,
           Tag.of("priority_class", cls.name().toLowerCase()));
     }
+    observability.gauge(
+        ServiceMetrics.Reconcile.HEALTH_BAND,
+        healthBand::get,
+        "Current scheduler health band (0=GREEN 1=YELLOW 2=ORANGE 3=RED)",
+        component,
+        operation);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      lastAdmissionDeferred.put(cls, 0L);
+    }
     refresh();
   }
 
@@ -101,6 +119,33 @@ public class ReconcileQueueMetrics {
         AtomicLong counter = queuedByClass.get(cls);
         if (counter != null) {
           counter.set(stats.queuedByClass.getOrDefault(cls, 0L));
+        }
+      }
+
+      // Phase 2: health band gauge
+      healthBand.set(stats.healthBand.ordinal());
+
+      // Phase 2: aging promotions delta counter
+      long newPromotions = stats.agingPromotionsTotal;
+      long promotionsDelta = newPromotions - lastAgingPromotionsTotal;
+      if (promotionsDelta > 0) {
+        observability.counter(
+            ServiceMetrics.Reconcile.AGING_PROMOTIONS, promotionsDelta, COMPONENT, OPERATION);
+        lastAgingPromotionsTotal = newPromotions;
+      }
+
+      // Phase 2: admission deferred delta counters per class
+      for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+        long newDeferred = stats.admissionDeferredByClass.getOrDefault(cls, 0L);
+        long deferredDelta = newDeferred - lastAdmissionDeferred.getOrDefault(cls, 0L);
+        if (deferredDelta > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+              deferredDelta,
+              COMPONENT,
+              OPERATION,
+              Tag.of("priority_class", cls.name().toLowerCase()));
+          lastAdmissionDeferred.put(cls, newDeferred);
         }
       }
     } catch (RuntimeException e) {
