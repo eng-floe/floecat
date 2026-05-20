@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -24,6 +25,8 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
@@ -38,6 +41,8 @@ public class ReconcileQueueMetrics {
   private final AtomicLong running = new AtomicLong();
   private final AtomicLong cancelling = new AtomicLong();
   private final AtomicLong oldestAgeMs = new AtomicLong();
+  private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
+      new EnumMap<>(StatsPriorityClass.class);
 
   @PostConstruct
   void init() {
@@ -67,6 +72,17 @@ public class ReconcileQueueMetrics {
         "Age in milliseconds of the oldest queued reconcile job",
         component,
         operation);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      AtomicLong counter = new AtomicLong();
+      queuedByClass.put(cls, counter);
+      observability.gauge(
+          ServiceMetrics.Reconcile.QUEUE_DEPTH_BY_CLASS,
+          counter::get,
+          "Current number of queued reconcile jobs in priority class " + cls.name(),
+          component,
+          operation,
+          Tag.of("priority_class", cls.name().toLowerCase()));
+    }
     refresh();
   }
 
@@ -81,6 +97,12 @@ public class ReconcileQueueMetrics {
       long oldestAge =
           oldestCreatedAt > 0L ? Math.max(0L, System.currentTimeMillis() - oldestCreatedAt) : 0L;
       oldestAgeMs.set(oldestAge);
+      for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+        AtomicLong counter = queuedByClass.get(cls);
+        if (counter != null) {
+          counter.set(stats.queuedByClass.getOrDefault(cls, 0L));
+        }
+      }
     } catch (RuntimeException e) {
       LOG.debugf(e, "Failed to refresh reconcile queue metrics");
     }

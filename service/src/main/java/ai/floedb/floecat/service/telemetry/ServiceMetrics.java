@@ -166,6 +166,13 @@ public final class ServiceMetrics {
             "ms",
             CONTRACT,
             "service");
+    public static final MetricId QUEUE_DEPTH_BY_CLASS =
+        new MetricId(
+            "floecat.service.reconcile.queue.depth_by_class",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",

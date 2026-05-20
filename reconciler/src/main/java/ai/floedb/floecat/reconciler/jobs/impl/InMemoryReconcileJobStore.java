@@ -377,7 +377,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         default -> {}
       }
     }
-    return new QueueStats(queued, running, cancelling, oldestQueued);
+    return new QueueStats(queued, running, cancelling, oldestQueued, readyQueue.sizeByAllClasses());
   }
 
   @Override
