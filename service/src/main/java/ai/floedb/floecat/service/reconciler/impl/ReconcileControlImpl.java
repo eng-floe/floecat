@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -63,6 +64,7 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -549,15 +551,26 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (policy == null) {
       return ReconcileExecutionPolicy.defaults();
     }
-    return ReconcileExecutionPolicy.of(
+    StatsPriorityClass priorityClass =
+        switch (policy.getPriorityClass()) {
+          case PC_P0_SYNC -> StatsPriorityClass.P0_SYNC;
+          case PC_P1_FRESHNESS -> StatsPriorityClass.P1_FRESHNESS;
+          case PC_P2_REPAIR -> StatsPriorityClass.P2_REPAIR;
+          case PC_UNSPECIFIED, PC_P3_BACKGROUND, UNRECOGNIZED -> StatsPriorityClass.P3_BACKGROUND;
+        };
+    ReconcileExecutionClass executionClass =
         switch (policy.getExecutionClass()) {
           case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
           case EC_BATCH -> ReconcileExecutionClass.BATCH;
           case EC_HEAVY -> ReconcileExecutionClass.HEAVY;
           case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
-        },
+        };
+    return new ReconcileExecutionPolicy(
+        executionClass,
         policy.getLane(),
-        policy.getAttributesMap());
+        policy.getAttributesMap(),
+        priorityClass,
+        policy.getPriorityScore());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
@@ -574,6 +587,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             })
         .setLane(effective.lane())
         .putAllAttributes(effective.attributes())
+        .setPriorityClass(
+            switch (effective.priorityClass()) {
+              case P0_SYNC -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P0_SYNC;
+              case P1_FRESHNESS -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P1_FRESHNESS;
+              case P2_REPAIR -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P2_REPAIR;
+              case P3_BACKGROUND -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P3_BACKGROUND;
+            })
+        .setPriorityScore(effective.priorityScore())
         .build();
   }
 
@@ -606,7 +627,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileControlImpl::mapCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
+                    .collect(java.util.stream.Collectors.toSet()),
+                mapCostHint(scope.getCapturePolicy().getMaxCost()))
             : ReconcileCapturePolicy.empty());
   }
 
@@ -619,6 +641,17 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
       case CO_UNSPECIFIED, UNRECOGNIZED ->
           throw new IllegalArgumentException("capture output is required");
+    };
+  }
+
+  private static JobCostHint mapCostHint(ai.floedb.floecat.reconciler.rpc.CostHint hint) {
+    if (hint == null) {
+      return JobCostHint.EXPENSIVE;
+    }
+    return switch (hint) {
+      case CH_CHEAP -> JobCostHint.CHEAP;
+      case CH_MEDIUM -> JobCostHint.MEDIUM;
+      case CH_UNSPECIFIED, CH_EXPENSIVE, UNRECOGNIZED -> JobCostHint.EXPENSIVE;
     };
   }
 

@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import org.junit.jupiter.api.Test;
 
 class StatsPriorityClassTest {

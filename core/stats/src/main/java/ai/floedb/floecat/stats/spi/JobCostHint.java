@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.reconciler.jobs;
+package ai.floedb.floecat.stats.spi;
 
 /**
  * Coarse cost estimate for a stats capture or index job.
@@ -22,7 +22,7 @@ package ai.floedb.floecat.reconciler.jobs;
  * <p>Used by the scheduler to prefer high value-per-cost jobs within a priority class, and by the
  * sync capture path to restrict which stat kinds an engine may attempt within a latency budget.
  *
- * <p>Engines report their cost via {@code StatsCaptureEngine.estimatedCost()} and {@code
+ * <p>Engines report their cost via {@link StatsCaptureEngine#estimatedCost} and {@code
  * CaptureEngine.estimatedCost()}. Implementations must not perform I/O to compute the hint.
  *
  * <p>Rough priors by stat kind and connector type:
