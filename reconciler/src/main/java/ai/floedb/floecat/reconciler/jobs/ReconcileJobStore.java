@@ -1160,6 +1160,18 @@ public interface ReconcileJobStore {
      */
     public final Map<StatsPriorityClass, Long> queuedByClass;
 
+    /** Current scheduler health band derived from queue-depth thresholds. Never null. */
+    public final SchedulerHealthBand healthBand;
+
+    /** Cumulative count of starvation-aging promotions since store creation. */
+    public final long agingPromotionsTotal;
+
+    /**
+     * Cumulative count of admission deferrals broken down by priority class. Never null; missing
+     * keys map to 0.
+     */
+    public final Map<StatsPriorityClass, Long> admissionDeferredByClass;
+
     public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
       this(queued, running, cancelling, oldestQueuedCreatedAtMs, Map.of());
     }
@@ -1170,6 +1182,53 @@ public interface ReconcileJobStore {
         long cancelling,
         long oldestQueuedCreatedAtMs,
         Map<StatsPriorityClass, Long> queuedByClass) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          SchedulerHealthBand.GREEN);
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand) {
+      this(queued, running, cancelling, oldestQueuedCreatedAtMs, queuedByClass, healthBand, 0L);
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          healthBand,
+          agingPromotionsTotal,
+          Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal,
+        Map<StatsPriorityClass, Long> admissionDeferredByClass) {
       this.queued = Math.max(0L, queued);
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
@@ -1179,6 +1238,13 @@ public interface ReconcileJobStore {
         queuedByClass.forEach((k, v) -> byClass.put(k, Math.max(0L, v)));
       }
       this.queuedByClass = byClass;
+      this.healthBand = healthBand == null ? SchedulerHealthBand.GREEN : healthBand;
+      this.agingPromotionsTotal = Math.max(0L, agingPromotionsTotal);
+      Map<StatsPriorityClass, Long> deferredByClass = new EnumMap<>(StatsPriorityClass.class);
+      if (admissionDeferredByClass != null) {
+        admissionDeferredByClass.forEach((k, v) -> deferredByClass.put(k, Math.max(0L, v)));
+      }
+      this.admissionDeferredByClass = deferredByClass;
     }
   }
 

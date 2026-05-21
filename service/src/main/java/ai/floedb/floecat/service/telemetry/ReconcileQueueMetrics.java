@@ -44,10 +44,21 @@ public class ReconcileQueueMetrics {
   private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
       new EnumMap<>(StatsPriorityClass.class);
 
+  private final AtomicLong healthBand = new AtomicLong();
+  // lastAgingPromotionsTotal and lastAdmissionDeferred are plain (non-volatile) fields used only
+  // inside refresh(), which is @Scheduled and therefore called on a single thread by Quarkus.
+  // They must NOT be accessed outside of refresh() without adding synchronization.
+  private long lastAgingPromotionsTotal = 0L;
+  private final Map<StatsPriorityClass, Long> lastAdmissionDeferred =
+      new EnumMap<>(StatsPriorityClass.class);
+
+  private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
+  private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
+
   @PostConstruct
   void init() {
-    Tag component = Tag.of(TagKey.COMPONENT, "service");
-    Tag operation = Tag.of(TagKey.OPERATION, "job_queue");
+    Tag component = COMPONENT;
+    Tag operation = OPERATION;
     observability.gauge(
         ServiceMetrics.Reconcile.JOBS_QUEUED,
         queued::get,
@@ -83,6 +94,19 @@ public class ReconcileQueueMetrics {
           operation,
           Tag.of("priority_class", cls.name().toLowerCase()));
     }
+    // Value is SchedulerHealthBand.ordinal(): 0=GREEN 1=YELLOW 2=ORANGE 3=RED.
+    // This mapping is part of the metrics contract — dashboards and autoscaler rules depend on it.
+    // If SchedulerHealthBand enum order ever changes, this gauge and all dependent alerts must be
+    // updated together.  See SchedulerHealthBand for the authoritative ordering.
+    observability.gauge(
+        ServiceMetrics.Reconcile.HEALTH_BAND,
+        healthBand::get,
+        "Current scheduler health band (0=GREEN 1=YELLOW 2=ORANGE 3=RED)",
+        component,
+        operation);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      lastAdmissionDeferred.put(cls, 0L);
+    }
     refresh();
   }
 
@@ -103,8 +127,34 @@ public class ReconcileQueueMetrics {
           counter.set(stats.queuedByClass.getOrDefault(cls, 0L));
         }
       }
+
+      healthBand.set(stats.healthBand.ordinal());
+
+      long newPromotions = stats.agingPromotionsTotal;
+      long promotionsDelta = newPromotions - lastAgingPromotionsTotal;
+      if (promotionsDelta > 0) {
+        observability.counter(
+            ServiceMetrics.Reconcile.AGING_PROMOTIONS, promotionsDelta, COMPONENT, OPERATION);
+        lastAgingPromotionsTotal = newPromotions;
+      }
+
+      for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+        long newDeferred = stats.admissionDeferredByClass.getOrDefault(cls, 0L);
+        long deferredDelta = newDeferred - lastAdmissionDeferred.getOrDefault(cls, 0L);
+        if (deferredDelta > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+              deferredDelta,
+              COMPONENT,
+              OPERATION,
+              Tag.of("priority_class", cls.name().toLowerCase()));
+          lastAdmissionDeferred.put(cls, newDeferred);
+        }
+      }
     } catch (RuntimeException e) {
-      LOG.debugf(e, "Failed to refresh reconcile queue metrics");
+      // Warn rather than debug: a silent metrics failure leaves all gauges stale and is invisible
+      // to on-call unless warn-level logging is enabled.
+      LOG.warnf(e, "Failed to refresh reconcile queue metrics");
     }
   }
 }

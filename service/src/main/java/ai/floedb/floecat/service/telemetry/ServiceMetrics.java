@@ -194,6 +194,24 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+
+    public static final MetricId HEALTH_BAND =
+        new MetricId(
+            "floecat.service.reconcile.health_band", MetricType.GAUGE, "", CONTRACT, "service");
+    public static final MetricId AGING_PROMOTIONS =
+        new MetricId(
+            "floecat.service.reconcile.aging.promotions.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ADMISSION_DEFERRED =
+        new MetricId(
+            "floecat.service.reconcile.admission.deferred.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {
