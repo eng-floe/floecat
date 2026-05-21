@@ -847,6 +847,65 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void listReconcileJobsUsesStoredConnectorAggregateSummaryWithoutChildTraversal() {
+    var connectorJob =
+        new ReconcileJobStore.ReconcileJob(
+            "plan-1",
+            "acct",
+            "connector-1",
+            "JS_SUCCEEDED",
+            "Succeeded",
+            10L,
+            30L,
+            2L,
+            2L,
+            0L,
+            0L,
+            0L,
+            false,
+            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+            1L,
+            1L,
+            0L,
+            true,
+            ReconcileScope.empty(),
+            null,
+            "",
+            "executor-2",
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            null,
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            2L,
+            3L,
+            1L,
+            0L,
+            3L,
+            0L,
+            "");
+
+    when(service.jobs.list("acct", 100, "", "", java.util.Set.of()))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(connectorJob), ""));
+
+    var response =
+        service
+            .listReconcileJobs(ListReconcileJobsRequest.newBuilder().build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getJobsCount());
+    assertEquals(
+        ai.floedb.floecat.reconciler.rpc.JobState.JS_SUCCEEDED, response.getJobs(0).getState());
+    assertEquals("Succeeded", response.getJobs(0).getMessage());
+    assertEquals(2L, response.getJobs(0).getTablesScanned());
+    assertEquals(2L, response.getJobs(0).getTablesChanged());
+    assertEquals(1L, response.getJobs(0).getSnapshotsProcessed());
+    assertEquals(1L, response.getJobs(0).getStatsProcessed());
+    verify(service.jobs, never()).childJobsPage("acct", "plan-1", 200, "");
+  }
+
+  @Test
   void getReconcileJobReturnsIndexArtifactOnExecFileGroupResult() {
     var execJob =
         new ReconcileJobStore.ReconcileJob(

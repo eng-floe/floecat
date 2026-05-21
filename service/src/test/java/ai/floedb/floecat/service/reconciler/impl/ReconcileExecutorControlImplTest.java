@@ -28,9 +28,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -48,6 +50,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -68,6 +71,7 @@ class ReconcileExecutorControlImplTest {
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
+    service.leasedFileGroupExecutionService = mock(LeasedFileGroupExecutionService.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -295,6 +299,91 @@ class ReconcileExecutorControlImplTest {
             eq(0L),
             eq(2L),
             eq(9L));
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultRoutesUploadedArtifactsToManifestPath() {
+    when(service.leasedFileGroupExecutionService.persistSuccess(
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), eq(""), eq(0), any(), any()))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .addIndexArtifacts(
+                                ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact
+                                    .newBuilder()
+                                    .setRecord(
+                                        IndexArtifactRecord.newBuilder()
+                                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
+                                            .build())
+                                    .setContentType("application/x-parquet")
+                                    .setUploadedArtifactUri("s3://bucket/artifacts/file-1.idx")
+                                    .build())
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.leasedFileGroupExecutionService)
+        .persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq(List.of()),
+            eq(""),
+            eq(0),
+            eq(List.of()),
+            eq(
+                List.of(
+                    new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
+                            .build(),
+                        "application/x-parquet",
+                        "s3://bucket/artifacts/file-1.idx"))));
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultRoutesFileStatsBlobManifest() {
+    when(service.leasedFileGroupExecutionService.persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq(List.of()),
+            eq("/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json"),
+            eq(4),
+            eq(List.of()),
+            eq(List.of())))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .setFileStatsBlobUri(
+                                "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json")
+                            .setFileStatsRecordCount(4)
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
   }
 
   @Test

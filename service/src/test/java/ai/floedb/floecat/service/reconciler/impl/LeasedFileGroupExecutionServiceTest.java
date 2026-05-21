@@ -31,6 +31,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -163,12 +164,88 @@ class LeasedFileGroupExecutionServiceTest {
         error.getMessage());
   }
 
+  @Test
+  void resolvePreservesCapturePolicyForCaptureModeExecFileGroup() {
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileScope scopedCapture =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("col_a", true, false)),
+                java.util.Set.of(
+                    ReconcileCapturePolicy.Output.FILE_STATS,
+                    ReconcileCapturePolicy.Output.COLUMN_STATS)));
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scopedCapture)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(group),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "",
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty())));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(scopedCapture.capturePolicy(), payload.capturePolicy());
+  }
+
   private static ReconcileJobStore.ReconcileJob job(
       String jobId,
       ReconcileJobKind kind,
       ReconcileSnapshotTask snapshotTask,
       ReconcileFileGroupTask fileGroupTask,
       String parentJobId) {
+    return job(
+        jobId,
+        kind,
+        snapshotTask,
+        fileGroupTask,
+        parentJobId,
+        CaptureMode.METADATA_ONLY,
+        ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId,
+      ReconcileJobKind kind,
+      ReconcileSnapshotTask snapshotTask,
+      ReconcileFileGroupTask fileGroupTask,
+      String parentJobId,
+      CaptureMode captureMode,
+      ReconcileScope scope) {
     return new ReconcileJobStore.ReconcileJob(
         jobId,
         ACCOUNT_ID,
@@ -183,12 +260,12 @@ class LeasedFileGroupExecutionServiceTest {
         0L,
         0L,
         false,
-        CaptureMode.METADATA_ONLY,
+        captureMode,
         0L,
         0L,
         0L,
         false,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "",
         "remote_file_group_worker",

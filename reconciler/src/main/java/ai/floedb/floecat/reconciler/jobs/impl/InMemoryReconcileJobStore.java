@@ -560,16 +560,77 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
+  public String persistSnapshotPlanManifest(
+      String accountId, String jobId, ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (!effective.fileGroupPlanRecorded()
+        || effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        || effective.fileGroupCount() == 0) {
+      return "";
+    }
+    return effective.fileGroupPlanBlobUri().isBlank()
+        ? "inmemory://snapshot-plan/" + jobId
+        : effective.fileGroupPlanBlobUri();
+  }
+
+  @Override
+  public boolean adoptSnapshotPlanManifest(
+      String jobId,
+      String leaseEpoch,
+      ReconcileSnapshotTask snapshotTask,
+      String manifestUri,
+      boolean allowExpiredWithinGrace) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    String effectiveManifestUri = manifestUri == null ? "" : manifestUri.trim();
+    if (getCompletionLeaseView(jobId, leaseEpoch, allowExpiredWithinGrace).isEmpty()) {
+      return false;
+    }
     jobs.computeIfPresent(
         jobId,
         (id, existing) -> {
-          if (existing.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
-              && !effective.fileGroupPlanRecorded()) {
+          if (existing.jobKind != ReconcileJobKind.PLAN_SNAPSHOT) {
             throw new IllegalArgumentException(
-                "persistSnapshotPlan requires explicit snapshot coverage metadata for PLAN_SNAPSHOT jobs");
+                "adoptSnapshotPlanManifest requires a PLAN_SNAPSHOT job");
+          }
+          if (!blank(existing.snapshotTask.tableId())
+              && !blankToEmpty(existing.snapshotTask.tableId()).equals(effective.tableId())) {
+            throw new IllegalArgumentException("snapshot plan adoption tableId mismatch");
+          }
+          if (existing.snapshotTask.snapshotId() >= 0L
+              && existing.snapshotTask.snapshotId() != effective.snapshotId()) {
+            throw new IllegalArgumentException("snapshot plan adoption snapshotId mismatch");
+          }
+          if (!blank(existing.snapshotTask.sourceNamespace())
+              && !blankToEmpty(existing.snapshotTask.sourceNamespace())
+                  .equals(blankToEmpty(effective.sourceNamespace()))) {
+            throw new IllegalArgumentException("snapshot plan adoption sourceNamespace mismatch");
+          }
+          if (!blank(existing.snapshotTask.sourceTable())
+              && !blankToEmpty(existing.snapshotTask.sourceTable())
+                  .equals(blankToEmpty(effective.sourceTable()))) {
+            throw new IllegalArgumentException("snapshot plan adoption sourceTable mismatch");
+          }
+          if (!effective.fileGroupPlanRecorded()) {
+            throw new IllegalArgumentException(
+                "adoptSnapshotPlanManifest requires explicit snapshot coverage metadata for PLAN_SNAPSHOT jobs");
+          }
+          ReconcileSnapshotTask adoptedTask =
+              ReconcileSnapshotTask.of(
+                  effective.tableId(),
+                  effective.snapshotId(),
+                  effective.sourceNamespace(),
+                  effective.sourceTable(),
+                  effective.fileGroups(),
+                  effective.fileGroupPlanRecorded(),
+                  effective.completionMode(),
+                  effectiveManifestUri,
+                  effective.fileGroupCount(),
+                  effective.directStatsBlobUri(),
+                  effective.directStatsRecordCount());
+          if (existing.snapshotTask.equals(adoptedTask)) {
+            return existing;
           }
           return new ReconcileJob(
               existing.jobId,
@@ -594,10 +655,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               existing.jobKind,
               existing.tableTask,
               existing.viewTask,
-              effective,
+              adoptedTask,
               existing.fileGroupTask,
               existing.parentJobId);
         });
+    return true;
   }
 
   @Override
@@ -757,6 +819,48 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
     leaseExpiresAtMs.put(jobId, now + leaseMs);
     return true;
+  }
+
+  @Override
+  public Optional<LeasedJob> getCompletionLeaseView(
+      String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
+    long now = System.currentTimeMillis();
+    ReconcileJob job = jobs.get(jobId);
+    if (job == null) {
+      return Optional.empty();
+    }
+    if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
+      return Optional.empty();
+    }
+    String expectedEpoch = leaseEpochs.get(jobId);
+    Long expiry = leaseExpiresAtMs.get(jobId);
+    if (expectedEpoch == null
+        || expectedEpoch.isBlank()
+        || !expectedEpoch.equals(leaseEpoch)
+        || expiry == null) {
+      return Optional.empty();
+    }
+    if (expiry <= now && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new LeasedJob(
+            job.jobId,
+            job.accountId,
+            job.connectorId,
+            job.fullRescan,
+            job.captureMode,
+            job.scope,
+            job.executionPolicy,
+            leaseEpoch,
+            pinnedExecutors.getOrDefault(jobId, ""),
+            job.executorId,
+            job.jobKind,
+            job.tableTask,
+            job.viewTask,
+            job.snapshotTask,
+            job.fileGroupTask,
+            job.parentJobId));
   }
 
   @Override

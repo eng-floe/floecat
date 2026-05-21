@@ -371,11 +371,20 @@ public class LeasedPlannerWorkerService {
       String jobId,
       String leaseEpoch,
       ReconcileSnapshotTask plannedSnapshotTask) {
-    ReconcileJobStore.LeasedJob lease =
-        requireLeasedJob(
-            principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    ReconcileJobStore.ReconcileJob currentJob =
+        jobs.getLeaseView(jobId)
+            .orElseThrow(
+                () ->
+                    Status.NOT_FOUND
+                        .withDescription("reconcile job not found: " + jobId)
+                        .asRuntimeException());
+    if (currentJob.jobKind != ReconcileJobKind.PLAN_SNAPSHOT) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("reconcile job is not a " + ReconcileJobKind.PLAN_SNAPSHOT + " job")
+          .asRuntimeException();
+    }
     ReconcileSnapshotTask baseSnapshotTask =
-        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+        currentJob.snapshotTask == null ? ReconcileSnapshotTask.empty() : currentJob.snapshotTask;
     ReconcileSnapshotTask finalizedSnapshotTask =
         plannedSnapshotTask == null || plannedSnapshotTask.isEmpty()
             ? ReconcileSnapshotTask.of(
@@ -390,11 +399,30 @@ public class LeasedPlannerWorkerService {
                 baseSnapshotTask.fileGroupCount())
             : plannedSnapshotTask;
     List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
-    ReconcileSnapshotTask durableSnapshotTask =
-        durableSnapshotTask(finalizedSnapshotTask, plannedJobs);
+    ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(finalizedSnapshotTask);
+    if ("JS_SUCCEEDED".equals(currentJob.state)) {
+      if (durableSnapshotTask.equals(currentJob.snapshotTask)) {
+        return true;
+      }
+      throw Status.FAILED_PRECONDITION
+          .withDescription("reconcile snapshot plan was already adopted with a different result")
+          .asRuntimeException();
+    }
+    ReconcileJobStore.LeasedJob lease =
+        requireCompletionLease(
+            principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
     long plannedFileGroupJobs =
         plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
-    jobs.persistSnapshotPlan(lease.jobId, durableSnapshotTask);
+    boolean adopted =
+        jobs.adoptSnapshotPlanManifest(
+            lease.jobId,
+            lease.leaseEpoch,
+            durableSnapshotTask,
+            durableSnapshotTask.fileGroupPlanBlobUri(),
+            true);
+    if (!adopted) {
+      return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
+    }
     java.util.Set<String> existingFileGroupKeys =
         existingExecFileGroupKeys(lease.accountId, lease.jobId);
     java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
@@ -461,7 +489,7 @@ public class LeasedPlannerWorkerService {
             0L,
             0L);
     if (!accepted) {
-      return false;
+      return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
     }
     return true;
   }
@@ -472,12 +500,6 @@ public class LeasedPlannerWorkerService {
     if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
         || !effective.fileGroupPlanRecorded()) {
       return List.of();
-    }
-    if (!effective.fileGroups().isEmpty()) {
-      return effective.fileGroups().stream()
-          .filter(group -> group != null && !group.isEmpty())
-          .map(group -> new PlannedFileGroupJob(ReconcileScope.empty(), group))
-          .toList();
     }
     return snapshotPlanBlobStore.loadPlanJobs(effective);
   }
@@ -523,32 +545,31 @@ public class LeasedPlannerWorkerService {
     return planId + "|" + groupId;
   }
 
-  private static ReconcileSnapshotTask durableSnapshotTask(
-      ReconcileSnapshotTask snapshotTask, List<PlannedFileGroupJob> plannedJobs) {
+  private static ReconcileSnapshotTask durableSnapshotTask(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
         || !effective.fileGroupPlanRecorded()) {
       return effective;
     }
-    List<ReconcileFileGroupTask> fileGroups =
-        plannedJobs == null
-            ? List.of()
-            : plannedJobs.stream()
-                .filter(job -> job != null && job.fileGroupTask() != null)
-                .map(PlannedFileGroupJob::fileGroupTask)
-                .filter(task -> !task.isEmpty())
-                .toList();
+    if (effective.fileGroupCount() > 0
+        && blankToEmpty(effective.fileGroupPlanBlobUri()).isBlank()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot plan success requires a persisted file-group manifest")
+          .asRuntimeException();
+    }
     return ReconcileSnapshotTask.of(
         effective.tableId(),
         effective.snapshotId(),
         effective.sourceNamespace(),
         effective.sourceTable(),
-        fileGroups,
+        List.of(),
         true,
         effective.completionMode(),
-        "",
-        fileGroups.size());
+        effective.fileGroupPlanBlobUri(),
+        effective.fileGroupCount(),
+        effective.directStatsBlobUri(),
+        effective.directStatsRecordCount());
   }
 
   public boolean persistPlanSnapshotFailure(
@@ -620,6 +641,32 @@ public class LeasedPlannerWorkerService {
         job.snapshotTask,
         job.fileGroupTask,
         blankToEmpty(job.parentJobId));
+  }
+
+  private ReconcileJobStore.LeasedJob requireCompletionLease(
+      String corr, String jobId, String leaseEpoch, ReconcileJobKind expectedKind) {
+    ReconcileJobStore.LeasedJob lease =
+        jobs.getCompletionLeaseView(jobId, leaseEpoch, true)
+            .orElseThrow(
+                () ->
+                    Status.FAILED_PRECONDITION
+                        .withDescription("reconcile lease is no longer valid")
+                        .asRuntimeException());
+    if (lease.jobKind != expectedKind) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("reconcile job is not a " + expectedKind + " job")
+          .asRuntimeException();
+    }
+    return lease;
+  }
+
+  private boolean currentSnapshotPlanSuccess(
+      String jobId, ReconcileSnapshotTask durableSnapshotTask) {
+    return jobs.getLeaseView(jobId)
+        .filter(current -> current.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+        .filter(current -> "JS_SUCCEEDED".equals(current.state))
+        .map(current -> durableSnapshotTask.equals(current.snapshotTask))
+        .orElse(false);
   }
 
   private void persistPlanFailure(

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -33,6 +34,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -59,6 +61,7 @@ class LeasedPlannerWorkerServiceTest {
     service.jobs = jobs;
     service.snapshotPlanBlobStore = snapshotPlanBlobStore;
     when(principal.getCorrelationId()).thenReturn("corr");
+    when(jobs.adoptSnapshotPlanManifest(any(), any(), any(), any(), anyBoolean())).thenReturn(true);
   }
 
   @Test
@@ -153,7 +156,6 @@ class LeasedPlannerWorkerServiceTest {
             "table-1",
             55L,
             List.of("s3://bucket/data/file-1.parquet", "s3://bucket/data/file-2.parquet"));
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(
             java.util.Optional.of(
@@ -176,6 +178,26 @@ class LeasedPlannerWorkerServiceTest {
                     0L,
                     ReconcileScope.empty(),
                     ReconcileExecutionPolicy.defaults(),
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
                     "remote-executor",
                     "remote_snapshot_planner_worker",
                     ReconcileJobKind.PLAN_SNAPSHOT,
@@ -208,13 +230,22 @@ class LeasedPlannerWorkerServiceTest {
             55L,
             "db",
             "events",
-            List.of(fullGroup),
+            List.of(),
             true,
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-            "",
+            "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
             1);
+    ReconcileScope fileGroupScope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("col_a", true, false)),
+                java.util.Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
     when(snapshotPlanBlobStore.loadPlanJobs(submittedSnapshotTask))
-        .thenReturn(List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+        .thenReturn(List.of(new PlannedFileGroupJob(fileGroupScope, fullGroup)));
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
@@ -235,9 +266,16 @@ class LeasedPlannerWorkerServiceTest {
 
     assertEquals(true, accepted);
     InOrder inOrder = inOrder(jobs);
-    inOrder.verify(jobs).renewLease("job-1", "lease-1");
     inOrder.verify(jobs).getLeaseView("job-1");
-    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(durableSnapshotTask));
+    inOrder.verify(jobs).getCompletionLeaseView("job-1", "lease-1", true);
+    inOrder
+        .verify(jobs)
+        .adoptSnapshotPlanManifest(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(durableSnapshotTask),
+            eq(durableSnapshotTask.fileGroupPlanBlobUri()),
+            eq(true));
     inOrder
         .verify(jobs)
         .bulkEnqueue(
@@ -247,6 +285,7 @@ class LeasedPlannerWorkerServiceTest {
                         && specs.size() == 2
                         && specs.get(0).jobKind == ReconcileJobKind.EXEC_FILE_GROUP
                         && specs.get(0).fileGroupTask.equals(fullGroup.asReference())
+                        && specs.get(0).scope.equals(fileGroupScope)
                         && specs.get(0).parentJobId.equals("job-1")
                         && specs.get(0).pinnedExecutorId.isBlank()
                         && specs.get(1).jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
@@ -369,7 +408,6 @@ class LeasedPlannerWorkerServiceTest {
   @Test
   void persistPlanSnapshotSuccessDoesNotCountPlannedSnapshotAsCompleted() {
     ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(
             java.util.Optional.of(
@@ -392,6 +430,26 @@ class LeasedPlannerWorkerServiceTest {
                     0L,
                     ReconcileScope.empty(),
                     ReconcileExecutionPolicy.defaults(),
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
                     "remote-executor",
                     "remote_snapshot_planner_worker",
                     ReconcileJobKind.PLAN_SNAPSHOT,
@@ -538,7 +596,6 @@ class LeasedPlannerWorkerServiceTest {
   @Test
   void persistPlanSnapshotSuccessPreservesDirectStatsCompletionMode() {
     ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(
             java.util.Optional.of(
@@ -561,6 +618,26 @@ class LeasedPlannerWorkerServiceTest {
                     0L,
                     ReconcileScope.empty(),
                     ReconcileExecutionPolicy.defaults(),
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
                     "remote-executor",
                     "remote_snapshot_planner_worker",
                     ReconcileJobKind.PLAN_SNAPSHOT,
@@ -603,7 +680,10 @@ class LeasedPlannerWorkerServiceTest {
 
     assertTrue(accepted);
     InOrder inOrder = inOrder(jobs);
-    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(directSnapshotTask));
+    inOrder
+        .verify(jobs)
+        .adoptSnapshotPlanManifest(
+            eq("job-1"), eq("lease-1"), eq(directSnapshotTask), eq(""), eq(true));
     inOrder.verify(jobs).bulkEnqueue(any());
     inOrder
         .verify(jobs)
@@ -620,11 +700,13 @@ class LeasedPlannerWorkerServiceTest {
             anyLong(),
             anyLong(),
             anyLong());
-    verify(jobs).persistSnapshotPlan(eq("job-1"), eq(directSnapshotTask));
+    verify(jobs)
+        .adoptSnapshotPlanManifest(
+            eq("job-1"), eq("lease-1"), eq(directSnapshotTask), eq(""), eq(true));
   }
 
   @Test
-  void persistPlanSnapshotSuccessUsesInlineDurableFileGroupsWithoutPlannerBlobReload() {
+  void persistPlanSnapshotSuccessRejectsInlineFileGroupsWithoutPersistedManifest() {
     ReconcileFileGroupTask fullGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
@@ -639,9 +721,28 @@ class LeasedPlannerWorkerServiceTest {
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "",
             1);
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_SNAPSHOT)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
@@ -656,13 +757,15 @@ class LeasedPlannerWorkerServiceTest {
             anyLong(),
             anyLong()))
         .thenReturn(true);
+    io.grpc.StatusRuntimeException error =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                service.persistPlanSnapshotSuccess(
+                    principal, "job-1", "lease-1", submittedSnapshotTask));
 
-    boolean accepted =
-        service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", submittedSnapshotTask);
-
-    assertTrue(accepted);
-    verify(snapshotPlanBlobStore, never()).loadPlanJobs(any());
-    verify(jobs).persistSnapshotPlan(eq("job-1"), eq(submittedSnapshotTask));
+    verify(snapshotPlanBlobStore).loadPlanJobs(submittedSnapshotTask);
+    verify(jobs, never()).adoptSnapshotPlanManifest(any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -676,14 +779,33 @@ class LeasedPlannerWorkerServiceTest {
             55L,
             "db",
             "events",
-            List.of(fullGroup),
+            List.of(),
             true,
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-            "",
+            "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
             1);
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_SNAPSHOT)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    submittedSnapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
@@ -698,6 +820,8 @@ class LeasedPlannerWorkerServiceTest {
             anyLong(),
             anyLong()))
         .thenReturn(true);
+    when(snapshotPlanBlobStore.loadPlanJobs(submittedSnapshotTask))
+        .thenReturn(List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
     when(jobs.childJobsPage("acct", "job-1", 200, ""))
         .thenReturn(
             new ReconcileJobStore.ReconcileJobPage(
@@ -738,6 +862,167 @@ class LeasedPlannerWorkerServiceTest {
     verify(jobs, never())
         .enqueueFileGroupExecution(
             any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+    verify(jobs).bulkEnqueue(any());
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessReturnsTrueWhenMatchingPlanWasAlreadyAdopted() {
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask submittedSnapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
+            1);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.ReconcileJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    "JS_SUCCEEDED",
+                    "Succeeded",
+                    1L,
+                    2L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    0L,
+                    0L,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    submittedSnapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+
+    boolean accepted =
+        service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", submittedSnapshotTask);
+
+    assertTrue(accepted);
+    verify(jobs, never()).getCompletionLeaseView(any(), any(), anyBoolean());
+    verify(jobs, never()).adoptSnapshotPlanManifest(any(), any(), any(), any(), anyBoolean());
+    verify(jobs, never()).bulkEnqueue(any());
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessTreatsPostCommitRetryAsIdempotent() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    ReconcileJobStore.ReconcileJob activeJob =
+        new ReconcileJobStore.ReconcileJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            "JS_RUNNING",
+            "",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            0L,
+            0L,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "remote-executor",
+            "remote_snapshot_planner_worker",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            snapshotTask,
+            ReconcileFileGroupTask.empty(),
+            "parent-1");
+    ReconcileJobStore.ReconcileJob succeededJob =
+        new ReconcileJobStore.ReconcileJob(
+            "job-1",
+            "acct",
+            "connector-1",
+            "JS_SUCCEEDED",
+            "Succeeded",
+            1L,
+            2L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            0L,
+            0L,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "remote-executor",
+            "remote_snapshot_planner_worker",
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+            snapshotTask,
+            ReconcileFileGroupTask.empty(),
+            "parent-1");
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(activeJob), java.util.Optional.of(succeededJob));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(false);
+
+    boolean accepted =
+        service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", snapshotTask);
+
+    assertTrue(accepted);
+    verify(jobs)
+        .adoptSnapshotPlanManifest(eq("job-1"), eq("lease-1"), eq(snapshotTask), eq(""), eq(true));
     verify(jobs).bulkEnqueue(any());
   }
 

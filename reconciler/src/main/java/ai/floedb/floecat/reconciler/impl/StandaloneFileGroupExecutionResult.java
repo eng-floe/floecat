@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
@@ -23,15 +24,53 @@ import java.util.List;
 public record StandaloneFileGroupExecutionResult(
     String resultId,
     List<TargetStatsRecord> statsRecords,
-    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    FileStatsBlobManifest fileStatsBlobManifest,
+    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+    List<PreUploadedIndexArtifact> preUploadedIndexArtifacts) {
   public StandaloneFileGroupExecutionResult {
     resultId = resultId == null ? "" : resultId.trim();
     statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
+    fileStatsBlobManifest =
+        fileStatsBlobManifest == null ? FileStatsBlobManifest.empty() : fileStatsBlobManifest;
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
+    preUploadedIndexArtifacts =
+        preUploadedIndexArtifacts == null ? List.of() : List.copyOf(preUploadedIndexArtifacts);
+  }
+
+  public StandaloneFileGroupExecutionResult(
+      String resultId,
+      List<TargetStatsRecord> statsRecords,
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    this(resultId, statsRecords, FileStatsBlobManifest.empty(), stagedIndexArtifacts, List.of());
   }
 
   public static StandaloneFileGroupExecutionResult empty(String resultId) {
-    return new StandaloneFileGroupExecutionResult(resultId, List.of(), List.of());
+    return new StandaloneFileGroupExecutionResult(
+        resultId, List.of(), FileStatsBlobManifest.empty(), List.of(), List.of());
+  }
+
+  public record FileStatsBlobManifest(String blobUri, int recordCount) {
+    public FileStatsBlobManifest {
+      blobUri = blobUri == null ? "" : blobUri.trim();
+      recordCount = Math.max(0, recordCount);
+    }
+
+    public static FileStatsBlobManifest empty() {
+      return new FileStatsBlobManifest("", 0);
+    }
+
+    public boolean isEmpty() {
+      return blobUri.isBlank() || recordCount <= 0;
+    }
+  }
+
+  public record PreUploadedIndexArtifact(
+      IndexArtifactRecord record, String contentType, String uploadedArtifactUri) {
+    public PreUploadedIndexArtifact {
+      record = record == null ? IndexArtifactRecord.getDefaultInstance() : record;
+      contentType = contentType == null ? "" : contentType;
+      uploadedArtifactUri = uploadedArtifactUri == null ? "" : uploadedArtifactUri.trim();
+    }
   }
 }

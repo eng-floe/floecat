@@ -677,6 +677,7 @@ message LeasedFileGroupIndexArtifact {
   ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
   bytes content = 2;
   string content_type = 3;
+  string uploaded_artifact_uri = 4;
 }
 
 message SubmitLeasedFileGroupExecutionResultRequest {
@@ -684,6 +685,8 @@ message SubmitLeasedFileGroupExecutionResultRequest {
     string result_id = 1;
     repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 2;
     repeated LeasedFileGroupIndexArtifact index_artifacts = 3;
+    string file_stats_blob_uri = 4;
+    uint32 file_stats_record_count = 5;
   }
 
   message Failure {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -45,6 +46,8 @@ import java.util.Set;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 class JavaConnectorCaptureEngineTest {
   private static final Connector SOURCE_CONNECTOR =
@@ -178,6 +181,53 @@ class JavaConnectorCaptureEngineTest {
     assertThat(engine.capture(request)).isPresent();
     verify(storageResolver)
         .resolveWithAuthorization(eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any());
+  }
+
+  @Test
+  void captureNormalizesTypedAwsAuthFailuresToTerminal() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of("s3://bucket/path/file-1.parquet"),
+            Set.of("id"),
+            Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(FloecatConnector.StatsTargetKind.FILE),
+            false,
+            Optional.empty());
+
+    S3Exception expiredToken =
+        (S3Exception)
+            S3Exception.builder()
+                .message("request failed")
+                .statusCode(400)
+                .awsErrorDetails(
+                    AwsErrorDetails.builder().serviceName("S3").errorCode("ExpiredToken").build())
+                .build();
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenThrow(expiredToken);
+
+    assertThatThrownBy(() -> engine.capture(request))
+        .isInstanceOf(ReconcileFailureException.class)
+        .satisfies(
+            error -> {
+              ReconcileFailureException failure = (ReconcileFailureException) error;
+              assertThat(failure.retryDisposition())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+              assertThat(failure.getCause()).isSameAs(expiredToken);
+            });
   }
 
   @Test

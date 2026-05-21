@@ -370,6 +370,11 @@ public interface ReconcileJobStore {
 
   boolean renewLease(String jobId, String leaseEpoch);
 
+  default Optional<LeasedJob> getCompletionLeaseView(
+      String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
+    return Optional.empty();
+  }
+
   default ProgressUpdate reportProgress(
       String jobId,
       String leaseEpoch,
@@ -602,7 +607,15 @@ public interface ReconcileJobStore {
 
   boolean isCancellationRequested(String jobId);
 
-  void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask);
+  String persistSnapshotPlanManifest(
+      String accountId, String jobId, ReconcileSnapshotTask snapshotTask);
+
+  boolean adoptSnapshotPlanManifest(
+      String jobId,
+      String leaseEpoch,
+      ReconcileSnapshotTask snapshotTask,
+      String manifestUri,
+      boolean allowExpiredWithinGrace);
 
   void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask);
 

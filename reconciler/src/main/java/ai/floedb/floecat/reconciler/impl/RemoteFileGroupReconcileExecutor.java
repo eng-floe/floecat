@@ -16,8 +16,11 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -34,18 +37,25 @@ import org.jboss.logging.Logger;
 public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteFileGroupReconcileExecutor.class);
 
+  private final BlobStore blobStore;
+  private final SnapshotPlanBlobStore snapshotPlanBlobStore;
   private final boolean enabled;
   private final RemoteFileGroupWorkerClient workerClient;
   private final StandaloneJavaFileGroupExecutionRunner runner;
 
   @Inject
   public RemoteFileGroupReconcileExecutor(
+      BlobStore blobStore,
+      SnapshotPlanBlobStore snapshotPlanBlobStore,
       RemoteFileGroupWorkerClient workerClient,
       StandaloneJavaFileGroupExecutionRunner runner,
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-file-group.enabled",
               defaultValue = "false")
           boolean enabled) {
+    this.blobStore = Objects.requireNonNull(blobStore, "blobStore");
+    this.snapshotPlanBlobStore =
+        Objects.requireNonNull(snapshotPlanBlobStore, "snapshotPlanBlobStore");
     this.workerClient = Objects.requireNonNull(workerClient, "workerClient");
     this.runner = Objects.requireNonNull(runner, "runner");
     this.enabled = enabled;
@@ -124,11 +134,24 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       }
       var captured =
           StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
+      String successResultId = successResultId(lease, payload);
+      List<TargetStatsRecord> fileStats =
+          captured.statsRecords().stream()
+              .filter(
+                  record ->
+                      record != null
+                          && record.hasTarget()
+                          && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE)
+              .toList();
+      var uploadedStats = uploadFileStatsDirect(lease, successResultId, fileStats);
+      var uploadedArtifacts = uploadIndexArtifactsDirect(lease, captured.stagedIndexArtifacts());
       var result =
           new StandaloneFileGroupExecutionResult(
-              successResultId(lease, payload),
-              captured.statsRecords(),
-              captured.stagedIndexArtifacts());
+              successResultId,
+              uploadedStats.isEmpty() ? captured.statsRecords() : List.of(),
+              uploadedStats,
+              uploadedArtifacts == null ? captured.stagedIndexArtifacts() : List.of(),
+              uploadedArtifacts == null ? List.of() : uploadedArtifacts);
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
         throw new IllegalStateException(
             "page-index capture produced no staged artifacts for file group " + payload.groupId());
@@ -223,6 +246,65 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
                 + " planned handles"
                 + (statsProcessed > 0 ? " and " + statsProcessed + " captured stats" : ""));
     return ExecutionResult.success(0, 0, 0, 0, 0, 0, statsProcessed, successMessage);
+  }
+
+  private List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>
+      uploadIndexArtifactsDirect(
+          ReconcileJobStore.LeasedJob lease,
+          List<ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact>
+              stagedArtifacts) {
+    if (stagedArtifacts == null || stagedArtifacts.isEmpty()) {
+      return List.of();
+    }
+    try {
+      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> uploaded =
+          new ArrayList<>(stagedArtifacts.size());
+      for (var artifact : stagedArtifacts) {
+        if (artifact == null || artifact.record() == null) {
+          continue;
+        }
+        byte[] content = artifact.content();
+        if (content == null || content.length == 0) {
+          throw new IllegalArgumentException("staged artifact missing content");
+        }
+        String artifactUri = artifact.record().getArtifactUri();
+        if (artifactUri == null || artifactUri.isBlank()) {
+          throw new IllegalArgumentException("staged artifact missing artifact uri");
+        }
+        String contentType =
+            artifact.contentType() == null || artifact.contentType().isBlank()
+                ? "application/x-parquet"
+                : artifact.contentType();
+        blobStore.put(artifactUri, content, contentType);
+        uploaded.add(
+            new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                artifact.record(), contentType, artifactUri));
+      }
+      return List.copyOf(uploaded);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Direct worker artifact upload failed for job %s; falling back to inline service upload",
+          lease.jobId);
+      return null;
+    }
+  }
+
+  private StandaloneFileGroupExecutionResult.FileStatsBlobManifest uploadFileStatsDirect(
+      ReconcileJobStore.LeasedJob lease, String resultId, List<TargetStatsRecord> statsRecords) {
+    if (statsRecords == null || statsRecords.isEmpty()) {
+      return StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty();
+    }
+    try {
+      return snapshotPlanBlobStore.persistFileGroupStats(
+          lease.accountId, lease.jobId, resultId, statsRecords);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Direct worker file-stats upload failed for job %s; falling back to inline service submit",
+          lease.jobId);
+      return StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty();
+    }
   }
 
   private boolean shouldSkipTerminalSubmission(

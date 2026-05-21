@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -54,11 +55,15 @@ public class SnapshotPlanBlobStore {
                             && job.fileGroupTask() != null
                             && !job.fileGroupTask().isEmpty())
                 .toList();
-    String blobUri = buildBlobUri(accountId, jobId, "snapshot-plan");
+    String blobUri =
+        SnapshotPlanManifestIds.manifestBlobUri(
+            accountId,
+            jobId,
+            sanitizedJobs.stream().map(PlannedFileGroupJob::fileGroupTask).toList());
     try {
       blobStore.put(
           blobUri,
-          mapper.writeValueAsBytes(new SnapshotPlanBlob(sanitizedJobs)),
+          mapper.writeValueAsBytes(SnapshotPlanBlob.of(sanitizedJobs)),
           "application/json; charset=" + StandardCharsets.UTF_8.name());
     } catch (Exception e) {
       throw new IllegalStateException("Failed to persist snapshot plan blob", e);
@@ -116,6 +121,34 @@ public class SnapshotPlanBlobStore {
         sanitizedStats.size());
   }
 
+  public StandaloneFileGroupExecutionResult.FileStatsBlobManifest persistFileGroupStats(
+      String accountId, String jobId, String resultId, List<TargetStatsRecord> statsRecords) {
+    List<TargetStatsRecord> sanitizedStats =
+        statsRecords == null
+            ? List.of()
+            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
+    if (sanitizedStats.isEmpty()) {
+      return StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty();
+    }
+    String effectiveResultId = resultId == null ? "" : resultId.trim();
+    if (effectiveResultId.isBlank()) {
+      throw new IllegalArgumentException("resultId is required for file-group stats blobs");
+    }
+    String blobUri = buildBlobUri(accountId, jobId, "file-group-stats/" + effectiveResultId);
+    try {
+      blobStore.put(
+          blobUri,
+          mapper.writeValueAsBytes(
+              new DirectStatsBlob(
+                  sanitizedStats.stream().map(TargetStatsRecord::toByteArray).toList())),
+          "application/json; charset=" + StandardCharsets.UTF_8.name());
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to persist file-group stats blob", e);
+    }
+    return new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
+        blobUri, sanitizedStats.size());
+  }
+
   public List<PlannedFileGroupJob> loadPlanJobs(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
@@ -133,7 +166,7 @@ public class SnapshotPlanBlobStore {
     try {
       return mapper
           .readValue(blobStore.get(effective.fileGroupPlanBlobUri()), SnapshotPlanBlob.class)
-          .fileGroupJobs();
+          .toPlannedFileGroupJobs();
     } catch (Exception e) {
       throw new IllegalStateException(
           "Failed to load snapshot plan blob " + effective.fileGroupPlanBlobUri(), e);
@@ -169,6 +202,24 @@ public class SnapshotPlanBlobStore {
     } catch (Exception e) {
       throw new IllegalStateException(
           "Failed to load direct stats blob " + effective.directStatsBlobUri(), e);
+    }
+  }
+
+  public List<TargetStatsRecord> loadFileGroupStats(String blobUri) {
+    String effectiveBlobUri = blobUri == null ? "" : blobUri.trim();
+    if (effectiveBlobUri.isBlank()) {
+      return List.of();
+    }
+    try {
+      return mapper
+          .readValue(blobStore.get(effectiveBlobUri), DirectStatsBlob.class)
+          .records()
+          .stream()
+          .map(SnapshotPlanBlobStore::parseTargetStatsRecord)
+          .toList();
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Failed to load file-group stats blob " + effectiveBlobUri, e);
     }
   }
 
@@ -210,9 +261,33 @@ public class SnapshotPlanBlobStore {
         + ".json";
   }
 
-  public record SnapshotPlanBlob(List<PlannedFileGroupJob> fileGroupJobs) {
-    public SnapshotPlanBlob {
-      fileGroupJobs = fileGroupJobs == null ? List.of() : List.copyOf(fileGroupJobs);
+  public static final class SnapshotPlanBlob {
+    public List<PlannedFileGroupJob> fileGroupJobs = List.of();
+
+    public static SnapshotPlanBlob of(List<PlannedFileGroupJob> plannedFileGroupJobs) {
+      SnapshotPlanBlob blob = new SnapshotPlanBlob();
+      List<PlannedFileGroupJob> sanitizedJobs =
+          plannedFileGroupJobs == null ? List.of() : List.copyOf(plannedFileGroupJobs);
+      blob.fileGroupJobs = sanitizedJobs;
+      return blob;
+    }
+
+    public List<ReconcileFileGroupTask> fileGroups() {
+      if (fileGroupJobs == null || fileGroupJobs.isEmpty()) {
+        return List.of();
+      }
+      return fileGroupJobs.stream().map(PlannedFileGroupJob::fileGroupTask).toList();
+    }
+
+    public List<PlannedFileGroupJob> toPlannedFileGroupJobs() {
+      if (fileGroupJobs == null || fileGroupJobs.isEmpty()) {
+        return List.of();
+      }
+      return fileGroupJobs.stream()
+          .filter(
+              job -> job != null && job.fileGroupTask() != null && !job.fileGroupTask().isEmpty())
+          .map(job -> new PlannedFileGroupJob(job.scope(), job.fileGroupTask()))
+          .toList();
     }
   }
 

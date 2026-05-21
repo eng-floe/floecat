@@ -137,7 +137,7 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
-  void persistSnapshotPlanUpdatesStoredJobPayload() {
+  void adoptSnapshotPlanManifestUpdatesStoredJobPayload() {
     var store = new InMemoryReconcileJobStore();
     String jobId =
         store.enqueueSnapshotPlan(
@@ -151,8 +151,7 @@ class InMemoryReconcileJobStoreTest {
             "parent-1",
             "");
 
-    store.persistSnapshotPlan(
-        jobId,
+    ReconcileSnapshotTask task =
         ReconcileSnapshotTask.of(
             "table-1",
             55L,
@@ -165,7 +164,9 @@ class InMemoryReconcileJobStoreTest {
                     "table-1",
                     55L,
                     List.of("s3://bucket/data/file-1.parquet"))),
-            true));
+            true);
+    String manifestUri = store.persistSnapshotPlanManifest("acct", jobId, task);
+    assertTrue(store.adoptSnapshotPlanManifest(jobId, "", task, manifestUri, true));
 
     var job = store.get("acct", jobId).orElseThrow();
     assertEquals(1, job.snapshotTask.fileGroups().size());
@@ -244,7 +245,7 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
-  void persistSnapshotPlanRejectsImplicitCoverageForPlanSnapshotJobs() {
+  void adoptSnapshotPlanManifestRejectsImplicitCoverageForPlanSnapshotJobs() {
     var store = new InMemoryReconcileJobStore();
     String jobId =
         store.enqueueSnapshotPlan(
@@ -262,8 +263,9 @@ class InMemoryReconcileJobStoreTest {
         assertThrows(
             IllegalArgumentException.class,
             () ->
-                store.persistSnapshotPlan(
+                store.adoptSnapshotPlanManifest(
                     jobId,
+                    "",
                     ReconcileSnapshotTask.of(
                         "table-1",
                         55L,
@@ -275,13 +277,15 @@ class InMemoryReconcileJobStoreTest {
                                 "snapshot-55-group-0",
                                 "table-1",
                                 55L,
-                                List.of("s3://bucket/data/file-1.parquet"))))));
+                                List.of("s3://bucket/data/file-1.parquet")))),
+                    "",
+                    true));
 
-    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+    assertTrue(error.getMessage().contains("adoptSnapshotPlanManifest"));
   }
 
   @Test
-  void persistSnapshotPlanRejectsEmptyCoverageForPlanSnapshotJobs() {
+  void adoptSnapshotPlanManifestRejectsEmptyCoverageForPlanSnapshotJobs() {
     var store = new InMemoryReconcileJobStore();
     String jobId =
         store.enqueueSnapshotPlan(
@@ -298,9 +302,11 @@ class InMemoryReconcileJobStoreTest {
     IllegalArgumentException error =
         assertThrows(
             IllegalArgumentException.class,
-            () -> store.persistSnapshotPlan(jobId, ReconcileSnapshotTask.empty()));
+            () ->
+                store.adoptSnapshotPlanManifest(
+                    jobId, "", ReconcileSnapshotTask.empty(), "", true));
 
-    assertTrue(error.getMessage().contains("persistSnapshotPlan"));
+    assertTrue(error.getMessage().contains("adoptSnapshotPlanManifest"));
   }
 
   @Test

@@ -32,12 +32,14 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
@@ -204,7 +206,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             true,
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-            "/accounts/acct/reconcile/jobs/job-lease/snapshot-plan/plan.json",
+            SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)),
             1);
     when(client.snapshotPlanBlobStore.persistPlan(any(), any(), any(), any()))
         .thenReturn(persistedSnapshotTask);
@@ -226,7 +228,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(success.getSnapshotTask().getFileGroupPlanRecorded()).isTrue();
     assertThat(success.getSnapshotTask().getCompletionMode().name()).isEqualTo("RSCM_FILE_GROUPS");
     assertThat(success.getSnapshotTask().getFileGroupPlanBlobUri())
-        .isEqualTo("/accounts/acct/reconcile/jobs/job-lease/snapshot-plan/plan.json");
+        .isEqualTo(
+            SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)));
     assertThat(success.getSnapshotTask().getFileGroupCount()).isEqualTo(1);
     assertThat(success.getSnapshotTask().getFileGroupsCount()).isZero();
   }
@@ -294,6 +297,76 @@ class GrpcRemoteReconcileExecutorClientTest {
                 remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("  ")));
 
     verify(client.executorControl).submitLeasedFileGroupExecutionResult(any());
+  }
+
+  @Test
+  void submitFileGroupSuccessSendsUploadedArtifactManifestWithoutInlineContent() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    client.executorControl =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+        .thenReturn(
+            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+
+    var record =
+        ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+            .setArtifactUri("s3://bucket/artifacts/file-1.parquet.idx")
+            .build();
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty(),
+            List.of(),
+            List.of(
+                new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                    record, "application/x-parquet", "s3://bucket/artifacts/file-1.parquet.idx")));
+
+    assertThat(client.submitSuccess(remoteFileGroupLease(), result)).isTrue();
+
+    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
+    verify(client.executorControl).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    var artifact = requestCaptor.getValue().getSuccess().getIndexArtifacts(0);
+    assertThat(artifact.getUploadedArtifactUri())
+        .isEqualTo("s3://bucket/artifacts/file-1.parquet.idx");
+    assertThat(artifact.getContent()).isEmpty();
+  }
+
+  @Test
+  void submitFileGroupSuccessSendsFileStatsBlobManifestWithoutInlineStats() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    client.executorControl =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+        .thenReturn(
+            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
+                "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json", 7),
+            List.of(),
+            List.of());
+
+    assertThat(client.submitSuccess(remoteFileGroupLease(), result)).isTrue();
+
+    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
+    verify(client.executorControl).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    var success = requestCaptor.getValue().getSuccess();
+    assertThat(success.getFileStatsBlobUri())
+        .isEqualTo("/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json");
+    assertThat(success.getFileStatsRecordCount()).isEqualTo(7);
+    assertThat(success.getStatsRecordsCount()).isZero();
   }
 
   private static ResourceId connectorId() {

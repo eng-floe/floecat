@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -795,6 +796,30 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
+                var uploadedIndexArtifacts =
+                    new ArrayList<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>();
+                var inlineIndexArtifacts =
+                    new ArrayList<
+                        ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact>();
+                for (var artifact : request.getSuccess().getIndexArtifactsList()) {
+                  if (artifact.getUploadedArtifactUri().isBlank()) {
+                    inlineIndexArtifacts.add(
+                        new ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact(
+                            artifact.getRecord(),
+                            artifact.getContent().toByteArray(),
+                            artifact.getContentType()));
+                    continue;
+                  }
+                  if (!artifact.getContent().isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "uploaded index artifact manifest must not include inline content");
+                  }
+                  uploadedIndexArtifacts.add(
+                      new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                          artifact.getRecord(),
+                          artifact.getContentType(),
+                          artifact.getUploadedArtifactUri()));
+                }
                 boolean accepted =
                     leasedFileGroupExecutionService.persistSuccess(
                         principalContext,
@@ -802,15 +827,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         leaseEpoch,
                         request.getSuccess().getResultId(),
                         request.getSuccess().getStatsRecordsList(),
-                        request.getSuccess().getIndexArtifactsList().stream()
-                            .map(
-                                artifact ->
-                                    new ai.floedb.floecat.reconciler.spi.ReconcilerBackend
-                                        .StagedIndexArtifact(
-                                        artifact.getRecord(),
-                                        artifact.getContent().toByteArray(),
-                                        artifact.getContentType()))
-                            .toList());
+                        request.getSuccess().getFileStatsBlobUri(),
+                        request.getSuccess().getFileStatsRecordCount(),
+                        inlineIndexArtifacts,
+                        uploadedIndexArtifacts);
                 return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

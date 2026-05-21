@@ -17,7 +17,9 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -33,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -441,7 +444,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         snapshotPlanBlobUri,
         fileGroupPlanBlobUri,
         StoredJobDefinition.of(scope, effectiveTableTask, effectiveViewTask),
-        StoredSnapshotPlanPayload.of(snapshotPlanFileGroups),
+        snapshotPlanBlob(snapshotPlanFileGroups),
         StoredFileGroupPlanPayload.of(effectiveFileGroupTask),
         effectiveFileGroupTask.fileResults().isEmpty()
             ? ReconcileFileGroupTask.empty()
@@ -975,87 +978,153 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
-    onHotPath(
+  public Optional<LeasedJob> getCompletionLeaseView(
+      String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return Optional.empty();
+    }
+    StoredReconcileJob existing = loaded.get().record;
+    if (!hasActiveLease(
+        jobId,
+        leaseEpoch,
+        existing,
+        "getCompletionLeaseView",
+        true,
+        true,
+        allowExpiredWithinGrace)) {
+      return Optional.empty();
+    }
+    ReconcileJob job = toCanonicalLeaseView(existing);
+    return Optional.of(
+        new LeasedJob(
+            job.jobId,
+            job.accountId,
+            job.connectorId,
+            job.fullRescan,
+            job.captureMode,
+            job.scope,
+            job.executionPolicy,
+            leaseEpoch,
+            job.pinnedExecutorId,
+            job.executorId,
+            job.jobKind,
+            job.tableTask,
+            job.viewTask,
+            job.snapshotTask,
+            job.fileGroupTask,
+            job.parentJobId));
+  }
+
+  @Override
+  public String persistSnapshotPlanManifest(
+      String accountId, String jobId, ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        || !effective.fileGroupPlanRecorded()
+        || effective.fileGroupCount() == 0) {
+      return "";
+    }
+    List<ReconcileFileGroupTask> plannedFileGroups = materializeSnapshotPlanFileGroups(effective);
+    if (plannedFileGroups.isEmpty()) {
+      throw new IllegalStateException(
+          "persistSnapshotPlanManifest requires a recorded file-group plan payload");
+    }
+    String effectiveAccountId = blankToEmpty(accountId);
+    if (effectiveAccountId.isBlank()) {
+      var loaded = loadByAnyAccount(jobId);
+      if (loaded.isEmpty()) {
+        throw new IllegalArgumentException("reconcile job not found: " + jobId);
+      }
+      effectiveAccountId = loaded.get().record.accountId;
+    }
+    SnapshotPlanBlob payload = snapshotPlanBlob(plannedFileGroups);
+    return writeBlob(
+        SnapshotPlanManifestIds.manifestBlobUri(effectiveAccountId, jobId, plannedFileGroups),
+        payload,
+        "Failed to persist snapshot plan payload");
+  }
+
+  @Override
+  public boolean adoptSnapshotPlanManifest(
+      String jobId,
+      String leaseEpoch,
+      ReconcileSnapshotTask snapshotTask,
+      String manifestUri,
+      boolean allowExpiredWithinGrace) {
+    return onHotPath(
         () -> {
           ReconcileSnapshotTask effective =
               snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+          String effectiveManifestUri = manifestUri == null ? "" : manifestUri.trim();
           LOG.debugf(
-              "persistSnapshotPlan jobId=%s tableId=%s snapshotId=%d fileGroups=%d",
-              jobId, effective.tableId(), effective.snapshotId(), effective.fileGroups().size());
+              "adoptSnapshotPlanManifest jobId=%s leaseEpoch=%s tableId=%s snapshotId=%d fileGroups=%d manifestUri=%s",
+              jobId,
+              leaseEpoch,
+              effective.tableId(),
+              effective.snapshotId(),
+              effective.fileGroupCount(),
+              effectiveManifestUri);
           var loaded = loadByAnyAccount(jobId);
           if (loaded.isEmpty()) {
-            return;
+            return false;
           }
-          String accountId = loaded.get().record.accountId;
-          String existingBlobUri = blankToEmpty(loaded.get().record.snapshotPlanBlobUri);
-          List<ReconcileFileGroupTask> plannedFileGroups =
-              materializeSnapshotPlanFileGroups(effective);
-          if (effective.fileGroupPlanRecorded()
-              && effective.fileGroupCount() > 0
-              && plannedFileGroups.isEmpty()
-              && blank(existingBlobUri)) {
-            throw new IllegalStateException(
-                "PLAN_SNAPSHOT has fileGroupPlanRecorded=true but no file groups and no existing"
-                    + " snapshot plan blob");
-          }
-          String nextBlobUri =
-              plannedFileGroups.isEmpty()
-                  ? existingBlobUri
-                  : writeBlob(
-                      Keys.reconcileJobBlobUri(
-                          accountId,
-                          jobId,
-                          "snapshot-plan-" + System.currentTimeMillis() + "-" + UUID.randomUUID()),
-                      StoredSnapshotPlanPayload.of(plannedFileGroups),
-                      "Failed to persist snapshot plan payload");
-          AtomicReference<String> previousSnapshotPlanBlobUri = new AtomicReference<>("");
-          Optional<StoredEnvelope> updated;
-          try {
-            updated =
-                mutateByJobIdReturningRecord(
-                    jobId,
-                    existing -> {
-                      previousSnapshotPlanBlobUri.set(blankToEmpty(existing.snapshotPlanBlobUri));
-                      if (ReconcileJobKind.PLAN_SNAPSHOT.name().equals(existing.jobKind)
-                          && !effective.fileGroupPlanRecorded()) {
-                        throw new IllegalArgumentException(
-                            "persistSnapshotPlan requires explicit snapshot coverage metadata for"
-                                + " PLAN_SNAPSHOT jobs");
-                      }
-                      existing.snapshotTaskTableId = blankToEmpty(effective.tableId());
-                      existing.snapshotTaskSnapshotId = effective.snapshotId();
-                      existing.snapshotTaskSourceNamespace = effective.sourceNamespace();
-                      existing.snapshotTaskSourceTable = effective.sourceTable();
-                      existing.snapshotTaskFileGroupPlanRecorded =
-                          effective.fileGroupPlanRecorded();
-                      existing.snapshotTaskCompletionMode = effective.completionMode().name();
-                      existing.snapshotTaskDirectStatsBlobUri =
-                          blankToEmpty(effective.directStatsBlobUri());
-                      existing.snapshotTaskDirectStatsRecordCount =
-                          effective.directStatsRecordCount();
-                      existing.snapshotPlanBlobUri = nextBlobUri;
-                      return existing;
-                    });
-          } catch (RuntimeException e) {
-            if (!nextBlobUri.isBlank()) {
-              blobStore.delete(nextBlobUri);
-            }
-            throw e;
-          }
+          List<ReconcileFileGroupTask> materializedFileGroups =
+              validateSnapshotPlanManifest(loaded.get().record, effective, effectiveManifestUri);
+          ReconcileSnapshotTask projectedSnapshotTask =
+              materializedSnapshotPlanTask(effective, effectiveManifestUri, materializedFileGroups);
+          final boolean[] alreadyAdopted = {false};
+          Optional<StoredEnvelope> updated =
+              mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (!hasActiveLease(
+                        jobId,
+                        leaseEpoch,
+                        existing,
+                        "adoptSnapshotPlanManifest",
+                        true,
+                        true,
+                        allowExpiredWithinGrace)) {
+                      return null;
+                    }
+                    if (ReconcileJobKind.PLAN_SNAPSHOT != existing.jobKind()) {
+                      throw new IllegalArgumentException(
+                          "adoptSnapshotPlanManifest requires a PLAN_SNAPSHOT job");
+                    }
+                    validateSnapshotPlanCanonicalIdentity(existing, effective);
+                    if (snapshotPlanMatches(existing, effective, effectiveManifestUri)) {
+                      alreadyAdopted[0] = true;
+                      return null;
+                    }
+                    existing.snapshotTaskTableId = blankToEmpty(effective.tableId());
+                    existing.snapshotTaskSnapshotId = effective.snapshotId();
+                    existing.snapshotTaskSourceNamespace =
+                        blankToEmpty(effective.sourceNamespace());
+                    existing.snapshotTaskSourceTable = blankToEmpty(effective.sourceTable());
+                    existing.snapshotTaskFileGroupPlanRecorded = effective.fileGroupPlanRecorded();
+                    existing.snapshotTaskCompletionMode = effective.completionMode().name();
+                    existing.snapshotTaskDirectStatsBlobUri =
+                        blankToEmpty(effective.directStatsBlobUri());
+                    existing.snapshotTaskDirectStatsRecordCount =
+                        effective.directStatsRecordCount();
+                    existing.snapshotPlanBlobUri = effectiveManifestUri;
+                    JobProjection projection = projectSnapshotPlan(projectedSnapshotTask);
+                    existing.indexesProcessed = projection.indexesProcessed;
+                    existing.plannedFileGroups = projection.plannedFileGroups;
+                    existing.plannedFiles = projection.plannedFiles;
+                    existing.completedFileGroups = projection.completedFileGroups;
+                    existing.failedFileGroups = projection.failedFileGroups;
+                    existing.completedFiles = projection.completedFiles;
+                    existing.failedFiles = projection.failedFiles;
+                    return existing;
+                  });
           if (updated.isEmpty()) {
-            if (!nextBlobUri.isBlank()) {
-              blobStore.delete(nextBlobUri);
-            }
-            return;
+            return alreadyAdopted[0];
           }
           refreshAncestorContributionRollups(updated.get().record, true);
-          String previousBlobUri = previousSnapshotPlanBlobUri.get();
-          if (!plannedFileGroups.isEmpty()
-              && !previousBlobUri.isBlank()
-              && !previousBlobUri.equals(nextBlobUri)) {
-            blobStore.delete(previousBlobUri);
-          }
+          return true;
         });
   }
 
@@ -1072,11 +1141,178 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return List.of();
     }
     return requireBlob(
-            effective.fileGroupPlanBlobUri(),
-            StoredSnapshotPlanPayload.class,
-            "snapshot plan payload",
-            "")
+            effective.fileGroupPlanBlobUri(), SnapshotPlanBlob.class, "snapshot plan payload", "")
         .fileGroups();
+  }
+
+  private List<ReconcileFileGroupTask> validateSnapshotPlanManifest(
+      StoredReconcileJob currentState, ReconcileSnapshotTask snapshotTask, String manifestUri) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS) {
+      if (!manifestUri.isBlank()) {
+        throw new IllegalArgumentException(
+            "snapshot plan manifest URI is only valid for FILE_GROUPS completion");
+      }
+      return List.of();
+    }
+    if (!effective.fileGroupPlanRecorded()) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption requires explicit file-group plan coverage metadata");
+    }
+    if (effective.fileGroupCount() == 0) {
+      if (manifestUri.isBlank()) {
+        return List.of();
+      }
+      SnapshotPlanBlob payload =
+          requireBlob(
+              manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
+      validateSnapshotPlanManifestHash(manifestUri, payload.fileGroups());
+      return payload.fileGroups();
+    }
+    if (manifestUri.isBlank()) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption requires a pre-persisted manifest URI");
+    }
+    SnapshotPlanBlob payload =
+        requireBlob(
+            manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
+    List<ReconcileFileGroupTask> plannedFileGroups = payload.fileGroups();
+    validateSnapshotPlanManifestHash(manifestUri, plannedFileGroups);
+    if (plannedFileGroups.size() != effective.fileGroupCount()) {
+      throw new IllegalArgumentException(
+          "snapshot plan manifest file-group count mismatch expected="
+              + effective.fileGroupCount()
+              + " actual="
+              + plannedFileGroups.size());
+    }
+    for (ReconcileFileGroupTask fileGroup : plannedFileGroups) {
+      if (fileGroup == null || fileGroup.isEmpty()) {
+        throw new IllegalArgumentException("snapshot plan manifest contained an empty file group");
+      }
+      if (!blankToEmpty(effective.tableId()).equals(blankToEmpty(fileGroup.tableId()))) {
+        throw new IllegalArgumentException(
+            "snapshot plan manifest tableId mismatch expected="
+                + effective.tableId()
+                + " actual="
+                + fileGroup.tableId());
+      }
+      if (effective.snapshotId() != fileGroup.snapshotId()) {
+        throw new IllegalArgumentException(
+            "snapshot plan manifest snapshotId mismatch expected="
+                + effective.snapshotId()
+                + " actual="
+                + fileGroup.snapshotId());
+      }
+    }
+    return plannedFileGroups;
+  }
+
+  private void validateSnapshotPlanCanonicalIdentity(
+      StoredReconcileJob currentState, ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (!blank(currentState.snapshotTaskTableId)
+        && !blankToEmpty(currentState.snapshotTaskTableId)
+            .equals(blankToEmpty(effective.tableId()))) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption tableId mismatch expected="
+              + currentState.snapshotTaskTableId
+              + " actual="
+              + effective.tableId());
+    }
+    if (currentState.snapshotTaskSnapshotId >= 0L
+        && currentState.snapshotTaskSnapshotId != effective.snapshotId()) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption snapshotId mismatch expected="
+              + currentState.snapshotTaskSnapshotId
+              + " actual="
+              + effective.snapshotId());
+    }
+    if (!blank(currentState.snapshotTaskSourceNamespace)
+        && !blankToEmpty(currentState.snapshotTaskSourceNamespace)
+            .equals(blankToEmpty(effective.sourceNamespace()))) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption sourceNamespace mismatch expected="
+              + currentState.snapshotTaskSourceNamespace
+              + " actual="
+              + effective.sourceNamespace());
+    }
+    if (!blank(currentState.snapshotTaskSourceTable)
+        && !blankToEmpty(currentState.snapshotTaskSourceTable)
+            .equals(blankToEmpty(effective.sourceTable()))) {
+      throw new IllegalArgumentException(
+          "snapshot plan adoption sourceTable mismatch expected="
+              + currentState.snapshotTaskSourceTable
+              + " actual="
+              + effective.sourceTable());
+    }
+  }
+
+  private boolean snapshotPlanMatches(
+      StoredReconcileJob currentState, ReconcileSnapshotTask snapshotTask, String manifestUri) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    return blankToEmpty(currentState.snapshotTaskTableId).equals(blankToEmpty(effective.tableId()))
+        && currentState.snapshotTaskSnapshotId == effective.snapshotId()
+        && blankToEmpty(currentState.snapshotTaskSourceNamespace)
+            .equals(blankToEmpty(effective.sourceNamespace()))
+        && blankToEmpty(currentState.snapshotTaskSourceTable)
+            .equals(blankToEmpty(effective.sourceTable()))
+        && currentState.snapshotTaskFileGroupPlanRecorded == effective.fileGroupPlanRecorded()
+        && blankToEmpty(currentState.snapshotTaskCompletionMode)
+            .equals(effective.completionMode().name())
+        && blankToEmpty(currentState.snapshotTaskDirectStatsBlobUri)
+            .equals(blankToEmpty(effective.directStatsBlobUri()))
+        && currentState.snapshotTaskDirectStatsRecordCount == effective.directStatsRecordCount()
+        && blankToEmpty(currentState.snapshotPlanBlobUri).equals(blankToEmpty(manifestUri));
+  }
+
+  private void validateSnapshotPlanManifestHash(
+      String manifestUri, List<ReconcileFileGroupTask> plannedFileGroups) {
+    String effectiveManifestUri = blankToEmpty(manifestUri);
+    if (effectiveManifestUri.isBlank()) {
+      return;
+    }
+    String expectedManifestUri =
+        SnapshotPlanManifestIds.manifestBlobUri(
+            "ignored-account", "ignored-job", plannedFileGroups);
+    String expectedFilename =
+        expectedManifestUri.substring(expectedManifestUri.lastIndexOf('/') + 1);
+    if (!effectiveManifestUri.endsWith("/" + expectedFilename)
+        && !effectiveManifestUri.endsWith(expectedFilename)) {
+      throw new IllegalArgumentException(
+          "snapshot plan manifest URI hash mismatch expectedSuffix="
+              + expectedFilename.substring(0, expectedFilename.length() - ".json".length())
+              + " actualUri="
+              + effectiveManifestUri);
+    }
+  }
+
+  private ReconcileSnapshotTask materializedSnapshotPlanTask(
+      ReconcileSnapshotTask snapshotTask,
+      String manifestUri,
+      List<ReconcileFileGroupTask> materializedFileGroups) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    List<ReconcileFileGroupTask> effectiveFileGroups =
+        materializedFileGroups == null ? List.of() : materializedFileGroups;
+    if (effectiveFileGroups.isEmpty() && !effective.fileGroups().isEmpty()) {
+      effectiveFileGroups = effective.fileGroups();
+    }
+    int adoptedFileGroupCount = effectiveFileGroups.size();
+    return ReconcileSnapshotTask.of(
+        effective.tableId(),
+        effective.snapshotId(),
+        effective.sourceNamespace(),
+        effective.sourceTable(),
+        effectiveFileGroups,
+        effective.fileGroupPlanRecorded(),
+        effective.completionMode(),
+        manifestUri == null ? "" : manifestUri.trim(),
+        adoptedFileGroupCount,
+        effective.directStatsBlobUri(),
+        effective.directStatsRecordCount());
   }
 
   @Override
@@ -1171,7 +1407,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               .ifPresent(
                   env -> {
                     if (changedMaterially[0]) {
-                      refreshDirectParentContribution(env.record, false);
+                      refreshAncestorContributionRollups(env.record, false);
                     }
                   });
         });
@@ -2568,7 +2804,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private ReconcileJob toPublicJob(StoredReconcileJob stored, boolean includeDetails) {
-    ProjectedPublicJob projected = projectPublicJob(stored, includeDetails, false);
+    boolean aggregateSummaryPresent = isParentCapable(stored.jobKind());
+    ProjectedPublicJob projected =
+        aggregateSummaryPresent
+            ? ProjectedPublicJob.self(stored, inlineSummaryProjection(stored))
+            : projectPublicJob(stored, includeDetails, false);
     StoredJobDefinition definition = includeDetails ? requireDefinition(stored) : null;
     ReconcileSnapshotTask snapshotTask =
         includeDetails ? snapshotTaskFor(stored) : ReconcileSnapshotTask.empty();
@@ -2592,7 +2832,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         projected.snapshotsProcessed,
         projected.statsProcessed,
         projected.projection.indexesProcessed,
-        false,
+        aggregateSummaryPresent,
         includeDetails ? definition.toScope() : ReconcileScope.empty(),
         stored.executionPolicy(),
         stored.pinnedExecutorId(),
@@ -2655,6 +2895,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private ReconcileJob toPublicJobSummary(StoredReconcileJob stored) {
+    boolean aggregateSummaryPresent = isParentCapable(stored.jobKind());
     JobProjection projection = inlineSummaryProjection(stored);
     String state = blankToEmpty(stored.state);
     return new ReconcileJob(
@@ -2675,7 +2916,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         stored.snapshotsProcessed,
         stored.statsProcessed,
         projection.indexesProcessed,
-        false,
+        aggregateSummaryPresent,
         ReconcileScope.empty(),
         stored.executionPolicy(),
         stored.pinnedExecutorId(),
@@ -4235,6 +4476,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  private String writeJson(Object payload) {
+    try {
+      return new String(mapper.writeValueAsBytes(payload), StandardCharsets.UTF_8);
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to serialize payload", e);
+    }
+  }
+
   private Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
     if (state == null) {
       return Optional.empty();
@@ -4424,11 +4673,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return List.of();
     }
     return requireBlob(
-            state.snapshotPlanBlobUri,
-            StoredSnapshotPlanPayload.class,
-            "snapshot plan payload",
-            state.jobId)
+            state.snapshotPlanBlobUri, SnapshotPlanBlob.class, "snapshot plan payload", state.jobId)
         .fileGroups();
+  }
+
+  private static SnapshotPlanBlob snapshotPlanBlob(List<ReconcileFileGroupTask> fileGroups) {
+    List<PlannedFileGroupJob> plannedJobs =
+        (fileGroups == null ? List.<ReconcileFileGroupTask>of() : fileGroups)
+            .stream()
+                .filter(fileGroup -> fileGroup != null && !fileGroup.isEmpty())
+                .map(fileGroup -> new PlannedFileGroupJob(ReconcileScope.empty(), fileGroup))
+                .toList();
+    return SnapshotPlanBlob.of(plannedJobs);
   }
 
   private List<String> loadFileGroupPaths(StoredReconcileJob state) {
@@ -4513,6 +4769,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         state.fileGroupTableId,
         state.fileGroupSnapshotId,
         state.fileGroupFileCount,
+        resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
+        resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
         resultPayload == null ? loadFileGroupPaths(state) : resultPayload.filePaths(),
         resultPayload == null ? loadFileGroupResults(state) : resultPayload.fileResults());
   }
@@ -4572,11 +4830,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (stored == null) {
       return ProjectedPublicJob.empty();
     }
-    if (isParentCapable(stored.jobKind())
-        && isTerminalState(stored.state)
-        && stored.finishedAtMs > 0L) {
-      return ProjectedPublicJob.self(stored, inlineSummaryProjection(stored));
-    }
     ReconcileSnapshotTask snapshotTask =
         includeSelfProjectionPayloads && stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
             ? snapshotTaskFor(stored)
@@ -4609,9 +4862,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       JobProjection selfProjection,
       List<StoredJobContribution> contributions) {
 
-    long tablesScanned = Math.max(0L, stored.tablesScanned);
+    long tablesScanned =
+        stored.jobKind() == ReconcileJobKind.PLAN_CONNECTOR
+                || stored.jobKind() == ReconcileJobKind.PLAN_TABLE
+            ? 0L
+            : Math.max(0L, stored.tablesScanned);
     long tablesChanged = 0L;
-    long viewsScanned = Math.max(0L, stored.viewsScanned);
+    long viewsScanned =
+        stored.jobKind() == ReconcileJobKind.PLAN_CONNECTOR
+            ? 0L
+            : Math.max(0L, stored.viewsScanned);
     long viewsChanged = 0L;
     long errors = 0L;
     long snapshotsProcessed = 0L;
@@ -4693,8 +4953,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               ? 1L
               : 0L;
     } else if (stored.jobKind() == ReconcileJobKind.PLAN_CONNECTOR) {
-      tablesScanned = Math.max(0L, stored.tablesScanned);
-      viewsScanned = Math.max(0L, stored.viewsScanned);
+      tablesScanned =
+          Math.max(
+              Math.max(Math.max(0L, stored.tablesScanned), tablesScanned),
+              maxExpectedChildJobs(stored, directChildCounts.totalObserved()));
     }
 
     if ("JS_FAILED".equals(stored.state)) {
@@ -4729,9 +4991,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       message = firstNonBlank(waitingChild.message, message, "Waiting on child work");
       executorId = "";
     } else if (queuedChild != null
-        && ("JS_WAITING".equals(stored.state) || "JS_SUCCEEDED".equals(stored.state))) {
+        && ("JS_RUNNING".equals(stored.state)
+            || "JS_WAITING".equals(stored.state)
+            || "JS_SUCCEEDED".equals(stored.state))) {
       state = "JS_WAITING";
-      message = "Waiting on child work";
+      message = firstNonBlank(queuedChild.message, "Waiting on child work");
       executorId = "";
     } else if (allSucceeded && directChildJobsComplete(stored, directChildCounts)) {
       state = "JS_SUCCEEDED";
@@ -4942,14 +5206,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
-  private void refreshDirectParentContribution(
-      StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
-    if (childJob == null || blank(childJob.parentJobId)) {
-      return;
-    }
-    upsertContributionForParent(childJob, includeSelfProjectionPayloads);
-  }
-
   private void refreshAncestorContributionRollups(
       StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
     if (childJob == null || blank(childJob.parentJobId)) {
@@ -4975,9 +5231,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || !isParentCapable(parentEnvelope.record.jobKind())) {
       return parentEnvelope == null ? null : parentEnvelope.record;
     }
-    if (isTerminalState(parentEnvelope.record.state)) {
-      return parentEnvelope.record;
-    }
     List<StoredJobContribution> contributions =
         loadDirectContributionsNoRepair(
             parentEnvelope.record.accountId, parentEnvelope.record.jobId);
@@ -4989,9 +5242,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             existing -> {
               if (!isParentCapable(existing.jobKind())) {
                 return existing;
-              }
-              if (isTerminalState(existing.state)) {
-                return null;
               }
               boolean leaseOwnsCanonicalState =
                   hasLiveLease(existing, true, System.currentTimeMillis());
@@ -5071,33 +5321,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ProjectedPublicJob projected,
       DirectChildCounts directChildCounts) {
     String projectedState = blankToEmpty(projected.state);
-    if (isTerminalState(projectedState)) {
-      return projectedState;
-    }
-    if ((hasExpectedDirectChildJobs(existing) || directChildCounts.totalObserved() > 0L)
-        && !directChildJobsComplete(existing, directChildCounts)) {
-      return "JS_WAITING";
-    }
-    if ("JS_WAITING".equals(projectedState)
-        && directChildJobsComplete(existing, directChildCounts)) {
-      return "JS_SUCCEEDED";
-    }
-    return switch (projectedState) {
-      case "JS_QUEUED" -> projectedState;
-      case "JS_RUNNING", "JS_CANCELLING" -> projectedState;
-      case "JS_FAILED", "JS_CANCELLED" -> projectedState;
-      default -> "JS_WAITING";
-    };
+    return projectedState.isBlank() ? blankToEmpty(existing.state) : projectedState;
   }
 
   private static String canonicalParentMessageFromProjection(
       StoredReconcileJob existing, ProjectedPublicJob projected, String nextState) {
-    if ("JS_WAITING".equals(nextState)) {
-      if ("JS_WAITING".equals(blankToEmpty(projected.state))) {
-        return firstNonBlank(projected.message, existing.message, "Waiting on child work");
-      }
-      return firstNonBlank(existing.message, "Waiting on child work");
-    }
     if ("JS_SUCCEEDED".equals(nextState)) {
       return normalizeSucceededMessage(
           firstNonBlank(projected.message, existing.message, "Succeeded"));
@@ -6033,7 +6261,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     + "|"
                     + group.snapshotId()
                     + "|"
-                    + String.join(",", group.filePaths()))
+                    + String.join(",", canonicalFilePaths(group)))
+        .sorted()
+        .toList();
+  }
+
+  private static List<String> canonicalFilePaths(ReconcileFileGroupTask group) {
+    if (group == null || group.filePaths() == null || group.filePaths().isEmpty()) {
+      return List.of();
+    }
+    return group.filePaths().stream()
+        .filter(path -> path != null && !path.isBlank())
+        .map(String::trim)
         .sorted()
         .toList();
   }
@@ -6102,7 +6341,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     final String snapshotPlanBlobUri;
     final String fileGroupPlanBlobUri;
     final StoredJobDefinition definition;
-    final StoredSnapshotPlanPayload snapshotPlanPayload;
+    final SnapshotPlanBlob snapshotPlanPayload;
     final StoredFileGroupPlanPayload fileGroupPlanPayload;
     final ReconcileFileGroupTask resultPayloadTask;
     final StoredReconcileJob record;
@@ -6125,7 +6364,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         String snapshotPlanBlobUri,
         String fileGroupPlanBlobUri,
         StoredJobDefinition definition,
-        StoredSnapshotPlanPayload snapshotPlanPayload,
+        SnapshotPlanBlob snapshotPlanPayload,
         StoredFileGroupPlanPayload fileGroupPlanPayload,
         ReconcileFileGroupTask resultPayloadTask,
         StoredReconcileJob record) {
@@ -6366,15 +6605,28 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   static final class StoredFileGroupResultPayload {
+    public String fileStatsBlobUri = "";
+    public int fileStatsRecordCount;
     public List<String> filePaths = List.of();
     public List<ReconcileFileResult> fileResults = List.of();
 
     static StoredFileGroupResultPayload of(ReconcileFileGroupTask task) {
       ReconcileFileGroupTask effective = task == null ? ReconcileFileGroupTask.empty() : task;
       StoredFileGroupResultPayload payload = new StoredFileGroupResultPayload();
+      payload.fileStatsBlobUri =
+          effective.fileStatsBlobUri() == null ? "" : effective.fileStatsBlobUri();
+      payload.fileStatsRecordCount = effective.fileStatsRecordCount();
       payload.filePaths = effective.filePaths() == null ? List.of() : effective.filePaths();
       payload.fileResults = effective.fileResults() == null ? List.of() : effective.fileResults();
       return payload;
+    }
+
+    String fileStatsBlobUri() {
+      return fileStatsBlobUri == null ? "" : fileStatsBlobUri;
+    }
+
+    int fileStatsRecordCount() {
+      return Math.max(0, fileStatsRecordCount);
     }
 
     List<String> filePaths() {

@@ -69,13 +69,17 @@ class SnapshotFinalizeReconcileExecutorTest {
       SNAPSHOT_PLAN_GROUPS = new IdentityHashMap<>();
   private static final Map<SnapshotPlanBlobStore, Map<String, List<TargetStatsRecord>>>
       DIRECT_STATS_RECORDS = new IdentityHashMap<>();
+  private static final Map<SnapshotPlanBlobStore, Map<String, List<TargetStatsRecord>>>
+      FILE_GROUP_STATS_RECORDS = new IdentityHashMap<>();
 
   private static SnapshotPlanBlobStore snapshotPlanBlobStore() {
     SnapshotPlanBlobStore store = mock(SnapshotPlanBlobStore.class);
     Map<String, List<ReconcileFileGroupTask>> groupsByUri = new HashMap<>();
     Map<String, List<TargetStatsRecord>> directStatsByUri = new HashMap<>();
+    Map<String, List<TargetStatsRecord>> fileGroupStatsByUri = new HashMap<>();
     SNAPSHOT_PLAN_GROUPS.put(store, groupsByUri);
     DIRECT_STATS_RECORDS.put(store, directStatsByUri);
+    FILE_GROUP_STATS_RECORDS.put(store, fileGroupStatsByUri);
     when(store.loadFileGroups(org.mockito.ArgumentMatchers.any()))
         .thenAnswer(
             invocation -> {
@@ -103,6 +107,19 @@ class SnapshotFinalizeReconcileExecutorTest {
               if (records == null) {
                 throw new IllegalStateException(
                     "Missing direct stats blob fixture " + snapshotTask.directStatsBlobUri());
+              }
+              return records;
+            });
+    when(store.loadFileGroupStats(org.mockito.ArgumentMatchers.anyString()))
+        .thenAnswer(
+            invocation -> {
+              String blobUri = invocation.getArgument(0);
+              if (blobUri == null || blobUri.isBlank()) {
+                return List.of();
+              }
+              List<TargetStatsRecord> records = fileGroupStatsByUri.get(blobUri);
+              if (records == null) {
+                throw new IllegalStateException("Missing file-group stats blob fixture " + blobUri);
               }
               return records;
             });
@@ -797,6 +814,153 @@ class SnapshotFinalizeReconcileExecutorTest {
     assertNotNull(result.error);
     assertTrue(result.message.contains("coverage mismatch"));
     assertTrue(result.message.contains("missing"));
+  }
+
+  @Test
+  void executeIngestsFileGroupStatsBlobsBeforeCoverageValidation() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    ReconcileFileGroupTask groupOne =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileFileGroupTask groupTwo =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-2", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-2.parquet"));
+    ReconcileScope scope = captureScope();
+    ReconcileSnapshotTask snapshotTask =
+        persistedSnapshotPlan(snapshotPlanBlobStore, scope, groupOne, groupTwo);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String childOneJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            groupOne,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    String childTwoJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            groupTwo,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    String childOneBlobUri = "/accounts/acct/reconcile/jobs/job-child-1/file-group-stats/1.json";
+    String childTwoBlobUri = "/accounts/acct/reconcile/jobs/job-child-2/file-group-stats/2.json";
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    FILE_GROUP_STATS_RECORDS
+        .get(snapshotPlanBlobStore)
+        .put(
+            childOneBlobUri,
+            List.of(
+                TargetStatsRecords.fileRecord(
+                    tableId,
+                    SNAPSHOT_ID,
+                    FileTargetStats.newBuilder()
+                        .setFilePath("s3://bucket/data/file-1.parquet")
+                        .setRowCount(10L)
+                        .setSizeBytes(128L)
+                        .build(),
+                    null)));
+    FILE_GROUP_STATS_RECORDS
+        .get(snapshotPlanBlobStore)
+        .put(
+            childTwoBlobUri,
+            List.of(
+                TargetStatsRecords.fileRecord(
+                    tableId,
+                    SNAPSHOT_ID,
+                    FileTargetStats.newBuilder()
+                        .setFilePath("s3://bucket/data/file-2.parquet")
+                        .setRowCount(20L)
+                        .setSizeBytes(256L)
+                        .build(),
+                    null)));
+
+    store.persistFileGroupResult(
+        childOneJobId,
+        groupOne
+            .withFileStatsBlob(childOneBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
+    store.persistFileGroupResult(
+        childTwoJobId,
+        groupTwo
+            .withFileStatsBlob(childTwoBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
+    ReconcileJobStore.LeasedJob childOneLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childOneLease.jobId, childOneLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+    ReconcileJobStore.LeasedJob childTwoLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childTwoLease.jobId, childTwoLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertTrue(result.ok());
+    assertEquals(
+        30L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .orElseThrow()
+            .getTable()
+            .getRowCount());
   }
 
   @Test

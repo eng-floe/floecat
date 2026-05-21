@@ -285,6 +285,23 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no stats outputs)");
     }
+    try {
+      ingestFileGroupStatsBlobs(childState.completedGroupTasks());
+    } catch (RuntimeException e) {
+      return ExecutionResult.failure(
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          "File-group stats blob ingest failed for snapshot "
+              + snapshotTask.snapshotId()
+              + ": "
+              + e.getMessage(),
+          e);
+    }
 
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -391,7 +408,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String finalizerJobId,
       List<ReconcileFileGroupTask> expectedGroups) {
     if (parentJobId == null || parentJobId.isBlank()) {
-      return new ChildState(0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+      return new ChildState(
+          0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
     HashMap<String, ReconcileJobStore.ReconcileJob> childByGroupKey = new HashMap<>();
     LinkedHashSet<String> duplicateGroups = new LinkedHashSet<>();
@@ -422,6 +440,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     int completedGroups = 0;
+    List<ReconcileFileGroupTask> completedGroupTasks = new ArrayList<>();
     LinkedHashSet<String> pendingGroups = new LinkedHashSet<>();
     LinkedHashSet<String> failedGroups = new LinkedHashSet<>();
     LinkedHashSet<String> cancelledGroups = new LinkedHashSet<>();
@@ -442,6 +461,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       if ("JS_SUCCEEDED".equals(child.state)) {
         if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
           completedGroups++;
+          completedGroupTasks.add(child.fileGroupTask);
         } else {
           invalidSucceededGroups.add(description);
         }
@@ -461,7 +481,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(cancelledGroups),
         List.copyOf(duplicateGroups),
         List.copyOf(missingGroups),
-        List.copyOf(invalidSucceededGroups));
+        List.copyOf(invalidSucceededGroups),
+        List.copyOf(completedGroupTasks));
   }
 
   private List<String> fileGroupChildDescriptions(
@@ -563,6 +584,33 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     for (TargetStatsRecord record : records) {
       statsStore.putTargetStats(record);
       processed++;
+    }
+    return processed;
+  }
+
+  private long ingestFileGroupStatsBlobs(List<ReconcileFileGroupTask> completedGroups) {
+    long processed = 0L;
+    List<ReconcileFileGroupTask> groups =
+        completedGroups == null ? List.<ReconcileFileGroupTask>of() : completedGroups;
+    for (ReconcileFileGroupTask group : groups) {
+      if (group == null || group.fileStatsBlobUri().isBlank()) {
+        continue;
+      }
+      List<TargetStatsRecord> records =
+          snapshotPlanBlobStore.loadFileGroupStats(group.fileStatsBlobUri());
+      if (group.fileStatsRecordCount() > 0 && records.size() != group.fileStatsRecordCount()) {
+        throw new IllegalStateException(
+            "File-group stats blob record count mismatch expected="
+                + group.fileStatsRecordCount()
+                + " actual="
+                + records.size()
+                + " group="
+                + describeGroup(group));
+      }
+      for (TargetStatsRecord record : records) {
+        statsStore.putTargetStats(record);
+        processed++;
+      }
     }
     return processed;
   }
@@ -716,7 +764,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       List<String> cancelledGroups,
       List<String> duplicateGroups,
       List<String> missingGroups,
-      List<String> invalidSucceededGroups) {}
+      List<String> invalidSucceededGroups,
+      List<ReconcileFileGroupTask> completedGroupTasks) {}
 
   private enum PlannedCoverageState {
     UNKNOWN,

@@ -27,6 +27,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -79,6 +80,9 @@ class SnapshotPlanBlobStoreTest {
 
     assertFalse(persistedTask.fileGroupPlanBlobUri().isBlank());
     assertEquals(1, persistedTask.fileGroupCount());
+    assertEquals(
+        SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", List.of(group)),
+        persistedTask.fileGroupPlanBlobUri());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()));
 
     List<PlannedFileGroupJob> roundTripped = store.loadPlanJobs(persistedTask);

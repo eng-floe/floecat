@@ -708,10 +708,32 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   public boolean submitSuccess(RemoteLeasedJob lease, StandaloneFileGroupExecutionResult result) {
+    StandaloneFileGroupExecutionResult.FileStatsBlobManifest statsBlobManifest =
+        result.fileStatsBlobManifest() == null
+            ? StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty()
+            : result.fileStatsBlobManifest();
     SubmitLeasedFileGroupExecutionResultRequest.Success.Builder success =
         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
-            .setResultId(result.resultId() == null ? "" : result.resultId())
-            .addAllStatsRecords(result.statsRecords());
+            .setResultId(result.resultId() == null ? "" : result.resultId());
+    if (!statsBlobManifest.isEmpty()) {
+      success
+          .setFileStatsBlobUri(statsBlobManifest.blobUri())
+          .setFileStatsRecordCount(statsBlobManifest.recordCount());
+    } else {
+      success.addAllStatsRecords(result.statsRecords());
+    }
+    for (var artifact : result.preUploadedIndexArtifacts()) {
+      if (artifact == null || artifact.record() == null) {
+        continue;
+      }
+      success.addIndexArtifacts(
+          ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact.newBuilder()
+              .setRecord(artifact.record())
+              .setContentType(artifact.contentType() == null ? "" : artifact.contentType())
+              .setUploadedArtifactUri(
+                  artifact.uploadedArtifactUri() == null ? "" : artifact.uploadedArtifactUri())
+              .build());
+    }
     for (var artifact : result.stagedIndexArtifacts()) {
       if (artifact == null || artifact.record() == null) {
         continue;
