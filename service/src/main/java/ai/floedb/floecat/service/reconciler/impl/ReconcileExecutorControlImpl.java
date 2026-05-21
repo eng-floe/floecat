@@ -956,6 +956,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setDirectStatsBlobUri(effective.directStatsBlobUri())
+        .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(
             switch (effective.completionMode()) {
               case DIRECT_STATS ->
@@ -1291,7 +1293,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               ReconcileSnapshotTask.CompletionMode.FILE_GROUPS;
         },
         snapshotTask.getFileGroupPlanBlobUri(),
-        snapshotTask.getFileGroupCount());
+        snapshotTask.getFileGroupCount(),
+        snapshotTask.getDirectStatsBlobUri(),
+        snapshotTask.getDirectStatsRecordCount());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

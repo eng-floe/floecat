@@ -1165,6 +1165,51 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void persistSnapshotPlanPreservesExistingBlobForMetadataOnlyUpdate() {
+    TrackingBlobStore blobStore = new TrackingBlobStore();
+    store.blobStore = blobStore;
+    store.init();
+
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of("plan-1", "group-1", "table-1", 55L, List.of("f1"));
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(plannedGroup), true));
+    int afterFirstWrite = blobStore.activeBlobCount();
+
+    store.persistSnapshotPlan(
+        jobId,
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1));
+
+    var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals(1, job.snapshotTask.fileGroups().size());
+    assertEquals("group-1", job.snapshotTask.fileGroups().getFirst().groupId());
+    assertEquals("f1", job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertEquals(afterFirstWrite, blobStore.activeBlobCount());
+  }
+
+  @Test
   void persistSnapshotPlanDeletesNewBlobWhenMutatorThrows() {
     TrackingBlobStore blobStore = new TrackingBlobStore();
     store.blobStore = blobStore;

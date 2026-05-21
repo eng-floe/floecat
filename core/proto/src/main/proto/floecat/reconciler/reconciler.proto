@@ -202,6 +202,10 @@ message ReconcileSnapshotTask {
   string file_group_plan_blob_uri = 8;
   // Number of grouped file executions in the persisted expanded file-group plan.
   uint32 file_group_count = 9;
+  // Optional blob URI for persisted direct target stats results.
+  string direct_stats_blob_uri = 10;
+  // Number of direct target stats records persisted in the blob.
+  uint32 direct_stats_record_count = 11;
 }
 
 // One grouped file execution unit emitted by snapshot planning.

@@ -212,7 +212,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.submitPlanSnapshotSuccess(
         remotePlanSnapshotLease(),
         snapshotTask,
-        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fileGroupTask)));
+        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fileGroupTask)),
+        List.of());
 
     ArgumentCaptor<SubmitLeasedPlanSnapshotResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanSnapshotResultRequest.class);

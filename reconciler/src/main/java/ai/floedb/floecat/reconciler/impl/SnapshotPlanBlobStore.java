@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -53,7 +54,7 @@ public class SnapshotPlanBlobStore {
                             && job.fileGroupTask() != null
                             && !job.fileGroupTask().isEmpty())
                 .toList();
-    String blobUri = buildBlobUri(accountId, jobId);
+    String blobUri = buildBlobUri(accountId, jobId, "snapshot-plan");
     try {
       blobStore.put(
           blobUri,
@@ -71,7 +72,48 @@ public class SnapshotPlanBlobStore {
         true,
         effective.completionMode(),
         blobUri,
-        sanitizedJobs.size());
+        sanitizedJobs.size(),
+        effective.directStatsBlobUri(),
+        effective.directStatsRecordCount());
+  }
+
+  public ReconcileSnapshotTask persistDirectStats(
+      String accountId,
+      String jobId,
+      ReconcileSnapshotTask snapshotTask,
+      List<TargetStatsRecord> directStats) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
+      return effective;
+    }
+    List<TargetStatsRecord> sanitizedStats =
+        directStats == null
+            ? List.of()
+            : directStats.stream().filter(java.util.Objects::nonNull).toList();
+    String blobUri = buildBlobUri(accountId, jobId, "direct-stats");
+    try {
+      blobStore.put(
+          blobUri,
+          mapper.writeValueAsBytes(
+              new DirectStatsBlob(
+                  sanitizedStats.stream().map(TargetStatsRecord::toByteArray).toList())),
+          "application/json; charset=" + StandardCharsets.UTF_8.name());
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to persist direct stats blob", e);
+    }
+    return ReconcileSnapshotTask.of(
+        effective.tableId(),
+        effective.snapshotId(),
+        effective.sourceNamespace(),
+        effective.sourceTable(),
+        List.of(),
+        true,
+        effective.completionMode(),
+        effective.fileGroupPlanBlobUri(),
+        effective.fileGroupCount(),
+        blobUri,
+        sanitizedStats.size());
   }
 
   public List<PlannedFileGroupJob> loadPlanJobs(ReconcileSnapshotTask snapshotTask) {
@@ -104,6 +146,32 @@ public class SnapshotPlanBlobStore {
     return loadPlanJobs(effective).stream().map(PlannedFileGroupJob::fileGroupTask).toList();
   }
 
+  public List<TargetStatsRecord> loadDirectStats(ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
+      return List.of();
+    }
+    if (effective.directStatsRecordCount() == 0) {
+      return List.of();
+    }
+    if (effective.directStatsBlobUri().isBlank()) {
+      throw new IllegalStateException(
+          "Missing direct stats blob URI for direct-stats snapshot task");
+    }
+    try {
+      return mapper
+          .readValue(blobStore.get(effective.directStatsBlobUri()), DirectStatsBlob.class)
+          .records()
+          .stream()
+          .map(SnapshotPlanBlobStore::parseTargetStatsRecord)
+          .toList();
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Failed to load direct stats blob " + effective.directStatsBlobUri(), e);
+    }
+  }
+
   public Optional<ReconcileFileGroupTask> findFileGroup(
       ReconcileSnapshotTask snapshotTask, ReconcileFileGroupTask groupRef) {
     if (groupRef == null || groupRef.isEmpty()) {
@@ -120,18 +188,24 @@ public class SnapshotPlanBlobStore {
     return loadFileGroups(snapshotTask).stream().mapToLong(group -> group.filePaths().size()).sum();
   }
 
-  private static String buildBlobUri(String accountId, String jobId) {
+  private static String buildBlobUri(String accountId, String jobId, String kind) {
     String acct = accountId == null ? "" : accountId.trim();
     String job = jobId == null ? "" : jobId.trim();
+    String safeKind = kind == null ? "" : kind.trim();
     if (acct.isBlank() || job.isBlank()) {
       throw new IllegalArgumentException(
           "accountId and jobId are required for snapshot plan blobs");
+    }
+    if (safeKind.isBlank()) {
+      throw new IllegalArgumentException("blob kind is required for snapshot plan blobs");
     }
     return "/accounts/"
         + acct
         + "/reconcile/jobs/"
         + job
-        + "/snapshot-plan/"
+        + "/"
+        + safeKind
+        + "/"
         + UUID.randomUUID()
         + ".json";
   }
@@ -139,6 +213,20 @@ public class SnapshotPlanBlobStore {
   public record SnapshotPlanBlob(List<PlannedFileGroupJob> fileGroupJobs) {
     public SnapshotPlanBlob {
       fileGroupJobs = fileGroupJobs == null ? List.of() : List.copyOf(fileGroupJobs);
+    }
+  }
+
+  private static TargetStatsRecord parseTargetStatsRecord(byte[] payload) {
+    try {
+      return TargetStatsRecord.parseFrom(payload);
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to decode direct stats record payload", e);
+    }
+  }
+
+  public record DirectStatsBlob(List<byte[]> records) {
+    public DirectStatsBlob {
+      records = records == null ? List.of() : List.copyOf(records);
     }
   }
 }

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import java.util.List;
 
 interface RemotePlannerWorkerClient {
@@ -67,7 +68,8 @@ interface RemotePlannerWorkerClient {
   boolean submitPlanSnapshotSuccess(
       RemoteLeasedJob lease,
       ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask snapshotTask,
-      List<PlannedFileGroupJob> fileGroupJobs);
+      List<PlannedFileGroupJob> fileGroupJobs,
+      List<TargetStatsRecord> directStats);
 
   boolean submitPlanSnapshotFailure(
       RemoteLeasedJob lease,

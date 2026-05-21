@@ -67,11 +67,15 @@ class SnapshotFinalizeReconcileExecutorTest {
   private static final long SNAPSHOT_ID = 55L;
   private static final Map<SnapshotPlanBlobStore, Map<String, List<ReconcileFileGroupTask>>>
       SNAPSHOT_PLAN_GROUPS = new IdentityHashMap<>();
+  private static final Map<SnapshotPlanBlobStore, Map<String, List<TargetStatsRecord>>>
+      DIRECT_STATS_RECORDS = new IdentityHashMap<>();
 
   private static SnapshotPlanBlobStore snapshotPlanBlobStore() {
     SnapshotPlanBlobStore store = mock(SnapshotPlanBlobStore.class);
     Map<String, List<ReconcileFileGroupTask>> groupsByUri = new HashMap<>();
+    Map<String, List<TargetStatsRecord>> directStatsByUri = new HashMap<>();
     SNAPSHOT_PLAN_GROUPS.put(store, groupsByUri);
+    DIRECT_STATS_RECORDS.put(store, directStatsByUri);
     when(store.loadFileGroups(org.mockito.ArgumentMatchers.any()))
         .thenAnswer(
             invocation -> {
@@ -86,6 +90,21 @@ class SnapshotFinalizeReconcileExecutorTest {
                     "Missing snapshot plan blob fixture " + snapshotTask.fileGroupPlanBlobUri());
               }
               return groups;
+            });
+    when(store.loadDirectStats(org.mockito.ArgumentMatchers.any()))
+        .thenAnswer(
+            invocation -> {
+              ReconcileSnapshotTask snapshotTask = invocation.getArgument(0);
+              if (snapshotTask == null || snapshotTask.directStatsRecordCount() == 0) {
+                return List.of();
+              }
+              List<TargetStatsRecord> records =
+                  directStatsByUri.get(snapshotTask.directStatsBlobUri());
+              if (records == null) {
+                throw new IllegalStateException(
+                    "Missing direct stats blob fixture " + snapshotTask.directStatsBlobUri());
+              }
+              return records;
             });
     return store;
   }
@@ -312,6 +331,142 @@ class SnapshotFinalizeReconcileExecutorTest {
 
     assertTrue(result.success());
     assertTrue(result.message.contains("direct stats"));
+  }
+
+  @Test
+  void executeLoadsDirectStatsBlobAndPersistsRecords() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    String blobUri = "/accounts/acct/reconcile/jobs/plan-1/direct-stats/stats.json";
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            tableId, SNAPSHOT_ID, TableValueStats.newBuilder().setRowCount(9L).build(), null);
+    DIRECT_STATS_RECORDS.get(snapshotPlanBlobStore).put(blobUri, List.of(tableRecord));
+
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            blobUri,
+            1);
+    ReconcileScope scope = captureScope();
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.CAPTURE_ONLY,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertTrue(result.success());
+    assertEquals(
+        9L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .orElseThrow()
+            .getTable()
+            .getRowCount());
+  }
+
+  @Test
+  void executeFailsExplicitlyWhenDirectStatsBlobIsMissing() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            "/accounts/acct/reconcile/jobs/plan-1/direct-stats/missing.json",
+            1);
+    ReconcileScope scope = captureScope();
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.CAPTURE_ONLY,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertFalse(result.success());
+    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertTrue(result.message.contains("Missing direct stats blob fixture"));
   }
 
   @Test

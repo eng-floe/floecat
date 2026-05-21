@@ -81,7 +81,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         55L,
                         TableValueStats.newBuilder().setRowCount(7L).build(),
                         null))));
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any())).thenReturn(true);
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -90,7 +90,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
 
     assertTrue(result.success());
     verify(backend, never()).fetchSnapshotFilePlan(any(), any(), anyLong());
-    verify(backend).putTargetStats(any(), argThat(stats -> stats != null && stats.size() == 1));
+    verify(backend, never()).putTargetStats(any(), any());
     verify(workerClient)
         .submitPlanSnapshotSuccess(
             eq(remoteLease),
@@ -99,9 +99,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     snapshotTask != null
                         && snapshotTask.fileGroups().isEmpty()
                         && snapshotTask.fileGroupPlanRecorded()
+                        && snapshotTask.directStatsRecordCount() == 1
                         && snapshotTask.completionMode()
                             == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS),
-            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.isEmpty()));
+            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.isEmpty()),
+            argThat(stats -> stats != null && stats.size() == 1));
   }
 
   @Test
@@ -143,7 +145,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             List.of(),
                             null)),
                     List.of())));
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any())).thenReturn(true);
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -163,7 +165,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         && snapshotTask.completionMode()
                             == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
                         && snapshotTask.fileGroups().size() == 1),
-            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 1));
+            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 1),
+            argThat(stats -> stats != null && stats.isEmpty()));
   }
 
   @Test
@@ -206,7 +209,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             List.of(),
                             null)),
                     List.of())));
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any())).thenReturn(true);
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(

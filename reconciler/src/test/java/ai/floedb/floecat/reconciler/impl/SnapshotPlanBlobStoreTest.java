@@ -20,11 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
@@ -90,6 +93,43 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
+  }
+
+  @Test
+  void persistDirectStatsRoundTripsRecords() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+
+    TargetStatsRecord record =
+        TargetStatsRecords.tableRecord(
+            tableId(), 55L, TableValueStats.newBuilder().setRowCount(3L).build(), null);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS);
+
+    ReconcileSnapshotTask persistedTask =
+        store.persistDirectStats("acct", "job-1", snapshotTask, List.of(record));
+
+    assertFalse(persistedTask.directStatsBlobUri().isBlank());
+    assertEquals(1, persistedTask.directStatsRecordCount());
+    assertNotNull(blobStore.bytesByUri.get(persistedTask.directStatsBlobUri()));
+    assertEquals(List.of(record), store.loadDirectStats(persistedTask));
+  }
+
+  private static ai.floedb.floecat.common.rpc.ResourceId tableId() {
+    return ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setId("table-1")
+        .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+        .build();
   }
 
   private static final class InMemoryBlobStore implements BlobStore {

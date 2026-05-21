@@ -988,11 +988,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             return;
           }
           String accountId = loaded.get().record.accountId;
+          String existingBlobUri = blankToEmpty(loaded.get().record.snapshotPlanBlobUri);
           List<ReconcileFileGroupTask> plannedFileGroups =
               materializeSnapshotPlanFileGroups(effective);
+          if (effective.fileGroupPlanRecorded()
+              && effective.fileGroupCount() > 0
+              && plannedFileGroups.isEmpty()
+              && blank(existingBlobUri)) {
+            throw new IllegalStateException(
+                "PLAN_SNAPSHOT has fileGroupPlanRecorded=true but no file groups and no existing"
+                    + " snapshot plan blob");
+          }
           String nextBlobUri =
               plannedFileGroups.isEmpty()
-                  ? ""
+                  ? existingBlobUri
                   : writeBlob(
                       Keys.reconcileJobBlobUri(
                           accountId,
@@ -1020,6 +1029,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                       existing.snapshotTaskSourceTable = effective.sourceTable();
                       existing.snapshotTaskFileGroupPlanRecorded =
                           effective.fileGroupPlanRecorded();
+                      existing.snapshotTaskCompletionMode = effective.completionMode().name();
+                      existing.snapshotTaskDirectStatsBlobUri =
+                          blankToEmpty(effective.directStatsBlobUri());
+                      existing.snapshotTaskDirectStatsRecordCount =
+                          effective.directStatsRecordCount();
                       existing.snapshotPlanBlobUri = nextBlobUri;
                       return existing;
                     });
@@ -1037,7 +1051,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           }
           refreshAncestorContributionRollups(updated.get().record, true);
           String previousBlobUri = previousSnapshotPlanBlobUri.get();
-          if (!previousBlobUri.isBlank() && !previousBlobUri.equals(nextBlobUri)) {
+          if (!plannedFileGroups.isEmpty()
+              && !previousBlobUri.isBlank()
+              && !previousBlobUri.equals(nextBlobUri)) {
             blobStore.delete(previousBlobUri);
           }
         });
@@ -4063,6 +4079,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     copy.snapshotTaskSourceNamespace = source.snapshotTaskSourceNamespace;
     copy.snapshotTaskSourceTable = source.snapshotTaskSourceTable;
     copy.snapshotTaskFileGroupPlanRecorded = source.snapshotTaskFileGroupPlanRecorded;
+    copy.snapshotTaskCompletionMode = source.snapshotTaskCompletionMode;
+    copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
+    copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
     copy.fileGroupPlanId = source.fileGroupPlanId;
     copy.fileGroupGroupId = source.fileGroupGroupId;
     copy.fileGroupTableId = source.fileGroupTableId;
@@ -4476,9 +4495,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         state.snapshotTaskSourceTable,
         fileGroups,
         state.snapshotTaskFileGroupPlanRecorded,
-        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+        ReconcileSnapshotTask.CompletionMode.fromString(state.snapshotTaskCompletionMode),
         blankToEmpty(state.snapshotPlanBlobUri),
-        fileGroups.size());
+        fileGroups.size(),
+        blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
+        state.snapshotTaskDirectStatsRecordCount);
   }
 
   private ReconcileFileGroupTask fileGroupTaskFor(StoredReconcileJob state) {
@@ -6383,6 +6404,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String snapshotTaskSourceNamespace;
     public String snapshotTaskSourceTable;
     public boolean snapshotTaskFileGroupPlanRecorded;
+    public String snapshotTaskCompletionMode;
+    public String snapshotTaskDirectStatsBlobUri;
+    public int snapshotTaskDirectStatsRecordCount;
     public String fileGroupPlanId;
     public String fileGroupGroupId;
     public String fileGroupTableId;
@@ -6474,6 +6498,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.snapshotTaskSourceNamespace = effectiveSnapshotTask.sourceNamespace();
       rec.snapshotTaskSourceTable = effectiveSnapshotTask.sourceTable();
       rec.snapshotTaskFileGroupPlanRecorded = effectiveSnapshotTask.fileGroupPlanRecorded();
+      rec.snapshotTaskCompletionMode = effectiveSnapshotTask.completionMode().name();
+      rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
+      rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
       rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
       rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
       rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());

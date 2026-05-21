@@ -28,7 +28,9 @@ public record ReconcileSnapshotTask(
     boolean fileGroupPlanRecorded,
     CompletionMode completionMode,
     String fileGroupPlanBlobUri,
-    int fileGroupCount) {
+    int fileGroupCount,
+    String directStatsBlobUri,
+    int directStatsRecordCount) {
 
   public enum CompletionMode {
     FILE_GROUPS,
@@ -58,6 +60,8 @@ public record ReconcileSnapshotTask(
     completionMode = completionMode == null ? CompletionMode.FILE_GROUPS : completionMode;
     fileGroupPlanBlobUri = fileGroupPlanBlobUri == null ? "" : fileGroupPlanBlobUri.trim();
     fileGroupCount = Math.max(0, fileGroupCount);
+    directStatsBlobUri = directStatsBlobUri == null ? "" : directStatsBlobUri.trim();
+    directStatsRecordCount = Math.max(0, directStatsRecordCount);
     if (fileGroupCount == 0 && !fileGroups.isEmpty()) {
       fileGroupCount = fileGroups.size();
     }
@@ -92,6 +96,8 @@ public record ReconcileSnapshotTask(
         false,
         CompletionMode.FILE_GROUPS,
         "",
+        0,
+        "",
         0);
   }
 
@@ -111,7 +117,33 @@ public record ReconcileSnapshotTask(
         fileGroupPlanRecorded,
         CompletionMode.FILE_GROUPS,
         "",
-        fileGroups == null ? 0 : fileGroups.size());
+        fileGroups == null ? 0 : fileGroups.size(),
+        "",
+        0);
+  }
+
+  public static ReconcileSnapshotTask of(
+      String tableId,
+      long snapshotId,
+      String sourceNamespace,
+      String sourceTable,
+      List<ReconcileFileGroupTask> fileGroups,
+      boolean fileGroupPlanRecorded,
+      CompletionMode completionMode,
+      String fileGroupPlanBlobUri,
+      int fileGroupCount) {
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        completionMode,
+        fileGroupPlanBlobUri,
+        fileGroupCount,
+        "",
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -131,7 +163,9 @@ public record ReconcileSnapshotTask(
         fileGroupPlanRecorded,
         completionMode,
         "",
-        fileGroups == null ? 0 : fileGroups.size());
+        fileGroups == null ? 0 : fileGroups.size(),
+        "",
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -143,7 +177,9 @@ public record ReconcileSnapshotTask(
       boolean fileGroupPlanRecorded,
       CompletionMode completionMode,
       String fileGroupPlanBlobUri,
-      int fileGroupCount) {
+      int fileGroupCount,
+      String directStatsBlobUri,
+      int directStatsRecordCount) {
     if ((tableId == null || tableId.isBlank())
         && snapshotId < 0L
         && (sourceNamespace == null || sourceNamespace.isBlank())
@@ -152,7 +188,9 @@ public record ReconcileSnapshotTask(
         && !fileGroupPlanRecorded
         && (completionMode == null || completionMode == CompletionMode.FILE_GROUPS)
         && (fileGroupPlanBlobUri == null || fileGroupPlanBlobUri.isBlank())
-        && fileGroupCount <= 0) {
+        && fileGroupCount <= 0
+        && (directStatsBlobUri == null || directStatsBlobUri.isBlank())
+        && directStatsRecordCount <= 0) {
       return empty();
     }
     return new ReconcileSnapshotTask(
@@ -164,12 +202,14 @@ public record ReconcileSnapshotTask(
         fileGroupPlanRecorded,
         completionMode,
         fileGroupPlanBlobUri,
-        fileGroupCount);
+        fileGroupCount,
+        directStatsBlobUri,
+        directStatsRecordCount);
   }
 
   public static ReconcileSnapshotTask empty() {
     return new ReconcileSnapshotTask(
-        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0);
+        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, "", 0);
   }
 
   @JsonIgnore
@@ -182,6 +222,8 @@ public record ReconcileSnapshotTask(
         && !fileGroupPlanRecorded
         && completionMode == CompletionMode.FILE_GROUPS
         && fileGroupPlanBlobUri.isBlank()
-        && fileGroupCount <= 0;
+        && fileGroupCount <= 0
+        && directStatsBlobUri.isBlank()
+        && directStatsRecordCount <= 0;
   }
 }

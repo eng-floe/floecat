@@ -222,7 +222,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                           effectiveFileGroupScope(payload.scope(), group), group))
               .toList();
       if (!workerClient.submitPlanSnapshotSuccess(
-          remoteLease, plannedCapture.snapshotTask(), fileGroupJobs)) {
+          remoteLease,
+          plannedCapture.snapshotTask(),
+          fileGroupJobs,
+          plannedCapture.directStats())) {
         return ExecutionResult.failure(
             0,
             0,
@@ -414,10 +417,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       ReconcileJobStore.LeasedJob lease,
       StandalonePlanSnapshotPayload payload,
       ReconcileSnapshotTask task) {
-    Optional<ReconcileSnapshotTask> directSnapshotTask =
+    Optional<PlannedSnapshotCapture> directSnapshotTask =
         tryDirectStatsCapture(lease, payload, task);
     if (directSnapshotTask.isPresent()) {
-      return PlannedSnapshotCapture.direct(directSnapshotTask.get());
+      return directSnapshotTask.get();
     }
     List<ReconcileFileGroupTask> fileGroupTasks = buildFileGroupTasks(lease, task);
     return PlannedSnapshotCapture.fileGroups(
@@ -432,7 +435,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         fileGroupTasks);
   }
 
-  private Optional<ReconcileSnapshotTask> tryDirectStatsCapture(
+  private Optional<PlannedSnapshotCapture> tryDirectStatsCapture(
       ReconcileJobStore.LeasedJob lease,
       StandalonePlanSnapshotPayload payload,
       ReconcileSnapshotTask task) {
@@ -458,18 +461,21 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (directStats.isEmpty()) {
       return Optional.empty();
     }
-    if (!directStats.get().isEmpty()) {
-      backend.putTargetStats(reconcileContext, directStats.get());
-    }
     return Optional.of(
-        ReconcileSnapshotTask.of(
-            task.tableId(),
-            task.snapshotId(),
-            task.sourceNamespace(),
-            task.sourceTable(),
-            List.of(),
-            true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS));
+        PlannedSnapshotCapture.direct(
+            ReconcileSnapshotTask.of(
+                task.tableId(),
+                task.snapshotId(),
+                task.sourceNamespace(),
+                task.sourceTable(),
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+                "",
+                0,
+                "",
+                directStats.get().size()),
+            directStats.get()));
   }
 
   private SnapshotDirectStatsRequest directStatsRequest(
@@ -695,15 +701,24 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private record PlannedSnapshotCapture(
-      ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> fileGroupTasks) {
+      ReconcileSnapshotTask snapshotTask,
+      List<ReconcileFileGroupTask> fileGroupTasks,
+      List<TargetStatsRecord> directStats) {
     private static PlannedSnapshotCapture direct(ReconcileSnapshotTask snapshotTask) {
-      return new PlannedSnapshotCapture(snapshotTask, List.of());
+      return new PlannedSnapshotCapture(snapshotTask, List.of(), List.of());
+    }
+
+    private static PlannedSnapshotCapture direct(
+        ReconcileSnapshotTask snapshotTask, List<TargetStatsRecord> directStats) {
+      return new PlannedSnapshotCapture(snapshotTask, List.of(), directStats);
     }
 
     private static PlannedSnapshotCapture fileGroups(
         ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> fileGroupTasks) {
       return new PlannedSnapshotCapture(
-          snapshotTask, fileGroupTasks == null ? List.of() : List.copyOf(fileGroupTasks));
+          snapshotTask,
+          fileGroupTasks == null ? List.of() : List.copyOf(fileGroupTasks),
+          List.of());
     }
   }
 

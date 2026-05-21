@@ -592,13 +592,19 @@ class LeasedPlannerWorkerServiceTest {
             "events",
             List.of(),
             true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS);
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            "/accounts/acct/reconcile/jobs/job-1/direct-stats/stats.json",
+            7);
 
     boolean accepted =
         service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", directSnapshotTask);
 
     assertTrue(accepted);
     InOrder inOrder = inOrder(jobs);
+    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(directSnapshotTask));
+    inOrder.verify(jobs).bulkEnqueue(any());
     inOrder
         .verify(jobs)
         .applyLeaseOutcome(
@@ -614,19 +620,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong(),
             anyLong(),
             anyLong());
-    inOrder.verify(jobs).persistSnapshotPlan(eq("job-1"), eq(directSnapshotTask));
     verify(jobs).persistSnapshotPlan(eq("job-1"), eq(directSnapshotTask));
-    verify(jobs)
-        .enqueueSnapshotFinalization(
-            eq("acct"),
-            eq("connector-1"),
-            eq(false),
-            eq(CaptureMode.METADATA_AND_CAPTURE),
-            any(),
-            eq(directSnapshotTask),
-            eq(ReconcileExecutionPolicy.defaults()),
-            eq("job-1"),
-            eq("remote-executor"));
   }
 
   @Test
@@ -744,9 +738,7 @@ class LeasedPlannerWorkerServiceTest {
     verify(jobs, never())
         .enqueueFileGroupExecution(
             any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
-    verify(jobs)
-        .enqueueSnapshotFinalization(
-            any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+    verify(jobs).bulkEnqueue(any());
   }
 
   @Test

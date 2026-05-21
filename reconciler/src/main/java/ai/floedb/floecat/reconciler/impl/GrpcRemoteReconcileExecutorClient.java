@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
@@ -611,10 +612,16 @@ class GrpcRemoteReconcileExecutorClient
   public boolean submitPlanSnapshotSuccess(
       RemoteLeasedJob lease,
       ReconcileSnapshotTask snapshotTask,
-      List<PlannedFileGroupJob> fileGroupJobs) {
+      List<PlannedFileGroupJob> fileGroupJobs,
+      List<TargetStatsRecord> directStats) {
+    ReconcileSnapshotTask effectiveSnapshotTask =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     ReconcileSnapshotTask persistedSnapshotTask =
-        snapshotPlanBlobStore.persistPlan(
-            lease.lease().accountId, lease.lease().jobId, snapshotTask, fileGroupJobs);
+        effectiveSnapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS
+            ? snapshotPlanBlobStore.persistDirectStats(
+                lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, directStats)
+            : snapshotPlanBlobStore.persistPlan(
+                lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, fileGroupJobs);
     SubmitLeasedPlanSnapshotResultRequest.Success.Builder success =
         SubmitLeasedPlanSnapshotResultRequest.Success.newBuilder();
     success.setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask));
@@ -1043,6 +1050,8 @@ class GrpcRemoteReconcileExecutorClient
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setDirectStatsBlobUri(effective.directStatsBlobUri())
+        .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(
             switch (effective.completionMode()) {
               case DIRECT_STATS ->
@@ -1246,7 +1255,9 @@ class GrpcRemoteReconcileExecutorClient
               ReconcileSnapshotTask.CompletionMode.FILE_GROUPS;
         },
         snapshotTask.getFileGroupPlanBlobUri(),
-        snapshotTask.getFileGroupCount());
+        snapshotTask.getFileGroupCount(),
+        snapshotTask.getDirectStatsBlobUri(),
+        snapshotTask.getDirectStatsRecordCount());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

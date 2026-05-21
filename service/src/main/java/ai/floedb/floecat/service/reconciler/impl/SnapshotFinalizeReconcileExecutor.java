@@ -119,15 +119,37 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
     if (coverage.state() == PlannedCoverageState.DIRECT_STATS) {
-      return ExecutionResult.success(
-          0,
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          "Finalized snapshot capture " + snapshotTask.snapshotId() + " from direct stats");
+      try {
+        long statsProcessed =
+            requestsStatsOutputs
+                ? ingestDirectStats(snapshotTask)
+                : snapshotTask.directStatsRecordCount();
+        return ExecutionResult.success(
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            statsProcessed,
+            "Finalized snapshot capture " + snapshotTask.snapshotId() + " from direct stats");
+      } catch (IllegalStateException e) {
+        return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, e.getMessage(), e);
+      } catch (RuntimeException e) {
+        return ExecutionResult.failure(
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            "Direct stats blob ingest failed for snapshot "
+                + snapshotTask.snapshotId()
+                + ": "
+                + e.getMessage(),
+            e);
+      }
     }
     if (coverage.state() == PlannedCoverageState.EXPLICIT_EMPTY) {
       List<String> unexpectedChildren =
@@ -525,6 +547,24 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(expectedGroups),
         List.copyOf(expectedFiles),
         "");
+  }
+
+  private long ingestDirectStats(ReconcileSnapshotTask snapshotTask) {
+    List<TargetStatsRecord> records = snapshotPlanBlobStore.loadDirectStats(snapshotTask);
+    if (snapshotTask.directStatsRecordCount() > 0
+        && records.size() != snapshotTask.directStatsRecordCount()) {
+      throw new IllegalStateException(
+          "Direct stats blob record count mismatch expected="
+              + snapshotTask.directStatsRecordCount()
+              + " actual="
+              + records.size());
+    }
+    long processed = 0L;
+    for (TargetStatsRecord record : records) {
+      statsStore.putTargetStats(record);
+      processed++;
+    }
+    return processed;
   }
 
   private CoverageValidation validateCoverage(
