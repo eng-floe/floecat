@@ -67,6 +67,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<String> supportedLanes() {
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
+  }
+
+  @Override
   public boolean supports(ReconcileJobStore.LeasedJob lease) {
     return lease != null && lease.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
   }

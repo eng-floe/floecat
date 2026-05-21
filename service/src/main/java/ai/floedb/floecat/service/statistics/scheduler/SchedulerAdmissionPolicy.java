@@ -26,6 +26,12 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
  * at startup: when the incoming job's priority class is {@link StatsPriorityClass#P0_SYNC}, {@link
  * #decide} must always return {@link AdmissionDecision#ADMIT} regardless of band.
  *
+ * <p>The stats orchestrator calls {@link #decide} before every async enqueue. {@link
+ * AdmissionDecision#REJECT} skips the enqueue entirely and returns a degraded result to the caller.
+ * {@link AdmissionDecision#DEFER} allows the enqueue; band-based deferral timing is then applied
+ * inside the job store. P0_SYNC jobs are never routed through this path — they bypass the scheduler
+ * policy entirely and are always dispatched synchronously.
+ *
  * <p>Implementations must be annotated with {@link SchedulerProfile} so the registry can resolve
  * them by name.
  *
@@ -70,7 +76,9 @@ public interface SchedulerAdmissionPolicy {
 
     /**
      * Job is not enqueued. The caller returns a degraded result. Counted in {@code
-     * reconcile.admission.rejected} metrics. Must not be returned for P0 or P1 jobs.
+     * reconcile.admission.rejected} metrics. Must not be returned for P0 or P1 jobs. Should not be
+     * returned for P2 jobs either — doing so silently drops async follow-up work for queries that
+     * already observed a sync TIMEOUT or FAILED, leaving coverage permanently missing.
      */
     REJECT
   }

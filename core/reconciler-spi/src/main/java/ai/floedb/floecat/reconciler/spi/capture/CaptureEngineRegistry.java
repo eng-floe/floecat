@@ -55,8 +55,21 @@ public class CaptureEngineRegistry {
     return candidates(request).stream().findFirst();
   }
 
+  /**
+   * Dispatches the request to the first eligible engine that fits within the cost budget.
+   *
+   * <p>Before calling {@code engine.capture()}, this method checks {@code
+   * engine.estimatedCost(request).fitsIn(request.maxCost())}. Engines whose estimated cost exceeds
+   * the budget are skipped silently; the caller receives an empty result rather than a failure.
+   * This enforces the {@link ai.floedb.floecat.stats.spi.JobCostHint} contract set by the
+   * originating {@code ReconcileCapturePolicy.maxCost()} (e.g. {@code MEDIUM} on sync-capture paths
+   * to prevent expensive full-column scans from blocking query planning).
+   */
   public CaptureEngineResult capture(CaptureEngineRequest request) {
     for (CaptureEngine engine : candidates(request)) {
+      if (!engine.estimatedCost(request).fitsIn(request.maxCost())) {
+        continue;
+      }
       Optional<CaptureEngineResult> result = engine.capture(request);
       if (result.isPresent()) {
         return result.get();

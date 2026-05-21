@@ -553,6 +553,95 @@ class StatsOrchestratorTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Admission policy wiring
+  // ---------------------------------------------------------------------------
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void admissionRejectSkipsEnqueueAndReturnsDegraded() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+
+    // Build a registry whose admission policy always rejects.
+    ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy rejectAll =
+        (assignment, band) ->
+            ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy
+                .AdmissionDecision.REJECT;
+    ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy noopPriority =
+        (request, ctx) ->
+            new ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy
+                .PriorityAssignment(
+                ai.floedb.floecat.reconciler.jobs.StatsPriorityClass.P3_BACKGROUND, 0L, "");
+    ai.floedb.floecat.service.statistics.scheduler.SchedulerContext stubCtx =
+        new ai.floedb.floecat.service.statistics.scheduler.SchedulerContext() {
+          @Override
+          public ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand currentBand() {
+            return ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand.GREEN;
+          }
+
+          @Override
+          public java.util.Map<ai.floedb.floecat.reconciler.jobs.StatsPriorityClass, Long>
+              queueDepthByClass() {
+            return java.util.Map.of();
+          }
+
+          @Override
+          public java.util.OptionalLong lastSuccessfulCaptureMs(String tableId) {
+            return java.util.OptionalLong.empty();
+          }
+
+          @Override
+          public ai.floedb.floecat.reconciler.jobs.CoverageLevel coverageLevel(
+              String tableId, long snapshotId) {
+            return ai.floedb.floecat.reconciler.jobs.CoverageLevel.NONE;
+          }
+
+          @Override
+          public java.util.OptionalLong snapshotDeltaRows(String tableId, long snapshotId) {
+            return java.util.OptionalLong.empty();
+          }
+        };
+
+    ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry registry =
+        Mockito.mock(ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry.class);
+    when(registry.activeAdmissionPolicy()).thenReturn(rejectAll);
+    when(registry.activePriorityPolicy()).thenReturn(noopPriority);
+    when(registry.activeContext()).thenReturn(stubCtx);
+
+    jakarta.enterprise.inject.Instance<
+            ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry>
+        registryInstance = Mockito.mock(jakarta.enterprise.inject.Instance.class);
+    when(registryInstance.isUnsatisfied()).thenReturn(false);
+    when(registryInstance.get()).thenReturn(registry);
+
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore, jobStore, tableRepository, syncCapture, true, null, registryInstance);
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+                42L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.ASYNC)
+            .build();
+    when(statsStore.getTargetStats(any(), Mockito.anyLong(), any())).thenReturn(Optional.empty());
+    when(tableRepository.getById(any())).thenReturn(Optional.of(upstreamTable()));
+
+    StatsCaptureBatchResult result =
+        orchestrator.triggerBatch(StatsCaptureBatchRequest.of(request));
+
+    // REJECT must not call enqueue — the job is dropped at admission.
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), any());
+    assertThat(result.results()).hasSize(1);
+    assertThat(result.results().getFirst().outcome())
+        .isEqualTo(ai.floedb.floecat.stats.spi.StatsTriggerOutcome.DEGRADED);
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -561,7 +650,8 @@ class StatsOrchestratorTest {
       ReconcileJobStore jobStore,
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
-    return new StatsOrchestrator(statsStore, jobStore, tableRepository, syncCapture, true, null);
+    return new StatsOrchestrator(
+        statsStore, jobStore, tableRepository, syncCapture, true, null, null);
   }
 
   private static StatsCaptureRequest tableRequest(StatsExecutionMode mode) {

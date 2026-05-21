@@ -16,10 +16,13 @@
 
 package ai.floedb.floecat.service.statistics.scheduler;
 
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Any;
@@ -51,8 +54,9 @@ import org.jboss.logging.Logger;
  *
  * <ol>
  *   <li>The active {@link SchedulerAdmissionPolicy} must return {@link
- *       SchedulerAdmissionPolicy.AdmissionDecision#ADMIT} for a P0_SYNC assignment in every health
- *       band.
+ *       SchedulerAdmissionPolicy.AdmissionDecision#ADMIT} for both P0_SYNC and P1_FRESHNESS
+ *       assignments in every health band. P1 freshness jobs feed new-snapshot indexing latency and
+ *       must never be dropped.
  *   <li>The active {@link SchedulerPreemptionPolicy} (if present) must never return a {@link
  *       StatsPriorityClass#P0_SYNC} job from a synthetic candidate list.
  *   <li>The active {@link SchedulerPriorityPolicy} must never return a {@link PriorityAssignment}
@@ -152,6 +156,11 @@ public class SchedulerPolicyRegistry {
   /**
    * Returns the active preemption policy, or {@code null} if no preemption policy is configured for
    * the current profile.
+   *
+   * <p><b>Phase 4 (not yet wired):</b> this accessor exists so the dispatch path can call it once
+   * preemption is integrated into {@code leaseNext()}. Until then the returned policy is validated
+   * at boot but is never invoked at runtime. The feature is gated by {@code
+   * floecat.stats.scheduler.preemption.enabled} (default {@code false}).
    */
   public SchedulerPreemptionPolicy activePreemptionPolicy() {
     return activePreemptionPolicy;
@@ -160,8 +169,10 @@ public class SchedulerPolicyRegistry {
   /**
    * Returns the scheduler context backed by the live job store.
    *
-   * <p>The returned context reflects the state of the job store at the time each method is called.
-   * It does not cache values across calls.
+   * <p>Queue band and depth are derived from a short-lived {@link ReconcileJobStore#queueStats()}
+   * snapshot (TTL: {@code ReconcileJobStoreContext.SNAPSHOT_TTL_MS} ms) so that multiple reads
+   * within a single policy invocation see consistent data. Coverage, delta, and last-capture values
+   * return conservative defaults until those data sources are wired.
    */
   public SchedulerContext activeContext() {
     return context;
@@ -172,69 +183,107 @@ public class SchedulerPolicyRegistry {
   // ---------------------------------------------------------------------------
 
   private void validateInvariants() {
-    validateP0AlwaysAdmit();
-    validatePreemptionNeverSelectsP0();
-    validatePriorityNeverAssignsP0();
+    validateAdmissionP0Invariant(activeAdmissionPolicy, context);
+    validatePreemptionP0Invariant(activePreemptionPolicy, context);
+    validatePriorityP0Invariant(activePriorityPolicy, context);
   }
 
-  private void validateP0AlwaysAdmit() {
-    var p0Assignment =
-        new SchedulerPriorityPolicy.PriorityAssignment(StatsPriorityClass.P0_SYNC, 0L, "");
-    for (SchedulerHealthBand band : SchedulerHealthBand.values()) {
-      var decision = activeAdmissionPolicy.decide(p0Assignment, band);
-      if (decision != SchedulerAdmissionPolicy.AdmissionDecision.ADMIT) {
-        throw new IllegalStateException(
-            "Scheduler invariant violated: admission policy '"
-                + activeAdmissionPolicy.getClass().getName()
-                + "' returned "
-                + decision
-                + " for P0_SYNC in band "
-                + band
-                + ". P0_SYNC must always be ADMIT.");
+  /**
+   * Validates that {@code policy} always returns {@link
+   * SchedulerAdmissionPolicy.AdmissionDecision#ADMIT} for both P0_SYNC and P1_FRESHNESS across all
+   * health bands.
+   *
+   * <p>Package-private to allow direct testing without CDI.
+   */
+  static void validateAdmissionP0Invariant(SchedulerAdmissionPolicy policy, SchedulerContext ctx) {
+    for (StatsPriorityClass guardedClass :
+        new StatsPriorityClass[] {StatsPriorityClass.P0_SYNC, StatsPriorityClass.P1_FRESHNESS}) {
+      var assignment = new SchedulerPriorityPolicy.PriorityAssignment(guardedClass, 0L, "");
+      for (SchedulerHealthBand band : SchedulerHealthBand.values()) {
+        var decision = policy.decide(assignment, band);
+        if (decision != SchedulerAdmissionPolicy.AdmissionDecision.ADMIT) {
+          throw new IllegalStateException(
+              "Scheduler invariant violated: admission policy '"
+                  + policy.getClass().getName()
+                  + "' returned "
+                  + decision
+                  + " for "
+                  + guardedClass
+                  + " in band "
+                  + band
+                  + ". "
+                  + guardedClass
+                  + " must always be ADMIT.");
+        }
       }
     }
   }
 
-  private void validatePreemptionNeverSelectsP0() {
-    if (activePreemptionPolicy == null) {
+  /**
+   * Validates that {@code policy} never selects a P0_SYNC job as a preemption victim. Does nothing
+   * when {@code policy} is null (no preemption configured for the profile).
+   *
+   * <p>Package-private to allow direct testing without CDI.
+   */
+  static void validatePreemptionP0Invariant(
+      SchedulerPreemptionPolicy policy, SchedulerContext ctx) {
+    if (policy == null) {
       return;
     }
-    // Synthetic candidate list containing a P0 job to verify the policy filters it out.
     var p0Candidate =
         new SchedulerPreemptionPolicy.RunningJobInfo(
             "synthetic-p0-job", StatsPriorityClass.P0_SYNC, System.currentTimeMillis(), 0, 10);
-    var victims = activePreemptionPolicy.selectVictim("incoming", List.of(p0Candidate), context);
-    if (victims.isPresent()) {
+    var victim = policy.selectVictim("incoming", List.of(p0Candidate), ctx);
+    if (victim.isPresent()) {
       throw new IllegalStateException(
           "Scheduler invariant violated: preemption policy '"
-              + activePreemptionPolicy.getClass().getName()
+              + policy.getClass().getName()
               + "' selected a P0_SYNC job as a preemption victim. P0 jobs must never be"
               + " preempted.");
     }
   }
 
-  private void validatePriorityNeverAssignsP0() {
-    // Create a minimal synthetic request. We cannot easily instantiate StatsCaptureRequest
-    // without protobuf tableId, so we validate by checking the default-impl contract via
-    // assignForReconcileJob(), which is fully exercisable with primitive args.
+  /**
+   * Validates that {@code policy} never returns P0_SYNC from either {@link
+   * SchedulerPriorityPolicy#assign} or {@link SchedulerPriorityPolicy#assignForReconcileJob}.
+   *
+   * <p>Package-private to allow direct testing without CDI.
+   */
+  static void validatePriorityP0Invariant(SchedulerPriorityPolicy policy, SchedulerContext ctx) {
+    // Validate assign() — the stats-orchestrator enqueue path.
+    StatsCaptureRequest syntheticRequest =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("synthetic").setId("synthetic-tbl").build(),
+                0L,
+                StatsTarget.getDefaultInstance())
+            .build();
+    var asyncAssignment = policy.assign(syntheticRequest, ctx);
+    if (asyncAssignment.priorityClass() == StatsPriorityClass.P0_SYNC) {
+      throw new IllegalStateException(
+          "Scheduler invariant violated: priority policy '"
+              + policy.getClass().getName()
+              + "' returned P0_SYNC from assign() for an async stats request."
+              + " P0_SYNC may only be assigned by the stats orchestrator.");
+    }
+
+    // Also validate assignForReconcileJob() — the reconciler-side enqueue path.
     for (ai.floedb.floecat.reconciler.jobs.ReconcileJobKind kind :
         ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.values()) {
-      var assignment =
-          activePriorityPolicy.assignForReconcileJob(kind, "tbl-synthetic", 0L, false, context);
+      var assignment = policy.assignForReconcileJob(kind, "tbl-synthetic", 0L, false, ctx);
       if (assignment.priorityClass() == StatsPriorityClass.P0_SYNC) {
         throw new IllegalStateException(
             "Scheduler invariant violated: priority policy '"
-                + activePriorityPolicy.getClass().getName()
+                + policy.getClass().getName()
                 + "' returned P0_SYNC for a reconcile job of kind "
                 + kind
                 + ". P0_SYNC may only be assigned by the stats orchestrator.");
       }
       var newSnapshotAssignment =
-          activePriorityPolicy.assignForReconcileJob(kind, "tbl-synthetic", 1L, true, context);
+          policy.assignForReconcileJob(kind, "tbl-synthetic", 1L, true, ctx);
       if (newSnapshotAssignment.priorityClass() == StatsPriorityClass.P0_SYNC) {
         throw new IllegalStateException(
             "Scheduler invariant violated: priority policy '"
-                + activePriorityPolicy.getClass().getName()
+                + policy.getClass().getName()
                 + "' returned P0_SYNC for a new-snapshot reconcile job of kind "
                 + kind
                 + ". P0_SYNC may only be assigned by the stats orchestrator.");
@@ -249,27 +298,52 @@ public class SchedulerPolicyRegistry {
   /**
    * Lightweight {@link SchedulerContext} backed by the live {@link ReconcileJobStore}.
    *
-   * <p>Queue depth and health band are derived from {@link ReconcileJobStore#queueStats()} on each
-   * call. Coverage, delta, and last-capture data are not yet tracked at this layer and return
+   * <p>{@link #currentBand()} and {@link #queueDepthByClass()} share a single {@link
+   * ReconcileJobStore#queueStats()} snapshot cached for {@link #SNAPSHOT_TTL_MS} milliseconds.
+   * Policy methods that call both in the same decision therefore see consistent band and depth
+   * values. Coverage, delta, and last-capture data are not yet tracked at this layer and return
    * conservative defaults: coverage returns {@link CoverageLevel#NONE} and delta / last-capture
    * return empty. These will be wired with real data sources in a future update.
    */
   private static final class ReconcileJobStoreContext implements SchedulerContext {
 
+    /** How long a QueueStats snapshot is reused before the next call refreshes it (ms). */
+    private static final long SNAPSHOT_TTL_MS = 100L;
+
     private final ReconcileJobStore jobs;
+    private volatile ReconcileJobStore.QueueStats cachedStats;
+    private volatile long cachedAtMs;
 
     ReconcileJobStoreContext(ReconcileJobStore jobs) {
       this.jobs = jobs;
     }
 
+    /**
+     * Returns a recent {@link ReconcileJobStore.QueueStats} snapshot, refreshing at most once per
+     * {@link #SNAPSHOT_TTL_MS}. The small data race on the two volatile fields is intentional: in
+     * the worst case a caller sees a stale snapshot one extra cycle, which is harmless for
+     * scheduling decisions.
+     */
+    private ReconcileJobStore.QueueStats snapshot() {
+      long now = System.currentTimeMillis();
+      ReconcileJobStore.QueueStats cached = this.cachedStats;
+      if (cached != null && (now - this.cachedAtMs) < SNAPSHOT_TTL_MS) {
+        return cached;
+      }
+      ReconcileJobStore.QueueStats fresh = jobs.queueStats();
+      this.cachedStats = fresh;
+      this.cachedAtMs = now;
+      return fresh;
+    }
+
     @Override
     public SchedulerHealthBand currentBand() {
-      return jobs.queueStats().healthBand;
+      return snapshot().healthBand;
     }
 
     @Override
     public Map<StatsPriorityClass, Long> queueDepthByClass() {
-      return jobs.queueStats().queuedByClass;
+      return snapshot().queuedByClass;
     }
 
     @Override

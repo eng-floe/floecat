@@ -128,6 +128,14 @@ public final class ReconcileCapturePolicy {
     return maxCost;
   }
 
+  /**
+   * Returns {@code true} when there is no capture work to do (no columns and no outputs).
+   *
+   * <p>Note: this method is blind to {@link #maxCost()}. A policy with an empty column/output set
+   * but a non-default {@code maxCost} still returns {@code true} here because no capture operations
+   * are defined regardless of cost. The {@code maxCost} field only constrains operations that
+   * exist.
+   */
   public boolean isEmpty() {
     return columns.isEmpty() && outputs.isEmpty();
   }

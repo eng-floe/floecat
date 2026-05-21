@@ -212,6 +212,13 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId ADMISSION_REJECTED =
+        new MetricId(
+            "floecat.service.reconcile.admission.rejected.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {

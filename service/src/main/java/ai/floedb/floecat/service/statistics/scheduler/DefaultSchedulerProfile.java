@@ -22,6 +22,9 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -57,8 +60,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  *
  * <h2>Preemption victim selection</h2>
  *
- * <p>Selects the most recently started eligible candidate (ascending {@code startedAtMs}) to
- * minimise wasted work. Returns empty if the candidate list is empty.
+ * <p>Selects the most recently started eligible candidate (highest {@code startedAtMs}) to minimise
+ * wasted work. Returns empty if the candidate list is empty.
  */
 @ApplicationScoped
 @SchedulerProfile(name = "default")
@@ -102,9 +105,12 @@ public class DefaultSchedulerProfile
   /**
    * Computes a 3-factor priority score for an async stats capture request.
    *
-   * <p>The returned class is always {@link StatsPriorityClass#P3_BACKGROUND}; callers that need
-   * {@link StatsPriorityClass#P2_REPAIR} or {@link StatsPriorityClass#P1_FRESHNESS} must set those
-   * classes before calling this method or override them after receiving the assignment.
+   * <p>The returned {@link PriorityAssignment#priorityClass()} is always {@link
+   * StatsPriorityClass#P3_BACKGROUND}. The stats orchestrator determines the actual class from
+   * enqueue context (P0 for sync, P2 for follow-up, P3 for background) and does not use the
+   * policy's class field for that path — only {@link PriorityAssignment#score()} and {@link
+   * PriorityAssignment#laneKey()} are applied. Custom profiles that need to influence urgency
+   * should express it through the score.
    *
    * <p>P0_SYNC is never returned.
    */
@@ -150,7 +156,7 @@ public class DefaultSchedulerProfile
   // ---------------------------------------------------------------------------
 
   /**
-   * Selects the most recently started candidate (smallest {@code startedAtMs}) to minimise wasted
+   * Selects the most recently started candidate (highest {@code startedAtMs}) to minimise wasted
    * completed work. Returns empty if the candidate list is empty.
    *
    * <p>Never returns a {@link StatsPriorityClass#P0_SYNC} job (the candidates list provided by the
@@ -158,11 +164,11 @@ public class DefaultSchedulerProfile
    * defensively).
    */
   @Override
-  public java.util.Optional<String> selectVictim(
-      String incomingJobId, java.util.List<RunningJobInfo> candidates, SchedulerContext context) {
+  public Optional<String> selectVictim(
+      String incomingJobId, List<RunningJobInfo> candidates, SchedulerContext context) {
     return candidates.stream()
         .filter(c -> c.priorityClass() != StatsPriorityClass.P0_SYNC)
-        .max(java.util.Comparator.comparingLong(RunningJobInfo::startedAtMs))
+        .max(Comparator.comparingLong(RunningJobInfo::startedAtMs))
         .map(RunningJobInfo::jobId);
   }
 

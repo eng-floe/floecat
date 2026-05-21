@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -152,6 +153,12 @@ class LeasedPlannerWorkerServiceTest {
         .persistSnapshotPlan(
             eq("job-1"),
             eq(ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(fullGroup), true)));
+    // Parent job has P3_BACKGROUND policy (defaults) → isNewSnapshot=false → fallback
+    // P3_BACKGROUND.
+    // laneKey = "acct:table-1" since registry is absent (no CDI in unit test).
+    ReconcileExecutionPolicy expectedFileGroupPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND, "acct:table-1", java.util.Map.of(), 0L);
     inOrder
         .verify(jobs)
         .enqueueFileGroupExecution(
@@ -161,7 +168,7 @@ class LeasedPlannerWorkerServiceTest {
             eq(CaptureMode.METADATA_AND_CAPTURE),
             any(),
             eq(fullGroup.asReference()),
-            eq(ReconcileExecutionPolicy.defaults()),
+            eq(expectedFileGroupPolicy),
             eq("job-1"),
             eq("remote-executor"));
     inOrder
@@ -275,6 +282,188 @@ class LeasedPlannerWorkerServiceTest {
             eq(1L),
             eq(0L),
             eq(0L));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Priority-aware enqueue: PLAN_SNAPSHOT from PLAN_TABLE completion
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void persistPlanTableSuccessEnqueuesPlanSnapshotAtP1FreshnessWhenRegistryAbsent() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-snap", 10L, "ns", "tbl");
+    when(jobs.renewLease("job-pt", "lease-pt")).thenReturn(true);
+    when(jobs.get("job-pt"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-pt", ReconcileJobKind.PLAN_TABLE, ReconcileExecutionPolicy.defaults())));
+
+    service.persistPlanTableSuccess(
+        principal,
+        "job-pt",
+        "lease-pt",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedSnapshotJob(
+                ReconcileScope.empty(), snapshotTask)));
+
+    // PLAN_SNAPSHOT is always isNewSnapshot=true → fallback returns P1_FRESHNESS when no registry.
+    ReconcileExecutionPolicy expectedSnapshotPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS, "acct:tbl-snap", java.util.Map.of(), 0L);
+    verify(jobs)
+        .enqueueSnapshotPlan(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(snapshotTask),
+            eq(expectedSnapshotPolicy),
+            eq("job-pt"),
+            eq("remote-executor"));
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessInheritsP1ForExecFileGroupWhenParentIsP1Freshness() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-fg", 20L, "ns", "tbl");
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of("plan-2", "grp-2", "tbl-fg", 20L, List.of("s3://f/a.parquet"));
+    ReconcileExecutionPolicy parentPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS, "acct:tbl-fg", java.util.Map.of(), 0L);
+    when(jobs.renewLease("job-ps", "lease-ps")).thenReturn(true);
+    when(jobs.get("job-ps"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-ps", ReconcileJobKind.PLAN_SNAPSHOT, parentPolicy, snapshotTask)));
+
+    service.persistPlanSnapshotSuccess(
+        principal,
+        "job-ps",
+        "lease-ps",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+
+    // Parent is P1_FRESHNESS → isNewSnapshot=true → fallback returns P1_FRESHNESS.
+    ReconcileExecutionPolicy expectedPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS, "acct:tbl-fg", java.util.Map.of(), 0L);
+    verify(jobs)
+        .enqueueFileGroupExecution(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(fullGroup.asReference()),
+            eq(expectedPolicy),
+            eq("job-ps"),
+            eq("remote-executor"));
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessUsesP3ForExecFileGroupWhenParentIsP3Background() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-bg", 30L, "ns", "tbl");
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of("plan-3", "grp-3", "tbl-bg", 30L, List.of("s3://f/b.parquet"));
+    ReconcileExecutionPolicy parentPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND, "acct:tbl-bg", java.util.Map.of(), 0L);
+    when(jobs.renewLease("job-bg", "lease-bg")).thenReturn(true);
+    when(jobs.get("job-bg"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-bg", ReconcileJobKind.PLAN_SNAPSHOT, parentPolicy, snapshotTask)));
+
+    service.persistPlanSnapshotSuccess(
+        principal,
+        "job-bg",
+        "lease-bg",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+
+    // Parent is P3_BACKGROUND → isNewSnapshot=false → fallback returns P3_BACKGROUND.
+    ReconcileExecutionPolicy expectedPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND, "acct:tbl-bg", java.util.Map.of(), 0L);
+    verify(jobs)
+        .enqueueFileGroupExecution(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(fullGroup.asReference()),
+            eq(expectedPolicy),
+            eq("job-bg"),
+            eq("remote-executor"));
+  }
+
+  private static ReconcileJobStore.ReconcileJob jobWithPolicy(
+      String jobId, ReconcileJobKind jobKind, ReconcileExecutionPolicy policy) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        policy,
+        "remote-executor",
+        "remote_snapshot_planner_worker",
+        jobKind,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-1");
+  }
+
+  private static ReconcileJobStore.ReconcileJob jobWithPolicy(
+      String jobId,
+      ReconcileJobKind jobKind,
+      ReconcileExecutionPolicy policy,
+      ReconcileSnapshotTask snapshotTask) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        policy,
+        "remote-executor",
+        "remote_snapshot_planner_worker",
+        jobKind,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        snapshotTask,
+        ReconcileFileGroupTask.empty(),
+        "parent-1");
   }
 
   private static ReconcileJobStore.ReconcileJob job(String jobId, ReconcileJobKind jobKind) {
