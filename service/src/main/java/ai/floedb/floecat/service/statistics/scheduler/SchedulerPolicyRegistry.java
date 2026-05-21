@@ -373,16 +373,39 @@ public class SchedulerPolicyRegistry {
       return snapshot().queuedByClass;
     }
 
+    /**
+     * Returns empty — last-capture timestamp is not yet tracked at this layer.
+     *
+     * <p><b>TODO (scoring context wiring):</b> wire this to the catalog stats metadata store once
+     * planner integration is complete. Until then, the age scoring factor treats every table as
+     * "never captured" (score=100), which biases scheduling toward freshness at the cost of some
+     * false urgency for recently-captured tables.
+     */
     @Override
     public OptionalLong lastSuccessfulCaptureMs(String tableId) {
       return OptionalLong.empty();
     }
 
+    /**
+     * Returns {@link CoverageLevel#NONE} for all tables — per-table coverage tracking is not yet
+     * wired at this layer.
+     *
+     * <p><b>TODO (scoring context wiring):</b> wire this to the catalog coverage metadata once
+     * available. NONE is the safe conservative default: it causes the coverage factor to contribute
+     * its maximum score (100), so under-tracked tables are never deprioritised.
+     */
     @Override
     public CoverageLevel coverageLevel(String tableId, long snapshotId) {
       return CoverageLevel.NONE;
     }
 
+    /**
+     * Returns empty — snapshot delta row counts are not yet tracked at this layer.
+     *
+     * <p><b>TODO (scoring context wiring):</b> wire this to snapshot metadata once planner
+     * integration provides row deltas. Until then, the delta factor uses its "unknown" fallback
+     * score (50), which is a neutral mid-range contribution.
+     */
     @Override
     public OptionalLong snapshotDeltaRows(String tableId, long snapshotId) {
       return OptionalLong.empty();

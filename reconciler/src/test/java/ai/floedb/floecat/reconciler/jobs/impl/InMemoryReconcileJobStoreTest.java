@@ -32,8 +32,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class InMemoryReconcileJobStoreTest {
@@ -617,6 +620,212 @@ class InMemoryReconcileJobStoreTest {
       restoreProperty(leaseMsKey, previousLeaseMs);
       restoreProperty(reclaimMsKey, previousReclaimMs);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler: priority-class dispatch ordering
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void leaseNextDispatchesP0BeforeP3() {
+    var store = new InMemoryReconcileJobStore();
+
+    // Enqueue P3 first, then P0 — dispatch should still return P0 first.
+    String p3JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+            "");
+    String p0JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p0"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", Map.of()),
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(p0JobId, firstLease.jobId, "P0_SYNC must be dispatched before P3_BACKGROUND");
+    assertNotEquals(p3JobId, firstLease.jobId);
+  }
+
+  @Test
+  void leaseNextDispatchesP1BeforeP3() {
+    var store = new InMemoryReconcileJobStore();
+
+    String p3JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3b"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+            "");
+    String p1JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p1"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P1_FRESHNESS, "", Map.of()),
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(p1JobId, firstLease.jobId, "P1_FRESHNESS must be dispatched before P3_BACKGROUND");
+    assertNotEquals(p3JobId, firstLease.jobId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler: health band escalation
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void healthBandEscalatesToYellowWhenP3DepthExceedsThreshold() {
+    // Threshold is SchedulerBandState.P3_YELLOW_THRESHOLD = 500.
+    // Force the band-refresh TTL so each enqueue triggers an escalation check.
+    var store = new InMemoryReconcileJobStore();
+    store.resetBandRefreshForTest();
+
+    // Enqueue P3_YELLOW_THRESHOLD + 1 = 501 P3 jobs on distinct tables so none are deduped.
+    long threshold = SchedulerBandState.P3_YELLOW_THRESHOLD;
+    for (int i = 0; i <= threshold; i++) {
+      store.enqueue(
+          "acct",
+          "conn",
+          false,
+          CaptureMode.METADATA_AND_CAPTURE,
+          ReconcileScope.of(List.of(), "tbl-band-" + i),
+          ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+          "");
+      // Reset cooldown so each enqueue can re-evaluate the band.
+      store.resetBandRefreshForTest();
+    }
+
+    ReconcileJobStore.QueueStats stats = store.queueStats();
+    assertTrue(
+        stats.healthBand.ordinal() >= SchedulerHealthBand.YELLOW.ordinal(),
+        "Band should be at least YELLOW when P3 depth exceeds threshold, got: " + stats.healthBand);
+  }
+
+  @Test
+  void healthBandEscalatesToRedOnP0Starvation() {
+    // Force band to GREEN, then enqueue a P0 job whose creation time is backdated far into the
+    // past to simulate a stale P0 starvation scenario.
+    var store = new InMemoryReconcileJobStore();
+
+    String p0JobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p0-stale"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", Map.of()),
+            "");
+
+    // Backdate creation to simulate P0 starvation well past the RED timeout.
+    store.backdateCreatedAtForTest(p0JobId, System.currentTimeMillis() - 10_000L);
+    store.resetBandRefreshForTest();
+
+    // Trigger another enqueue to run the escalation check.
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-trigger"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+        "");
+
+    ReconcileJobStore.QueueStats stats = store.queueStats();
+    assertEquals(
+        SchedulerHealthBand.RED,
+        stats.healthBand,
+        "Band must escalate to RED when P0 job is stale");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler: admission deferral
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void admissionDeferredCounterIncrementsWhenP3EnqueuedUnderOrangeBand() {
+    var store = new InMemoryReconcileJobStore();
+    // Force band to ORANGE so P3 admission is deferred.
+    store.setCurrentBandForTest(SchedulerHealthBand.ORANGE);
+
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-deferred"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+        "");
+
+    ReconcileJobStore.QueueStats stats = store.queueStats();
+    assertTrue(
+        stats.admissionDeferredByClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L) >= 1L,
+        "P3 admission deferred counter should be at least 1 under ORANGE band");
+  }
+
+  @Test
+  void p0AdmissionNeverDeferredUnderRedBand() {
+    var store = new InMemoryReconcileJobStore();
+    store.setCurrentBandForTest(SchedulerHealthBand.RED);
+
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p0-red"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", Map.of()),
+        "");
+
+    ReconcileJobStore.QueueStats stats = store.queueStats();
+    assertEquals(
+        0L,
+        stats.admissionDeferredByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L),
+        "P0_SYNC must never be deferred regardless of band");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler: aging promotions
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void agingPromotionCounterIncrementsWhenJobExceedsAgingThreshold() {
+    var store = new InMemoryReconcileJobStore();
+
+    String jobId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-aging"),
+            ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", Map.of()),
+            "");
+
+    // Backdate creation past the P3 aging threshold (300 s default).
+    store.backdateCreatedAtForTest(jobId, System.currentTimeMillis() - 400_000L);
+
+    // leaseNext() applies lazy aging promotion at lease time.
+    store.leaseNext().orElseThrow();
+
+    ReconcileJobStore.QueueStats stats = store.queueStats();
+    assertTrue(
+        stats.agingPromotionsTotal >= 1L,
+        "Aging promotion counter should be at least 1 after a job exceeds its threshold");
   }
 
   private static void restoreProperty(String key, String value) {

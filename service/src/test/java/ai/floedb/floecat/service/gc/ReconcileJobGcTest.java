@@ -71,8 +71,12 @@ class ReconcileJobGcTest {
     String dedupeInput = ACCOUNT_ID + "|" + CONNECTOR_ID + "|incr|*|*|";
     String dedupePointer = Keys.reconcileDedupePointer(ACCOUNT_ID, hashValue(dedupeInput));
     String readyPointer =
-        Keys.reconcileReadyPointerByDue(
-            System.currentTimeMillis() - 1_000L, ACCOUNT_ID, "lane", jobId);
+        Keys.reconcileReadyPointerByPriorityDue(
+            ai.floedb.floecat.reconciler.jobs.StatsPriorityClass.P3_BACKGROUND,
+            System.currentTimeMillis() - 1_000L,
+            ACCOUNT_ID,
+            "lane",
+            jobId);
     String canonicalBlob =
         putReconcileJob(
             jobId, "JS_SUCCEEDED", System.currentTimeMillis() - 10_000L, dedupeInput, readyPointer);
@@ -112,8 +116,12 @@ class ReconcileJobGcTest {
     putReconcileJob(jobId, "JS_RUNNING", System.currentTimeMillis(), "", "");
 
     String staleReadyKey =
-        Keys.reconcileReadyPointerByDue(
-            System.currentTimeMillis(), ACCOUNT_ID, "lane-stale", jobId + "-stale");
+        Keys.reconcileReadyPointerByPriorityDue(
+            ai.floedb.floecat.reconciler.jobs.StatsPriorityClass.P3_BACKGROUND,
+            System.currentTimeMillis(),
+            ACCOUNT_ID,
+            "lane-stale",
+            jobId + "-stale");
     String canonicalBlob =
         pointers.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow().getBlobUri();
     putPointer(staleReadyKey, canonicalBlob);

@@ -68,21 +68,29 @@ This lists all metrics currently available in the repository:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.reconcile.admission.deferred.total | COUNTER |  | v1 | Total number of jobs deferred at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.admission.rejected.total | COUNTER |  | v1 | Total number of jobs rejected at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.aging.promotions.total | COUNTER |  | v1 | Total number of times a queued job was temporarily promoted to a higher priority class due to starvation aging. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.get_job.total | COUNTER |  | v1 | GetReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.get_settings.total | COUNTER |  | v1 | GetReconcilerSettings request outcomes. | component, operation, result | component, operation, reason, result |
+| floecat.service.reconcile.health_band | GAUGE |  | v1 | Current scheduler health band (0=GREEN, 1=YELLOW, 2=ORANGE, 3=RED). Autoscaler trigger. | component, operation | component, operation |
 | floecat.service.reconcile.job.latency | TIMER | ms | v1 | Reconcile job terminal latency by execution mode. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.jobs.cancelling | GAUGE |  | v1 | Current number of reconcile jobs waiting for cancellation. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.queued | GAUGE |  | v1 | Current number of queued reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.running | GAUGE |  | v1 | Current number of running reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.total | COUNTER |  | v1 | Reconcile job terminal outcomes by execution mode. | component, mode, operation, result | component, mode, operation, reason, result |
+| floecat.service.reconcile.lane.wait_ms | GAUGE | ms | v1 | Age in milliseconds of the oldest queued job in the lane (top-10 most-starved lanes). | component, lane_key, operation | component, lane_key, operation |
 | floecat.service.reconcile.list_jobs.total | COUNTER |  | v1 | ListReconcileJobs request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.planner.enqueue.total | COUNTER |  | v1 | Automatic reconcile planner enqueue decisions by mode. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.planner.tick.latency | TIMER | ms | v1 | Automatic reconcile planner tick latency. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.planner.ticks.total | COUNTER |  | v1 | Automatic reconcile planner tick outcomes. | component, operation, result | component, operation, reason, result |
+| floecat.service.reconcile.policy.profile | GAUGE |  | v1 | Info gauge identifying the active scheduler profile (value=1; profile_name tag carries the name). Emitted once at startup. | component, operation, profile_name | component, operation, profile_name |
+| floecat.service.reconcile.queue.depth_by_class | GAUGE |  | v1 | Current number of queued reconcile jobs broken down by priority class. | component, operation, priority_class | component, operation, priority_class |
 | floecat.service.reconcile.queue.oldest_age | GAUGE | ms | v1 | Age in milliseconds of the oldest queued reconcile job. | component, operation | component, operation |
+| floecat.service.reconcile.scoring.score_dist | SUMMARY |  | v1 | Distribution of priority scores assigned at enqueue time by the active scheduler profile. | component, operation, priority_class | component, operation, priority_class |
 | floecat.service.reconcile.snapshots_processed.total | COUNTER |  | v1 | Snapshots processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.start_capture.total | COUNTER |  | v1 | StartCapture request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.stats_processed.total | COUNTER |  | v1 | Statistics payloads processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

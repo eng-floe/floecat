@@ -1705,7 +1705,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
    * that a lane-blocked P0 job is never bypassed by a P3 job in the same dispatch round.
    *
    * <p><b>Schema note:</b> Only priority-prefixed keys (written by the priority-aware enqueue
-   * paths) are scanned. Legacy keys (old format without priority prefix) are not dispatched.
+   * paths) are scanned. Legacy keys (old format without priority prefix) are not dispatched; a
+   * service restart is sufficient to clear them.
+   *
+   * <p><b>TODO (WRR fairness, Phase 2 deferral):</b> Within-class dispatch selects by score only.
+   * Weighted round-robin across lanes (to prevent one large tenant monopolising a priority bucket)
+   * is not yet implemented in this store. The {@link InMemoryReconcileJobStore} also does not
+   * implement WRR in the current codebase; it is deferred to a future phase alongside planner
+   * integration. Until then, a high-volume tenant with many high-score P3 jobs can starve other
+   * tenants within the same class.
+   *
+   * <p><b>TODO (preemption wiring, Phase 4):</b> Preemption (cancelling a running P3 job to free a
+   * worker for an incoming P0/P1 job) requires: (1) checking {@code
+   * SchedulerPolicyRegistry.activePreemptionPolicy()} when all workers are busy; (2) marking the
+   * selected victim as JS_CANCELLING; (3) the executor observing the CANCELLING state at file
+   * boundary and releasing the lease. The {@code SchedulerPreemptionPolicy} SPI and boot-time
+   * invariant validation already exist; only the dispatch-path wiring is missing. Gated by {@code
+   * floecat.stats.scheduler.preemption.enabled} (default {@code false}).
    */
   private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
     agingTracker.cleanupExpired(nowMs);

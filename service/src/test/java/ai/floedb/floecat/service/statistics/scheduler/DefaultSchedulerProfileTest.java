@@ -40,6 +40,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -250,6 +251,36 @@ class DefaultSchedulerProfileTest {
         profile.selectVictim("incoming", List.of(p0, p3), bandCtx(SchedulerHealthBand.RED));
     assertTrue(result.isPresent());
     assertEquals("p3-job", result.get(), "Should select P3 candidate, not P0");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column selector: bias toward capturing
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void columnSelectorBiasesCoverageToNoneRegardlessOfContextCoverage() {
+    // When column selectors are present, coverage is treated as NONE for scoring even if the
+    // SchedulerContext reports FULL — ensuring targeted column requests are not deprioritised.
+    var ctxFull = ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.empty());
+    long scoreWithoutSelector = scoreWith(ctxFull);
+
+    // Build a request with a column selector; same context still reports FULL coverage.
+    var requestWithSelector =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                StatsTarget.getDefaultInstance())
+            .columnSelectors(Set.of("col_a"))
+            .build();
+    long scoreWithSelector = profile.assign(requestWithSelector, ctxFull).score();
+
+    assertTrue(
+        scoreWithSelector > scoreWithoutSelector,
+        "Column-scoped request should produce a higher score (NONE coverage) than a FULL-coverage"
+            + " request without selectors. Without: "
+            + scoreWithoutSelector
+            + ", with: "
+            + scoreWithSelector);
   }
 
   // ---------------------------------------------------------------------------
