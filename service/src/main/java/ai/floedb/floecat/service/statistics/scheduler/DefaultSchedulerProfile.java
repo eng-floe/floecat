@@ -28,6 +28,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -106,7 +107,7 @@ public class DefaultSchedulerProfile
     this.weightDelta = weightDelta > 0 ? weightDelta : 2;
     this.weightAge = weightAge > 0 ? weightAge : 1;
     this.maxAgeMs = maxAgeMs > 0L ? maxAgeMs : 86_400_000L;
-    this.observability = observability;
+    this.observability = Objects.requireNonNull(observability, "observability");
   }
 
   // ---------------------------------------------------------------------------
@@ -130,16 +131,19 @@ public class DefaultSchedulerProfile
     String tableKey = request.tableId().getId();
     long score = computeScore(request, context, tableKey);
     String laneKey = request.tableId().getAccountId() + ":" + tableKey;
-    // Record score distribution so dashboards can observe score spread per priority class.
-    // P3_BACKGROUND is always the assigned class from this path (P0/P2 are set by the orchestrator
-    // directly; P1 is set by the planner worker for new snapshots).
+    // DefaultSchedulerProfile always assigns P3_BACKGROUND from this path (P0/P2 are set by the
+    // orchestrator directly; P1 is set by the planner worker for new snapshots). Build the
+    // assignment first so the metric tag derives from the actual returned class rather than a
+    // hardcoded literal — this stays correct if a subclass or future profile changes the class.
+    PriorityAssignment assignment =
+        new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, score, laneKey);
     observability.summary(
         ServiceMetrics.Reconcile.SCORING_SCORE_DIST,
         score,
         COMPONENT,
         OPERATION,
-        Tag.of("priority_class", StatsPriorityClass.P3_BACKGROUND.name().toLowerCase()));
-    return new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, score, laneKey);
+        Tag.of("priority_class", assignment.priorityClass().name().toLowerCase()));
+    return assignment;
   }
 
   // ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ public class ReconcileQueueMetrics {
       new EnumMap<>(StatsPriorityClass.class);
   // Lane wait gauges — keyed by lane_key; registered lazily on first observation.
   private final ConcurrentHashMap<String, AtomicLong> laneWaitAtomics = new ConcurrentHashMap<>();
+  private static final int MAX_TRACKED_LANES = 200;
 
   private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
   private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
@@ -159,6 +160,10 @@ public class ReconcileQueueMetrics {
       for (Map.Entry<String, Long> e : stats.topLaneWaitMs.entrySet()) {
         String laneKey = e.getKey();
         long waitMs = e.getValue();
+        if (!laneWaitAtomics.containsKey(laneKey) && laneWaitAtomics.size() >= MAX_TRACKED_LANES) {
+          // Avoid unbounded gauge-registration growth for ephemeral lane keys.
+          continue;
+        }
         laneWaitAtomics
             .computeIfAbsent(
                 laneKey,

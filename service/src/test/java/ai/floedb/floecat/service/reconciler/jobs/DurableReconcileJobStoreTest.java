@@ -80,6 +80,7 @@ class DurableReconcileJobStoreTest {
     System.clearProperty("floecat.reconciler.job-store.max-backoff-ms");
     System.clearProperty("floecat.reconciler.job-store.lease-ms");
     System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
+    System.clearProperty("floecat.reconciler.job-store.ready-scan-limit");
   }
 
   @Test
@@ -1689,6 +1690,26 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void queueStatsEscalatesToRedWhenP0QueueIsStarved() throws Exception {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p0"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P0_SYNC, "", java.util.Map.of()),
+        "");
+
+    Thread.sleep(1_250L);
+
+    var stats = store.queueStats();
+    assertEquals(1L, stats.queuedByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L));
+    assertEquals(SchedulerHealthBand.RED, stats.healthBand);
+  }
+
+  @Test
   void queueStatsReturnsGreenHealthBandWhenQueuesAreEmpty() {
     store.init();
 
@@ -1731,6 +1752,128 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, stats.running);
     assertEquals(1L, stats.cancelling);
     assertTrue(stats.oldestQueuedCreatedAtMs > 0L);
+  }
+
+  @Test
+  void queueStatsReturnsTopLaneWaitEntries() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-lane-a"));
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-lane-b"));
+
+    var stats = store.queueStats();
+
+    assertFalse(stats.topLaneWaitMs.isEmpty(), "expected at least one lane wait entry");
+    assertTrue(stats.topLaneWaitMs.size() <= 10, "topLaneWaitMs should be capped at 10 lanes");
+    stats.topLaneWaitMs.values().forEach(wait -> assertTrue(wait >= 0L));
+  }
+
+  @Test
+  void leaseNextPrefersHigherScoreWithinPriorityClass() {
+    store.init();
+
+    String lowScoreJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-score-low"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 10L),
+            "");
+    String highScoreJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-score-high"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 999L),
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(highScoreJob, firstLease.jobId);
+    assertNotEquals(lowScoreJob, firstLease.jobId);
+  }
+
+  @Test
+  void leaseNextFallsThroughWhenHigherPriorityJobsDoNotMatchLeaseRequest() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        "conn-p0-heavy",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-high"),
+        new ReconcileExecutionPolicy(
+            ReconcileExecutionClass.HEAVY, "", java.util.Map.of(), StatsPriorityClass.P0_SYNC, 10L),
+        "");
+
+    String lowPriorityDefaultJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            "conn-p3-default",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-low"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 1L),
+            "");
+
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT), java.util.Set.of()))
+            .orElseThrow();
+
+    assertEquals(lowPriorityDefaultJob, lease.jobId);
+    assertEquals("conn-p3-default", lease.connectorId);
+  }
+
+  @Test
+  void leaseNextPrefersHigherScoreAcrossReadyPagesWithinPriorityClass() {
+    System.setProperty("floecat.reconciler.job-store.ready-scan-limit", "1");
+    store.init();
+
+    String lowScoreJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-cross-page-low"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 10L),
+            "");
+    String highScoreJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-cross-page-high"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 999L),
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+
+    assertEquals(highScoreJob, firstLease.jobId);
+    assertNotEquals(lowScoreJob, firstLease.jobId);
   }
 
   /**

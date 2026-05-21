@@ -90,6 +90,11 @@ public class SchedulerPolicyRegistry {
 
   private SchedulerContext context;
 
+  // Held as a field so the gauge supplier is strongly reachable for the lifetime of this
+  // ApplicationScoped bean. A local variable would be eligible for GC after init() returns,
+  // which could silently drop the gauge in frameworks that hold supplier references weakly.
+  private final AtomicLong profileGaugeValue = new AtomicLong(0L);
+
   @Inject
   SchedulerPolicyRegistry(
       @ConfigProperty(name = "floecat.stats.scheduler.profile", defaultValue = "default")
@@ -142,10 +147,10 @@ public class SchedulerPolicyRegistry {
 
     // Emit POLICY_PROFILE info gauge: value always 1, profile_name tag identifies the profile.
     // Dashboards use this to annotate other scheduler metrics with the active profile.
-    AtomicLong profileGauge = new AtomicLong(1L);
+    profileGaugeValue.set(1L);
     observability.gauge(
         ServiceMetrics.Reconcile.POLICY_PROFILE,
-        profileGauge::get,
+        profileGaugeValue::get,
         "Active scheduler policy profile (value=1; profile_name tag identifies the profile)",
         COMPONENT,
         OPERATION,

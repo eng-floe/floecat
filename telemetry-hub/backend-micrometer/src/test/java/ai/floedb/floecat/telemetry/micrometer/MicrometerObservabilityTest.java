@@ -207,6 +207,74 @@ class MicrometerObservabilityTest {
     assertThat(duplicates.count()).isEqualTo(1d);
   }
 
+  /**
+   * Re-registering a gauge with a new supplier (e.g. after a CDI hot-reload where the bean is
+   * destroyed and recreated) must update the live gauge value rather than throwing or silently
+   * keeping the stale supplier. Verified in both LENIENT and STRICT modes.
+   */
+  @Test
+  void gaugeReregistration_updatesSupplierInLenientMode() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    Tag[] tags = new Tag[] {Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op")};
+
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 10.0, "initial", tags);
+    // Re-register with a new supplier (simulates CDI bean rebuilt with fresh AtomicLong).
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 99.0, "updated", tags);
+
+    Gauge gauge = meters.find(Telemetry.Metrics.RPC_ACTIVE.name()).tags("component", "svc").gauge();
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.value())
+        .as("Gauge should reflect new supplier (99), not stale supplier (10)")
+        .isEqualTo(99.0);
+  }
+
+  @Test
+  void gaugeReregistration_doesNotThrowInStrictMode() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.STRICT);
+    Tag[] tags = new Tag[] {Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op")};
+
+    // First registration — must succeed.
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 10.0, "initial", tags);
+    // Re-registration in STRICT mode must NOT throw (CDI hot-reload scenario).
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 99.0, "updated", tags);
+
+    Gauge gauge = meters.find(Telemetry.Metrics.RPC_ACTIVE.name()).tags("component", "svc").gauge();
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.value())
+        .as("Gauge should reflect new supplier (99) after re-registration in STRICT mode")
+        .isEqualTo(99.0);
+  }
+
+  /**
+   * Simulates the cross-CDI-instance scenario: a previous {@link MicrometerObservability} instance
+   * registered a gauge in the shared Micrometer registry, then was GC'd (its {@code gauges} map
+   * gone). A new {@link MicrometerObservability} instance (empty {@code gauges} map) must detect
+   * the orphaned registry entry, replace it with the new supplier, and not throw.
+   */
+  @Test
+  void gaugeReregistration_replacesOrphanedRegistryGauge() {
+    Tag[] tags = new Tag[] {Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op")};
+    // First instance registers the gauge — simulates initial CDI lifecycle.
+    MicrometerObservability first =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.STRICT);
+    first.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 10.0, "first instance", tags);
+
+    // Second instance shares the same MeterRegistry (simulates CDI rebuild where the registry
+    // persists but the MicrometerObservability bean is recreated).
+    MicrometerObservability second =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.STRICT);
+    // Must not throw even though the registry already has this gauge.
+    second.gauge(Telemetry.Metrics.RPC_ACTIVE, () -> 77.0, "second instance", tags);
+
+    Gauge gauge = meters.find(Telemetry.Metrics.RPC_ACTIVE.name()).tags("component", "svc").gauge();
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.value())
+        .as("Gauge should reflect second instance's supplier (77), not stale first (10)")
+        .isEqualTo(77.0);
+  }
+
   @Test
   void registrySizeGaugeExposesContractSize() {
     new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);

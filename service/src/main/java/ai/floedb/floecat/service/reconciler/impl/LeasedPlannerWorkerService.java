@@ -528,7 +528,8 @@ public class LeasedPlannerWorkerService {
       try {
         return registry
             .activePriorityPolicy()
-            .assignForReconcileJob(kind, laneKey, snapshotId, isNewSnapshot, null);
+            .assignForReconcileJob(
+                kind, laneKey, snapshotId, isNewSnapshot, registry.activeContext());
       } catch (RuntimeException e) {
         LOG.warnf(
             e,

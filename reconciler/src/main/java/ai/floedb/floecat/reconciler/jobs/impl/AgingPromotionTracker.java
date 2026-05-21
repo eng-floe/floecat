@@ -88,8 +88,9 @@ public final class AgingPromotionTracker {
    * @return {@code true} if a promotion was recorded; {@code false} otherwise
    */
   public boolean recordIfEligible(String jobId, long ageMs, StatsPriorityClass cls, long now) {
-    if (!promotedJobIds.containsKey(jobId) && ageMs > SchedulerStoreHelpers.agingThresholdMs(cls)) {
-      promotedJobIds.put(jobId, now + SchedulerStoreHelpers.AGING_COOLDOWN_MS);
+    if (ageMs > SchedulerStoreHelpers.agingThresholdMs(cls)
+        && promotedJobIds.putIfAbsent(jobId, now + SchedulerStoreHelpers.AGING_COOLDOWN_MS)
+            == null) {
       total.incrementAndGet();
       return true;
     }

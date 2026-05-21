@@ -148,7 +148,9 @@ public final class SchedulerBandState {
    *
    * <p>Known transient: if {@link #maybeEscalate} concurrently CAS-escalates to RED between the
    * caller's snapshot collection and this call, the hard-set may overwrite RED. The next {@link
-   * #maybeEscalate} (within 1 s) re-escalates. One-cycle window, accepted trade-off.
+   * #maybeEscalate} (within 1 s) re-escalates, but callers that only refresh via periodic {@code
+   * queueStats()} can observe the lower band for up to one full refresh interval (15 s by default
+   * in current service metrics scheduling).
    *
    * @param depths ready-queue depth by priority class (from the full scan)
    * @param oldestP0AgeMs age of the oldest P0 queued job; pass {@code 0L} if no P0 jobs

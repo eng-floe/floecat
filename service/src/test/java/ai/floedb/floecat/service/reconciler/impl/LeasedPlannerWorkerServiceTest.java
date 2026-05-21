@@ -35,6 +35,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerContext;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy;
+import jakarta.enterprise.inject.Instance;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -399,6 +403,45 @@ class LeasedPlannerWorkerServiceTest {
             eq(expectedPolicy),
             eq("job-bg"),
             eq("remote-executor"));
+  }
+
+  @Test
+  void persistPlanTableSuccessPassesRegistryContextToPriorityPolicy() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-ctx", 40L, "ns", "tbl");
+    when(jobs.renewLease("job-ctx", "lease-ctx")).thenReturn(true);
+    when(jobs.get("job-ctx"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-ctx", ReconcileJobKind.PLAN_TABLE, ReconcileExecutionPolicy.defaults())));
+
+    @SuppressWarnings("unchecked")
+    Instance<SchedulerPolicyRegistry> registryInstance = mock(Instance.class);
+    SchedulerPolicyRegistry registry = mock(SchedulerPolicyRegistry.class);
+    SchedulerPriorityPolicy policy = mock(SchedulerPriorityPolicy.class);
+    SchedulerContext context = mock(SchedulerContext.class);
+    when(registryInstance.isUnsatisfied()).thenReturn(false);
+    when(registryInstance.get()).thenReturn(registry);
+    when(registry.activePriorityPolicy()).thenReturn(policy);
+    when(registry.activeContext()).thenReturn(context);
+    when(policy.assignForReconcileJob(
+            eq(ReconcileJobKind.PLAN_SNAPSHOT), any(), eq(40L), eq(true), eq(context)))
+        .thenReturn(
+            new SchedulerPriorityPolicy.PriorityAssignment(
+                StatsPriorityClass.P1_FRESHNESS, 7L, "acct:tbl-ctx"));
+    service.schedulerRegistryInstance = registryInstance;
+
+    service.persistPlanTableSuccess(
+        principal,
+        "job-ctx",
+        "lease-ctx",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedSnapshotJob(
+                ReconcileScope.empty(), snapshotTask)));
+
+    verify(policy)
+        .assignForReconcileJob(
+            eq(ReconcileJobKind.PLAN_SNAPSHOT), any(), eq(40L), eq(true), eq(context));
   }
 
   private static ReconcileJobStore.ReconcileJob jobWithPolicy(

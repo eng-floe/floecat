@@ -51,6 +51,11 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
     Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> schedulerClassRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, "priority_class");
+    Set<String> schedulerLaneRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, "lane_key");
+    Set<String> schedulerProfileRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, "profile_name");
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsAllowed =
         Set.of(
@@ -288,6 +293,56 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsRequired,
         statsAllowed,
         "End-to-end latency of a single sync-first resolution attempt including store reads.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.QUEUE_DEPTH_BY_CLASS,
+        schedulerClassRequired,
+        schedulerClassRequired,
+        "Current number of queued reconcile jobs broken down by priority class.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.HEALTH_BAND,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current scheduler health band (0=GREEN, 1=YELLOW, 2=ORANGE, 3=RED). Autoscaler trigger.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.AGING_PROMOTIONS,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Total number of times a queued job was temporarily promoted to a higher priority class"
+            + " due to starvation aging.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+        schedulerClassRequired,
+        schedulerClassRequired,
+        "Total number of jobs deferred at enqueue time due to the current health band.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.ADMISSION_REJECTED,
+        schedulerClassRequired,
+        schedulerClassRequired,
+        "Total number of jobs rejected at enqueue time due to the current health band.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LANE_WAIT_MS,
+        schedulerLaneRequired,
+        schedulerLaneRequired,
+        "Age in milliseconds of the oldest queued job in the lane (top-10 most-starved lanes).");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SCORING_SCORE_DIST,
+        schedulerClassRequired,
+        schedulerClassRequired,
+        "Distribution of priority scores assigned at enqueue time by the active scheduler profile.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.POLICY_PROFILE,
+        schedulerProfileRequired,
+        schedulerProfileRequired,
+        "Info gauge identifying the active scheduler profile (value=1; profile_name tag carries"
+            + " the name). Emitted once at startup.");
     return Collections.unmodifiableMap(defs);
   }
 

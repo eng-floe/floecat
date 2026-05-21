@@ -839,17 +839,6 @@ public final class Keys {
     return "/accounts/by-id/reconcile/jobs/ready/";
   }
 
-  public static String reconcileReadyPointerByDue(
-      long dueAtMs, String accountId, String laneKey, String jobId) {
-    long due = reqNonNegative("due_at_ms", dueAtMs);
-    String tid = req("account_id", accountId);
-    String lane = req("lane_key", laneKey);
-    String jid = req("job_id", jobId);
-    return String.format(
-        "/accounts/by-id/reconcile/jobs/ready/%019d/%s/%s/%s",
-        due, encode(tid), encode(lane), encode(jid));
-  }
-
   /**
    * Priority-prefixed ready pointer key. The single-digit {@code priorityOrder} (0–3) sorts P0 keys
    * before P1, P2, P3 within the {@link #reconcileReadyPointerPrefix()} namespace, ensuring P0_SYNC
@@ -857,10 +846,6 @@ public final class Keys {
    *
    * <p>Key format: {@code
    * /accounts/by-id/reconcile/jobs/ready/{order}/{dueAtMs}/{accountId}/{laneKey}/{jobId}}
-   *
-   * <p><b>Schema note:</b> This format is incompatible with the legacy {@link
-   * #reconcileReadyPointerByDue} format. Existing legacy keys will not be scanned by priority-aware
-   * scanners and must be migrated before upgrading a live cluster.
    */
   public static String reconcileReadyPointerByPriorityDue(
       ai.floedb.floecat.reconciler.jobs.StatsPriorityClass priorityClass,

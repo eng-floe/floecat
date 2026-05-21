@@ -146,11 +146,14 @@ public final class MicrometerObservability implements Observability {
             .description(descriptionFor(Telemetry.Metrics.OBSERVABILITY_DUPLICATE_GAUGE))
             .tags(Telemetry.TagKey.REASON, "duplicate_gauge")
             .register(registry);
+    // policy must be assigned before gauge() so that the duplicate-gauge handler can call
+    // policy.isStrict() without a NullPointerException (gauge() may detect an orphaned registry
+    // entry if a previous MicrometerObservability instance shared the same MeterRegistry).
+    this.policy = policy;
     gauge(
         Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE,
         () -> (double) telemetryRegistry.metrics().size(),
         descriptionFor(Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE));
-    this.policy = policy;
     this.tracer = GlobalOpenTelemetry.getTracer("ai.floedb.floecat.telemetry");
   }
 
@@ -194,24 +197,39 @@ public final class MicrometerObservability implements Observability {
         key,
         (ignored, existing) -> {
           if (existing != null) {
+            // Gauge already tracked in this instance's map.  This happens when the same
+            // supplier bean (e.g. ReconcileQueueMetrics) is destroyed and re-created within
+            // the same JVM (Quarkus dev-mode hot-reload, CDI context rebuild).  Replace the
+            // stale gauge so the new supplier is wired in; retain the duplicate counter for
+            // observability.  In strict mode emit a warning rather than throwing — throwing
+            // would prevent bean creation and leave all gauges frozen at stale values.
             duplicateGaugeCounter.increment();
             if (policy.isStrict()) {
-              throw new IllegalArgumentException(
-                  "Gauge already registered for metric "
-                      + metric.name()
-                      + " with tags "
-                      + key.tags());
+              LOG.warn(
+                  "Gauge already registered for metric {} with tags {} — replacing stale"
+                      + " gauge (supplier will point to new bean instance). This is expected"
+                      + " after a CDI hot-reload; treat as a bug if it occurs at steady state.",
+                  metric.name(),
+                  key.tags());
             }
             registry.remove(existing);
           } else {
+            // Gauge not in this instance's map but may already be in the Micrometer registry
+            // if a previous MicrometerObservability instance (same JVM, previous CDI lifecycle)
+            // registered it.  Remove the stale registry entry so the new supplier is used;
+            // the old supplier points to a destroyed bean instance whose AtomicLong fields are
+            // no longer updated.
             Gauge registryGauge = registry.find(metric.name()).tags(meterTags).gauge();
             if (registryGauge != null) {
               duplicateGaugeCounter.increment();
               if (policy.isStrict()) {
-                throw new IllegalArgumentException(
-                    "Gauge already registered for metric " + metric.name());
+                LOG.warn(
+                    "Gauge already registered for metric {} in Micrometer registry but not in"
+                        + " local map — replacing stale gauge. This is expected after a"
+                        + " CDI hot-reload; treat as a bug if it occurs at steady state.",
+                    metric.name());
               }
-              return registryGauge;
+              registry.remove(registryGauge);
             }
           }
           Supplier<Number> safeSupplier =

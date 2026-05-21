@@ -98,7 +98,7 @@ public final class SchedulerStoreHelpers {
       case P3_BACKGROUND -> P3_AGING_THRESHOLD_MS;
       case P2_REPAIR -> P2_AGING_THRESHOLD_MS;
       case P1_FRESHNESS -> P1_AGING_THRESHOLD_MS; // effectively disabled
-      default -> Long.MAX_VALUE; // P0_SYNC never ages
+      case P0_SYNC -> Long.MAX_VALUE; // P0_SYNC never ages
     };
   }
 }
