@@ -17,8 +17,10 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -1153,11 +1155,30 @@ public interface ReconcileJobStore {
     public final long cancelling;
     public final long oldestQueuedCreatedAtMs;
 
+    /**
+     * Depth of the ready queue broken down by priority class. Never null; missing keys map to 0.
+     */
+    public final Map<StatsPriorityClass, Long> queuedByClass;
+
     public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
+      this(queued, running, cancelling, oldestQueuedCreatedAtMs, Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass) {
       this.queued = Math.max(0L, queued);
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
       this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
+      Map<StatsPriorityClass, Long> byClass = new EnumMap<>(StatsPriorityClass.class);
+      if (queuedByClass != null) {
+        queuedByClass.forEach((k, v) -> byClass.put(k, Math.max(0L, v)));
+      }
+      this.queuedByClass = byClass;
     }
   }
 

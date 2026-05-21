@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
@@ -39,7 +40,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Collectors;
 
 @ApplicationScoped
@@ -48,6 +48,23 @@ import java.util.stream.Collectors;
     stringValue = "memory",
     enableIfMissing = true)
 public class InMemoryReconcileJobStore implements ReconcileJobStore {
+
+  // ---------------------------------------------------------------------------
+  // Job state transition table
+  //
+  //  QUEUED      → RUNNING     leaseNext() succeeds
+  //  RUNNING     → CANCELLING  explicit cancel() call while job is running;
+  //                             preemption (phase 4, enabled via feature flag)
+  //  RUNNING     → SUCCEEDED   markSucceeded()
+  //  RUNNING     → QUEUED      lease expired (reclaimExpiredLeasesIfDue); markFailed() retry
+  //  RUNNING     → FAILED      markFailed() after maxAttempts exceeded; markFailedTerminal()
+  //  CANCELLING  → RUNNING     leaseNext() re-leases CANCELLING job so executor can observe it
+  //  CANCELLING  → QUEUED      markCancelled() with fileResults checkpoint (phase 4 resume path)
+  //  CANCELLING  → CANCELLED   markCancelled() completes cancellation
+  //  CANCELLING  → FAILED      lease expired while CANCELLING before executor responded
+  //  QUEUED      → CANCELLED   cancel() on a job that has never started
+  // ---------------------------------------------------------------------------
+
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
@@ -67,7 +84,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> activeJobIdBySnapshotLeaseKey = new ConcurrentHashMap<>();
   private final Map<String, Integer> attemptsByJobId = new ConcurrentHashMap<>();
   private final Map<String, Long> nextAttemptAtMs = new ConcurrentHashMap<>();
-  private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
+  private final PriorityReadyQueue readyQueue = new PriorityReadyQueue();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
   private volatile int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private volatile long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
@@ -196,6 +213,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     nextAttemptAtMs.put(id, now);
     dedupeKeysByJobId.put(id, dedupeKey);
     activeJobIdByDedupeKey.put(dedupeKey, id);
+    // Lane key is derived from scope + job-kind, not from executionPolicy.lane().
+    // executionPolicy.lane() is stored on the job record and propagated to LeasedJob for future
+    // use (Phase 2 WRR fairness), but the actual lane-mutex assignment uses the computed key
+    // below.  Both approaches produce per-table serialization, so runtime behaviour is correct;
+    // the divergence only matters when a caller wants to override the lane with a custom key.
+    // TODO(phase2): honour executionPolicy.lane() when non-blank, falling back to the computed key.
     laneKeysByJobId.put(
         id,
         laneKey(
@@ -235,7 +258,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveParentJobId);
     jobs.put(id, job);
     pinnedExecutors.put(id, effectivePinnedExecutorId);
-    ready.add(id);
+    readyQueue.enqueue(id, effectivePolicy.priorityClass(), effectivePolicy.priorityScore());
     return id;
   }
 
@@ -360,7 +383,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         default -> {}
       }
     }
-    return new QueueStats(queued, running, cancelling, oldestQueued);
+    return new QueueStats(queued, running, cancelling, oldestQueued, readyQueue.sizeByAllClasses());
   }
 
   @Override
@@ -444,104 +467,138 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     long now = System.currentTimeMillis();
     reclaimExpiredLeasesIfDue(now);
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    int attempts = Math.max(1, ready.size());
-    for (int i = 0; i < attempts; i++) {
-      String jobId = ready.poll();
-      if (jobId == null) {
-        return Optional.empty();
-      }
 
-      var job = jobs.get(jobId);
-
-      if (job == null) {
+    // Dispatch loop: iterate priority classes from most- to least-urgent.
+    //
+    // For each class we scan at most sizeByClass(cls) candidates (the size at the top of this
+    // class's iteration.  Jobs that pass all checks are leased and returned.  Jobs that fail a
+    // check are requeued at their original priority so they are not lost.
+    //
+    // P0_SYNC guard: if any P0 job was requeued (genuinely deferred, not merely discarded as
+    // stale/terminal), we return empty rather than falling through to P1/P2/P3.  Sync-capture
+    // jobs must not wait behind async work.
+    //
+    // Intentional tradeoff: a single lane-blocked P0 job will prevent all P1/P2/P3 dispatch for
+    // that lease call, even for unrelated lanes.  This is a strict SLO guarantee — sync latency
+    // is bounded at the cost of async throughput for a single call.  Worker pools typically retry
+    // leaseNext() on empty immediately, so the practical impact is one skipped poll cycle.
+    // Stale or terminal P0 entries (job removed/finished) are discarded without triggering the
+    // guard; only live-but-deferred P0 jobs block lower-priority dispatch.
+    boolean anyP0Requeued = false;
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      long classSize = readyQueue.sizeByClass(cls);
+      if (classSize == 0) {
         continue;
       }
+      for (long i = 0; i < classSize; i++) {
+        String jobId = readyQueue.pollHighest(cls);
+        if (jobId == null) {
+          break;
+        }
 
-      if (!"JS_QUEUED".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
-        continue;
-      }
-
-      if (nextAttemptAtMs.getOrDefault(jobId, 0L) > now) {
-        ready.add(jobId);
-        continue;
-      }
-
-      if (!effective.matches(
-          job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""), job.jobKind)) {
-        ready.add(jobId);
-        continue;
-      }
-
-      String laneKey = laneKeysByJobId.getOrDefault(jobId, "");
-      if (!laneKey.isBlank()) {
-        String laneOwner = activeJobIdByLaneKey.get(laneKey);
-        if (laneOwner != null && !laneOwner.equals(jobId) && hasLiveLaneLease(laneOwner, now)) {
-          ready.add(jobId);
+        var job = jobs.get(jobId);
+        if (job == null) {
+          // Job was removed from the store; discard without triggering the P0 guard.
           continue;
         }
-      }
-      if (!tryAcquireSnapshotLease(job, jobId, now)) {
-        ready.add(jobId);
-        continue;
+
+        if (!"JS_QUEUED".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
+          // Terminal or already-running: discard without triggering the P0 guard.
+          continue;
+        }
+
+        if (nextAttemptAtMs.getOrDefault(jobId, 0L) > now) {
+          readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+          continue;
+        }
+
+        if (!effective.matches(
+            job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""), job.jobKind)) {
+          readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+          continue;
+        }
+
+        String laneKey = laneKeysByJobId.getOrDefault(jobId, "");
+        if (!laneKey.isBlank()) {
+          String laneOwner = activeJobIdByLaneKey.get(laneKey);
+          if (laneOwner != null && !laneOwner.equals(jobId) && hasLiveLaneLease(laneOwner, now)) {
+            readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+            if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+            continue;
+          }
+        }
+
+        if (!tryAcquireSnapshotLease(job, jobId, now)) {
+          readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
+          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+          continue;
+        }
+
+        if (leased.add(jobId)) {
+          String leaseEpoch = UUID.randomUUID().toString();
+          leaseEpochs.put(jobId, leaseEpoch);
+          leaseExpiresAtMs.put(jobId, now + leaseMs);
+          if (!laneKey.isBlank()) {
+            activeJobIdByLaneKey.put(laneKey, jobId);
+          }
+          jobs.computeIfPresent(
+              jobId,
+              (id, current) ->
+                  new ReconcileJob(
+                      current.jobId,
+                      current.accountId,
+                      current.connectorId,
+                      "JS_CANCELLING".equals(current.state) ? "JS_CANCELLING" : "JS_RUNNING",
+                      "JS_CANCELLING".equals(current.state) ? current.message : "Leased",
+                      current.startedAtMs > 0L ? current.startedAtMs : now,
+                      0L,
+                      current.tablesScanned,
+                      current.tablesChanged,
+                      current.viewsScanned,
+                      current.viewsChanged,
+                      current.errors,
+                      current.fullRescan,
+                      current.captureMode,
+                      current.snapshotsProcessed,
+                      current.statsProcessed,
+                      current.scope,
+                      current.executionPolicy,
+                      current.executorId,
+                      current.jobKind,
+                      current.tableTask,
+                      current.viewTask,
+                      current.snapshotTask,
+                      current.fileGroupTask,
+                      current.parentJobId));
+          ReconcileJob leasedJob = jobs.get(jobId);
+          return Optional.of(
+              new LeasedJob(
+                  leasedJob.jobId,
+                  leasedJob.accountId,
+                  leasedJob.connectorId,
+                  leasedJob.fullRescan,
+                  leasedJob.captureMode,
+                  leasedJob.scope,
+                  leasedJob.executionPolicy,
+                  leaseEpoch,
+                  pinnedExecutors.getOrDefault(jobId, ""),
+                  leasedJob.executorId,
+                  leasedJob.jobKind,
+                  leasedJob.tableTask,
+                  leasedJob.viewTask,
+                  leasedJob.snapshotTask,
+                  leasedJob.fileGroupTask,
+                  leasedJob.parentJobId));
+        }
+        releaseSnapshotLease(jobId);
       }
 
-      if (leased.add(jobId)) {
-        String leaseEpoch = UUID.randomUUID().toString();
-        leaseEpochs.put(jobId, leaseEpoch);
-        leaseExpiresAtMs.put(jobId, now + leaseMs);
-        if (!laneKey.isBlank()) {
-          activeJobIdByLaneKey.put(laneKey, jobId);
-        }
-        jobs.computeIfPresent(
-            jobId,
-            (id, current) ->
-                new ReconcileJob(
-                    current.jobId,
-                    current.accountId,
-                    current.connectorId,
-                    "JS_CANCELLING".equals(current.state) ? "JS_CANCELLING" : "JS_RUNNING",
-                    "JS_CANCELLING".equals(current.state) ? current.message : "Leased",
-                    current.startedAtMs > 0L ? current.startedAtMs : now,
-                    0L,
-                    current.tablesScanned,
-                    current.tablesChanged,
-                    current.viewsScanned,
-                    current.viewsChanged,
-                    current.errors,
-                    current.fullRescan,
-                    current.captureMode,
-                    current.snapshotsProcessed,
-                    current.statsProcessed,
-                    current.scope,
-                    current.executionPolicy,
-                    current.executorId,
-                    current.jobKind,
-                    current.tableTask,
-                    current.viewTask,
-                    current.snapshotTask,
-                    current.fileGroupTask,
-                    current.parentJobId));
-        ReconcileJob leasedJob = jobs.get(jobId);
-        return Optional.of(
-            new LeasedJob(
-                leasedJob.jobId,
-                leasedJob.accountId,
-                leasedJob.connectorId,
-                leasedJob.fullRescan,
-                leasedJob.captureMode,
-                leasedJob.scope,
-                leasedJob.executionPolicy,
-                leaseEpoch,
-                pinnedExecutors.getOrDefault(jobId, ""),
-                leasedJob.executorId,
-                leasedJob.jobKind,
-                leasedJob.tableTask,
-                leasedJob.viewTask,
-                leasedJob.snapshotTask,
-                leasedJob.fileGroupTask,
-                leasedJob.parentJobId));
+      // P0 guard: stop after the P0 class scan if any live P0 job was deferred.
+      if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
+        return Optional.empty();
       }
-      releaseSnapshotLease(jobId);
     }
     return Optional.empty();
   }
@@ -771,7 +828,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
           long now = System.currentTimeMillis();
           nextAttemptAtMs.put(id, now + backoffMs(attempts));
-          ready.add(id);
+          readyQueue.enqueue(
+              id, job.executionPolicy.priorityClass(), job.executionPolicy.priorityScore());
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -830,7 +888,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           leaseExpiresAtMs.remove(id);
           long now = System.currentTimeMillis();
           nextAttemptAtMs.put(id, now + baseBackoffMs);
-          ready.add(id);
+          readyQueue.enqueue(
+              id, job.executionPolicy.priorityClass(), job.executionPolicy.priorityScore());
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -943,7 +1002,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                         ? cancelPokeExpiry
                         : Math.min(expiry, cancelPokeExpiry));
             nextAttemptAtMs.put(id, now);
-            ready.add(id);
+            readyQueue.enqueue(
+                id, job.executionPolicy.priorityClass(), job.executionPolicy.priorityScore());
             return new ReconcileJob(
                 job.jobId,
                 job.accountId,
@@ -1016,9 +1076,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     if (!"JS_CANCELLED".equals(current.state) && !"JS_CANCELLING".equals(current.state)) {
       return Optional.empty();
     }
-    if ("JS_CANCELLED".equals(current.state)) {
-      ready.remove(jobId);
-    }
+    // Note: when a QUEUED job is cancelled, it may still be in readyQueue. The next leaseNext()
+    // call will poll it and discard it (state is no longer JS_QUEUED or JS_CANCELLING).
     return Optional.of(current);
   }
 
@@ -1052,7 +1111,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
-          ready.remove(id);
+          // readyQueue has no remove-by-value: any residual entry will be discarded on
+          // the next leaseNext() poll because the job state is no longer JS_QUEUED/JS_CANCELLING.
           pinnedExecutors.remove(id);
           nextAttemptAtMs.remove(id);
           clearDedupe(id);
@@ -1121,7 +1181,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {
               nextAttemptAtMs.put(id, nowMs);
-              ready.add(id);
+              readyQueue.enqueue(
+                  id, job.executionPolicy.priorityClass(), job.executionPolicy.priorityScore());
               return new ReconcileJob(
                   job.jobId,
                   job.accountId,
@@ -1151,7 +1212,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             }
             if ("JS_CANCELLING".equals(job.state)) {
               nextAttemptAtMs.put(id, nowMs);
-              ready.add(id);
+              readyQueue.enqueue(
+                  id, job.executionPolicy.priorityClass(), job.executionPolicy.priorityScore());
               return new ReconcileJob(
                   job.jobId,
                   job.accountId,
