@@ -123,6 +123,14 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final int UPDATE_OCC_RETRIES = 4;
+  private static final int MAX_TARGET_STATS_RECORDS_PER_REQUEST = 250;
+  private static final int MAX_TARGET_STATS_REQUEST_BYTES = 128 * 1024;
+  private static final int[][] TARGET_STATS_RETRY_LIMITS = {
+    {MAX_TARGET_STATS_RECORDS_PER_REQUEST, MAX_TARGET_STATS_REQUEST_BYTES},
+    {100, 64 * 1024},
+    {25, 16 * 1024},
+    {1, 4 * 1024}
+  };
 
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
 
@@ -548,6 +556,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.plannedFilePaths(),
                       request.statsColumns(),
                       request.indexColumns(),
+                      request.columnSelectorPolicy(),
                       request.requestedStatsTargetKinds(),
                       request.capturePageIndex(),
                       ctx.authorizationToken()));
@@ -572,7 +581,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       ResourceId tableId,
       long snapshotId,
       Set<String> includeColumns,
-      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy) {
     if (tableId == null || snapshotId < 0) {
       return Optional.empty();
     }
@@ -587,7 +597,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                 tableId,
                 snapshotId,
                 includeColumns == null ? Set.of() : Set.copyOf(includeColumns),
-                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds)));
+                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
+                columnSelectorPolicy == null
+                    ? FloecatConnector.ColumnSelectorPolicy.defaults()
+                    : columnSelectorPolicy));
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -818,10 +831,35 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (stats == null || stats.isEmpty()) {
       return;
     }
-    statisticsMutiny(ctx)
-        .putTargetStats(Multi.createFrom().iterable(groupTargetRequests(stats)))
-        .await()
-        .atMost(statsTimeout);
+    StatusRuntimeException lastResourceExhausted = null;
+    for (int attempt = 0; attempt < TARGET_STATS_RETRY_LIMITS.length; attempt++) {
+      int maxRecords = TARGET_STATS_RETRY_LIMITS[attempt][0];
+      int maxBytes = TARGET_STATS_RETRY_LIMITS[attempt][1];
+      try {
+        statisticsMutiny(ctx)
+            .putTargetStats(
+                Multi.createFrom().iterable(groupTargetRequests(stats, maxRecords, maxBytes)))
+            .await()
+            .atMost(statsTimeout);
+        return;
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.RESOURCE_EXHAUSTED
+            || attempt == TARGET_STATS_RETRY_LIMITS.length - 1) {
+          throw e;
+        }
+        lastResourceExhausted = e;
+        LOG.warnf(
+            "PutTargetStats hit RESOURCE_EXHAUSTED; retrying with smaller chunks "
+                + "attempt=%d maxRecords=%d maxBytes=%d stats=%d",
+            attempt + 2,
+            TARGET_STATS_RETRY_LIMITS[attempt + 1][0],
+            TARGET_STATS_RETRY_LIMITS[attempt + 1][1],
+            stats.size());
+      }
+    }
+    if (lastResourceExhausted != null) {
+      throw lastResourceExhausted;
+    }
   }
 
   @Override
@@ -962,6 +1000,12 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   private List<PutTargetStatsRequest> groupTargetRequests(List<TargetStatsRecord> stats) {
+    return groupTargetRequests(
+        stats, MAX_TARGET_STATS_RECORDS_PER_REQUEST, MAX_TARGET_STATS_REQUEST_BYTES);
+  }
+
+  private List<PutTargetStatsRequest> groupTargetRequests(
+      List<TargetStatsRecord> stats, int maxRecordsPerRequest, int maxRequestBytes) {
     Map<StatsGroupKey, List<TargetStatsRecord>> grouped = new LinkedHashMap<>();
     for (TargetStatsRecord record : stats) {
       StatsGroupKey key = new StatsGroupKey(record.getTableId(), record.getSnapshotId());
@@ -969,16 +1013,33 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     List<PutTargetStatsRequest> requests = new ArrayList<>(grouped.size());
     for (var entry : grouped.entrySet()) {
-      PutTargetStatsRequest.Builder builder =
-          PutTargetStatsRequest.newBuilder()
-              .setTableId(entry.getKey().tableId)
-              .setSnapshotId(entry.getKey().snapshotId);
+      PutTargetStatsRequest.Builder builder = newTargetStatsRequest(entry.getKey());
+      int currentRecords = 0;
       for (TargetStatsRecord record : entry.getValue()) {
+        if (currentRecords > 0
+            && (currentRecords >= maxRecordsPerRequest
+                || projectedTargetStatsRequestSize(builder, record) > maxRequestBytes)) {
+          requests.add(builder.build());
+          builder = newTargetStatsRequest(entry.getKey());
+          currentRecords = 0;
+        }
         builder.addRecords(record);
+        currentRecords++;
       }
-      requests.add(builder.build());
+      if (currentRecords > 0) {
+        requests.add(builder.build());
+      }
     }
     return requests;
+  }
+
+  private static PutTargetStatsRequest.Builder newTargetStatsRequest(StatsGroupKey key) {
+    return PutTargetStatsRequest.newBuilder().setTableId(key.tableId).setSnapshotId(key.snapshotId);
+  }
+
+  private static int projectedTargetStatsRequestSize(
+      PutTargetStatsRequest.Builder builder, TargetStatsRecord nextRecord) {
+    return builder.build().getSerializedSize() + nextRecord.getSerializedSize();
   }
 
   @Override

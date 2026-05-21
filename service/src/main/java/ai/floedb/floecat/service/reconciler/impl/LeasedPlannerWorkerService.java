@@ -127,6 +127,49 @@ public class LeasedPlannerWorkerService {
         nullToEmpty(viewJobs).stream()
             .filter(job -> job != null && !job.viewTask().isEmpty())
             .count();
+    java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        new java.util.ArrayList<>((int) (plannedTableJobs + plannedViewJobs));
+    for (PlannedViewJob viewJob : nullToEmpty(viewJobs)) {
+      if (viewJob == null || viewJob.viewTask().isEmpty()) {
+        continue;
+      }
+      childSpecs.add(
+          ReconcileJobStore.BulkEnqueueSpec.of(
+              lease.accountId,
+              lease.connectorId,
+              lease.fullRescan,
+              lease.captureMode,
+              viewJob.scope(),
+              ReconcileJobKind.PLAN_VIEW,
+              ReconcileTableTask.empty(),
+              viewJob.viewTask(),
+              ReconcileSnapshotTask.empty(),
+              ReconcileFileGroupTask.empty(),
+              effectiveExecutionPolicy(lease),
+              lease.jobId,
+              ""));
+    }
+    for (PlannedTableJob tableJob : nullToEmpty(tableJobs)) {
+      if (tableJob == null || tableJob.tableTask().isEmpty()) {
+        continue;
+      }
+      childSpecs.add(
+          ReconcileJobStore.BulkEnqueueSpec.of(
+              lease.accountId,
+              lease.connectorId,
+              lease.fullRescan,
+              lease.captureMode,
+              tableJob.scope(),
+              ReconcileJobKind.PLAN_TABLE,
+              tableJob.tableTask(),
+              ReconcileViewTask.empty(),
+              ReconcileSnapshotTask.empty(),
+              ReconcileFileGroupTask.empty(),
+              effectiveExecutionPolicy(lease),
+              lease.jobId,
+              ""));
+    }
+    jobs.bulkEnqueue(childSpecs);
     boolean accepted =
         completePlanSuccess(
             jobId,
@@ -144,36 +187,6 @@ public class LeasedPlannerWorkerService {
             0L);
     if (!accepted) {
       return false;
-    }
-    for (PlannedViewJob viewJob : nullToEmpty(viewJobs)) {
-      if (viewJob == null || viewJob.viewTask().isEmpty()) {
-        continue;
-      }
-      jobs.enqueueViewPlan(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          viewJob.scope(),
-          viewJob.viewTask(),
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          lease.pinnedExecutorId);
-    }
-    for (PlannedTableJob tableJob : nullToEmpty(tableJobs)) {
-      if (tableJob == null || tableJob.tableTask().isEmpty()) {
-        continue;
-      }
-      jobs.enqueueTablePlan(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          tableJob.scope(),
-          tableJob.tableTask(),
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          lease.pinnedExecutorId);
     }
     return true;
   }
@@ -226,21 +239,6 @@ public class LeasedPlannerWorkerService {
         nullToEmpty(snapshotJobs).stream()
             .filter(job -> job != null && !job.snapshotTask().isEmpty())
             .count();
-    boolean accepted =
-        completePlanSuccess(
-            jobId,
-            leaseEpoch,
-            "Planned " + plannedSnapshotJobs + " snapshot job(s)",
-            tablesScanned,
-            tablesChanged,
-            0L,
-            0L,
-            errors,
-            snapshotsProcessed,
-            statsProcessed);
-    if (!accepted) {
-      return false;
-    }
     for (PlannedSnapshotJob snapshotJob : nullToEmpty(snapshotJobs)) {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
@@ -255,6 +253,21 @@ public class LeasedPlannerWorkerService {
           effectiveExecutionPolicy(lease),
           lease.jobId,
           lease.pinnedExecutorId);
+    }
+    boolean accepted =
+        completePlanSuccess(
+            jobId,
+            leaseEpoch,
+            "Planned " + plannedSnapshotJobs + " snapshot job(s)",
+            tablesScanned,
+            tablesChanged,
+            0L,
+            0L,
+            errors,
+            snapshotsProcessed,
+            statsProcessed);
+    if (!accepted) {
+      return false;
     }
     return true;
   }
@@ -381,6 +394,54 @@ public class LeasedPlannerWorkerService {
         durableSnapshotTask(finalizedSnapshotTask, plannedJobs);
     long plannedFileGroupJobs =
         plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
+    jobs.persistSnapshotPlan(lease.jobId, durableSnapshotTask);
+    java.util.Set<String> existingFileGroupKeys =
+        existingExecFileGroupKeys(lease.accountId, lease.jobId);
+    java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        new java.util.ArrayList<>(plannedJobs.size() + 1);
+    for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
+      if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
+        continue;
+      }
+      String fileGroupKey = execFileGroupKey(fileGroupJob.fileGroupTask());
+      if (!fileGroupKey.isBlank() && existingFileGroupKeys.contains(fileGroupKey)) {
+        continue;
+      }
+      childSpecs.add(
+          ReconcileJobStore.BulkEnqueueSpec.of(
+              lease.accountId,
+              lease.connectorId,
+              lease.fullRescan,
+              lease.captureMode,
+              fileGroupJob.scope(),
+              ReconcileJobKind.EXEC_FILE_GROUP,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.empty(),
+              ReconcileSnapshotTask.empty(),
+              fileGroupJob.fileGroupTask().asReference(),
+              effectiveExecutionPolicy(lease),
+              lease.jobId,
+              ""));
+      if (!fileGroupKey.isBlank()) {
+        existingFileGroupKeys.add(fileGroupKey);
+      }
+    }
+    childSpecs.add(
+        ReconcileJobStore.BulkEnqueueSpec.of(
+            lease.accountId,
+            lease.connectorId,
+            lease.fullRescan,
+            lease.captureMode,
+            effectiveScope(lease),
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            durableSnapshotTask,
+            ReconcileFileGroupTask.empty(),
+            effectiveExecutionPolicy(lease),
+            lease.jobId,
+            ""));
+    jobs.bulkEnqueue(childSpecs);
     boolean accepted =
         completePlanSuccess(
             jobId,
@@ -402,32 +463,6 @@ public class LeasedPlannerWorkerService {
     if (!accepted) {
       return false;
     }
-    jobs.persistSnapshotPlan(lease.jobId, durableSnapshotTask);
-    for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
-      if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
-        continue;
-      }
-      jobs.enqueueFileGroupExecution(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          fileGroupJob.scope(),
-          fileGroupJob.fileGroupTask().asReference(),
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          lease.pinnedExecutorId);
-    }
-    jobs.enqueueSnapshotFinalization(
-        lease.accountId,
-        lease.connectorId,
-        lease.fullRescan,
-        lease.captureMode,
-        effectiveScope(lease),
-        durableSnapshotTask,
-        effectiveExecutionPolicy(lease),
-        lease.jobId,
-        lease.pinnedExecutorId);
     return true;
   }
 
@@ -445,6 +480,47 @@ public class LeasedPlannerWorkerService {
           .toList();
     }
     return snapshotPlanBlobStore.loadPlanJobs(effective);
+  }
+
+  private java.util.Set<String> existingExecFileGroupKeys(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return java.util.Set.of();
+    }
+    java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      for (ReconcileJobStore.ReconcileJob child : page.jobs) {
+        if (child == null
+            || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP
+            || child.fileGroupTask == null
+            || child.fileGroupTask.isEmpty()) {
+          continue;
+        }
+        String key = execFileGroupKey(child.fileGroupTask);
+        if (!key.isBlank()) {
+          keys.add(key);
+        }
+      }
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return keys;
+  }
+
+  private static String execFileGroupKey(ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null) {
+      return "";
+    }
+    String planId = blankToEmpty(fileGroupTask.planId());
+    String groupId = blankToEmpty(fileGroupTask.groupId());
+    if (planId.isBlank() || groupId.isBlank()) {
+      return "";
+    }
+    return planId + "|" + groupId;
   }
 
   private static ReconcileSnapshotTask durableSnapshotTask(
@@ -505,7 +581,7 @@ public class LeasedPlannerWorkerService {
           .asRuntimeException();
     }
     ReconcileJobStore.ReconcileJob job =
-        jobs.get(jobId)
+        jobs.getLeaseView(jobId)
             .orElseThrow(
                 () ->
                     Status.NOT_FOUND

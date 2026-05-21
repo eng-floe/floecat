@@ -144,6 +144,7 @@ class CaptureEngineRegistryTest {
             List.of(),
             Set.of(),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             java.util.Optional.empty());
@@ -163,6 +164,7 @@ class CaptureEngineRegistryTest {
             List.of("s3://bucket/file.parquet"),
             Set.of("c1"),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             java.util.Optional.empty());
@@ -200,6 +202,7 @@ class CaptureEngineRegistryTest {
             List.of("s3://bucket/file.parquet"),
             Set.of(" c1 ", "", "c1", "  "),
             Set.of(" idx ", "idx", ""),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             java.util.Optional.empty());
@@ -234,6 +237,7 @@ class CaptureEngineRegistryTest {
         List.of("s3://bucket/file.parquet"),
         Set.of(),
         Set.of(),
+        FloecatConnector.ColumnSelectorPolicy.defaults(),
         statsTargetKinds,
         capturePageIndex,
         java.util.Optional.empty());

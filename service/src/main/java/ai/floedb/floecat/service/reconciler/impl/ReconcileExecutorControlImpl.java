@@ -765,6 +765,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   payload.capturePolicy().outputs().stream()
                                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                                       .toList())
+                              .setDefaultColumnScope(
+                                  toProtoDefaultColumnScope(
+                                      payload.capturePolicy().defaultColumnScope()))
+                              .setMaxDefaultColumns(payload.capturePolicy().maxDefaultColumns())
                               .build());
               if (payload.sourceConnector() != null) {
                 executionBuilder.setSourceConnector(payload.sourceConnector());
@@ -1102,6 +1106,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   effectiveScope.capturePolicy().outputs().stream()
                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                       .toList())
+              .setDefaultColumnScope(
+                  toProtoDefaultColumnScope(effectiveScope.capturePolicy().defaultColumnScope()))
+              .setMaxDefaultColumns(effectiveScope.capturePolicy().maxDefaultColumns())
               .build());
     }
     if (effectiveScope.hasSnapshotSelection()) {
@@ -1144,6 +1151,15 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     };
   }
 
+  private static ai.floedb.floecat.reconciler.rpc.DefaultColumnScope toProtoDefaultColumnScope(
+      ReconcileCapturePolicy.DefaultColumnScope scope) {
+    return switch (scope == null ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N : scope) {
+      case ALL -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_ALL;
+      case EXPLICIT_ONLY -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY;
+      case FIRST_N -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_FIRST_N;
+    };
+  }
+
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
   }
@@ -1178,11 +1194,23 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
+                    .collect(java.util.stream.Collectors.toSet()),
+                fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
+                scope.getCapturePolicy().getMaxDefaultColumns())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
             : ReconcileSnapshotSelection.unspecified());
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
+      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+    return switch (scope) {
+      case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+      case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+    };
   }
 
   private static ReconcileSnapshotSelection fromProtoSnapshotSelection(

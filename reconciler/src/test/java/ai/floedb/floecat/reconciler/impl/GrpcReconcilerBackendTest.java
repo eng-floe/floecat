@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
@@ -39,8 +40,10 @@ import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
+import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -70,8 +73,10 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -401,6 +406,57 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
+  void groupTargetRequestsSplitsLargeSingleSnapshotByRecordCount() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    List<TargetStatsRecord> stats = new ArrayList<>();
+    for (int i = 0; i < 251; i++) {
+      stats.add(fileStatsRecord(tableId, 44L, "s3://bucket/path/file-" + i + ".parquet"));
+    }
+
+    List<PutTargetStatsRequest> requests = invokeGroupTargetRequests(backend, stats);
+
+    assertThat(requests).hasSize(2);
+    assertThat(requests.get(0).getRecordsCount()).isEqualTo(250);
+    assertThat(requests.get(1).getRecordsCount()).isEqualTo(1);
+    assertThat(requests)
+        .allMatch(req -> req.getTableId().equals(tableId) && req.getSnapshotId() == 44L);
+  }
+
+  @Test
+  void groupTargetRequestsSplitsLargeSingleSnapshotBySerializedSize() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    String largePath = "s3://bucket/path/" + "x".repeat(60_000) + ".parquet";
+    List<TargetStatsRecord> stats =
+        List.of(
+            fileStatsRecord(tableId, 44L, largePath + "-a"),
+            fileStatsRecord(tableId, 44L, largePath + "-b"),
+            fileStatsRecord(tableId, 44L, largePath + "-c"));
+
+    List<PutTargetStatsRequest> requests = invokeGroupTargetRequests(backend, stats);
+
+    assertThat(requests).hasSizeGreaterThan(1);
+    assertThat(requests).allMatch(req -> req.getSerializedSize() <= 128 * 1024);
+    assertThat(requests.stream().mapToInt(PutTargetStatsRequest::getRecordsCount).sum())
+        .isEqualTo(3);
+  }
+
+  @Test
   void fetchSnapshotFilePlanUsesSourceConnectorFromUpstreamMetadata() throws Exception {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
@@ -555,6 +611,7 @@ class GrpcReconcilerBackendTest {
                 List.of("s3://bucket/path/file.parquet"),
                 Set.of(),
                 Set.of(),
+                ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy.defaults(),
                 Set.of(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE),
                 false));
 
@@ -689,6 +746,27 @@ class GrpcReconcilerBackendTest {
         "svc",
         Instant.now(),
         Optional.empty());
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<PutTargetStatsRequest> invokeGroupTargetRequests(
+      GrpcReconcilerBackend backend, List<TargetStatsRecord> stats) throws Exception {
+    Method method =
+        GrpcReconcilerBackend.class.getDeclaredMethod("groupTargetRequests", List.class);
+    method.setAccessible(true);
+    return (List<PutTargetStatsRequest>) method.invoke(backend, stats);
+  }
+
+  private static TargetStatsRecord fileStatsRecord(
+      ResourceId tableId, long snapshotId, String filePath) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setTarget(
+            StatsTarget.newBuilder()
+                .setFile(FileStatsTarget.newBuilder().setFilePath(filePath).build())
+                .build())
+        .build();
   }
 
   @Test

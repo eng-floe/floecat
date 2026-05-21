@@ -1787,7 +1787,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             .orElse("");
     String outputs =
         policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns + "|" + outputs;
+    return columns
+        + "|"
+        + outputs
+        + "|"
+        + policy.defaultColumnScope().name()
+        + "|"
+        + policy.maxDefaultColumns();
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {

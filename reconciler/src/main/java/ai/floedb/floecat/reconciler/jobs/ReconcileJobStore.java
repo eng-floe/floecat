@@ -327,6 +327,10 @@ public interface ReconcileJobStore {
     return get(null, jobId);
   }
 
+  default Optional<ReconcileJob> getLeaseView(String jobId) {
+    return get(jobId);
+  }
+
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 

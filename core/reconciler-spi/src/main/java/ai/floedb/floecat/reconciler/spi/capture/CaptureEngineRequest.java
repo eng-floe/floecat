@@ -36,6 +36,7 @@ public record CaptureEngineRequest(
     List<String> plannedFilePaths,
     Set<String> statsColumns,
     Set<String> indexColumns,
+    FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
     boolean capturePageIndex,
     Optional<String> authorizationToken) {
@@ -53,6 +54,10 @@ public record CaptureEngineRequest(
                 .toList();
     statsColumns = normalizeSelectors(statsColumns);
     indexColumns = normalizeSelectors(indexColumns);
+    columnSelectorPolicy =
+        columnSelectorPolicy == null
+            ? FloecatConnector.ColumnSelectorPolicy.defaults()
+            : columnSelectorPolicy;
     requestedStatsTargetKinds =
         requestedStatsTargetKinds == null
             ? Set.of()

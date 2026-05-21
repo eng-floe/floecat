@@ -942,6 +942,75 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void executePreservesExistingTableStatsWhenEmptyMarkerWouldRetry() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            captureScope(ReconcileCapturePolicy.Output.FILE_STATS),
+            ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-plan-1",
+            "");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of(), true);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    TargetStatsRecord existing =
+        TargetStatsRecords.tableRecord(
+            tableId,
+            SNAPSHOT_ID,
+            TableValueStats.newBuilder()
+                .setRowCount(17L)
+                .setDataFileCount(3L)
+                .setTotalSizeBytes(2048L)
+                .build(),
+            null);
+    statsStore.putTargetStats(existing);
+
+    ExecutionResult result =
+        executor.execute(
+            context(
+                new ReconcileJobStore.LeasedJob(
+                    "finalizer-1",
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    captureScope(ReconcileCapturePolicy.Output.FILE_STATS),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    parentJobId)));
+
+    assertTrue(result.ok());
+    assertEquals(
+        existing,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget())
+            .orElseThrow());
+  }
+
+  @Test
   void executeDoesNotPersistEmptySnapshotSentinelForIndexOnly() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1634,6 +1703,11 @@ class SnapshotFinalizeReconcileExecutorTest {
 
     @Override
     public void putTargetStats(TargetStatsRecord value) {}
+
+    @Override
+    public boolean putTargetStatsIfAbsent(TargetStatsRecord value) {
+      return false;
+    }
 
     @Override
     public Optional<TargetStatsRecord> getTargetStats(

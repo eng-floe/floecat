@@ -61,6 +61,21 @@ public final class FileGroupExecutionSupport {
     return kinds;
   }
 
+  public static ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy
+      columnSelectorPolicy(ReconcileCapturePolicy capturePolicy) {
+    ReconcileCapturePolicy effective =
+        capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    return new ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy(
+        switch (effective.defaultColumnScope()) {
+          case ALL -> ai.floedb.floecat.connector.spi.FloecatConnector.DefaultColumnScope.ALL;
+          case EXPLICIT_ONLY ->
+              ai.floedb.floecat.connector.spi.FloecatConnector.DefaultColumnScope.EXPLICIT_ONLY;
+          case FIRST_N ->
+              ai.floedb.floecat.connector.spi.FloecatConnector.DefaultColumnScope.FIRST_N;
+        },
+        effective.maxDefaultColumns());
+  }
+
   public static Optional<ReconcileFileGroupTask> resolvePlannedTask(
       ReconcileJobStore jobs, ReconcileJobStore.LeasedJob lease, ReconcileFileGroupTask task) {
     if (task != null && !task.filePaths().isEmpty()) {

@@ -1191,6 +1191,11 @@ public class DeltaManifestMaterializer {
     }
 
     @Override
+    public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
+      throw new UnsupportedOperationException("Delta engine copy is not supported in gateway");
+    }
+
+    @Override
     public Optional<String> getConf(String s) {
       return Optional.empty();
     }

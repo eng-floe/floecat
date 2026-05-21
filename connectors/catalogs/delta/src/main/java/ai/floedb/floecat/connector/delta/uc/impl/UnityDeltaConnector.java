@@ -96,34 +96,25 @@ public final class UnityDeltaConnector extends DeltaConnector {
       }
       var meta = M.readTree(response.body());
 
-      var fields = M.createArrayNode();
-      for (var c : meta.path("columns")) {
-        var n = M.createObjectNode();
-        n.put("name", c.path("name").asText());
-        n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
-        n.put("nullable", c.path("nullable").asBoolean(true));
-        var md = M.createObjectNode();
-        if (!c.path("comment").isMissingNode()) {
-          md.put("comment", c.path("comment").asText());
-        }
-        n.set("metadata", md);
-        fields.add(n);
-      }
-      var schemaNode = M.createObjectNode();
-      schemaNode.put("type", "struct");
-      schemaNode.set("fields", fields);
-
       Map<String, String> props = new LinkedHashMap<>();
       putIfPresent(props, meta, "table_type");
       putIfPresent(props, meta, "data_source_format");
       putIfPresent(props, meta, "storage_location");
 
       String location = meta.path("storage_location").asText(null);
+      String schemaJson = buildSchemaJson(meta);
+      if (location != null && !location.isBlank()) {
+        try {
+          schemaJson = describeTableSchemaJson(location);
+        } catch (RuntimeException ignored) {
+          // Fall back to UC column metadata when Delta snapshot metadata is unavailable.
+        }
+      }
       return new TableDescriptor(
           namespaceFq,
           tableName,
           location,
-          schemaNode.toString(),
+          schemaJson,
           List.of(),
           ColumnIdAlgorithm.CID_PATH_ORDINAL,
           props);

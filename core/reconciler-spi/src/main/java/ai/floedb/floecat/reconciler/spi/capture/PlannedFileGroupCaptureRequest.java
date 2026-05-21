@@ -31,6 +31,7 @@ public record PlannedFileGroupCaptureRequest(
     List<String> plannedFilePaths,
     Set<String> statsColumns,
     Set<String> indexColumns,
+    FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
     boolean capturePageIndex) {
   public PlannedFileGroupCaptureRequest {
@@ -45,6 +46,10 @@ public record PlannedFileGroupCaptureRequest(
                 .toList();
     statsColumns = normalizeSelectors(statsColumns);
     indexColumns = normalizeSelectors(indexColumns);
+    columnSelectorPolicy =
+        columnSelectorPolicy == null
+            ? FloecatConnector.ColumnSelectorPolicy.defaults()
+            : columnSelectorPolicy;
     requestedStatsTargetKinds =
         requestedStatsTargetKinds == null
             ? Set.of()
@@ -70,6 +75,7 @@ public record PlannedFileGroupCaptureRequest(
       List<String> plannedFilePaths,
       Set<String> statsColumns,
       Set<String> indexColumns,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
       Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
       boolean capturePageIndex) {
     return new PlannedFileGroupCaptureRequest(
@@ -80,6 +86,7 @@ public record PlannedFileGroupCaptureRequest(
         plannedFilePaths,
         statsColumns,
         indexColumns,
+        columnSelectorPolicy,
         requestedStatsTargetKinds,
         capturePageIndex);
   }

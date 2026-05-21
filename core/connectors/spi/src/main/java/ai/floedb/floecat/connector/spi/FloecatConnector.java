@@ -31,8 +31,64 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public interface FloecatConnector extends Closeable {
+  public enum DefaultColumnScope {
+    FIRST_N,
+    ALL,
+    EXPLICIT_ONLY
+  }
+
+  public record ColumnSelectorPolicy(DefaultColumnScope defaultScope, int maxColumns) {
+    public static final int DEFAULT_MAX_COLUMNS = 32;
+
+    public ColumnSelectorPolicy {
+      defaultScope = defaultScope == null ? DefaultColumnScope.FIRST_N : defaultScope;
+      maxColumns = maxColumns <= 0 ? DEFAULT_MAX_COLUMNS : maxColumns;
+    }
+
+    public static ColumnSelectorPolicy defaults() {
+      return new ColumnSelectorPolicy(DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
+    }
+  }
+
+  static Set<String> resolveIncludedColumns(
+      List<String> availableColumns, Set<String> includeColumns, ColumnSelectorPolicy policy) {
+    if (includeColumns != null && !includeColumns.isEmpty()) {
+      return Set.copyOf(
+          includeColumns.stream()
+              .filter(column -> column != null && !column.isBlank())
+              .map(String::trim)
+              .collect(Collectors.toCollection(LinkedHashSet::new)));
+    }
+    List<String> available = availableColumns == null ? List.of() : availableColumns;
+    ColumnSelectorPolicy effectivePolicy =
+        policy == null ? ColumnSelectorPolicy.defaults() : policy;
+    return switch (effectivePolicy.defaultScope()) {
+      case ALL ->
+          Set.copyOf(
+              available.stream()
+                  .filter(column -> column != null && !column.isBlank())
+                  .map(String::trim)
+                  .collect(Collectors.toCollection(LinkedHashSet::new)));
+      case EXPLICIT_ONLY -> Set.of();
+      case FIRST_N -> {
+        LinkedHashSet<String> resolved = new LinkedHashSet<>();
+        for (String column : available) {
+          if (column == null || column.isBlank()) {
+            continue;
+          }
+          resolved.add(column.trim());
+          if (resolved.size() >= effectivePolicy.maxColumns()) {
+            break;
+          }
+        }
+        yield Set.copyOf(resolved);
+      }
+    };
+  }
+
   enum SnapshotSelectionKind {
     ALL,
     CURRENT,
@@ -185,6 +241,24 @@ public interface FloecatConnector extends Closeable {
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds) {
     return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  default List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
+    return captureSnapshotTargetStats(
         namespaceFq, tableName, destinationTableId, snapshotId, includeColumns);
   }
 
@@ -202,6 +276,24 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStatsDirect(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     return Optional.empty();
   }
 
@@ -215,6 +307,27 @@ public interface FloecatConnector extends Closeable {
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes);
+
+  default FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes);
+  }
 
   record FileGroupCaptureResult(
       List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {

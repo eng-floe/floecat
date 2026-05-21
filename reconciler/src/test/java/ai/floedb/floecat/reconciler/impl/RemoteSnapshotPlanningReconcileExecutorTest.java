@@ -72,7 +72,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 task));
     when(backend.fetchSnapshot(any(), any(), eq(55L)))
         .thenReturn(Optional.of(mock(Snapshot.class)));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any()))
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(
             Optional.of(
                 List.of(
@@ -152,7 +152,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
 
     assertTrue(result.success());
     verify(backend, never())
-        .captureSnapshotTargetStatsDirect(any(), any(), anyLong(), any(), any());
+        .captureSnapshotTargetStatsDirect(any(), any(), anyLong(), any(), any(), any());
     verify(backend).fetchSnapshotFilePlan(any(), any(), eq(55L));
     verify(workerClient)
         .submitPlanSnapshotSuccess(
@@ -188,7 +188,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 snapshotTask()));
     when(backend.fetchSnapshot(any(), any(), eq(55L)))
         .thenReturn(Optional.of(mock(Snapshot.class)));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any()))
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
     when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
         .thenReturn(
@@ -214,7 +214,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
     assertTrue(result.success());
-    verify(backend).captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any());
+    verify(backend).captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any());
     verify(backend).fetchSnapshotFilePlan(any(), any(), eq(55L));
   }
 
@@ -240,7 +240,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 snapshotTask()));
     when(backend.fetchSnapshot(any(), any(), eq(55L)))
         .thenReturn(Optional.of(mock(Snapshot.class)));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any()))
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenThrow(
             new StatusRuntimeException(
                 Status.RESOURCE_EXHAUSTED.withDescription(

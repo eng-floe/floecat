@@ -361,6 +361,32 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void putTargetStatsIfAbsentPreservesExistingConflictingRecord() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9190L;
+
+    TargetStatsRecord existing =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+    TargetStatsRecord zeroMarker =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(0L).setDataFileCount(0L).build(),
+            null);
+
+    repository.putTargetStats(existing);
+
+    assertThat(repository.putTargetStatsIfAbsent(zeroMarker)).isFalse();
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(existing);
+  }
+
+  @Test
   void puttingStatsDoesNotAdvanceTablePointerVersion() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

@@ -530,9 +530,10 @@ public class Shell implements Runnable {
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
+         analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
+             [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # Defaults to --mode capture-only --capture stats.
+             # Defaults to --mode capture-only --capture stats --default-cols first-n --max-default-cols 32.
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -569,6 +570,8 @@ public class Shell implements Runnable {
              # --mode is required. --capture is required for capture modes.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
              [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
+             [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
+             # Defaults to --default-cols first-n --max-default-cols 32 when --columns is not set.
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
          connector cancel <jobId> [--reason <text>]

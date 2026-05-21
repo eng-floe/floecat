@@ -24,7 +24,9 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -44,8 +46,8 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
               name = "floecat.reconciler.executor.remote-file-group.enabled",
               defaultValue = "false")
           boolean enabled) {
-    this.workerClient = workerClient;
-    this.runner = runner;
+    this.workerClient = Objects.requireNonNull(workerClient, "workerClient");
+    this.runner = Objects.requireNonNull(runner, "runner");
     this.enabled = enabled;
   }
 
@@ -93,25 +95,13 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
     }
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
     if (context.shouldStop().getAsBoolean()) {
-      return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
+      return stopRequestedResult(null);
     }
-    StandaloneFileGroupExecutionPayload payload = workerClient.getExecution(remoteLease);
-    if (payload.plannedFilePaths().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          "planned file group does not contain any file handles",
-          new IllegalStateException("planned file group does not contain any file handles"));
-    }
-    if (!payload.requestsStats() && !payload.capturePageIndex()) {
-      if (!workerClient.submitSuccess(
-          remoteLease, StandaloneFileGroupExecutionResult.empty(successResultId(lease, payload)))) {
-        return ExecutionResult.failure(
+    StandaloneFileGroupExecutionPayload payload = null;
+    try {
+      payload = workerClient.getExecution(remoteLease);
+      if (payload.plannedFilePaths().isEmpty()) {
+        return ExecutionResult.terminalFailure(
             0,
             0,
             0,
@@ -119,20 +109,19 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             1,
             0,
             0,
-            "standalone worker no-op result submission was rejected",
-            new IllegalStateException("worker no-op result submission rejected"));
+            "planned file group does not contain any file handles",
+            new IllegalStateException("planned file group does not contain any file handles"));
       }
-      return ExecutionResult.success(
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
-    }
-    try {
+      if (!payload.requestsStats() && !payload.capturePageIndex()) {
+        return submitTerminalSuccess(
+            context,
+            lease,
+            remoteLease,
+            payload,
+            StandaloneFileGroupExecutionResult.empty(successResultId(lease, payload)),
+            0,
+            "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
+      }
       var captured =
           StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
       var result =
@@ -162,50 +151,107 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
                   + String.join(", ", missingArtifactFiles));
         }
       }
-      if (!workerClient.submitSuccess(remoteLease, result)) {
-        return ExecutionResult.failure(
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            "standalone worker result submission was rejected",
-            new IllegalStateException("worker result submission rejected"));
-      }
       long statsProcessed = captured.statsRecords().size();
-      context
-          .progressListener()
-          .onProgress(
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              statsProcessed,
-              "Executed file group "
-                  + payload.groupId()
-                  + " with "
-                  + payload.plannedFilePaths().size()
-                  + " planned handles"
-                  + (statsProcessed > 0 ? " and " + statsProcessed + " captured stats" : ""));
-      return ExecutionResult.success(
-          0, 0, 0, 0, 0, 0, statsProcessed, "Executed file group " + payload.groupId());
+      return submitTerminalSuccess(
+          context,
+          lease,
+          remoteLease,
+          payload,
+          result,
+          statsProcessed,
+          "Executed file group " + payload.groupId());
+    } catch (ReconcileFailureException e) {
+      throw e;
     } catch (RuntimeException e) {
+      if (context.shouldStop().getAsBoolean()) {
+        LOG.warnf(
+            "Skipping file-group failure submission for job %s leaseEpoch=%s because outer stop was requested during execution",
+            lease.jobId, lease.leaseEpoch);
+        return stopRequestedResult(payload);
+      }
       String failureDetail = failureDetail(e);
       LOG.errorf(
           e,
           "File-group capture failed planId=%s groupId=%s tableId=%s snapshotId=%d",
-          payload.planId(),
-          payload.groupId(),
-          payload.tableId() == null ? "" : payload.tableId().getId(),
-          payload.snapshotId());
+          payload == null ? "" : payload.planId(),
+          payload == null ? "" : payload.groupId(),
+          payload == null || payload.tableId() == null ? "" : payload.tableId().getId(),
+          payload == null ? 0L : payload.snapshotId());
       workerClient.submitFailure(remoteLease, failureResultId(lease, payload), failureDetail);
       return ExecutionResult.failure(
           0, 0, 0, 0, 1, 0, 0, "File-group capture failed: " + failureDetail, e);
     }
+  }
+
+  private ExecutionResult submitTerminalSuccess(
+      ExecutionContext context,
+      ReconcileJobStore.LeasedJob lease,
+      RemoteLeasedJob remoteLease,
+      StandaloneFileGroupExecutionPayload payload,
+      StandaloneFileGroupExecutionResult result,
+      long statsProcessed,
+      String successMessage) {
+    if (shouldSkipTerminalSubmission(context.shouldStop(), lease, payload, "success")) {
+      return stopRequestedResult(payload);
+    }
+    try {
+      if (!workerClient.submitSuccess(remoteLease, result)) {
+        throw terminalSubmissionUncertain(
+            "standalone worker success result submission was rejected", null);
+      }
+    } catch (RuntimeException e) {
+      throw terminalSubmissionUncertain(
+          "standalone worker success result submission did not complete cleanly", e);
+    }
+    if (payload != null && !payload.requestsStats() && !payload.capturePageIndex()) {
+      return ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, successMessage);
+    }
+    context
+        .progressListener()
+        .onProgress(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            statsProcessed,
+            "Executed file group "
+                + payload.groupId()
+                + " with "
+                + payload.plannedFilePaths().size()
+                + " planned handles"
+                + (statsProcessed > 0 ? " and " + statsProcessed + " captured stats" : ""));
+    return ExecutionResult.success(0, 0, 0, 0, 0, 0, statsProcessed, successMessage);
+  }
+
+  private boolean shouldSkipTerminalSubmission(
+      BooleanSupplier shouldStop,
+      ReconcileJobStore.LeasedJob lease,
+      StandaloneFileGroupExecutionPayload payload,
+      String outcome) {
+    if (!shouldStop.getAsBoolean()) {
+      return false;
+    }
+    LOG.warnf(
+        "Skipping file-group terminal %s submission for job %s leaseEpoch=%s groupId=%s because outer stop was requested",
+        outcome, lease.jobId, lease.leaseEpoch, payload == null ? "" : payload.groupId());
+    return true;
+  }
+
+  private static ExecutionResult stopRequestedResult(StandaloneFileGroupExecutionPayload payload) {
+    String groupId = payload == null ? "" : payload.groupId();
+    return ExecutionResult.cancelled(
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        groupId == null || groupId.isBlank()
+            ? "Stopped during file-group execution"
+            : "Stopped during file-group execution for " + groupId);
   }
 
   private static String failureDetail(Throwable error) {
@@ -220,6 +266,16 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       current = current.getCause();
     }
     return String.join(" | caused by: ", parts);
+  }
+
+  private static ReconcileFailureException terminalSubmissionUncertain(
+      String message, RuntimeException cause) {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.RETRYABLE,
+        ExecutionResult.RetryClass.STATE_UNCERTAIN,
+        message,
+        cause);
   }
 
   private static String renderThrowable(Throwable error) {

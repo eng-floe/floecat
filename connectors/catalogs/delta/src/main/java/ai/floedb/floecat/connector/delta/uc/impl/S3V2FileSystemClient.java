@@ -67,6 +67,12 @@ final class S3V2FileSystemClient implements FileIO {
   }
 
   @Override
+  public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
+    throw new UnsupportedOperationException(
+        "Copying files not implemented for read-only S3V2FileIO");
+  }
+
+  @Override
   public String resolvePath(String path) {
     if (path.startsWith("s3a://")) {
       return "s3://" + path.substring(6);

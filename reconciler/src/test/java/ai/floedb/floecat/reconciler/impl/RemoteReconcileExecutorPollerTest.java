@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -666,6 +667,374 @@ class RemoteReconcileExecutorPollerTest {
         .complete(
             any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
             anyLong(), anyLong(), any());
+  }
+
+  @Test
+  void runLeaseContinuesAfterTransientHeartbeatTransportFailure() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch transportFailureSeen = new CountDownLatch(1);
+    CountDownLatch renewedAfterFailure = new CountDownLatch(1);
+    CountDownLatch allowCompletion = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicInteger renewCalls = new AtomicInteger();
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            context -> {
+              try {
+                assertTrue(transportFailureSeen.await(5, TimeUnit.SECONDS));
+                assertTrue(renewedAfterFailure.await(5, TimeUnit.SECONDS));
+                allowCompletion.countDown();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+              return ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "done");
+            });
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    Config heartbeatConfig = mock(Config.class);
+    when(heartbeatConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
+        .thenReturn(java.util.Optional.of(3_000L));
+    when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
+        .thenReturn(java.util.Optional.of(200L));
+    poller.config = heartbeatConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-transport", ReconcileJobKind.PLAN_SNAPSHOT);
+    when(client.renew(lease))
+        .thenAnswer(
+            invocation -> {
+              int call = renewCalls.incrementAndGet();
+              if (call == 1) {
+                transportFailureSeen.countDown();
+                throw new io.grpc.StatusRuntimeException(io.grpc.Status.UNAVAILABLE);
+              }
+              renewedAfterFailure.countDown();
+              return new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false);
+            });
+    when(client.cancellationRequested(lease)).thenReturn(false);
+    when(client.complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done")))
+        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(true));
+
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            });
+    worker.start();
+
+    assertTrue(allowCompletion.await(5, TimeUnit.SECONDS));
+    worker.join(5_000L);
+
+    if (failure.get() != null) {
+      throw new AssertionError("runLease failed", failure.get());
+    }
+    assertTrue(!worker.isAlive());
+    verify(client).start(lease, "planner");
+    verify(client, times(2)).renew(lease);
+    verify(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done"));
+  }
+
+  @Test
+  void runLeaseDoesNotCompleteWhenTerminalStateIsUncertain() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "file-group",
+            context -> {
+              throw new ReconcileFailureException(
+                  ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+                  ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+                  ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN,
+                  "terminal submit uncertain",
+                  new RuntimeException("response lost"));
+            });
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    Config heartbeatConfig = mock(Config.class);
+    when(heartbeatConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
+        .thenReturn(java.util.Optional.of(3_000L));
+    when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
+        .thenReturn(java.util.Optional.of(1_000L));
+    poller.config = heartbeatConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-uncertain", ReconcileJobKind.EXEC_FILE_GROUP);
+    when(client.renew(lease))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(lease)).thenReturn(false);
+
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            });
+    worker.start();
+    worker.join(5_000L);
+
+    if (failure.get() != null) {
+      throw new AssertionError("runLease failed", failure.get());
+    }
+    assertTrue(!worker.isAlive());
+    verify(client).start(lease, "file-group");
+    verify(client, never())
+        .complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any());
+  }
+
+  @Test
+  void runLeaseDoesNotCompleteWhenStartStateIsUncertain() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner", context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "done"));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-start-uncertain", ReconcileJobKind.PLAN_CONNECTOR);
+    org.mockito.Mockito.doThrow(new io.grpc.StatusRuntimeException(io.grpc.Status.UNAVAILABLE))
+        .when(client)
+        .start(lease, "planner");
+
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            });
+    worker.start();
+    worker.join(5_000L);
+
+    if (failure.get() != null) {
+      throw new AssertionError("runLease failed", failure.get());
+    }
+    assertTrue(!worker.isAlive());
+    verify(client).start(lease, "planner");
+    verify(client, never())
+        .complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any());
+  }
+
+  @Test
+  void runLeaseDoesNotConvertSuccessfulCompleteTransportFailureIntoFailedComplete()
+      throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner", context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "done"));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-complete-uncertain", ReconcileJobKind.PLAN_CONNECTOR);
+    when(client.renew(lease))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(lease)).thenReturn(false);
+    org.mockito.Mockito.doThrow(new io.grpc.StatusRuntimeException(io.grpc.Status.UNAVAILABLE))
+        .when(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done"));
+
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            });
+    worker.start();
+    worker.join(5_000L);
+
+    if (failure.get() != null) {
+      throw new AssertionError("runLease failed", failure.get());
+    }
+    assertTrue(!worker.isAlive());
+    verify(client).start(lease, "planner");
+    verify(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done"));
+    verify(client, never())
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.FAILED),
+            any(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            any());
+  }
+
+  @Test
+  void runLeaseDoesNotClassifyNonTransportCompleteFailureAsStateUncertain() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner", context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "done"));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-complete-precondition", ReconcileJobKind.PLAN_CONNECTOR);
+    when(client.renew(lease))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(lease)).thenReturn(false);
+    io.grpc.StatusRuntimeException precondition =
+        new io.grpc.StatusRuntimeException(io.grpc.Status.FAILED_PRECONDITION);
+    org.mockito.Mockito.doThrow(precondition)
+        .when(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done"));
+    when(client.complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.FAILED),
+            any(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            any()))
+        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(false));
+
+    poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+
+    verify(client).start(lease, "planner");
+    verify(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.SUCCEEDED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq("done"));
+    verify(client)
+        .complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.FAILED),
+            any(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            any());
   }
 
   private static ReconcileExecutor remoteExecutor(

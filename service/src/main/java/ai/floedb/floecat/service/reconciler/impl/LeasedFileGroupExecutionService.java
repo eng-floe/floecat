@@ -415,7 +415,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
           .asRuntimeException();
     }
     ReconcileJobStore.ReconcileJob job =
-        jobs.get(jobId)
+        jobs.getLeaseView(jobId)
             .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("job_id", jobId)));
     if (job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
       throw Status.FAILED_PRECONDITION

@@ -604,7 +604,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileControlImpl::mapCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
+                    .collect(java.util.stream.Collectors.toSet()),
+                fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
+                scope.getCapturePolicy().getMaxDefaultColumns())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
@@ -636,6 +638,16 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
       case CO_UNSPECIFIED, UNRECOGNIZED ->
           throw new IllegalArgumentException("capture output is required");
+    };
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
+      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+    return switch (scope) {
+      case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+      case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
     };
   }
 

@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -332,7 +333,12 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             .setKind(ResourceKind.RK_TABLE)
             .setId(snapshotTask.tableId())
             .build();
-    statsStore.putTargetStats(
+    if (statsStore
+        .getTargetStats(tableId, snapshotTask.snapshotId(), StatsTargetIdentity.tableTarget())
+        .isPresent()) {
+      return 0L;
+    }
+    TargetStatsRecord zeroMarker =
         TargetStatsRecords.tableRecord(
             tableId,
             snapshotTask.snapshotId(),
@@ -341,8 +347,20 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 .setDataFileCount(0L)
                 .setTotalSizeBytes(0L)
                 .build(),
-            null));
-    return 1L;
+            null);
+    if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
+      return 1L;
+    }
+    if (statsStore
+        .getTargetStats(tableId, snapshotTask.snapshotId(), StatsTargetIdentity.tableTarget())
+        .isPresent()) {
+      return 0L;
+    }
+    throw new IllegalStateException(
+        "snapshot finalization failed to persist empty completion marker for table "
+            + snapshotTask.tableId()
+            + " snapshot "
+            + snapshotTask.snapshotId());
   }
 
   private ChildState childState(

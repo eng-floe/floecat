@@ -200,7 +200,7 @@ class DeltaTypeMapperTest {
     DataType unknownType =
         new DataType() {
           @Override
-          public boolean equivalent(DataType dataType) {
+          public boolean isNested() {
             return false;
           }
 

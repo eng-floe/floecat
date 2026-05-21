@@ -71,9 +71,18 @@ message CaptureColumnPolicy {
   bool capture_index = 3;
 }
 
+enum DefaultColumnScope {
+  DCS_UNSPECIFIED = 0;
+  DCS_FIRST_N = 1;
+  DCS_ALL = 2;
+  DCS_EXPLICIT_ONLY = 3;
+}
+
 message CapturePolicy {
   repeated CaptureColumnPolicy columns = 1;
   repeated CaptureOutput outputs = 2;
+  DefaultColumnScope default_column_scope = 3;
+  uint32 max_default_columns = 4;
 }
 
 enum SnapshotSelectionKind {

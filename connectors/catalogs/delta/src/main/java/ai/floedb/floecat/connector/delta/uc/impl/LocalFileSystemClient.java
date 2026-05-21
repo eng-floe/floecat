@@ -68,6 +68,12 @@ final class LocalFileSystemClient implements FileIO {
   }
 
   @Override
+  public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
+    throw new UnsupportedOperationException(
+        "Copying files not implemented for read-only LocalFileIO");
+  }
+
+  @Override
   public String resolvePath(String path) {
     if (path.startsWith("s3a://")) {
       return "s3://" + path.substring(6);

@@ -44,7 +44,8 @@ final class JavaConnectorFileGroupCaptureAdapter {
             Set.copyOf(request.plannedFilePaths()),
             request.statsColumns(),
             request.requestedStatsTargetKinds(),
-            request.capturePageIndex());
+            request.capturePageIndex(),
+            request.columnSelectorPolicy());
     return CaptureEngineResult.of(
         completeStats(request, captured.statsRecords()),
         filterPageIndexEntries(captured.pageIndexEntries(), request.indexColumns()),

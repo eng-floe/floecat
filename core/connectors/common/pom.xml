@@ -113,6 +113,12 @@
       <artifactId>iceberg-core</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-kernel-api</artifactId>
+      <version>${version.delta.kernel.api}</version>
+    </dependency>
+
     <!-- Hadoop filesystem + config -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>

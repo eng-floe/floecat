@@ -35,6 +35,14 @@ public interface StatsStore {
   /** Upserts a target stats record. */
   void putTargetStats(TargetStatsRecord value);
 
+  /**
+   * Creates a target stats record only when the exact table/snapshot/target key is absent.
+   *
+   * <p>Returns {@code true} only when this call created the record. Returns {@code false} when an
+   * equal or conflicting record already owns the target key.
+   */
+  boolean putTargetStatsIfAbsent(TargetStatsRecord value);
+
   /** Returns the target stats record for the exact table/snapshot/target key, if present. */
   Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target);

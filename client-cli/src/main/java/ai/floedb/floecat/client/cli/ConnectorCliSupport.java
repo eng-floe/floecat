@@ -56,6 +56,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
@@ -537,6 +538,8 @@ final class ConnectorCliSupport {
                   + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]"
                   + " [--snapshot <id[,id...]>|--current|--latest-n <n>|--all]"
                   + " [--columns c1,#id2,...]"
+                  + " [--default-cols first-n|all|explicit-only]"
+                  + " [--max-default-cols <n>]"
                   + "  (--mode required; --capture required for capture modes)");
           return;
         }
@@ -562,6 +565,13 @@ final class ConnectorCliSupport {
                 Quotes.unquote(CliArgs.parseStringFlag(args, "--capture", "")));
         List<String> columns =
             CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+        DefaultColumnScope defaultColumnScope =
+            CliUtils.parseDefaultColumnScope(
+                Quotes.unquote(CliArgs.parseStringFlag(args, "--default-cols", "")));
+        int maxDefaultColumns = CliArgs.parseIntFlag(args, "--max-default-cols", 32);
+        if (maxDefaultColumns <= 0) {
+          throw new IllegalArgumentException("--max-default-cols must be greater than 0");
+        }
         int scopeFlags =
             (currentSnapshot ? 1 : 0)
                 + (!snapshotToken.isBlank() ? 1 : 0)
@@ -582,7 +592,9 @@ final class ConnectorCliSupport {
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
-        CapturePolicy capturePolicy = CliUtils.buildCapturePolicy(mode, requestedOutputs, columns);
+        CapturePolicy capturePolicy =
+            CliUtils.buildCapturePolicy(
+                mode, requestedOutputs, columns, defaultColumnScope, maxDefaultColumns);
         Connector connector = null;
         if (!destNs.isBlank()
             || !destTable.isBlank()

@@ -22,6 +22,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import io.delta.kernel.internal.types.DataTypeJsonSerDe;
+import io.delta.kernel.types.FieldMetadata;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructField;
+import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.VariantType;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -309,6 +316,35 @@ class DeltaSchemaMapperTest {
     assertThat(desc.getColumns(0).getOrdinal()).isEqualTo(1);
     assertThat(desc.getColumns(1).getOrdinal()).isEqualTo(2);
     assertThat(desc.getColumns(2).getOrdinal()).isEqualTo(3);
+  }
+
+  @Test
+  void kernelEmittedSchemaJsonParsesNestedFieldsAndColumnMappingIds() {
+    StructType schema =
+        new StructType()
+            .add(
+                new StructField(
+                    "payload",
+                    new StructType()
+                        .add(
+                            new StructField(
+                                "id",
+                                LongType.LONG,
+                                false,
+                                FieldMetadata.builder()
+                                    .putLong("delta.columnMapping.id", 17L)
+                                    .build()))
+                        .add("attrs", VariantType.VARIANT, true),
+                    true))
+            .add("message", StringType.STRING, true);
+
+    SchemaDescriptor desc =
+        DeltaSchemaMapper.map(CID, DataTypeJsonSerDe.serializeStructType(schema), Set.of());
+
+    assertThat(desc.getColumnsList().stream().map(SchemaColumn::getPhysicalPath))
+        .containsExactly("payload", "payload.id", "payload.attrs", "message");
+    assertThat(desc.getColumns(1).getFieldId()).isEqualTo(17);
+    assertThat(desc.getColumns(2).getLogicalType()).isEqualTo("VARIANT");
   }
 
   // ---------------------------------------------------------------------------

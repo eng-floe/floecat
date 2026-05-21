@@ -234,6 +234,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     java.util.Map<String, BulkEnqueueItemResult> batchDedupe = new java.util.HashMap<>();
+    java.util.Map<String, PendingBulkEnqueue> representativeByParent =
+        new java.util.LinkedHashMap<>();
+    java.util.Map<String, Integer> createdChildrenByParent = new java.util.LinkedHashMap<>();
     for (PendingBulkEnqueue entry : preparedEntries) {
       if (results.get(entry.index) != null) {
         continue;
@@ -267,7 +270,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           new BulkEnqueueItemResult(entry.index, entry.record.jobId, true, "");
       results.set(entry.index, created);
       batchDedupe.put(entry.dedupePointerKey, created);
-      refreshContributionChain(entry.record);
+      if (!blank(entry.record.parentJobId)) {
+        representativeByParent.putIfAbsent(entry.record.parentJobId, entry);
+        createdChildrenByParent.merge(entry.record.parentJobId, 1, Integer::sum);
+      }
+    }
+
+    for (var parentEntry : createdChildrenByParent.entrySet()) {
+      incrementExpectedChildJobs(parentEntry.getKey(), parentEntry.getValue());
+      PendingBulkEnqueue representative = representativeByParent.get(parentEntry.getKey());
+      if (representative != null) {
+        refreshAncestorContributionRollups(representative.record, false);
+      }
     }
 
     return new BulkEnqueueResult(results);
@@ -280,21 +294,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return new BulkEnqueueItemResult(entry.index, existing.get().jobId, false, "");
       }
       if (pointerStore.compareAndSetBatch(bulkEnqueuePointerOps(entry))) {
-        if (entry.record.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
-          readCanonicalRecordByKey(entry.canonicalKey)
-              .ifPresent(
-                  rec ->
-                      LOG.infof(
-                          "enqueue EXEC_FILE_GROUP committed readback jobId=%s parentJobId=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d state=%s",
-                          rec.jobId,
-                          rec.parentJobId,
-                          rec.fileGroupPlanId,
-                          rec.fileGroupGroupId,
-                          rec.fileGroupTableId,
-                          rec.fileGroupSnapshotId,
-                          rec.fileGroupFileCount,
-                          rec.state));
-        }
         return null;
       }
     }
@@ -351,6 +350,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             effectiveViewTask,
             effectiveSnapshotTask,
             effectiveFileGroupTask);
+    if (effectiveJobKind == ReconcileJobKind.PLAN_TABLE) {
+      LOG.infof(
+          "enqueue PLAN_TABLE lane jobId=%s parentJobId=%s target=%s taskTarget=%s source=%s.%s laneKey=%s",
+          jobId,
+          spec.parentJobId,
+          blankToEmpty(scope.destinationTableId()),
+          blankToEmpty(effectiveTableTask.destinationTableId()),
+          blankToEmpty(effectiveTableTask.sourceNamespace()),
+          blankToEmpty(effectiveTableTask.sourceTable()),
+          laneKey);
+    }
     String dedupeKey =
         dedupeKey(
             spec.accountId,
@@ -515,6 +525,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public Optional<ReconcileJob> getLeaseView(String jobId) {
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(toCanonicalLeaseView(loaded.get().record));
+  }
+
+  @Override
   public ReconcileJobPage list(
       String accountId,
       int pageSize,
@@ -538,6 +557,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ReconcileJobPage listAccountWide(
       String accountId, int pageSize, String pageToken, java.util.Set<String> states) {
+    long startedAtMs = System.currentTimeMillis();
     int limit = Math.max(1, pageSize);
     ListCursor cursor = decodeListCursor(pageToken);
     String token = cursor.storeToken();
@@ -545,6 +565,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     List<ReconcileJob> out = new java.util.ArrayList<>(limit);
     String nextToken = "";
     int pages = 0;
+    int pointerCount = 0;
+    int recordCount = 0;
     while (out.size() < limit) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
@@ -553,6 +575,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointers.isEmpty()) {
         break;
       }
+      pointerCount += pointers.size();
       int startIndex = Math.min(skip, pointers.size());
       skip = 0;
       for (int i = startIndex; i < pointers.size(); i++) {
@@ -564,6 +587,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         if (rec.isEmpty()) {
           continue;
         }
+        recordCount++;
         var job = toPublicJobSummary(rec.get());
         if (states != null && !states.isEmpty() && !states.contains(job.state)) {
           continue;
@@ -597,6 +621,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       token = nextToken;
     }
+    LOG.debugf(
+        "list total_ms=%d pointer_count=%d record_count=%d contribution_count=%d mode=account accountId=%s returned=%d",
+        System.currentTimeMillis() - startedAtMs,
+        pointerCount,
+        recordCount,
+        0,
+        accountId,
+        out.size());
     return new ReconcileJobPage(out, nextToken);
   }
 
@@ -606,6 +638,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String pageToken,
       String connectorId,
       java.util.Set<String> states) {
+    long startedAtMs = System.currentTimeMillis();
     int limit = Math.max(1, pageSize);
     ListCursor cursor = decodeListCursor(pageToken);
     String token = cursor.storeToken();
@@ -614,6 +647,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     List<ReconcileJob> out = new java.util.ArrayList<>(limit);
     String nextToken = "";
     int pages = 0;
+    int pointerCount = 0;
+    int recordCount = 0;
     while (out.size() < limit) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
@@ -621,6 +656,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointers.isEmpty()) {
         break;
       }
+      pointerCount += pointers.size();
       int startIndex = Math.min(skip, pointers.size());
       skip = 0;
       for (int i = startIndex; i < pointers.size(); i++) {
@@ -629,6 +665,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         if (rec.isEmpty()) {
           continue;
         }
+        recordCount++;
         StoredReconcileJob stored = rec.get();
         if (!connectorId.equals(stored.connectorId)) {
           continue;
@@ -666,6 +703,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       token = nextToken;
     }
+    LOG.debugf(
+        "list total_ms=%d pointer_count=%d record_count=%d contribution_count=%d mode=connector accountId=%s connectorId=%s returned=%d",
+        System.currentTimeMillis() - startedAtMs,
+        pointerCount,
+        recordCount,
+        0,
+        accountId,
+        connectorId,
+        out.size());
     return new ReconcileJobPage(out, nextToken);
   }
 
@@ -779,6 +825,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       int pageSize,
       String pageToken,
       java.util.function.Predicate<StoredReconcileJob> filter) {
+    long startedAtMs = System.currentTimeMillis();
     int limit = Math.max(1, pageSize);
     ListCursor cursor = decodeListCursor(pageToken);
     String token = cursor.storeToken();
@@ -786,6 +833,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     List<ReconcileJob> out = new ArrayList<>(limit);
     String nextToken = "";
     int pages = 0;
+    int pointerCount = 0;
+    int recordCount = 0;
     while (out.size() < limit) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
@@ -793,6 +842,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointers.isEmpty()) {
         break;
       }
+      pointerCount += pointers.size();
       int startIndex = Math.min(skip, pointers.size());
       skip = 0;
       for (int i = startIndex; i < pointers.size(); i++) {
@@ -801,6 +851,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         if (rec.isEmpty()) {
           continue;
         }
+        recordCount++;
         out.add(toPublicJobSummary(rec.get()));
         if (out.size() >= limit) {
           boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
@@ -829,6 +880,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       token = nextToken;
     }
+    LOG.debugf(
+        "list total_ms=%d pointer_count=%d record_count=%d contribution_count=%d mode=state prefix=%s returned=%d",
+        System.currentTimeMillis() - startedAtMs, pointerCount, recordCount, 0, prefix, out.size());
     return new ReconcileJobPage(out, nextToken);
   }
 
@@ -853,33 +907,62 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public QueueStats queueStats() {
-    long queued = Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_QUEUED")));
+    long queued =
+        Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_QUEUED")))
+            + Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_WAITING")));
     long running = Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_RUNNING")));
     long cancelling = Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_CANCELLING")));
-    long oldestQueued = oldestStateTimestamp("JS_QUEUED");
+    long oldestQueued =
+        firstPositiveMin(oldestStateTimestamp("JS_QUEUED"), oldestStateTimestamp("JS_WAITING"));
     return new QueueStats(queued, running, cancelling, oldestQueued);
   }
 
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    long now = System.currentTimeMillis();
-    var leased = leaseReadyDue(now, effective);
-    if (leased.isPresent()) {
-      return leased;
+    long startedAtMs = System.currentTimeMillis();
+    LeaseScanStats scanStats = new LeaseScanStats();
+    var leased = leaseReadyDue(startedAtMs, effective, scanStats);
+    LOG.debugf(
+        "leaseNext total_ms=%d scan_count=%d candidate_count=%d leased=%s",
+        System.currentTimeMillis() - startedAtMs,
+        scanStats.scanCount,
+        scanStats.candidateCount,
+        leased.isPresent());
+    return leased;
+  }
+
+  void runMaintenanceOnce(long maxMillis) {
+    long startedAtMs = System.currentTimeMillis();
+    long budgetMs = Math.max(0L, maxMillis);
+    long stepStartedAtMs = startedAtMs;
+    drainPendingRepairHintsForMaintenance(MAX_PENDING_REPAIR_HINTS, budgetMs);
+    long drainElapsedMs = System.currentTimeMillis() - stepStartedAtMs;
+    if (budgetMs > 0L && System.currentTimeMillis() - startedAtMs >= budgetMs) {
+      LOG.debugf(
+          "runMaintenanceOnce total_ms=%d drain_ms=%d ready_repair_ms=%d reclaim_ms=%d",
+          System.currentTimeMillis() - startedAtMs, drainElapsedMs, 0, 0);
+      return;
     }
 
-    if (repairQueuedReadyPointersIfNeeded(now, effective)) {
-      leased = leaseReadyDue(System.currentTimeMillis(), effective);
-      if (leased.isPresent()) {
-        return leased;
-      }
+    stepStartedAtMs = System.currentTimeMillis();
+    repairQueuedReadyPointersIfNeeded(System.currentTimeMillis(), LeaseRequest.all());
+    long readyRepairElapsedMs = System.currentTimeMillis() - stepStartedAtMs;
+    if (budgetMs > 0L && System.currentTimeMillis() - startedAtMs >= budgetMs) {
+      LOG.debugf(
+          "runMaintenanceOnce total_ms=%d drain_ms=%d ready_repair_ms=%d reclaim_ms=%d",
+          System.currentTimeMillis() - startedAtMs, drainElapsedMs, readyRepairElapsedMs, 0);
+      return;
     }
 
-    // Reclaim is best-effort recovery work; do not block ready leasing on potentially expensive
-    // scans.
-    reclaimExpiredLeasesIfDue(now);
-    return leaseReadyDue(System.currentTimeMillis(), effective);
+    stepStartedAtMs = System.currentTimeMillis();
+    reclaimExpiredLeasesIfDue(System.currentTimeMillis());
+    LOG.debugf(
+        "runMaintenanceOnce total_ms=%d drain_ms=%d ready_repair_ms=%d reclaim_ms=%d",
+        System.currentTimeMillis() - startedAtMs,
+        drainElapsedMs,
+        readyRepairElapsedMs,
+        System.currentTimeMillis() - stepStartedAtMs);
   }
 
   @Override
@@ -952,7 +1035,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             }
             return;
           }
-          refreshContributionChain(updated.get().record);
+          refreshAncestorContributionRollups(updated.get().record, true);
           String previousBlobUri = previousSnapshotPlanBlobUri.get();
           if (!previousBlobUri.isBlank() && !previousBlobUri.equals(nextBlobUri)) {
             blobStore.delete(previousBlobUri);
@@ -993,7 +1076,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           validateFileGroupResultMatchesCanonical(loaded.get().record, effective);
           writeFileGroupResultPayload(
               loaded.get().record.accountId, loaded.get().record.jobId, effective);
-          refreshContributionChain(loaded.get().record);
         });
   }
 
@@ -1005,7 +1087,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     jobId,
                     existing -> {
                       if (!hasActiveLease(
-                          jobId, leaseEpoch, existing, "markRunning", false, true)) {
+                          jobId, leaseEpoch, existing, "markRunning", false, true, false)) {
                         return null;
                       }
                       boolean cancelling = "JS_CANCELLING".equals(existing.state);
@@ -1019,7 +1101,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                       existing.executorId = executorId == null ? "" : executorId;
                       return existing;
                     })
-                .ifPresent(env -> refreshContributionChain(env.record)));
+                .ifPresent(env -> refreshAncestorContributionRollups(env.record, false)));
   }
 
   @Override
@@ -1035,30 +1117,48 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long statsProcessed,
       String message) {
     onHotPath(
-        () ->
-            mutateByJobIdReturningRecord(
-                    jobId,
-                    existing -> {
-                      if (!hasActiveLease(
-                          jobId, leaseEpoch, existing, "markProgress", false, true)) {
-                        return null;
-                      }
-                      if (isTerminalState(existing.state)) {
-                        return null;
-                      }
-                      existing.tablesScanned = tablesScanned;
-                      existing.tablesChanged = tablesChanged;
-                      existing.viewsScanned = viewsScanned;
-                      existing.viewsChanged = viewsChanged;
-                      existing.errors = errors;
-                      existing.snapshotsProcessed = snapshotsProcessed;
-                      existing.statsProcessed = statsProcessed;
-                      if (message != null && !message.isBlank()) {
-                        existing.message = message;
-                      }
-                      return existing;
-                    })
-                .ifPresent(env -> refreshContributionChain(env.record)));
+        () -> {
+          boolean[] changedMaterially = new boolean[] {false};
+          mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (!hasActiveLease(
+                        jobId, leaseEpoch, existing, "markProgress", false, true, false)) {
+                      return null;
+                    }
+                    if (isTerminalState(existing.state)) {
+                      return null;
+                    }
+                    changedMaterially[0] =
+                        existing.tablesScanned != tablesScanned
+                            || existing.tablesChanged != tablesChanged
+                            || existing.viewsScanned != viewsScanned
+                            || existing.viewsChanged != viewsChanged
+                            || existing.errors != errors
+                            || existing.snapshotsProcessed != snapshotsProcessed
+                            || existing.statsProcessed != statsProcessed
+                            || (message != null
+                                && !message.isBlank()
+                                && !message.equals(blankToEmpty(existing.message)));
+                    existing.tablesScanned = tablesScanned;
+                    existing.tablesChanged = tablesChanged;
+                    existing.viewsScanned = viewsScanned;
+                    existing.viewsChanged = viewsChanged;
+                    existing.errors = errors;
+                    existing.snapshotsProcessed = snapshotsProcessed;
+                    existing.statsProcessed = statsProcessed;
+                    if (message != null && !message.isBlank()) {
+                      existing.message = message;
+                    }
+                    return existing;
+                  })
+              .ifPresent(
+                  env -> {
+                    if (changedMaterially[0]) {
+                      refreshDirectParentContribution(env.record, false);
+                    }
+                  });
+        });
   }
 
   @Override
@@ -1223,7 +1323,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             return current;
           });
     }
-    updated.ifPresent(env -> refreshContributionChain(env.record));
+    updated.ifPresent(env -> refreshAncestorContributionRollups(env.record, false));
     var post = get(accountId, jobId);
     if (post.isPresent()
         && ("JS_CANCELLED".equals(post.get().state) || "JS_CANCELLING".equals(post.get().state))) {
@@ -1542,6 +1642,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           reconcilePointerBatchOps(
               canonicalPointerKey, currentPointer, baseline, nextRecord, nextPointer);
       if (pointerStore.compareAndSetBatch(pointerOps)) {
+        logStateTransition(baseline, nextRecord, "mutate");
         return Optional.of(new StoredEnvelope(canonicalPointerKey, cloneStoredRecord(nextRecord)));
       }
     }
@@ -1619,6 +1720,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return Optional.empty();
       }
 
+      if ("JS_WAITING".equals(current.state)) {
+        clearReadyPointersIfOwned(current, canonicalPointerKey);
+        return Optional.empty();
+      }
+
       if (hasLiveLease(current, true, now)) {
         return Optional.empty();
       }
@@ -1632,136 +1738,164 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return Optional.empty();
       }
 
-      boolean cancelling = "JS_CANCELLING".equals(current.state);
-      if (!cancelling) {
-        current.state = "JS_RUNNING";
-        current.message = "Leased";
-      }
-      if (current.startedAtMs <= 0L) {
-        current.startedAtMs = now;
-      }
-      if (!blank(current.readyPointerKey)) {
-        current.readyPointerKey = null;
-      }
-
-      current.updatedAtMs = now;
-      current.canonicalPointerKey = canonicalPointerKey;
-      String nextLeaseEpoch = UUID.randomUUID().toString();
-      assertImmutableJobIdentityPreserved(baseline, current);
-
-      Pointer nextPointer =
-          Pointer.newBuilder()
-              .setKey(canonicalPointerKey)
-              .setBlobUri(encodeInlineJobState(current))
-              .setVersion(currentPointer.getVersion() + 1)
-              .build();
-
-      String leasePointerKey = Keys.reconcileJobLeasePointerById(current.accountId, current.jobId);
-      Pointer currentLeasePointer = pointerStore.get(leasePointerKey).orElse(null);
-      StoredJobLease currentLease =
-          currentLeasePointer == null
-              ? StoredJobLease.empty(current.accountId, current.jobId)
-              : readInlineJobLease(currentLeasePointer.getBlobUri())
-                  .orElse(StoredJobLease.empty(current.accountId, current.jobId));
-      if (currentLease.epoch != null
-          && !currentLease.epoch.isBlank()
-          && currentLease.expiresAtMs > now) {
-        repairReadyPointersIfStillCurrent(canonicalPointerKey);
-        clearSnapshotLeaseIfOwned(current, canonicalPointerKey);
-        return Optional.empty();
-      }
-      StoredJobLease nextLease =
-          StoredJobLease.active(current.accountId, current.jobId, nextLeaseEpoch, now + leaseMs);
-
-      long mutationStartMs = System.currentTimeMillis();
-      List<CasOp> pointerOps =
-          new ArrayList<>(
-              reconcilePointerBatchOps(
-                  canonicalPointerKey, currentPointer, baseline, current, nextPointer));
-      pointerOps.addAll(
-          leasePointerBatchOps(leasePointerKey, currentLeasePointer, currentLease, nextLease));
-      if (pointerStore.compareAndSetBatch(pointerOps)) {
-        if (current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
-          readCanonicalRecordByKey(canonicalPointerKey)
-              .ifPresent(
-                  rec ->
-                      LOG.infof(
-                          "lease EXEC_FILE_GROUP committed readback jobId=%s state=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d",
-                          rec.jobId,
-                          rec.state,
-                          rec.fileGroupPlanId,
-                          rec.fileGroupGroupId,
-                          rec.fileGroupTableId,
-                          rec.fileGroupSnapshotId,
-                          rec.fileGroupFileCount));
+      String nextLeaseEpoch = "";
+      boolean releaseSnapshotLease = true;
+      try {
+        boolean cancelling = "JS_CANCELLING".equals(current.state);
+        if (!cancelling) {
+          current.state = "JS_RUNNING";
+          current.message = "Leased";
         }
-        long mutationElapsedMs = System.currentTimeMillis() - mutationStartMs;
-        long definitionStartMs = System.currentTimeMillis();
-        StoredJobDefinition definition = requireDefinition(current);
-        long definitionElapsedMs = System.currentTimeMillis() - definitionStartMs;
-        long snapshotTaskElapsedMs = 0L;
-        ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.empty();
-        if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
-            || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
-          long snapshotTaskStartMs = System.currentTimeMillis();
-          snapshotTask = snapshotTaskFor(current);
-          snapshotTaskElapsedMs = System.currentTimeMillis() - snapshotTaskStartMs;
+        if (current.startedAtMs <= 0L) {
+          current.startedAtMs = now;
         }
-        long fileGroupTaskElapsedMs = 0L;
-        ReconcileFileGroupTask fileGroupTask = ReconcileFileGroupTask.empty();
-        if (current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
-          long fileGroupTaskStartMs = System.currentTimeMillis();
-          fileGroupTask = fileGroupTaskFor(current);
-          fileGroupTaskElapsedMs = System.currentTimeMillis() - fileGroupTaskStartMs;
+        if (!blank(current.readyPointerKey)) {
+          current.readyPointerKey = null;
         }
-        LOG.debugf(
-            "leaseCanonical breakdown jobId=%s kind=%s mutate_ms=%d load_definition_ms=%d"
-                + " snapshot_task_ms=%d file_group_task_ms=%d",
-            current.jobId,
-            current.jobKind(),
-            mutationElapsedMs,
-            definitionElapsedMs,
-            snapshotTaskElapsedMs,
-            fileGroupTaskElapsedMs);
-        if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
-            || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
-          LOG.debugf(
-              "leaseCanonical snapshot-backed jobId=%s kind=%s connectorId=%s tableId=%s snapshotId=%d"
-                  + " source=%s.%s fileGroups=%d",
-              current.jobId,
-              current.jobKind(),
-              current.connectorId,
-              snapshotTask.tableId(),
-              snapshotTask.snapshotId(),
-              snapshotTask.sourceNamespace(),
-              snapshotTask.sourceTable(),
-              snapshotTask.fileGroups().size());
+
+        current.updatedAtMs = now;
+        current.canonicalPointerKey = canonicalPointerKey;
+        nextLeaseEpoch = UUID.randomUUID().toString();
+        assertImmutableJobIdentityPreserved(baseline, current);
+
+        Pointer nextPointer =
+            Pointer.newBuilder()
+                .setKey(canonicalPointerKey)
+                .setBlobUri(encodeInlineJobState(current))
+                .setVersion(currentPointer.getVersion() + 1)
+                .build();
+
+        String leasePointerKey =
+            Keys.reconcileJobLeasePointerById(current.accountId, current.jobId);
+        Pointer currentLeasePointer = pointerStore.get(leasePointerKey).orElse(null);
+        StoredJobLease currentLease =
+            currentLeasePointer == null
+                ? StoredJobLease.empty(current.accountId, current.jobId)
+                : readInlineJobLease(currentLeasePointer.getBlobUri())
+                    .orElse(StoredJobLease.empty(current.accountId, current.jobId));
+        if (currentLease.epoch != null
+            && !currentLease.epoch.isBlank()
+            && currentLease.expiresAtMs > now) {
+          repairReadyPointersIfStillCurrent(canonicalPointerKey);
+          return Optional.empty();
         }
-        return Optional.of(
-            new LeasedJob(
+        StoredJobLease nextLease =
+            StoredJobLease.active(current.accountId, current.jobId, nextLeaseEpoch, now + leaseMs);
+
+        long mutationStartMs = System.currentTimeMillis();
+        List<CasOp> pointerOps =
+            new ArrayList<>(
+                reconcilePointerBatchOps(
+                    canonicalPointerKey, currentPointer, baseline, current, nextPointer));
+        pointerOps.addAll(
+            leasePointerBatchOps(leasePointerKey, currentLeasePointer, currentLease, nextLease));
+        if (pointerStore.compareAndSetBatch(pointerOps)) {
+          releaseSnapshotLease = false;
+          try {
+            long mutationElapsedMs = System.currentTimeMillis() - mutationStartMs;
+            long definitionStartMs = System.currentTimeMillis();
+            StoredJobDefinition definition = requireDefinition(current);
+            long definitionElapsedMs = System.currentTimeMillis() - definitionStartMs;
+            long snapshotTaskElapsedMs = 0L;
+            ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.empty();
+            if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+                || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+              long snapshotTaskStartMs = System.currentTimeMillis();
+              snapshotTask = snapshotTaskFor(current);
+              snapshotTaskElapsedMs = System.currentTimeMillis() - snapshotTaskStartMs;
+            }
+            long fileGroupTaskElapsedMs = 0L;
+            ReconcileFileGroupTask fileGroupTask = ReconcileFileGroupTask.empty();
+            if (current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
+              long fileGroupTaskStartMs = System.currentTimeMillis();
+              fileGroupTask = fileGroupTaskFor(current);
+              fileGroupTaskElapsedMs = System.currentTimeMillis() - fileGroupTaskStartMs;
+            }
+            LOG.debugf(
+                "leaseCanonical breakdown jobId=%s kind=%s mutate_ms=%d load_definition_ms=%d"
+                    + " snapshot_task_ms=%d file_group_task_ms=%d",
                 current.jobId,
-                current.accountId,
-                current.connectorId,
-                current.fullRescan,
-                current.captureMode(),
-                definition.toScope(),
-                current.executionPolicy(),
-                nextLeaseEpoch,
-                current.pinnedExecutorId(),
-                current.executorId(),
                 current.jobKind(),
-                definition.tableTask(),
-                definition.viewTask(),
-                snapshotTask,
-                fileGroupTask,
-                current.parentJobId()));
-      }
+                mutationElapsedMs,
+                definitionElapsedMs,
+                snapshotTaskElapsedMs,
+                fileGroupTaskElapsedMs);
+            if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+                || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+              LOG.debugf(
+                  "leaseCanonical snapshot-backed jobId=%s kind=%s connectorId=%s tableId=%s snapshotId=%d"
+                      + " source=%s.%s fileGroups=%d",
+                  current.jobId,
+                  current.jobKind(),
+                  current.connectorId,
+                  snapshotTask.tableId(),
+                  snapshotTask.snapshotId(),
+                  snapshotTask.sourceNamespace(),
+                  snapshotTask.sourceTable(),
+                  snapshotTask.fileGroups().size());
+            }
+            return Optional.of(
+                new LeasedJob(
+                    current.jobId,
+                    current.accountId,
+                    current.connectorId,
+                    current.fullRescan,
+                    current.captureMode(),
+                    definition.toScope(),
+                    current.executionPolicy(),
+                    nextLeaseEpoch,
+                    current.pinnedExecutorId(),
+                    current.executorId(),
+                    current.jobKind(),
+                    definition.tableTask(),
+                    definition.viewTask(),
+                    snapshotTask,
+                    fileGroupTask,
+                    current.parentJobId()));
+          } catch (RuntimeException e) {
+            rollbackLeaseCanonicalOnHydrationFailure(canonicalPointerKey, baseline, nextLeaseEpoch);
+            throw e;
+          }
+        }
 
-      clearLaneLeaseIfOwned(current, canonicalPointerKey);
-      clearSnapshotLeaseIfOwned(current, canonicalPointerKey);
+        clearLaneLeaseIfOwned(current, canonicalPointerKey);
+      } finally {
+        if (releaseSnapshotLease) {
+          clearSnapshotLeaseIfOwned(current, canonicalPointerKey);
+        }
+      }
     }
 
     return Optional.empty();
+  }
+
+  private void rollbackLeaseCanonicalOnHydrationFailure(
+      String canonicalPointerKey, StoredReconcileJob baseline, String leaseEpoch) {
+    if (baseline == null || blank(canonicalPointerKey) || blank(leaseEpoch)) {
+      return;
+    }
+    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
+    clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
+    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
+    mutateByCanonicalPointer(
+        canonicalPointerKey,
+        existing -> {
+          if (existing == null
+              || !"JS_RUNNING".equals(existing.state)
+              || !"Leased".equals(blankToEmpty(existing.message))) {
+            return existing;
+          }
+          existing.state = baseline.state;
+          existing.message = baseline.message;
+          existing.startedAtMs = baseline.startedAtMs;
+          existing.finishedAtMs = baseline.finishedAtMs;
+          existing.executorId = baseline.executorId;
+          existing.attempt = baseline.attempt;
+          existing.nextAttemptAtMs = baseline.nextAttemptAtMs;
+          existing.lastError = baseline.lastError;
+          existing.readyPointerKey = baseline.readyPointerKey;
+          return existing;
+        });
   }
 
   private boolean tryAcquireLaneLease(
@@ -2067,6 +2201,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (lease.expiresAtMs > nowMs) {
       return;
     }
+    if (nowMs - lease.expiresAtMs <= leaseRenewGraceMs) {
+      return;
+    }
     if (!"JS_RUNNING".equals(canonicalRecord.state)
         && !"JS_CANCELLING".equals(canonicalRecord.state)) {
       clearLeaseIfEpochMatches(canonicalRecord.accountId, canonicalRecord.jobId, lease.epoch);
@@ -2103,7 +2240,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   || currentLease.epoch == null
                   || currentLease.epoch.isBlank()
                   || currentLease.expiresAtMs <= 0L
-                  || currentLease.expiresAtMs > nowMs) {
+                  || currentLease.expiresAtMs > nowMs
+                  || nowMs - currentLease.expiresAtMs <= leaseRenewGraceMs) {
                 return null;
               }
               expiredEpoch.set(currentLease.epoch);
@@ -2137,9 +2275,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
+    return leaseReadyDue(nowMs, request, null);
+  }
+
+  private Optional<LeasedJob> leaseReadyDue(
+      long nowMs, LeaseRequest request, LeaseScanStats scanStats) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     for (ReadyIndexSelection selection : readyScanSelections(effective)) {
-      Optional<LeasedJob> leased = leaseReadyDueFromPrefix(nowMs, effective, selection);
+      Optional<LeasedJob> leased = leaseReadyDueFromPrefix(nowMs, effective, selection, scanStats);
       if (leased.isPresent()) {
         return leased;
       }
@@ -2148,10 +2291,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private Optional<LeasedJob> leaseReadyDueFromPrefix(
-      long nowMs, LeaseRequest request, ReadyIndexSelection selection) {
+      long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
     String token = "";
     int pages = 0;
     while (true) {
+      if (scanStats != null) {
+        scanStats.scanCount++;
+      }
       StringBuilder next = new StringBuilder();
       List<Pointer> ready =
           pointerStore.listPointersByPrefix(selection.prefix(), readyScanLimit, token, next);
@@ -2160,6 +2306,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
 
       for (Pointer candidate : ready) {
+        if (scanStats != null) {
+          scanStats.candidateCount++;
+        }
         var readyTarget = decodeReadyPointerTarget(candidate.getKey(), selection);
         if (readyTarget == null) {
           if (!shouldSkipMalformedReadyPointer(candidate.getKey(), selection)) {
@@ -2185,6 +2334,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           continue;
         }
         StoredReconcileJob record = recordOpt.get();
+        if ("JS_WAITING".equals(record.state)) {
+          clearReadyPointersIfOwned(record, readyTarget.canonicalPointerKey());
+          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
+          continue;
+        }
         if (!readyPointerMatchesRecord(candidate.getKey(), readyTarget, record)) {
           pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
@@ -2388,10 +2542,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                           executionClass)));
     }
 
-    if (!selections.isEmpty()) {
-      return selections;
-    }
-
     selections.add(
         new ReadyIndexSelection(Keys.reconcileReadyPointerPrefix(), ReadyIndexType.GLOBAL, ""));
     return selections;
@@ -2402,7 +2552,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private ReconcileJob toPublicJob(StoredReconcileJob stored, boolean includeDetails) {
-    ProjectedPublicJob projected = projectPublicJob(stored, includeDetails);
+    ProjectedPublicJob projected = projectPublicJob(stored, includeDetails, false);
     StoredJobDefinition definition = includeDetails ? requireDefinition(stored) : null;
     ReconcileSnapshotTask snapshotTask =
         includeDetails ? snapshotTaskFor(stored) : ReconcileSnapshotTask.empty();
@@ -2445,8 +2595,87 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         stored.parentJobId());
   }
 
+  private ReconcileJob toCanonicalLeaseView(StoredReconcileJob stored) {
+    StoredJobDefinition definition = requireDefinition(stored);
+    ReconcileSnapshotTask snapshotTask = snapshotTaskFor(stored);
+    ReconcileFileGroupTask fileGroupTask = fileGroupTaskFor(stored);
+    JobProjection projection = inlineSummaryProjection(stored);
+    String state = blankToEmpty(stored.state);
+    return new ReconcileJob(
+        stored.jobId,
+        stored.accountId,
+        stored.connectorId,
+        state,
+        normalizeWaitingStateMessage(state, stored.message),
+        stored.startedAtMs,
+        stored.finishedAtMs,
+        stored.tablesScanned,
+        stored.tablesChanged,
+        stored.viewsScanned,
+        stored.viewsChanged,
+        stored.errors,
+        stored.fullRescan,
+        stored.captureMode(),
+        stored.snapshotsProcessed,
+        stored.statsProcessed,
+        projection.indexesProcessed,
+        false,
+        definition.toScope(),
+        stored.executionPolicy(),
+        stored.pinnedExecutorId(),
+        stored.executorId(),
+        stored.jobKind(),
+        definition.tableTask(),
+        definition.viewTask(),
+        snapshotTask,
+        fileGroupTask,
+        projection.plannedFileGroups,
+        projection.plannedFiles,
+        projection.completedFileGroups,
+        projection.failedFileGroups,
+        projection.completedFiles,
+        projection.failedFiles,
+        stored.parentJobId());
+  }
+
   private ReconcileJob toPublicJobSummary(StoredReconcileJob stored) {
-    return toPublicJob(stored, false);
+    JobProjection projection = inlineSummaryProjection(stored);
+    String state = blankToEmpty(stored.state);
+    return new ReconcileJob(
+        stored.jobId,
+        stored.accountId,
+        stored.connectorId,
+        state,
+        normalizeWaitingStateMessage(state, stored.message),
+        stored.startedAtMs,
+        stored.finishedAtMs,
+        stored.tablesScanned,
+        stored.tablesChanged,
+        stored.viewsScanned,
+        stored.viewsChanged,
+        stored.errors,
+        stored.fullRescan,
+        stored.captureMode(),
+        stored.snapshotsProcessed,
+        stored.statsProcessed,
+        projection.indexesProcessed,
+        false,
+        ReconcileScope.empty(),
+        stored.executionPolicy(),
+        stored.pinnedExecutorId(),
+        stored.executorId(),
+        stored.jobKind(),
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        projection.plannedFileGroups,
+        projection.plannedFiles,
+        projection.completedFileGroups,
+        projection.failedFileGroups,
+        projection.completedFiles,
+        projection.failedFiles,
+        stored.parentJobId());
   }
 
   private boolean upsertReadyPointer(String readyPointerKey, String blobUri) {
@@ -2496,6 +2725,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && record.jobId.equals(owner.get().jobId)
         && record.accountId.equals(owner.get().accountId)) {
       pointerStore.compareAndDelete(dedupeKey, existing.getVersion());
+    }
+  }
+
+  private void clearReadyPointersIfOwned(StoredReconcileJob record, String canonicalPointerKey) {
+    if (record == null || blank(canonicalPointerKey)) {
+      return;
+    }
+    for (String readyPointerKey : readyPointerKeysForCleanup(record)) {
+      Pointer existing = pointerStore.get(readyPointerKey).orElse(null);
+      if (existing != null && canonicalPointerKey.equals(existing.getBlobUri())) {
+        pointerStore.compareAndDelete(readyPointerKey, existing.getVersion());
+      }
     }
   }
 
@@ -3032,6 +3273,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (record == null || target == null || candidateKey == null || candidateKey.isBlank()) {
       return false;
     }
+    if ("JS_WAITING".equals(record.state)) {
+      return false;
+    }
     if (!requiresReadyPointer(record)) {
       return false;
     }
@@ -3154,6 +3398,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long statsProcessed) {
     return onHotPath(
         () -> {
+          long operationStartedAtMs = System.currentTimeMillis();
           var updated =
               mutateByJobIdReturningRecord(
                   jobId,
@@ -3167,7 +3412,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                           case FAILED_TERMINAL -> "markFailedTerminal";
                           case CANCELLED -> "markCancelled";
                         };
-                    if (!hasActiveLease(jobId, leaseEpoch, existing, op, allowCancelling, true)) {
+                    boolean allowExpiredWithinGrace =
+                        completionKind == CompletionKind.SUCCEEDED
+                            || completionKind == CompletionKind.FAILED_TERMINAL
+                            || completionKind == CompletionKind.CANCELLED;
+                    if (!hasActiveLease(
+                        jobId,
+                        leaseEpoch,
+                        existing,
+                        op,
+                        allowCancelling,
+                        true,
+                        allowExpiredWithinGrace)) {
                       return null;
                     }
                     if (isTerminalState(existing.state)) {
@@ -3194,18 +3450,38 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     }
                     switch (completionKind) {
                       case SUCCEEDED -> {
-                        existing.state = "JS_SUCCEEDED";
-                        existing.message = "Succeeded";
-                        if (existing.startedAtMs <= 0L) {
-                          existing.startedAtMs = finishedAtMs;
-                        }
-                        existing.finishedAtMs = finishedAtMs;
                         existing.tablesScanned = tablesScanned;
                         existing.tablesChanged = tablesChanged;
                         existing.viewsScanned = viewsScanned;
                         existing.viewsChanged = viewsChanged;
+                        existing.errors = 0L;
                         existing.snapshotsProcessed = snapshotsProcessed;
                         existing.statsProcessed = statsProcessed;
+                        existing.lastError = "";
+                        long directChildJobs =
+                            countDirectChildJobs(existing.accountId, existing.jobId);
+                        if (hasIncompleteDirectChildJobs(existing)
+                            || (directChildJobs > 0L
+                                && !directChildJobsComplete(
+                                    maxExpectedChildJobs(existing, directChildJobs),
+                                    existing.completedChildJobs,
+                                    existing.failedChildJobs,
+                                    existing.cancelledChildJobs))) {
+                          if (existing.expectedChildJobs <= 0L) {
+                            existing.expectedChildJobs = directChildJobs;
+                          }
+                          existing.state = "JS_WAITING";
+                          existing.message = blank(message) ? "Waiting on child work" : message;
+                          existing.finishedAtMs = 0L;
+                          existing.executorId = "";
+                        } else {
+                          existing.state = "JS_SUCCEEDED";
+                          existing.message = "Succeeded";
+                          existing.finishedAtMs = finishedAtMs;
+                        }
+                        if (existing.startedAtMs <= 0L) {
+                          existing.startedAtMs = finishedAtMs;
+                        }
                         existing.readyPointerKey = null;
                         return existing;
                       }
@@ -3301,8 +3577,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   });
           updated.ifPresent(
               env -> {
+                long mutationElapsedMs = System.currentTimeMillis() - operationStartedAtMs;
                 clearExecutionLeasesIfOwned(env, jobId, leaseEpoch);
-                refreshContributionChain(env.record);
+                long refreshStartedAtMs = System.currentTimeMillis();
+                refreshAncestorContributionRollups(
+                    env.record,
+                    isTerminalState(env.record.state)
+                        || env.record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT);
+                LOG.debugf(
+                    "applyLeaseOutcome mutation_ms=%d contribution_refresh_ms=%d jobId=%s completionKind=%s",
+                    mutationElapsedMs,
+                    System.currentTimeMillis() - refreshStartedAtMs,
+                    jobId,
+                    completionKind);
               });
           return updated.isPresent();
         });
@@ -3674,7 +3961,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       StoredReconcileJob existing,
       String op,
       boolean allowCancelling,
-      boolean requireUnexpiredLease) {
+      boolean requireUnexpiredLease,
+      boolean allowExpiredWithinGrace) {
     if (leaseEpoch == null || leaseEpoch.isBlank()) {
       logLeaseSkip(op, "Skipping %s for reconcile job %s due to missing lease epoch", op, jobId);
       return false;
@@ -3697,16 +3985,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     long now = System.currentTimeMillis();
-    if (requireUnexpiredLease && lease.expiresAtMs <= now) {
-      logLeaseSkip(
-          op,
-          "Skipping %s for reconcile job %s due to expired lease expiresAtMs=%d now=%d",
-          op,
-          jobId,
-          lease.expiresAtMs,
-          now);
-      return false;
-    }
     if (!leaseEpoch.equals(lease.epoch)) {
       logLeaseSkip(
           op,
@@ -3715,6 +3993,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           jobId,
           lease.epoch);
       return false;
+    }
+    if (requireUnexpiredLease && lease.expiresAtMs <= now) {
+      if (!allowExpiredWithinGrace || now - lease.expiresAtMs > leaseRenewGraceMs) {
+        logLeaseSkip(
+            op,
+            "Skipping %s for reconcile job %s due to expired lease expiresAtMs=%d now=%d graceMs=%d",
+            op,
+            jobId,
+            lease.expiresAtMs,
+            now,
+            leaseRenewGraceMs);
+        return false;
+      }
     }
     return true;
   }
@@ -3791,6 +4082,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     copy.errors = source.errors;
     copy.snapshotsProcessed = source.snapshotsProcessed;
     copy.statsProcessed = source.statsProcessed;
+    copy.indexesProcessed = source.indexesProcessed;
+    copy.plannedFileGroups = source.plannedFileGroups;
+    copy.plannedFiles = source.plannedFiles;
+    copy.completedFileGroups = source.completedFileGroups;
+    copy.failedFileGroups = source.failedFileGroups;
+    copy.completedFiles = source.completedFiles;
+    copy.failedFiles = source.failedFiles;
+    copy.expectedChildJobs = source.expectedChildJobs;
+    copy.completedChildJobs = source.completedChildJobs;
+    copy.failedChildJobs = source.failedChildJobs;
+    copy.cancelledChildJobs = source.cancelledChildJobs;
     copy.attempt = source.attempt;
     copy.nextAttemptAtMs = source.nextAttemptAtMs;
     copy.lastError = source.lastError;
@@ -4210,10 +4512,49 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return JobProjection.empty();
   }
 
+  private JobProjection inlineSummaryProjection(StoredReconcileJob stored) {
+    if (stored == null) {
+      return JobProjection.empty();
+    }
+    if (isParentCapable(stored.jobKind())) {
+      return new JobProjection(
+          stored.indexesProcessed,
+          stored.plannedFileGroups,
+          stored.plannedFiles,
+          stored.completedFileGroups,
+          stored.failedFileGroups,
+          stored.completedFiles,
+          stored.failedFiles);
+    }
+    if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
+      long plannedFiles = Math.max(0L, stored.fileGroupFileCount);
+      long completedFileGroups = "JS_SUCCEEDED".equals(stored.state) ? 1L : 0L;
+      long failedFileGroups =
+          ("JS_FAILED".equals(stored.state) || "JS_CANCELLED".equals(stored.state)) ? 1L : 0L;
+      long completedFiles = completedFileGroups > 0L ? plannedFiles : 0L;
+      long failedFiles = failedFileGroups > 0L ? plannedFiles : 0L;
+      return new JobProjection(
+          0L, 1L, plannedFiles, completedFileGroups, failedFileGroups, completedFiles, failedFiles);
+    }
+    return JobProjection.empty();
+  }
+
   private ProjectedPublicJob projectPublicJob(
       StoredReconcileJob stored, boolean includeSelfProjectionPayloads) {
+    return projectPublicJob(stored, includeSelfProjectionPayloads, false);
+  }
+
+  private ProjectedPublicJob projectPublicJob(
+      StoredReconcileJob stored,
+      boolean includeSelfProjectionPayloads,
+      boolean allowContributionRepair) {
     if (stored == null) {
       return ProjectedPublicJob.empty();
+    }
+    if (isParentCapable(stored.jobKind())
+        && isTerminalState(stored.state)
+        && stored.finishedAtMs > 0L) {
+      return ProjectedPublicJob.self(stored, inlineSummaryProjection(stored));
     }
     ReconcileSnapshotTask snapshotTask =
         includeSelfProjectionPayloads && stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
@@ -4223,20 +4564,33 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         includeSelfProjectionPayloads && stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP
             ? fileGroupTaskFor(stored)
             : ReconcileFileGroupTask.empty();
-    JobProjection selfProjection = projectJob(stored, snapshotTask, fileGroupTask);
+    JobProjection selfProjection =
+        isParentCapable(stored.jobKind())
+            ? inlineSummaryProjection(stored)
+            : projectJob(stored, snapshotTask, fileGroupTask);
     if (!isParentCapable(stored.jobKind())) {
       return ProjectedPublicJob.self(stored, selfProjection);
     }
 
     List<StoredJobContribution> contributions =
-        loadDirectContributions(stored.accountId, stored.jobId);
+        allowContributionRepair
+            ? loadDirectContributionsWithRepair(stored.accountId, stored.jobId)
+            : loadDirectContributionsNoRepair(stored.accountId, stored.jobId);
     if (contributions.isEmpty()) {
       return ProjectedPublicJob.self(stored, selfProjection);
     }
 
-    long tablesScanned = 0L;
+    return projectParentPublicJob(stored, selfProjection, contributions);
+  }
+
+  private ProjectedPublicJob projectParentPublicJob(
+      StoredReconcileJob stored,
+      JobProjection selfProjection,
+      List<StoredJobContribution> contributions) {
+
+    long tablesScanned = Math.max(0L, stored.tablesScanned);
     long tablesChanged = 0L;
-    long viewsScanned = 0L;
+    long viewsScanned = Math.max(0L, stored.viewsScanned);
     long viewsChanged = 0L;
     long errors = 0L;
     long snapshotsProcessed = 0L;
@@ -4269,6 +4623,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     StoredJobContribution cancelledChild = null;
     StoredJobContribution waitingChild = null;
     StoredJobContribution queuedChild = null;
+    DirectChildCounts directChildCounts = DirectChildCounts.empty();
     boolean allSucceeded = true;
 
     for (StoredJobContribution contribution : contributions) {
@@ -4288,6 +4643,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       contributionFailedFiles += contribution.failedFiles;
 
       String childState = blankToEmpty(contribution.state);
+      directChildCounts = directChildCounts.incrementedBy(childState);
       if (!"JS_SUCCEEDED".equals(childState)) {
         allSucceeded = false;
       }
@@ -4315,6 +4671,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           contributions.stream().anyMatch(DurableReconcileJobStore::planTableDescendantChanged)
               ? 1L
               : 0L;
+    } else if (stored.jobKind() == ReconcileJobKind.PLAN_CONNECTOR) {
+      tablesScanned = Math.max(0L, stored.tablesScanned);
+      viewsScanned = Math.max(0L, stored.viewsScanned);
     }
 
     if ("JS_FAILED".equals(stored.state)) {
@@ -4323,6 +4682,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     } else if ("JS_CANCELLED".equals(stored.state)) {
       state = "JS_CANCELLED";
       message = blankToEmpty(stored.message);
+    } else if ("JS_WAITING".equals(stored.state)
+        && !directChildJobsComplete(stored, directChildCounts)) {
+      state = "JS_WAITING";
+      message = firstNonBlank(stored.message, "Waiting on child work");
+      executorId = "";
     } else if (cancellingChild != null) {
       state = "JS_CANCELLING";
       message = firstNonBlank(cancellingChild.message, message, "Cancelling");
@@ -4341,15 +4705,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       executorId = firstNonBlank(cancelledChild.executorId, executorId);
     } else if (waitingChild != null) {
       state = "JS_WAITING";
-      message = firstNonBlank(waitingChild.message, message, "Waiting");
-      executorId = firstNonBlank(waitingChild.executorId, executorId);
-    } else if (queuedChild != null) {
-      state = "JS_QUEUED";
-      message = firstNonBlank(queuedChild.message, message, "Queued");
-      executorId = firstNonBlank(queuedChild.executorId, executorId);
-    } else if (allSucceeded) {
+      message = firstNonBlank(waitingChild.message, message, "Waiting on child work");
+      executorId = "";
+    } else if (queuedChild != null
+        && ("JS_WAITING".equals(stored.state) || "JS_SUCCEEDED".equals(stored.state))) {
+      state = "JS_WAITING";
+      message = "Waiting on child work";
+      executorId = "";
+    } else if (allSucceeded && directChildJobsComplete(stored, directChildCounts)) {
       state = "JS_SUCCEEDED";
-      message = firstNonBlank(message, "Succeeded");
+      message = normalizeSucceededMessage(message);
+    } else if (allSucceeded && hasExpectedDirectChildJobs(stored)) {
+      state = "JS_WAITING";
+      message = "Waiting on child work";
+      executorId = "";
+    } else if ("JS_RUNNING".equals(state)
+        && !hasLiveLease(stored, true, System.currentTimeMillis())
+        && hasExpectedDirectChildJobs(stored)) {
+      state = "JS_WAITING";
+      message = "Waiting on child work";
+      executorId = "";
     }
 
     long finishedAtMs =
@@ -4357,12 +4732,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (isTerminalState(stored.state) && !blank(stored.executorId)) {
       executorId = stored.executorId;
     }
-    if (contributionPlannedFileGroups > 0L) {
-      plannedFileGroups = contributionPlannedFileGroups;
-    }
-    if (contributionPlannedFiles > 0L) {
-      plannedFiles = contributionPlannedFiles;
-    }
+    plannedFileGroups = Math.max(plannedFileGroups, contributionPlannedFileGroups);
+    plannedFiles = Math.max(plannedFiles, contributionPlannedFiles);
     if (contributionCompletedFileGroups > 0L) {
       completedFileGroups = contributionCompletedFileGroups;
     }
@@ -4427,6 +4798,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private List<StoredJobContribution> loadDirectContributions(
+      String accountId, String parentJobId) {
+    return loadDirectContributionsNoRepair(accountId, parentJobId);
+  }
+
+  private List<StoredJobContribution> loadDirectContributionsNoRepair(
+      String accountId, String parentJobId) {
+    return loadDirectContributions(accountId, parentJobId, false);
+  }
+
+  private List<StoredJobContribution> loadDirectContributionsWithRepair(
       String accountId, String parentJobId) {
     return loadDirectContributions(accountId, parentJobId, true);
   }
@@ -4535,17 +4916,194 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private void refreshContributionChain(StoredReconcileJob record) {
     StoredReconcileJob current = record;
     while (current != null && !blank(current.parentJobId)) {
-      upsertContributionForParent(current);
+      upsertContributionForParent(current, true);
       current = loadByAnyAccount(current.parentJobId).map(envelope -> envelope.record).orElse(null);
     }
   }
 
+  private void refreshDirectParentContribution(
+      StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
+    if (childJob == null || blank(childJob.parentJobId)) {
+      return;
+    }
+    upsertContributionForParent(childJob, includeSelfProjectionPayloads);
+  }
+
+  private void refreshAncestorContributionRollups(
+      StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
+    if (childJob == null || blank(childJob.parentJobId)) {
+      return;
+    }
+    StoredReconcileJob currentChild = childJob;
+    boolean includeCurrentPayloads = includeSelfProjectionPayloads;
+    while (currentChild != null && !blank(currentChild.parentJobId)) {
+      upsertContributionForParent(currentChild, includeCurrentPayloads);
+      StoredEnvelope parentEnvelope = loadByAnyAccount(currentChild.parentJobId).orElse(null);
+      if (parentEnvelope == null || parentEnvelope.record == null) {
+        return;
+      }
+      currentChild = refreshCanonicalCountersFromContributions(parentEnvelope);
+      includeCurrentPayloads = false;
+    }
+  }
+
+  private StoredReconcileJob refreshCanonicalCountersFromContributions(
+      StoredEnvelope parentEnvelope) {
+    if (parentEnvelope == null
+        || parentEnvelope.record == null
+        || !isParentCapable(parentEnvelope.record.jobKind())) {
+      return parentEnvelope == null ? null : parentEnvelope.record;
+    }
+    if (isTerminalState(parentEnvelope.record.state)) {
+      return parentEnvelope.record;
+    }
+    List<StoredJobContribution> contributions =
+        loadDirectContributionsNoRepair(
+            parentEnvelope.record.accountId, parentEnvelope.record.jobId);
+    DirectChildCounts directChildCounts = countDirectChildStates(contributions);
+    ProjectedPublicJob projected = projectPublicJob(parentEnvelope.record, false, false);
+    Optional<StoredEnvelope> updated =
+        mutateByCanonicalPointerReturningRecord(
+            parentEnvelope.canonicalPointerKey,
+            existing -> {
+              if (!isParentCapable(existing.jobKind())) {
+                return existing;
+              }
+              if (isTerminalState(existing.state)) {
+                return null;
+              }
+              boolean leaseOwnsCanonicalState =
+                  hasLiveLease(existing, true, System.currentTimeMillis());
+              String nextState =
+                  canonicalParentStateFromProjection(existing, projected, directChildCounts);
+              String nextMessage =
+                  leaseOwnsCanonicalState
+                      ? existing.message
+                      : canonicalParentMessageFromProjection(existing, projected, nextState);
+              String nextExecutorId =
+                  leaseOwnsCanonicalState
+                      ? existing.executorId
+                      : canonicalParentExecutorFromProjection(existing, projected, nextState);
+              long nextFinishedAtMs =
+                  leaseOwnsCanonicalState
+                      ? existing.finishedAtMs
+                      : (isTerminalState(nextState)
+                          ? Math.max(projected.finishedAtMs, existing.finishedAtMs)
+                          : 0L);
+              if (existing.tablesScanned == projected.tablesScanned
+                  && existing.tablesChanged == projected.tablesChanged
+                  && existing.viewsScanned == projected.viewsScanned
+                  && existing.viewsChanged == projected.viewsChanged
+                  && existing.errors == projected.errors
+                  && existing.snapshotsProcessed == projected.snapshotsProcessed
+                  && existing.statsProcessed == projected.statsProcessed
+                  && existing.indexesProcessed == projected.projection.indexesProcessed
+                  && existing.plannedFileGroups == projected.projection.plannedFileGroups
+                  && existing.plannedFiles == projected.projection.plannedFiles
+                  && existing.completedFileGroups == projected.projection.completedFileGroups
+                  && existing.failedFileGroups == projected.projection.failedFileGroups
+                  && existing.completedFiles == projected.projection.completedFiles
+                  && existing.failedFiles == projected.projection.failedFiles
+                  && existing.completedChildJobs == directChildCounts.completed
+                  && existing.failedChildJobs == directChildCounts.failed
+                  && existing.cancelledChildJobs == directChildCounts.cancelled
+                  && blankToEmpty(existing.state)
+                      .equals(leaseOwnsCanonicalState ? blankToEmpty(existing.state) : nextState)
+                  && blankToEmpty(existing.message).equals(nextMessage)
+                  && blankToEmpty(existing.executorId).equals(nextExecutorId)
+                  && existing.finishedAtMs == nextFinishedAtMs) {
+                return null;
+              }
+              if (!leaseOwnsCanonicalState) {
+                existing.state = nextState;
+              }
+              existing.message = nextMessage;
+              existing.executorId = nextExecutorId;
+              existing.finishedAtMs = nextFinishedAtMs;
+              if (!leaseOwnsCanonicalState && isTerminalState(nextState)) {
+                existing.readyPointerKey = null;
+              }
+              existing.tablesScanned = projected.tablesScanned;
+              existing.tablesChanged = projected.tablesChanged;
+              existing.viewsScanned = projected.viewsScanned;
+              existing.viewsChanged = projected.viewsChanged;
+              existing.errors = projected.errors;
+              existing.snapshotsProcessed = projected.snapshotsProcessed;
+              existing.statsProcessed = projected.statsProcessed;
+              existing.indexesProcessed = projected.projection.indexesProcessed;
+              existing.plannedFileGroups = projected.projection.plannedFileGroups;
+              existing.plannedFiles = projected.projection.plannedFiles;
+              existing.completedFileGroups = projected.projection.completedFileGroups;
+              existing.failedFileGroups = projected.projection.failedFileGroups;
+              existing.completedFiles = projected.projection.completedFiles;
+              existing.failedFiles = projected.projection.failedFiles;
+              existing.completedChildJobs = directChildCounts.completed;
+              existing.failedChildJobs = directChildCounts.failed;
+              existing.cancelledChildJobs = directChildCounts.cancelled;
+              return existing;
+            });
+    return updated.map(env -> env.record).orElse(parentEnvelope.record);
+  }
+
+  private static String canonicalParentStateFromProjection(
+      StoredReconcileJob existing,
+      ProjectedPublicJob projected,
+      DirectChildCounts directChildCounts) {
+    String projectedState = blankToEmpty(projected.state);
+    if (isTerminalState(projectedState)) {
+      return projectedState;
+    }
+    if ((hasExpectedDirectChildJobs(existing) || directChildCounts.totalObserved() > 0L)
+        && !directChildJobsComplete(existing, directChildCounts)) {
+      return "JS_WAITING";
+    }
+    if ("JS_WAITING".equals(projectedState)
+        && directChildJobsComplete(existing, directChildCounts)) {
+      return "JS_SUCCEEDED";
+    }
+    return switch (projectedState) {
+      case "JS_QUEUED" -> projectedState;
+      case "JS_RUNNING", "JS_CANCELLING" -> projectedState;
+      case "JS_FAILED", "JS_CANCELLED" -> projectedState;
+      default -> "JS_WAITING";
+    };
+  }
+
+  private static String canonicalParentMessageFromProjection(
+      StoredReconcileJob existing, ProjectedPublicJob projected, String nextState) {
+    if ("JS_WAITING".equals(nextState)) {
+      if ("JS_WAITING".equals(blankToEmpty(projected.state))) {
+        return firstNonBlank(projected.message, existing.message, "Waiting on child work");
+      }
+      return firstNonBlank(existing.message, "Waiting on child work");
+    }
+    if ("JS_SUCCEEDED".equals(nextState)) {
+      return normalizeSucceededMessage(
+          firstNonBlank(projected.message, existing.message, "Succeeded"));
+    }
+    return firstNonBlank(projected.message, existing.message, nextState);
+  }
+
+  private static String canonicalParentExecutorFromProjection(
+      StoredReconcileJob existing, ProjectedPublicJob projected, String nextState) {
+    if ("JS_WAITING".equals(nextState) || "JS_SUCCEEDED".equals(nextState)) {
+      return "";
+    }
+    return firstNonBlank(projected.executorId, existing.executorId);
+  }
+
   private void upsertContributionForParent(StoredReconcileJob childJob) {
+    upsertContributionForParent(childJob, true);
+  }
+
+  private void upsertContributionForParent(
+      StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
     if (childJob == null || blank(childJob.parentJobId)) {
       return;
     }
     StoredJobContribution contribution =
-        contributionSnapshot(childJob.accountId, childJob.parentJobId, childJob);
+        contributionSnapshot(
+            childJob.accountId, childJob.parentJobId, childJob, includeSelfProjectionPayloads);
     upsertReferencePointer(
         Keys.reconcileJobContributionPointer(
             contribution.accountId, contribution.parentJobId, contribution.childJobId),
@@ -4553,8 +5111,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private StoredJobContribution contributionSnapshot(
-      String parentAccountId, String parentJobId, StoredReconcileJob childJob) {
-    ProjectedPublicJob projected = projectPublicJob(childJob, true);
+      String parentAccountId,
+      String parentJobId,
+      StoredReconcileJob childJob,
+      boolean includeSelfProjectionPayloads) {
+    ProjectedPublicJob projected = projectPublicJob(childJob, includeSelfProjectionPayloads, false);
     return StoredJobContribution.of(
         parentAccountId,
         parentJobId,
@@ -4621,6 +5182,104 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       result = Math.max(result, contribution.finishedAtMs);
     }
     return result;
+  }
+
+  private void incrementExpectedChildJobs(String parentJobId) {
+    incrementExpectedChildJobs(parentJobId, 1);
+  }
+
+  private void incrementExpectedChildJobs(String parentJobId, int delta) {
+    if (blank(parentJobId)) {
+      return;
+    }
+    int effectiveDelta = Math.max(0, delta);
+    if (effectiveDelta == 0) {
+      return;
+    }
+    mutateByJobIdReturningRecord(
+        parentJobId,
+        existing -> {
+          if (existing == null
+              || !isParentCapable(existing.jobKind())
+              || (isTerminalState(existing.state) && existing.finishedAtMs > 0L)) {
+            return null;
+          }
+          existing.expectedChildJobs =
+              Math.max(0L, existing.expectedChildJobs) + (long) effectiveDelta;
+          return existing;
+        });
+  }
+
+  private static boolean hasExpectedDirectChildJobs(StoredReconcileJob stored) {
+    return stored != null && Math.max(0L, stored.expectedChildJobs) > 0L;
+  }
+
+  private static boolean hasIncompleteDirectChildJobs(StoredReconcileJob stored) {
+    return hasExpectedDirectChildJobs(stored) && !directChildJobsComplete(stored);
+  }
+
+  private static boolean directChildJobsComplete(StoredReconcileJob stored) {
+    if (stored == null) {
+      return true;
+    }
+    return directChildJobsComplete(
+        Math.max(0L, stored.expectedChildJobs),
+        stored.completedChildJobs,
+        stored.failedChildJobs,
+        stored.cancelledChildJobs);
+  }
+
+  private static boolean directChildJobsComplete(
+      long expectedChildJobs,
+      long completedChildJobs,
+      long failedChildJobs,
+      long cancelledChildJobs) {
+    long expected = Math.max(0L, expectedChildJobs);
+    if (expected <= 0L) {
+      return true;
+    }
+    long terminalChildren =
+        Math.max(0L, completedChildJobs)
+            + Math.max(0L, failedChildJobs)
+            + Math.max(0L, cancelledChildJobs);
+    return terminalChildren >= expected;
+  }
+
+  private static boolean directChildJobsComplete(
+      StoredReconcileJob stored, DirectChildCounts directChildCounts) {
+    if (stored == null) {
+      return true;
+    }
+    long expected = maxExpectedChildJobs(stored, directChildCounts.totalObserved());
+    if (expected <= 0L) {
+      return true;
+    }
+    return directChildCounts.totalTerminal() >= expected;
+  }
+
+  private static long maxExpectedChildJobs(StoredReconcileJob stored, long directChildJobs) {
+    if (stored == null) {
+      return Math.max(0L, directChildJobs);
+    }
+    return Math.max(Math.max(0L, stored.expectedChildJobs), Math.max(0L, directChildJobs));
+  }
+
+  private static DirectChildCounts countDirectChildStates(
+      List<StoredJobContribution> contributions) {
+    DirectChildCounts counts = DirectChildCounts.empty();
+    for (StoredJobContribution contribution : contributions) {
+      counts = counts.incrementedBy(contribution == null ? "" : contribution.state);
+    }
+    return counts;
+  }
+
+  private long countDirectChildJobs(String accountId, String parentJobId) {
+    if (blank(accountId) || blank(parentJobId)) {
+      return 0L;
+    }
+    return Math.max(
+        0L,
+        pointerStore.countByPrefix(Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId)));
   }
 
   private static JobProjection projectSnapshotPlan(ReconcileSnapshotTask snapshotTask) {
@@ -4705,6 +5364,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return fileGroupTask.filePaths().size();
   }
 
+  private static long firstPositiveMin(long first, long second) {
+    if (first <= 0L) {
+      return Math.max(0L, second);
+    }
+    if (second <= 0L) {
+      return first;
+    }
+    return Math.min(first, second);
+  }
+
   private boolean isCanonicalJobPointerKey(String accountId, String pointerKey) {
     String prefix = Keys.reconcileJobStateRowByIdPrefix(accountId);
     if (pointerKey == null || prefix == null || !pointerKey.startsWith(prefix)) {
@@ -4756,7 +5425,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (hasStoredReadyPointer) {
       readyKeys.add(record.readyPointerKey);
     }
-    if ("JS_CANCELLING".equals(record.state) || hasStoredReadyPointer) {
+    boolean shouldReconstructHistoricalReadyKeys =
+        hasStoredReadyPointer || !isTerminalState(record.state);
+    if (shouldReconstructHistoricalReadyKeys) {
       long dueAtMs =
           record.nextAttemptAtMs > 0L
               ? record.nextAttemptAtMs
@@ -4794,6 +5465,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  private void logStateTransition(
+      StoredReconcileJob previous, StoredReconcileJob current, String transitionSource) {
+    if (previous == null || current == null) {
+      return;
+    }
+    if (blankToEmpty(previous.state).equals(blankToEmpty(current.state))) {
+      return;
+    }
+    LOG.infof(
+        "reconcile state transition source=%s jobId=%s kind=%s oldState=%s newState=%s readyPointerKey=%s completionHint=%s",
+        blankToEmpty(transitionSource),
+        current.jobId,
+        current.jobKind(),
+        blankToEmpty(previous.state),
+        blankToEmpty(current.state),
+        blankToEmpty(current.readyPointerKey),
+        blankToEmpty(current.message));
+  }
+
   private static boolean isTerminalState(String state) {
     if (state == null) {
       return false;
@@ -4801,6 +5491,42 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return switch (state) {
       case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
       default -> false;
+    };
+  }
+
+  private static String normalizeSucceededMessage(String message) {
+    String normalized = blankToEmpty(message);
+    if (normalized.isBlank()) {
+      return "Succeeded";
+    }
+    if (normalized.startsWith("Planned ") || normalized.startsWith("Snapshot plan recorded")) {
+      return "Succeeded";
+    }
+    return switch (normalized) {
+      case "Queued",
+          "Queued (full)",
+          "Leased",
+          "Running",
+          "Waiting",
+          "Cancelling",
+          "Retrying",
+          "Waiting on dependency",
+          "Waiting on child work" ->
+          "Succeeded";
+      default -> normalized;
+    };
+  }
+
+  private static String normalizeWaitingStateMessage(String state, String message) {
+    String normalizedState = blankToEmpty(state);
+    String normalizedMessage = blankToEmpty(message);
+    if (!"JS_WAITING".equals(normalizedState)) {
+      return normalizedMessage;
+    }
+    return switch (normalizedMessage) {
+      case "", "Queued", "Queued (full)", "Leased", "Running", "Waiting", "Retrying" ->
+          "Waiting on child work";
+      default -> normalizedMessage;
     };
   }
 
@@ -4877,14 +5603,34 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     if (jobKind == ReconcileJobKind.PLAN_TABLE && tableTask != null) {
-      return scope.destinationTableId() == null || scope.destinationTableId().isBlank()
-          ? "tables|" + namespaces
-          : "table|" + scope.destinationTableId();
+      String destinationTableId = blankToEmpty(scope.destinationTableId());
+      if (destinationTableId.isBlank()) {
+        destinationTableId = blankToEmpty(tableTask.destinationTableId());
+      }
+      if (!destinationTableId.isBlank()) {
+        return "table|" + destinationTableId;
+      }
+      String sourceNamespace = blankToEmpty(tableTask.sourceNamespace());
+      String sourceTable = blankToEmpty(tableTask.sourceTable());
+      if (!sourceNamespace.isBlank() || !sourceTable.isBlank()) {
+        return "table-source|" + sourceNamespace + "|" + sourceTable;
+      }
+      return "tables|" + namespaces;
     }
     if (jobKind == ReconcileJobKind.PLAN_VIEW && viewTask != null) {
-      return scope.destinationViewId() == null || scope.destinationViewId().isBlank()
-          ? "views|" + namespaces
-          : "view|" + scope.destinationViewId();
+      String destinationViewId = blankToEmpty(scope.destinationViewId());
+      if (destinationViewId.isBlank()) {
+        destinationViewId = blankToEmpty(viewTask.destinationViewId());
+      }
+      if (!destinationViewId.isBlank()) {
+        return "view|" + destinationViewId;
+      }
+      String sourceNamespace = blankToEmpty(viewTask.sourceNamespace());
+      String sourceView = blankToEmpty(viewTask.sourceView());
+      if (!sourceNamespace.isBlank() || !sourceView.isBlank()) {
+        return "view-source|" + sourceNamespace + "|" + sourceView;
+      }
+      return "views|" + namespaces;
     }
     if (jobKind == ReconcileJobKind.PLAN_SNAPSHOT
         && snapshotTask != null
@@ -5241,7 +5987,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             .orElse("");
     String outputs =
         policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns + "|" + outputs;
+    return columns
+        + "|"
+        + outputs
+        + "|"
+        + policy.defaultColumnScope().name()
+        + "|"
+        + policy.maxDefaultColumns();
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
@@ -5385,6 +6137,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private record ReadyIndexSelection(String prefix, ReadyIndexType type, String filterValue) {}
 
+  private static final class LeaseScanStats {
+    private int scanCount;
+    private int candidateCount;
+  }
+
   private record ReadyPointerTarget(
       String canonicalPointerKey,
       String accountId,
@@ -5438,6 +6195,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public List<ReconcileScope.ScopedCaptureRequest> destinationCaptureRequests = List.of();
     public List<ReconcileCapturePolicy.Column> capturePolicyColumns = List.of();
     public List<String> capturePolicyOutputs = List.of();
+    public String capturePolicyDefaultColumnScope;
+    public int capturePolicyMaxDefaultColumns;
     public String snapshotSelectionKind;
     public List<Long> snapshotSelectionSnapshotIds = List.of();
     public int snapshotSelectionLatestN;
@@ -5470,6 +6229,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       definition.capturePolicyColumns = effectiveScope.capturePolicy().columns();
       definition.capturePolicyOutputs =
           effectiveScope.capturePolicy().outputs().stream().map(Enum::name).toList();
+      definition.capturePolicyDefaultColumnScope =
+          effectiveScope.capturePolicy().defaultColumnScope().name();
+      definition.capturePolicyMaxDefaultColumns =
+          effectiveScope.capturePolicy().maxDefaultColumns();
       ReconcileSnapshotSelection snapshotSelection = effectiveScope.snapshotSelection();
       definition.snapshotSelectionKind = snapshotSelection.kind().name();
       definition.snapshotSelectionSnapshotIds = snapshotSelection.snapshotIds();
@@ -5499,7 +6262,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               capturePolicyColumns,
               capturePolicyOutputs.stream()
                   .map(ReconcileCapturePolicy.Output::valueOf)
-                  .collect(java.util.stream.Collectors.toSet())),
+                  .collect(java.util.stream.Collectors.toSet()),
+              blankToEmpty(capturePolicyDefaultColumnScope).isBlank()
+                  ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+                  : ReconcileCapturePolicy.DefaultColumnScope.valueOf(
+                      capturePolicyDefaultColumnScope),
+              capturePolicyMaxDefaultColumns),
           snapshotSelection);
     }
 
@@ -5634,6 +6402,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public long errors;
     public long snapshotsProcessed;
     public long statsProcessed;
+    public long indexesProcessed;
+    public long plannedFileGroups;
+    public long plannedFiles;
+    public long completedFileGroups;
+    public long failedFileGroups;
+    public long completedFiles;
+    public long failedFiles;
+    public long expectedChildJobs;
+    public long completedChildJobs;
+    public long failedChildJobs;
+    public long cancelledChildJobs;
 
     public int attempt;
     public long nextAttemptAtMs;
@@ -5703,6 +6482,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.definitionBlobUri = definitionBlobUri;
       rec.snapshotPlanBlobUri = snapshotPlanBlobUri;
       rec.fileGroupPlanBlobUri = fileGroupPlanBlobUri;
+      JobProjection initialProjection =
+          switch (rec.jobKind()) {
+            case PLAN_SNAPSHOT -> projectSnapshotPlan(effectiveSnapshotTask);
+            case EXEC_FILE_GROUP -> projectExecFileGroup(effectiveFileGroupTask, rec.state);
+            default -> JobProjection.empty();
+          };
+      rec.indexesProcessed = initialProjection.indexesProcessed;
+      rec.plannedFileGroups = initialProjection.plannedFileGroups;
+      rec.plannedFiles = initialProjection.plannedFiles;
+      rec.completedFileGroups = initialProjection.completedFileGroups;
+      rec.failedFileGroups = initialProjection.failedFileGroups;
+      rec.completedFiles = initialProjection.completedFiles;
+      rec.failedFiles = initialProjection.failedFiles;
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -5858,9 +6650,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     static ProjectedPublicJob self(StoredReconcileJob stored, JobProjection projection) {
+      String state = blankToEmpty(stored.state);
       return new ProjectedPublicJob(
-          blankToEmpty(stored.state),
-          blankToEmpty(stored.message),
+          state,
+          normalizeWaitingStateMessage(state, stored.message),
           stored.startedAtMs,
           stored.finishedAtMs,
           stored.tablesScanned,
@@ -5872,6 +6665,29 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           stored.statsProcessed,
           blankToEmpty(stored.executorId),
           projection);
+    }
+  }
+
+  private record DirectChildCounts(
+      long completed, long failed, long cancelled, long totalObserved) {
+    static DirectChildCounts empty() {
+      return new DirectChildCounts(0L, 0L, 0L, 0L);
+    }
+
+    DirectChildCounts incrementedBy(String state) {
+      return switch (blankToEmpty(state)) {
+        case "JS_SUCCEEDED" ->
+            new DirectChildCounts(completed + 1L, failed, cancelled, totalObserved + 1L);
+        case "JS_FAILED" ->
+            new DirectChildCounts(completed, failed + 1L, cancelled, totalObserved + 1L);
+        case "JS_CANCELLED" ->
+            new DirectChildCounts(completed, failed, cancelled + 1L, totalObserved + 1L);
+        default -> new DirectChildCounts(completed, failed, cancelled, totalObserved + 1L);
+      };
+    }
+
+    long totalTerminal() {
+      return completed + failed + cancelled;
     }
   }
 

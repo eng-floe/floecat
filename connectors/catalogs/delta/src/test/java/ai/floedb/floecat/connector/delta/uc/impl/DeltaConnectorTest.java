@@ -27,11 +27,14 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.Operation;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
+import io.delta.kernel.Snapshot.ChecksumWriteMode;
 import io.delta.kernel.Table;
 import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
 import io.delta.kernel.exceptions.TableNotFoundException;
+import io.delta.kernel.statistics.SnapshotStatistics;
+import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StructType;
 import java.io.IOException;
@@ -237,12 +240,76 @@ class DeltaConnectorTest {
     assertTrue(stats.isEmpty(), "unknown snapshot should return empty stats");
   }
 
+  @Test
+  void directStatsIncludeColumnsDefaultsToFirstThirtyTwoSchemaColumns() {
+    List<String> availableColumns = new java.util.ArrayList<>();
+    for (int i = 0; i < 40; i++) {
+      availableColumns.add("c" + i);
+    }
+
+    Set<String> includeNames =
+        FloecatConnector.resolveIncludedColumns(availableColumns, Set.of(), null);
+
+    assertEquals(32, includeNames.size());
+    assertEquals(
+        Set.copyOf(java.util.stream.IntStream.range(0, 32).mapToObj(i -> "c" + i).toList()),
+        includeNames);
+  }
+
+  @Test
+  void directStatsIncludeColumnsKeepsExplicitColumnSelectorsBeyondThirtyTwo() {
+    List<String> availableColumns = new java.util.ArrayList<>();
+    for (int i = 0; i < 40; i++) {
+      availableColumns.add("c" + i);
+    }
+
+    Set<String> includeNames =
+        FloecatConnector.resolveIncludedColumns(
+            availableColumns, new java.util.LinkedHashSet<>(List.of("c39", " c35 ", "c2")), null);
+
+    assertEquals(Set.of("c39", "c35", "c2"), includeNames);
+  }
+
+  @Test
+  void describeFromDeltaUsesRealSnapshotSchemaJson() {
+    Snapshot latest = snapshot(11L, 11000L, new StructType().add("ignored", LongType.LONG, true));
+    Table table = new StubTable(latest, Map.of(11L, latest));
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+    String realSchemaJson =
+        """
+        {
+          "type":"struct",
+          "fields":[
+            {
+              "name":"payload",
+              "type":{"type":"struct","fields":[
+                {"name":"id","type":"long","nullable":false,"metadata":{}}
+              ]},
+              "nullable":true,
+              "metadata":{}
+            }
+          ]
+        }
+        """;
+    connector.setSnapshotSchemaJson(realSchemaJson);
+
+    FloecatConnector.TableDescriptor descriptor =
+        connector.describeFromDelta("s3://bucket/table", "ns", "tbl");
+
+    assertEquals(realSchemaJson, descriptor.schemaJson());
+  }
+
   private static Snapshot snapshot(long version, long timestampMs) {
     return snapshot(version, timestampMs, new StructType());
   }
 
   private static Snapshot snapshot(long version, long timestampMs, StructType schema) {
     return new Snapshot() {
+      @Override
+      public String getPath() {
+        return "s3://bucket/table";
+      }
+
       @Override
       public long getVersion() {
         return version;
@@ -269,7 +336,39 @@ class DeltaConnectorTest {
       }
 
       @Override
+      public Map<String, String> getTableProperties() {
+        return Map.of();
+      }
+
+      @Override
+      public SnapshotStatistics getStatistics() {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
       public ScanBuilder getScanBuilder() {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public UpdateTableTransactionBuilder buildUpdateTableTransaction(
+          String engineInfo, Operation operation) {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public Snapshot publish(Engine engine) {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public void writeChecksum(Engine engine, ChecksumWriteMode checksumWriteMode) {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public void writeCheckpoint(Engine engine)
+          throws IOException, CheckpointAlreadyExistsException {
         throw new UnsupportedOperationException();
       }
     };

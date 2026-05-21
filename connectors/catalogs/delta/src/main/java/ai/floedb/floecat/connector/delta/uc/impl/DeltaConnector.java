@@ -55,19 +55,19 @@ import io.delta.kernel.types.StructType;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 import org.apache.parquet.io.InputFile;
+import org.jboss.logging.Logger;
 
 abstract class DeltaConnector implements FloecatConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
   private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";
+  private static final Logger LOG = Logger.getLogger(DeltaConnector.class);
 
   private final String connectorId;
   protected final Engine engine;
@@ -178,6 +178,25 @@ abstract class DeltaConnector implements FloecatConnector {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0) {
       return List.of();
     }
@@ -191,6 +210,7 @@ abstract class DeltaConnector implements FloecatConnector {
         tableRoot,
         destinationTableId,
         includeColumns,
+        columnSelectorPolicy,
         snapshotId,
         snapshot,
         includeTargetKinds,
@@ -204,7 +224,8 @@ abstract class DeltaConnector implements FloecatConnector {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0) {
       return Optional.empty();
     }
@@ -227,12 +248,8 @@ abstract class DeltaConnector implements FloecatConnector {
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
     final Set<String> includeNames =
-        (includeColumns == null || includeColumns.isEmpty())
-            ? new LinkedHashSet<>(nameToType.keySet())
-            : includeColumns.stream()
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
+        FloecatConnector.resolveIncludedColumns(
+            List.copyOf(nameToType.keySet()), includeColumns, columnSelectorPolicy);
 
     try (var planner =
         new DeltaPlanner(
@@ -246,8 +263,48 @@ abstract class DeltaConnector implements FloecatConnector {
             null,
             true,
             false)) {
-      if (planner.missingLogStats() || planner.hasDeletionVectors()) {
+      if (planner.missingLogStats()) {
+        LOG.infof(
+            "Delta direct snapshot stats fallback table=%s.%s snapshotId=%d reason=missing_log_stats requestedKinds=%s includeColumns=%d requestedColumnTypes=%s checkpointStructRecoveredFiles=%d checkpointStructRecoverySamples=%s missingStatsFiles=%d missingStatsSamples=%s",
+            namespaceFq,
+            tableName,
+            snapshotId,
+            requestedKinds,
+            includeNames.size(),
+            requestedColumnTypes(includeNames, nameToType),
+            planner.checkpointStructRecoveryFileCount(),
+            planner.checkpointStructRecoverySamplePaths(),
+            planner.missingLogStatsFileCount(),
+            planner.missingLogStatsSamplePaths());
         return Optional.empty();
+      }
+      if (planner.hasDeletionVectors()) {
+        LOG.infof(
+            "Delta direct snapshot stats fallback table=%s.%s snapshotId=%d reason=deletion_vectors requestedKinds=%s includeColumns=%d requestedColumnTypes=%s checkpointStructRecoveredFiles=%d checkpointStructRecoverySamples=%s inlineDeletionVectors=%d onDiskDeletionVectors=%d deletionVectorSamples=%s",
+            namespaceFq,
+            tableName,
+            snapshotId,
+            requestedKinds,
+            includeNames.size(),
+            requestedColumnTypes(includeNames, nameToType),
+            planner.checkpointStructRecoveryFileCount(),
+            planner.checkpointStructRecoverySamplePaths(),
+            planner.inlineDeletionVectorCount(),
+            planner.onDiskDeletionVectorCount(),
+            planner.deletionVectorSamplePaths());
+        return Optional.empty();
+      }
+      if (planner.checkpointStructRecoveryFileCount() > 0) {
+        LOG.infof(
+            "Delta direct snapshot stats recovered_from_checkpoint_struct table=%s.%s snapshotId=%d requestedKinds=%s includeColumns=%d requestedColumnTypes=%s recoveredFiles=%d recoverySamples=%s",
+            namespaceFq,
+            tableName,
+            snapshotId,
+            requestedKinds,
+            includeNames.size(),
+            requestedColumnTypes(includeNames, nameToType),
+            planner.checkpointStructRecoveryFileCount(),
+            planner.checkpointStructRecoverySamplePaths());
       }
     }
     return Optional.of(
@@ -255,6 +312,7 @@ abstract class DeltaConnector implements FloecatConnector {
             tableRoot,
             destinationTableId,
             includeColumns,
+            columnSelectorPolicy,
             snapshotId,
             snapshot,
             requestedKinds,
@@ -272,6 +330,29 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -286,6 +367,7 @@ abstract class DeltaConnector implements FloecatConnector {
             tableRoot,
             destinationTableId,
             includeColumns,
+            columnSelectorPolicy,
             snapshotId,
             snapshot,
             includeTargetKinds == null || includeTargetKinds.isEmpty()
@@ -388,28 +470,34 @@ abstract class DeltaConnector implements FloecatConnector {
     return Table.forPath(engine, tableRoot);
   }
 
+  private static Map<String, String> requestedColumnTypes(
+      Set<String> includeNames, Map<String, LogicalType> nameToType) {
+    LinkedHashMap<String, String> typed = new LinkedHashMap<>();
+    if (includeNames == null || includeNames.isEmpty()) {
+      return typed;
+    }
+    for (String name : includeNames) {
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      LogicalType logicalType = nameToType == null ? null : nameToType.get(name);
+      typed.put(name, logicalType == null ? "UNKNOWN" : logicalType.toString());
+    }
+    return typed;
+  }
+
+  protected String describeTableSchemaJson(String tableRoot) {
+    Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getLatestSnapshot(engine);
+    if (snapshot == null) {
+      throw new IllegalStateException("Delta table has no latest snapshot at " + tableRoot);
+    }
+    return snapshotSchemaJson(snapshot);
+  }
+
   protected TableDescriptor describeFromDelta(
       String tableRoot, String namespaceFq, String tableName) {
     try {
-      Table table = Table.forPath(engine, tableRoot);
-      Snapshot snapshot = table.getLatestSnapshot(engine);
-      StructType kernelSchema = snapshot.getSchema();
-
-      var fields = M.createArrayNode();
-      var kernelFields = kernelSchema.fields();
-      for (int i = 0; i < kernelFields.size(); i++) {
-        var c = kernelFields.get(i);
-        var n = M.createObjectNode();
-        n.put("name", c.getName());
-        n.put("type", c.getDataType().toString());
-        n.put("nullable", c.isNullable());
-        n.set("metadata", M.createObjectNode());
-        fields.add(n);
-      }
-      var schemaNode = M.createObjectNode();
-      schemaNode.put("type", "struct");
-      schemaNode.set("fields", fields);
-
       Map<String, String> props = new LinkedHashMap<>();
       props.put("data_source_format", "DELTA");
       props.put("storage_location", tableRoot);
@@ -418,7 +506,7 @@ abstract class DeltaConnector implements FloecatConnector {
           namespaceFq,
           tableName,
           tableRoot,
-          schemaNode.toString(),
+          describeTableSchemaJson(tableRoot),
           List.of(),
           ColumnIdAlgorithm.CID_PATH_ORDINAL,
           props);
@@ -562,6 +650,7 @@ abstract class DeltaConnector implements FloecatConnector {
       String tableRoot,
       ResourceId destinationTableId,
       Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
       long version,
       Snapshot snapshot,
       Set<StatsTargetKind> includeTargetKinds,
@@ -570,6 +659,7 @@ abstract class DeltaConnector implements FloecatConnector {
         tableRoot,
         destinationTableId,
         includeColumns,
+        columnSelectorPolicy,
         version,
         snapshot,
         includeTargetKinds,
@@ -581,6 +671,7 @@ abstract class DeltaConnector implements FloecatConnector {
       String tableRoot,
       ResourceId destinationTableId,
       Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
       long version,
       Snapshot snapshot,
       Set<StatsTargetKind> includeTargetKinds,
@@ -597,12 +688,8 @@ abstract class DeltaConnector implements FloecatConnector {
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
     final String schemaJson = snapshotSchemaJson(snapshot);
     final Set<String> includeNames =
-        (includeColumns == null || includeColumns.isEmpty())
-            ? new LinkedHashSet<>(nameToType.keySet())
-            : includeColumns.stream()
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
+        FloecatConnector.resolveIncludedColumns(
+            List.copyOf(nameToType.keySet()), includeColumns, columnSelectorPolicy);
 
     EngineOut engineOut =
         runEngine(

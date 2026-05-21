@@ -453,7 +453,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             tableId,
             task.snapshotId(),
             request.includeColumns(),
-            request.includeTargetKinds());
+            request.includeTargetKinds(),
+            request.columnSelectorPolicy());
     if (directStats.isEmpty()) {
       return Optional.empty();
     }
@@ -482,7 +483,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return new SnapshotDirectStatsRequest(
         true,
         capturePolicy.selectorsForStats(),
-        FileGroupExecutionSupport.requestedStatsTargetKinds(capturePolicy));
+        FileGroupExecutionSupport.requestedStatsTargetKinds(capturePolicy),
+        FileGroupExecutionSupport.columnSelectorPolicy(capturePolicy));
   }
 
   private static boolean isDirectStatsEligible(
@@ -658,7 +660,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             .ifPresent(column -> columns.putIfAbsent(selector, column));
       }
     }
-    return ReconcileCapturePolicy.of(new ArrayList<>(columns.values()), Set.copyOf(outputs));
+    return ReconcileCapturePolicy.of(
+        new ArrayList<>(columns.values()),
+        Set.copyOf(outputs),
+        basePolicy == null
+            ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+            : basePolicy.defaultColumnScope(),
+        basePolicy == null
+            ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
+            : basePolicy.maxDefaultColumns());
   }
 
   private static Optional<ReconcileCapturePolicy.Column> selectorPolicy(
@@ -700,9 +710,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private record SnapshotDirectStatsRequest(
       boolean eligible,
       Set<String> includeColumns,
-      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy) {
     private static SnapshotDirectStatsRequest ineligible() {
-      return new SnapshotDirectStatsRequest(false, Set.of(), Set.of());
+      return new SnapshotDirectStatsRequest(
+          false, Set.of(), Set.of(), FloecatConnector.ColumnSelectorPolicy.defaults());
     }
   }
 }

@@ -124,7 +124,8 @@ public interface ReconcilerBackend {
       ResourceId tableId,
       long snapshotId,
       Set<String> includeColumns,
-      Set<FloecatConnector.StatsTargetKind> includeTargetKinds) {
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy) {
     return Optional.empty();
   }
 

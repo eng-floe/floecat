@@ -37,9 +37,13 @@ import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import io.grpc.Metadata;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -226,6 +230,71 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(success.getSnapshotTask().getFileGroupsCount()).isZero();
   }
 
+  @Test
+  void renewRetriesOnceOnTransportFailure() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    client.executorControl =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.renewReconcileLease(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE))
+        .thenReturn(
+            RenewReconcileLeaseResponse.newBuilder()
+                .setRenewed(true)
+                .setCancellationRequested(false)
+                .build());
+
+    RemoteReconcileExecutorClient.LeaseHeartbeat heartbeat = client.renew(remoteLease());
+
+    assertThat(heartbeat.leaseValid()).isTrue();
+    assertThat(heartbeat.cancellationRequested()).isFalse();
+    verify(client.executorControl, org.mockito.Mockito.times(2)).renewReconcileLease(any());
+  }
+
+  @Test
+  void submitFileGroupSuccessRetriesWhenResultIdIsStable() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    client.executorControl =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE))
+        .thenReturn(
+            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+
+    boolean accepted =
+        client.submitSuccess(
+            remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("result-1"));
+
+    assertThat(accepted).isTrue();
+    verify(client.executorControl, org.mockito.Mockito.times(2))
+        .submitLeasedFileGroupExecutionResult(any());
+  }
+
+  @Test
+  void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    client.executorControl =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            client.submitSuccess(
+                remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("  ")));
+
+    verify(client.executorControl).submitLeasedFileGroupExecutionResult(any());
+  }
+
   private static ResourceId connectorId() {
     return ResourceId.newBuilder()
         .setAccountId("acct")
@@ -273,6 +342,28 @@ class GrpcRemoteReconcileExecutorClientTest {
             null,
             ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
             null,
+            ""));
+  }
+
+  private static RemoteLeasedJob remoteFileGroupLease() {
+    return new RemoteLeasedJob(
+        new ReconcileJobStore.LeasedJob(
+            "job-lease",
+            "acct",
+            "connector-1",
+            false,
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            ReconcileScope.empty(),
+            null,
+            "lease-epoch",
+            "",
+            "",
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            null,
+            null,
+            null,
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet")),
             ""));
   }
 }

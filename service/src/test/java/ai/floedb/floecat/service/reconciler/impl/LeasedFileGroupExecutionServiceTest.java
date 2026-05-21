@@ -80,7 +80,7 @@ class LeasedFileGroupExecutionServiceTest {
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
 
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.get(CHILD_JOB_ID))
+    when(jobs.getLeaseView(CHILD_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -125,7 +125,7 @@ class LeasedFileGroupExecutionServiceTest {
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, 1, List.of(), List.of());
 
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.get(CHILD_JOB_ID))
+    when(jobs.getLeaseView(CHILD_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(

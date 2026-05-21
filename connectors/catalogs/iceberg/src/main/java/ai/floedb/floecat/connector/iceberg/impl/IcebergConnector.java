@@ -59,7 +59,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileScanTask;
@@ -333,6 +332,25 @@ public abstract class IcebergConnector implements FloecatConnector {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0) {
       return List.of();
     }
@@ -342,7 +360,13 @@ public abstract class IcebergConnector implements FloecatConnector {
       return List.of();
     }
     return buildTargetStats(
-        table, destinationTableId, snapshot, includeColumns, includeTargetKinds, Set.of());
+        table,
+        destinationTableId,
+        snapshot,
+        includeColumns,
+        columnSelectorPolicy,
+        includeTargetKinds,
+        Set.of());
   }
 
   @Override
@@ -355,6 +379,29 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -369,6 +416,7 @@ public abstract class IcebergConnector implements FloecatConnector {
             destinationTableId,
             snapshot,
             includeColumns,
+            columnSelectorPolicy,
             includeTargetKinds == null || includeTargetKinds.isEmpty()
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
@@ -409,6 +457,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Snapshot snapshot,
       Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
@@ -421,7 +470,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     long snapshotId = snapshot.snapshotId();
     long createdMs = snapshot.timestampMillis();
     Schema schema = schemaForSnapshot(table, snapshot);
-    final Set<Integer> includeIds = resolveIncludedFieldIds(schema, includeColumns);
+    final Set<Integer> includeIds =
+        resolveIncludedFieldIds(schema, includeColumns, columnSelectorPolicy);
 
     EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
     var columnNames = engineOutput.columnNames();
@@ -1118,16 +1168,20 @@ public abstract class IcebergConnector implements FloecatConnector {
     return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
   }
 
-  static Set<Integer> resolveIncludedFieldIds(Schema schema, Set<String> includeColumns) {
+  static Set<Integer> resolveIncludedFieldIds(
+      Schema schema, Set<String> includeColumns, ColumnSelectorPolicy columnSelectorPolicy) {
     if (schema == null) {
       return Set.of();
     }
-    if (includeColumns == null || includeColumns.isEmpty()) {
-      return schema.columns().stream()
-          .map(Types.NestedField::fieldId)
-          .collect(Collectors.toCollection(LinkedHashSet::new));
+    Set<String> effectiveColumns =
+        FloecatConnector.resolveIncludedColumns(
+            schema.columns().stream().map(Types.NestedField::name).toList(),
+            includeColumns,
+            columnSelectorPolicy);
+    if (effectiveColumns.isEmpty()) {
+      return Set.of();
     }
-    return resolveFieldIdsNested(schema, includeColumns);
+    return resolveFieldIdsNested(schema, effectiveColumns);
   }
 
   private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {
