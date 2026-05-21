@@ -35,6 +35,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 @ApplicationScoped
 public class ReconcileJobGc {
 
+  private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final Set<String> TERMINAL_STATES =
       Set.of("JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED");
 
@@ -103,9 +104,6 @@ public class ReconcileJobGc {
         if (record == null) {
           if (pointerStore.compareAndDelete(canonical.getKey(), canonical.getVersion())) {
             ptrDeleted++;
-            if (blobStore.delete(canonical.getBlobUri())) {
-              blobDeleted++;
-            }
             String jobId = decodeJobId(jobPrefix, canonical.getKey());
             if (jobId != null) {
               deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
@@ -142,9 +140,6 @@ public class ReconcileJobGc {
             if (pointerStore.compareAndDelete(canonical.getKey(), canonical.getVersion())) {
               expired++;
               ptrDeleted++;
-              if (blobStore.delete(canonical.getBlobUri())) {
-                blobDeleted++;
-              }
               String jobId = decodeJobId(jobPrefix, canonical.getKey());
               if (jobId != null) {
                 deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
@@ -181,7 +176,7 @@ public class ReconcileJobGc {
         }
         scanned++;
 
-        JsonNode record = readRecordByBlobUri(dedupe.getBlobUri());
+        JsonNode record = readRecordByCanonicalKey(dedupe.getBlobUri());
         if (record == null) {
           if (pointerStore.compareAndDelete(dedupe.getKey(), dedupe.getVersion())) {
             dedupeDeleted++;
@@ -240,7 +235,7 @@ public class ReconcileJobGc {
         }
         scanned++;
 
-        JsonNode record = readRecordByBlobUri(ready.getBlobUri());
+        JsonNode record = readRecordByCanonicalKey(ready.getBlobUri());
         if (record == null) {
           if (pointerStore.compareAndDelete(ready.getKey(), ready.getVersion())) {
             deleted++;
@@ -269,19 +264,31 @@ public class ReconcileJobGc {
   }
 
   private JsonNode readRecord(Pointer canonical) {
-    return readRecordByBlobUri(canonical.getBlobUri());
+    return canonical == null ? null : readRecordByReference(canonical.getBlobUri());
   }
 
-  private JsonNode readRecordByBlobUri(String blobUri) {
-    byte[] payload = blobStore.get(blobUri);
-    if (payload == null || payload.length == 0) {
+  private JsonNode readRecordByCanonicalKey(String canonicalPointerKey) {
+    if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
       return null;
     }
-    try {
-      return mapper.readTree(payload);
-    } catch (Exception ignored) {
+    Pointer canonical = pointerStore.get(canonicalPointerKey).orElse(null);
+    return readRecord(canonical);
+  }
+
+  private JsonNode readRecordByReference(String reference) {
+    if (reference == null || reference.isBlank()) {
       return null;
     }
+    if (reference.startsWith(INLINE_JOB_STATE_PREFIX)) {
+      try {
+        byte[] payload =
+            Base64.getUrlDecoder().decode(reference.substring(INLINE_JOB_STATE_PREFIX.length()));
+        return mapper.readTree(payload);
+      } catch (Exception ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 
   private static String text(JsonNode node, String field) {

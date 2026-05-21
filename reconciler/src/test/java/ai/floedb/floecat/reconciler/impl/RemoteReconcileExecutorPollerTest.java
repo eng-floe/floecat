@@ -675,6 +675,7 @@ class RemoteReconcileExecutorPollerTest {
     CountDownLatch transportFailureSeen = new CountDownLatch(1);
     CountDownLatch renewedAfterFailure = new CountDownLatch(1);
     CountDownLatch allowCompletion = new CountDownLatch(1);
+    CountDownLatch completionSubmitted = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger renewCalls = new AtomicInteger();
     ReconcileExecutor executor =
@@ -699,7 +700,7 @@ class RemoteReconcileExecutorPollerTest {
     when(heartbeatConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
         .thenReturn(java.util.Optional.of(1));
     when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
-        .thenReturn(java.util.Optional.of(3_000L));
+        .thenReturn(java.util.Optional.of(10_000L));
     when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
         .thenReturn(java.util.Optional.of(200L));
     poller.config = heartbeatConfig;
@@ -732,7 +733,11 @@ class RemoteReconcileExecutorPollerTest {
             eq(0L),
             eq(0L),
             eq("done")))
-        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(true));
+        .thenAnswer(
+            invocation -> {
+              completionSubmitted.countDown();
+              return new RemoteReconcileExecutorClient.CompletionResult(true);
+            });
 
     Thread worker =
         new Thread(
@@ -746,6 +751,7 @@ class RemoteReconcileExecutorPollerTest {
     worker.start();
 
     assertTrue(allowCompletion.await(5, TimeUnit.SECONDS));
+    assertTrue(completionSubmitted.await(5, TimeUnit.SECONDS));
     worker.join(5_000L);
 
     if (failure.get() != null) {

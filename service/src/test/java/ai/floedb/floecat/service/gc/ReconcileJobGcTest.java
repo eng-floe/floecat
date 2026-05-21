@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 class ReconcileJobGcTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
+  private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
 
   private PointerStore pointers;
   private BlobStore blobs;
@@ -73,16 +75,16 @@ class ReconcileJobGcTest {
     String readyPointer =
         Keys.reconcileReadyPointerByDue(
             System.currentTimeMillis() - 1_000L, ACCOUNT_ID, "lane", jobId);
-    String canonicalBlob =
-        putReconcileJob(
+    String canonicalKey =
+        putInlineReconcileJob(
             jobId, "JS_SUCCEEDED", System.currentTimeMillis() - 10_000L, dedupeInput, readyPointer);
     String historyBlob = Keys.reconcileJobBlobUri(ACCOUNT_ID, jobId, "history");
     blobs.put(
         historyBlob,
         "{\"old\":true}".getBytes(StandardCharsets.UTF_8),
         "application/json; charset=UTF-8");
-    putPointer(dedupePointer, canonicalBlob);
-    putPointer(readyPointer, canonicalBlob);
+    putPointer(dedupePointer, canonicalKey);
+    putPointer(readyPointer, canonicalKey);
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
@@ -91,8 +93,21 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
     assertTrue(pointers.get(dedupePointer).isEmpty());
     assertTrue(pointers.get(readyPointer).isEmpty());
-    assertFalse(blobs.head(canonicalBlob).isPresent());
     assertFalse(blobs.head(historyBlob).isPresent());
+  }
+
+  @Test
+  void accountSliceDeletesDanglingCanonicalPointers() {
+    String jobId = "job-missing-inline";
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    putPointer(canonicalKey, "inline:reconcile-job:not-valid");
+    putPointer(Keys.reconcileJobLookupPointerById(jobId), canonicalKey);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(result.ptrDeleted() >= 1);
+    assertTrue(pointers.get(canonicalKey).isEmpty());
+    assertTrue(pointers.get(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
   }
 
   @Test
@@ -109,14 +124,13 @@ class ReconcileJobGcTest {
   @Test
   void readySliceDeletesStaleReadyPointers() {
     String jobId = "job-running";
-    putReconcileJob(jobId, "JS_RUNNING", System.currentTimeMillis(), "", "");
+    String canonicalKey =
+        putInlineReconcileJob(jobId, "JS_RUNNING", System.currentTimeMillis(), "", "");
 
     String staleReadyKey =
         Keys.reconcileReadyPointerByDue(
             System.currentTimeMillis(), ACCOUNT_ID, "lane-stale", jobId + "-stale");
-    String canonicalBlob =
-        pointers.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow().getBlobUri();
-    putPointer(staleReadyKey, canonicalBlob);
+    putPointer(staleReadyKey, canonicalKey);
 
     var result = gc.runReadySlice("");
 
@@ -124,15 +138,43 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(staleReadyKey).isEmpty());
   }
 
+  @Test
+  void accountSliceKeepsLiveInlineJobs() {
+    String jobId = "job-inline-running";
+    String canonicalKey =
+        putInlineReconcileJob(jobId, "JS_RUNNING", System.currentTimeMillis(), "", "");
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(0, result.ptrDeleted());
+    assertTrue(pointers.get(canonicalKey).isPresent());
+    assertTrue(pointers.get(lookupKey).isPresent());
+  }
+
+  @Test
+  void readySliceKeepsCurrentInlineQueuedReadyPointer() {
+    String jobId = "job-inline-queued";
+    String readyKey =
+        Keys.reconcileReadyPointerByDue(System.currentTimeMillis(), ACCOUNT_ID, "lane", jobId);
+    String canonicalKey =
+        putInlineReconcileJob(jobId, "JS_QUEUED", System.currentTimeMillis(), "", readyKey);
+    putPointer(readyKey, canonicalKey);
+
+    var result = gc.runReadySlice("");
+
+    assertEquals(0, result.deleted());
+    assertTrue(pointers.get(readyKey).isPresent());
+  }
+
   private void putPointer(String key, String blobUri) {
     Pointer ptr = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
     pointers.compareAndSet(key, 0L, ptr);
   }
 
-  private String putReconcileJob(
+  private String putInlineReconcileJob(
       String jobId, String state, long updatedAtMs, String dedupeKey, String readyPointerKey) {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    String blobUri = Keys.reconcileJobBlobUri(ACCOUNT_ID, jobId, "seed");
     String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
 
     ObjectNode record = mapper.createObjectNode();
@@ -145,13 +187,14 @@ class ReconcileJobGcTest {
     record.put("dedupeKey", dedupeKey);
     record.put("readyPointerKey", readyPointerKey);
 
-    blobs.put(
-        blobUri,
-        record.toString().getBytes(StandardCharsets.UTF_8),
-        "application/json; charset=UTF-8");
-    putPointer(canonicalKey, blobUri);
-    putPointer(lookupKey, blobUri);
-    return blobUri;
+    String inlineReference =
+        INLINE_JOB_STATE_PREFIX
+            + Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(record.toString().getBytes(StandardCharsets.UTF_8));
+    putPointer(canonicalKey, inlineReference);
+    putPointer(lookupKey, canonicalKey);
+    return canonicalKey;
   }
 
   private static String hashValue(String value) {

@@ -489,7 +489,10 @@ public class ConnectorIT {
             .flatMap(job -> job.snapshotTask.fileGroups().stream())
             .flatMap(group -> group.filePaths().stream())
             .collect(Collectors.toCollection(ArrayList::new));
-    assertTrue(filePaths.isEmpty(), "metacat currently leaves planned parquet file paths empty");
+    assertFalse(filePaths.isEmpty(), "expected planned parquet file paths to be persisted");
+    assertTrue(
+        filePaths.stream().allMatch(path -> path != null && !path.isBlank()),
+        "expected planned parquet file paths to be non-blank");
   }
 
   @Test
@@ -1097,9 +1100,10 @@ public class ConnectorIT {
 
     assertNotNull(planJob);
     assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
-    assertEquals(2L, planJob.tablesScanned, "expected 2 planned tables");
+    assertEquals(3L, planJob.tablesScanned, "expected 3 direct child jobs (2 tables + 1 view)");
     assertEquals(1L, planJob.viewsScanned, "expected 1 planned view");
-    assertEquals(2L, planJob.tablesChanged, "plan job should surface two newly created tables");
+    assertEquals(
+        2L, planJob.tablesChanged, "plan job should surface two newly created destination tables");
     assertEquals(1L, planJob.viewsChanged, "plan job should surface one newly created view");
 
     var aggregatedJob =

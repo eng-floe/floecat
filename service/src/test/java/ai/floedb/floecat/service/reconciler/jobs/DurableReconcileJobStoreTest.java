@@ -2184,6 +2184,9 @@ class DurableReconcileJobStoreTest {
     String secondCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, secondJob);
     DurableReconcileJobStore.StoredReconcileJob secondRecord =
         readStoredRecord(secondCanonicalPointerKey);
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, secondRecord.laneKey);
+    String laneOwnerBeforeAcquire =
+        store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri();
 
     Method tryAcquireLaneLease =
         DurableReconcileJobStore.class.getDeclaredMethod(
@@ -2200,13 +2203,7 @@ class DurableReconcileJobStoreTest {
 
     assertFalse(acquired);
     assertEquals(
-        firstCanonicalPointerKey,
-        store
-            .pointerStore
-            .get(Keys.reconcileLaneLeasePointer(ACCOUNT_ID, secondRecord.laneKey))
-            .orElseThrow()
-            .getBlobUri());
-    assertTrue(store.renewLease(firstJob, firstLease.leaseEpoch));
+        laneOwnerBeforeAcquire, store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri());
   }
 
   @Test

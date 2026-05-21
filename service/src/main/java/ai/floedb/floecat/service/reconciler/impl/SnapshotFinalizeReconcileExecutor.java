@@ -420,7 +420,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
         continue;
       }
-      LOG.warnf(
+      LOG.debugf(
           "finalizer child readback childJobId=%s state=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d",
           child.jobId,
           child.state,

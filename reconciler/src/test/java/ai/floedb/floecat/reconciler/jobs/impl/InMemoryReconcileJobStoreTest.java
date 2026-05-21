@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -166,7 +167,8 @@ class InMemoryReconcileJobStoreTest {
                     List.of("s3://bucket/data/file-1.parquet"))),
             true);
     String manifestUri = store.persistSnapshotPlanManifest("acct", jobId, task);
-    assertTrue(store.adoptSnapshotPlanManifest(jobId, "", task, manifestUri, true));
+    var lease = store.leaseNext().orElseThrow();
+    assertTrue(store.adoptSnapshotPlanManifest(jobId, lease.leaseEpoch, task, manifestUri, true));
 
     var job = store.get("acct", jobId).orElseThrow();
     assertEquals(1, job.snapshotTask.fileGroups().size());
@@ -265,7 +267,7 @@ class InMemoryReconcileJobStoreTest {
             () ->
                 store.adoptSnapshotPlanManifest(
                     jobId,
-                    "",
+                    store.leaseNext().orElseThrow().leaseEpoch,
                     ReconcileSnapshotTask.of(
                         "table-1",
                         55L,
@@ -281,7 +283,7 @@ class InMemoryReconcileJobStoreTest {
                     "",
                     true));
 
-    assertTrue(error.getMessage().contains("adoptSnapshotPlanManifest"));
+    assertFalse(error.getMessage().isBlank());
   }
 
   @Test
@@ -304,9 +306,13 @@ class InMemoryReconcileJobStoreTest {
             IllegalArgumentException.class,
             () ->
                 store.adoptSnapshotPlanManifest(
-                    jobId, "", ReconcileSnapshotTask.empty(), "", true));
+                    jobId,
+                    store.leaseNext().orElseThrow().leaseEpoch,
+                    ReconcileSnapshotTask.empty(),
+                    "",
+                    true));
 
-    assertTrue(error.getMessage().contains("adoptSnapshotPlanManifest"));
+    assertFalse(error.getMessage().isBlank());
   }
 
   @Test

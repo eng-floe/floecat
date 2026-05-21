@@ -1404,11 +1404,7 @@ class GrpcRemoteReconcileExecutorClient
         lastError = error;
         boolean transportFailure = isTransportFailure(error);
         if (transportFailure) {
-          LOG.warnf(
-              error,
-              "worker-control rpc transport failure op=%s attempt=%d; recreating channel",
-              operation,
-              attempt);
+          logWorkerControlTransportFailure(operation, attempt, error);
           resetWorkerControlChannel();
         }
         if (!retryOnTransportFailure || !transportFailure || attempt >= maxAttempts) {
@@ -1417,6 +1413,14 @@ class GrpcRemoteReconcileExecutorClient
       }
     }
     throw lastError == null ? new IllegalStateException("worker-control rpc failed") : lastError;
+  }
+
+  void logWorkerControlTransportFailure(String operation, int attempt, RuntimeException error) {
+    LOG.debugf(
+        error,
+        "worker-control rpc transport failure op=%s attempt=%d; recreating channel",
+        operation,
+        attempt);
   }
 
   private static boolean isTransportFailure(Throwable error) {

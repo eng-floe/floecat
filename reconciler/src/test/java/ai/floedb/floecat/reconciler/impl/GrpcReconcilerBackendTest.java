@@ -837,7 +837,7 @@ class GrpcReconcilerBackendTest {
                 "orders"));
 
     assertThat(changed).isTrue();
-    verify(backend.table).updateTable(any());
+    verify(backend.table, org.mockito.Mockito.times(2)).updateTable(any());
     verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
   }
 }

@@ -257,7 +257,8 @@ public class RemoteReconcileExecutorPoller {
             MIN_LEASE_HEARTBEAT_MS,
             Math.min(heartbeatEveryMs * 2L, Math.max(1_000L, leaseMs / 3L)));
     long[] nextCancelCheckAtMs = {started};
-    AtomicBoolean leaseRejected = new AtomicBoolean(false);
+    AtomicBoolean leaseInvalid = new AtomicBoolean(false);
+    AtomicBoolean leaseStateUncertain = new AtomicBoolean(false);
     AtomicBoolean cancellationRequested = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(false);
     AtomicLong lastLeaseConfirmedAtMs = new AtomicLong(started);
@@ -271,7 +272,7 @@ public class RemoteReconcileExecutorPoller {
             });
     Runnable heartbeatTask =
         () -> {
-          if (leaseRejected.get()) {
+          if (leaseInvalid.get()) {
             return;
           }
           try {
@@ -280,9 +281,10 @@ public class RemoteReconcileExecutorPoller {
               LOG.warnf(
                   "Remote reconcile lease heartbeat rejected for job %s executor=%s cancellationRequested=%s",
                   lease.jobId, executor.id(), response.cancellationRequested());
-              leaseRejected.set(true);
+              leaseInvalid.set(true);
             } else {
               lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
+              leaseStateUncertain.set(false);
             }
             cancellationRequested.set(response.cancellationRequested());
           } catch (RuntimeException e) {
@@ -294,12 +296,21 @@ public class RemoteReconcileExecutorPoller {
                     System.currentTimeMillis())) {
               LOG.warnf(
                   e,
-                  "Remote reconcile lease heartbeat transport failure for job %s executor=%s; lease state uncertain",
+                  "Remote reconcile lease heartbeat transport failure for job %s executor=%s; continuing with last confirmed lease state",
                   lease.jobId,
                   executor.id());
               return;
             }
-            leaseRejected.set(true);
+            if (isTransportFailure(e)) {
+              leaseStateUncertain.set(true);
+              LOG.warnf(
+                  e,
+                  "Remote reconcile lease heartbeat state is uncertain for job %s executor=%s",
+                  lease.jobId,
+                  executor.id());
+              return;
+            }
+            leaseInvalid.set(true);
             LOG.warnf(
                 e,
                 "Remote reconcile lease heartbeat failed for job %s executor=%s",
@@ -314,7 +325,7 @@ public class RemoteReconcileExecutorPoller {
             interrupted.set(true);
             return true;
           }
-          if (leaseRejected.get()) {
+          if (leaseInvalid.get()) {
             return true;
           }
           if (leaseDefinitelyExpired(
@@ -322,8 +333,7 @@ public class RemoteReconcileExecutorPoller {
               leaseSafetyMarginMs,
               lastLeaseConfirmedAtMs.get(),
               System.currentTimeMillis())) {
-            leaseRejected.set(true);
-            return true;
+            leaseStateUncertain.set(true);
           }
           long now = System.currentTimeMillis();
           if (now >= nextCancelCheckAtMs[0]) {
@@ -335,11 +345,20 @@ public class RemoteReconcileExecutorPoller {
                       leaseMs, leaseSafetyMarginMs, lastLeaseConfirmedAtMs.get(), now)) {
                 LOG.warnf(
                     e,
-                    "Remote reconcile cancellation check transport failure for job %s executor=%s; lease state uncertain",
+                    "Remote reconcile cancellation check transport failure for job %s executor=%s; continuing with last confirmed lease state",
                     lease.jobId,
                     executor.id());
               } else {
-                leaseRejected.set(true);
+                if (isTransportFailure(e)) {
+                  leaseStateUncertain.set(true);
+                  LOG.warnf(
+                      e,
+                      "Remote reconcile cancellation state is uncertain for job %s executor=%s",
+                      lease.jobId,
+                      executor.id());
+                  return false;
+                }
+                leaseInvalid.set(true);
                 throw e;
               }
             }
@@ -360,7 +379,21 @@ public class RemoteReconcileExecutorPoller {
       }
       heartbeatExecutor.scheduleAtFixedRate(
           heartbeatTask, heartbeatEveryMs, heartbeatEveryMs, TimeUnit.MILLISECONDS);
-      if (shouldStop.getAsBoolean()) {
+      if (!leaseStillCompletable(
+          remoteLease,
+          lease,
+          executor.id(),
+          leaseMs,
+          leaseSafetyMarginMs,
+          leaseInvalid,
+          leaseStateUncertain,
+          cancellationRequested,
+          lastLeaseConfirmedAtMs)) {
+        LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
+        return;
+      }
+      shouldStop.getAsBoolean();
+      if (cancellationRequested.get()) {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,
@@ -376,6 +409,9 @@ public class RemoteReconcileExecutorPoller {
             "Cancelled");
         return;
       }
+      if (leaseInvalid.get() || interrupted.get()) {
+        return;
+      }
       var result =
           executor.execute(
               new ReconcileExecutor.ExecutionContext(
@@ -389,7 +425,7 @@ public class RemoteReconcileExecutorPoller {
                       snapshotsProcessed,
                       statsProcessed,
                       message) -> {
-                    if (leaseRejected.get()) {
+                    if (leaseInvalid.get()) {
                       return;
                     }
                     progress.update(
@@ -422,30 +458,44 @@ public class RemoteReconcileExecutorPoller {
                               System.currentTimeMillis())) {
                         LOG.warnf(
                             e,
-                            "Remote reconcile progress transport failure for job %s executor=%s; lease state uncertain",
+                            "Remote reconcile progress transport failure for job %s executor=%s; continuing with last confirmed lease state",
                             lease.jobId,
                             executor.id());
                         return;
                       }
-                      leaseRejected.set(true);
+                      if (isTransportFailure(e)) {
+                        leaseStateUncertain.set(true);
+                        LOG.warnf(
+                            e,
+                            "Remote reconcile progress state is uncertain for job %s executor=%s",
+                            lease.jobId,
+                            executor.id());
+                        return;
+                      }
+                      leaseInvalid.set(true);
                       throw e;
                     }
                     if (!response.leaseValid()) {
                       LOG.warnf(
                           "Remote reconcile progress heartbeat rejected for job %s executor=%s cancellationRequested=%s",
                           lease.jobId, executor.id(), response.cancellationRequested());
-                      leaseRejected.set(true);
+                      leaseInvalid.set(true);
                       return;
                     }
                     lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
+                    leaseStateUncertain.set(false);
                     cancellationRequested.set(response.cancellationRequested());
                   }));
-      if (leaseRejected.get()
-          || leaseDefinitelyExpired(
-              leaseMs,
-              leaseSafetyMarginMs,
-              lastLeaseConfirmedAtMs.get(),
-              System.currentTimeMillis())) {
+      if (!leaseStillCompletable(
+          remoteLease,
+          lease,
+          executor.id(),
+          leaseMs,
+          leaseSafetyMarginMs,
+          leaseInvalid,
+          leaseStateUncertain,
+          cancellationRequested,
+          lastLeaseConfirmedAtMs)) {
         LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
         return;
       }
@@ -485,13 +535,17 @@ public class RemoteReconcileExecutorPoller {
             "Remote reconcile terminal state is uncertain for job %s executor=%s; leaving lease for retry after expiry",
             lease.jobId,
             executor.id());
-      } else if (!leaseRejected.get()
-          && !leaseDefinitelyExpired(
+      } else if (!interrupted.get()
+          && leaseStillCompletable(
+              remoteLease,
+              lease,
+              executor.id(),
               leaseMs,
               leaseSafetyMarginMs,
-              lastLeaseConfirmedAtMs.get(),
-              System.currentTimeMillis())
-          && !interrupted.get()) {
+              leaseInvalid,
+              leaseStateUncertain,
+              cancellationRequested,
+              lastLeaseConfirmedAtMs)) {
         long errorCount =
             cancellationRequested.get() ? progress.errors : Math.max(1L, progress.errors);
         completeForOutcome(
@@ -530,6 +584,50 @@ public class RemoteReconcileExecutorPoller {
     } finally {
       heartbeatExecutor.shutdownNow();
       Thread.interrupted();
+    }
+  }
+
+  private boolean leaseStillCompletable(
+      RemoteLeasedJob remoteLease,
+      ReconcileJobStore.LeasedJob lease,
+      String executorId,
+      long leaseMs,
+      long leaseSafetyMarginMs,
+      AtomicBoolean leaseInvalid,
+      AtomicBoolean leaseStateUncertain,
+      AtomicBoolean cancellationRequested,
+      AtomicLong lastLeaseConfirmedAtMs) {
+    if (leaseInvalid.get()) {
+      return false;
+    }
+    long now = System.currentTimeMillis();
+    if (!leaseStateUncertain.get()
+        && !leaseDefinitelyExpired(
+            leaseMs, leaseSafetyMarginMs, lastLeaseConfirmedAtMs.get(), now)) {
+      return true;
+    }
+    try {
+      RemoteReconcileExecutorClient.LeaseHeartbeat response = client.renew(remoteLease);
+      if (!response.leaseValid()) {
+        leaseInvalid.set(true);
+        cancellationRequested.set(response.cancellationRequested());
+        LOG.warnf(
+            "Remote reconcile final lease confirmation rejected for job %s executor=%s cancellationRequested=%s",
+            lease.jobId, executorId, response.cancellationRequested());
+        return false;
+      }
+      lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
+      leaseStateUncertain.set(false);
+      cancellationRequested.set(response.cancellationRequested());
+      return true;
+    } catch (RuntimeException e) {
+      if (isTransportFailure(e)) {
+        throw lifecycleStateUncertain(
+            "Remote reconcile final lease confirmation state is uncertain for job " + lease.jobId,
+            e);
+      }
+      leaseInvalid.set(true);
+      throw e;
     }
   }
 
@@ -645,6 +743,15 @@ public class RemoteReconcileExecutorPoller {
       LOG.warnf("Remote reconcile completion rejected for job %s", lease.lease().jobId);
     }
     return result.accepted();
+  }
+
+  private static ReconcileFailureException lifecycleStateUncertain(String message) {
+    return new ReconcileFailureException(
+        ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+        ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN,
+        message,
+        null);
   }
 
   private static ReconcileFailureException lifecycleStateUncertain(

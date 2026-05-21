@@ -29,6 +29,7 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +48,11 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
     store.init();
+  }
+
+  @AfterEach
+  void tearDown() {
+    System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
   }
 
   @Test
@@ -239,6 +245,8 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   @Test
   void applyLeaseOutcomeReturnsFalseForExpiredLease() {
+    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    store.init();
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
     expireLease(jobId);

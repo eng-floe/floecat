@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -236,8 +237,8 @@ class GrpcRemoteReconcileExecutorClientTest {
 
   @Test
   void renewRetriesOnceOnTransportFailure() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
+    TransportLoggingClient client =
+        new TransportLoggingClient(
             "authorization", () -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
@@ -255,6 +256,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(heartbeat.leaseValid()).isTrue();
     assertThat(heartbeat.cancellationRequested()).isFalse();
     verify(client.executorControl, org.mockito.Mockito.times(2)).renewReconcileLease(any());
+    assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease#1");
   }
 
   @Test
@@ -439,5 +441,23 @@ class GrpcRemoteReconcileExecutorClientTest {
             ReconcileFileGroupTask.of(
                 "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet")),
             ""));
+  }
+
+  private static final class TransportLoggingClient extends GrpcRemoteReconcileExecutorClient {
+    private final java.util.List<String> transportFailureLogs = new java.util.ArrayList<>();
+
+    private TransportLoggingClient(
+        String workerAuthHeaderName, ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+      super(workerAuthHeaderName, reconcileWorkerAuthProvider);
+    }
+
+    @Override
+    void logWorkerControlTransportFailure(String operation, int attempt, RuntimeException error) {
+      transportFailureLogs.add(operation + "#" + attempt);
+    }
+
+    private java.util.List<String> transportFailureLogs() {
+      return transportFailureLogs;
+    }
   }
 }

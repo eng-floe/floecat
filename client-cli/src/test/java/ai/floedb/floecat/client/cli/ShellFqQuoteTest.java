@@ -392,7 +392,12 @@ class ShellFqQuoteTest {
     }
     String help = baos.toString();
     assertTrue(
-        help.contains("analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current]"));
+        help.contains(
+            "analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]"));
+    assertTrue(
+        help.contains(
+            "[--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]"));
+    assertTrue(help.contains("[--capture stats|table-stats|file-stats|column-stats|index,...]"));
     assertTrue(help.contains("[--wait-seconds <n>]"));
   }
 
@@ -404,7 +409,7 @@ class ShellFqQuoteTest {
     assertTrue(
         baos.toString()
             .contains(
-                "usage: analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current]"));
+                "usage: analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only] [--capture stats|table-stats|file-stats|column-stats|index,...]"));
     assertTrue(baos.toString().contains("[--wait-seconds <n>]"));
   }
 }

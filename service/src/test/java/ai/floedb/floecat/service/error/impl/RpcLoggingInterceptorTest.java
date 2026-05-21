@@ -47,7 +47,7 @@ class RpcLoggingInterceptorTest {
 
   @Test
   void capturesQueryIdFromRequestMessage() {
-    CapturingRpcLoggingInterceptor interceptor = new CapturingRpcLoggingInterceptor();
+    QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
     AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
     RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
@@ -71,7 +71,7 @@ class RpcLoggingInterceptorTest {
 
   @Test
   void capturesQueryIdFromResponseMessageWhenRequestDoesNotCarryIt() {
-    CapturingRpcLoggingInterceptor interceptor = new CapturingRpcLoggingInterceptor();
+    QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
     AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
     RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
@@ -98,7 +98,7 @@ class RpcLoggingInterceptorTest {
 
   @Test
   void fallsBackToHeaderQueryIdWhenContextAndMessagesDoNotProvideOne() {
-    CapturingRpcLoggingInterceptor interceptor = new CapturingRpcLoggingInterceptor();
+    QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
     AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
     RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
@@ -122,7 +122,7 @@ class RpcLoggingInterceptorTest {
 
   @Test
   void contextQueryIdTakesPrecedenceOverHeaderQueryId() {
-    CapturingRpcLoggingInterceptor interceptor = new CapturingRpcLoggingInterceptor();
+    QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
     AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
     RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
@@ -150,6 +150,32 @@ class RpcLoggingInterceptorTest {
     assertEquals(
         "getter-query-id", RpcLoggingInterceptor.extractQueryId(new GetterOnly("getter-query-id")));
     assertEquals("", RpcLoggingInterceptor.extractQueryId(new Object()));
+  }
+
+  @Test
+  void slowSuccessfulCallsLogAtDebug() {
+    LevelCapturingRpcLoggingInterceptor interceptor = new LevelCapturingRpcLoggingInterceptor();
+    interceptor.slowRpcMs = 250L;
+
+    interceptor.logCall(
+        Status.OK, new Metadata(), METHOD.getFullMethodName(), 250L, "corr-id", "query-id");
+
+    assertEquals("debug", interceptor.lastLevel());
+  }
+
+  @Test
+  void failedCallsStillLogAtError() {
+    LevelCapturingRpcLoggingInterceptor interceptor = new LevelCapturingRpcLoggingInterceptor();
+
+    interceptor.logCall(
+        Status.INTERNAL.withDescription("boom"),
+        new Metadata(),
+        METHOD.getFullMethodName(),
+        10L,
+        "corr-id",
+        "query-id");
+
+    assertEquals("error", interceptor.lastLevel());
   }
 
   private static <ReqT, RespT> ServerCallHandler<ReqT, RespT> captureHandler(
@@ -193,7 +219,7 @@ class RpcLoggingInterceptorTest {
     }
   }
 
-  private static final class CapturingRpcLoggingInterceptor extends RpcLoggingInterceptor {
+  private static final class QueryCapturingRpcLoggingInterceptor extends RpcLoggingInterceptor {
     private String loggedQueryId = "";
 
     @Override
@@ -209,6 +235,29 @@ class RpcLoggingInterceptorTest {
 
     private String loggedQueryId() {
       return loggedQueryId;
+    }
+  }
+
+  private static final class LevelCapturingRpcLoggingInterceptor extends RpcLoggingInterceptor {
+    private String lastLevel = "";
+
+    private String lastLevel() {
+      return lastLevel;
+    }
+
+    @Override
+    void logError(String message) {
+      this.lastLevel = "error";
+    }
+
+    @Override
+    void logSlowSuccessfulCall(String message) {
+      this.lastLevel = "debug";
+    }
+
+    @Override
+    void logSuccessfulCall(String message) {
+      this.lastLevel = "info";
     }
   }
 
