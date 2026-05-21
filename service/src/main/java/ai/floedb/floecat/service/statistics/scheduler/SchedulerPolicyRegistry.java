@@ -22,7 +22,11 @@ import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Any;
@@ -33,6 +37,7 @@ import java.lang.annotation.Annotation;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -68,11 +73,15 @@ public class SchedulerPolicyRegistry {
 
   private static final Logger LOG = Logger.getLogger(SchedulerPolicyRegistry.class);
 
+  private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
+  private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "scheduler");
+
   private final String profileName;
   private final Instance<SchedulerPriorityPolicy> priorityPolicies;
   private final Instance<SchedulerAdmissionPolicy> admissionPolicies;
   private final Instance<SchedulerPreemptionPolicy> preemptionPolicies;
   private final ReconcileJobStore jobs;
+  private final Observability observability;
 
   private SchedulerPriorityPolicy activePriorityPolicy;
   private SchedulerAdmissionPolicy activeAdmissionPolicy;
@@ -88,12 +97,14 @@ public class SchedulerPolicyRegistry {
       @Any Instance<SchedulerPriorityPolicy> priorityPolicies,
       @Any Instance<SchedulerAdmissionPolicy> admissionPolicies,
       @Any Instance<SchedulerPreemptionPolicy> preemptionPolicies,
-      ReconcileJobStore jobs) {
+      ReconcileJobStore jobs,
+      Observability observability) {
     this.profileName = profileName;
     this.priorityPolicies = priorityPolicies;
     this.admissionPolicies = admissionPolicies;
     this.preemptionPolicies = preemptionPolicies;
     this.jobs = jobs;
+    this.observability = observability;
   }
 
   @PostConstruct
@@ -128,6 +139,17 @@ public class SchedulerPolicyRegistry {
     context = new ReconcileJobStoreContext(jobs);
 
     validateInvariants();
+
+    // Emit POLICY_PROFILE info gauge: value always 1, profile_name tag identifies the profile.
+    // Dashboards use this to annotate other scheduler metrics with the active profile.
+    AtomicLong profileGauge = new AtomicLong(1L);
+    observability.gauge(
+        ServiceMetrics.Reconcile.POLICY_PROFILE,
+        profileGauge::get,
+        "Active scheduler policy profile (value=1; profile_name tag identifies the profile)",
+        COMPONENT,
+        OPERATION,
+        Tag.of("profile_name", profileName));
 
     LOG.infof(
         "Scheduler policy profile '%s' loaded: priority=%s, admission=%s, preemption=%s",

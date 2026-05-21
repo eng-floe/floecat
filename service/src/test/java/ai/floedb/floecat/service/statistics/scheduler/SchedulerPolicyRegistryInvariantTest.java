@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.telemetry.NoopObservability;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.OptionalLong;
@@ -157,7 +158,7 @@ class SchedulerPolicyRegistryInvariantTest {
 
   @Test
   void bootPassesForDefaultSchedulerProfile() {
-    var profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L);
+    var profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, new NoopObservability());
     var ctx = stubContext();
     // Should not throw — DefaultSchedulerProfile satisfies all three invariants.
     SchedulerPolicyRegistry.validateAdmissionP0Invariant(profile, ctx);

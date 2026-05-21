@@ -448,6 +448,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     long oldestQueued = 0L;
     long oldestP0QueuedCreatedAtMs = 0L;
     long now = System.currentTimeMillis();
+    // Track oldest enqueue time per lane for lane-wait metric (top-10 by wait time).
+    Map<String, Long> laneOldestCreatedAtMs = new java.util.HashMap<>();
     for (ReconcileJob job : jobs.values()) {
       if (job == null || job.state == null) {
         continue;
@@ -465,6 +467,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 && (oldestP0QueuedCreatedAtMs == 0L || created < oldestP0QueuedCreatedAtMs)) {
               oldestP0QueuedCreatedAtMs = created;
             }
+          }
+          // Track per-lane oldest enqueue time for lane wait metrics.
+          String laneKey = laneKeysByJobId.getOrDefault(job.jobId, "");
+          if (!laneKey.isBlank() && created > 0L) {
+            laneOldestCreatedAtMs.merge(laneKey, created, Math::min);
           }
         }
         case "JS_RUNNING" -> running++;
@@ -498,6 +505,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       deferredSnapshot.put(cls, admissionDeferred.get(cls).get());
     }
 
+    // Compute top-10 lanes by oldest queued job wait time (most-starved first).
+    Map<String, Long> topLaneWaitMs =
+        laneOldestCreatedAtMs.entrySet().stream()
+            .sorted(Map.Entry.comparingByValue()) // oldest created-at first
+            .limit(10)
+            .collect(Collectors.toMap(Map.Entry::getKey, e -> now - e.getValue()));
+
     return new QueueStats(
         queued,
         running,
@@ -506,7 +520,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         byClass,
         band,
         agingTracker.totalPromotions(),
-        deferredSnapshot);
+        deferredSnapshot,
+        topLaneWaitMs);
   }
 
   @Override

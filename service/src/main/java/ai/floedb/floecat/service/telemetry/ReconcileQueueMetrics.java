@@ -27,6 +27,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
@@ -51,6 +52,8 @@ public class ReconcileQueueMetrics {
   private long lastAgingPromotionsTotal = 0L;
   private final Map<StatsPriorityClass, Long> lastAdmissionDeferred =
       new EnumMap<>(StatsPriorityClass.class);
+  // Lane wait gauges — keyed by lane_key; registered lazily on first observation.
+  private final ConcurrentHashMap<String, AtomicLong> laneWaitAtomics = new ConcurrentHashMap<>();
 
   private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
   private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
@@ -151,6 +154,34 @@ public class ReconcileQueueMetrics {
           lastAdmissionDeferred.put(cls, newDeferred);
         }
       }
+
+      // Update lane wait gauges: register new lanes lazily, zero-out lanes no longer in top-10.
+      for (Map.Entry<String, Long> e : stats.topLaneWaitMs.entrySet()) {
+        String laneKey = e.getKey();
+        long waitMs = e.getValue();
+        laneWaitAtomics
+            .computeIfAbsent(
+                laneKey,
+                k -> {
+                  AtomicLong al = new AtomicLong();
+                  observability.gauge(
+                      ServiceMetrics.Reconcile.LANE_WAIT_MS,
+                      al::get,
+                      "Wait time (ms) for oldest queued job in lane " + k,
+                      COMPONENT,
+                      OPERATION,
+                      Tag.of("lane_key", k));
+                  return al;
+                })
+            .set(waitMs);
+      }
+      // Zero out lanes that are no longer in the top-10 (their gauges stay registered).
+      laneWaitAtomics.forEach(
+          (laneKey, al) -> {
+            if (!stats.topLaneWaitMs.containsKey(laneKey)) {
+              al.set(0L);
+            }
+          });
     } catch (RuntimeException e) {
       // Warn rather than debug: a silent metrics failure leaves all gauges stale and is invisible
       // to on-call unless warn-level logging is enabled.

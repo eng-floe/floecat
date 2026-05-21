@@ -1172,6 +1172,13 @@ public interface ReconcileJobStore {
      */
     public final Map<StatsPriorityClass, Long> admissionDeferredByClass;
 
+    /**
+     * Top-10 lanes (by oldest queued job wait time) and their current wait time in milliseconds.
+     * Only includes lanes with at least one JS_QUEUED job. Empty map when no lanes are waiting.
+     * Never null.
+     */
+    public final Map<String, Long> topLaneWaitMs;
+
     public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
       this(queued, running, cancelling, oldestQueuedCreatedAtMs, Map.of());
     }
@@ -1229,6 +1236,28 @@ public interface ReconcileJobStore {
         SchedulerHealthBand healthBand,
         long agingPromotionsTotal,
         Map<StatsPriorityClass, Long> admissionDeferredByClass) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          healthBand,
+          agingPromotionsTotal,
+          admissionDeferredByClass,
+          Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal,
+        Map<StatsPriorityClass, Long> admissionDeferredByClass,
+        Map<String, Long> topLaneWaitMs) {
       this.queued = Math.max(0L, queued);
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
@@ -1245,6 +1274,7 @@ public interface ReconcileJobStore {
         admissionDeferredByClass.forEach((k, v) -> deferredByClass.put(k, Math.max(0L, v)));
       }
       this.admissionDeferredByClass = deferredByClass;
+      this.topLaneWaitMs = topLaneWaitMs == null ? Map.of() : Map.copyOf(topLaneWaitMs);
     }
   }
 

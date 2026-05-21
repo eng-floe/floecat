@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>This class is package-private and shared by all {@link
  * ai.floedb.floecat.reconciler.jobs.ReconcileJobStore} implementations.
  */
-final class SchedulerBandState {
+public final class SchedulerBandState {
 
   // ---------------------------------------------------------------------------
   // Thresholds — package-private so tests can reference them
@@ -79,7 +79,7 @@ final class SchedulerBandState {
   // ---------------------------------------------------------------------------
 
   /** Returns the current health band. Thread-safe; reads one {@link AtomicReference}. */
-  SchedulerHealthBand current() {
+  public SchedulerHealthBand current() {
     return current.get();
   }
 
@@ -94,7 +94,7 @@ final class SchedulerBandState {
    * @param oldestP0AgeMs age of the oldest P0 queued job in ms; pass {@code 0L} when no P0 jobs are
    *     queued (avoids the O(n) jobs-map scan cost in the common case)
    */
-  void maybeEscalate(long now, Map<StatsPriorityClass, Long> depths, long oldestP0AgeMs) {
+  public void maybeEscalate(long now, Map<StatsPriorityClass, Long> depths, long oldestP0AgeMs) {
     long last = lastEscalateMs.get();
     if (now - last < BAND_REFRESH_INTERVAL_MS) {
       return;
@@ -127,7 +127,7 @@ final class SchedulerBandState {
    *
    * @param depths ready-queue depth by priority class (fresh snapshot, O(1) reads)
    */
-  void maybeClearRedOnP0Drain(Map<StatsPriorityClass, Long> depths) {
+  public void maybeClearRedOnP0Drain(Map<StatsPriorityClass, Long> depths) {
     if (current.get() != SchedulerHealthBand.RED) {
       return;
     }
@@ -154,7 +154,8 @@ final class SchedulerBandState {
    * @param oldestP0AgeMs age of the oldest P0 queued job; pass {@code 0L} if no P0 jobs
    * @return the band that was computed and set
    */
-  SchedulerHealthBand computeAndSet(Map<StatsPriorityClass, Long> depths, long oldestP0AgeMs) {
+  public SchedulerHealthBand computeAndSet(
+      Map<StatsPriorityClass, Long> depths, long oldestP0AgeMs) {
     SchedulerHealthBand band = computeRequired(depths, oldestP0AgeMs);
     current.set(band);
     return band;

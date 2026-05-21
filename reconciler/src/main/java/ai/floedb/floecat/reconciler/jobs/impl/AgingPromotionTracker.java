@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>This class is package-private and shared by all {@link
  * ai.floedb.floecat.reconciler.jobs.ReconcileJobStore} implementations.
  */
-final class AgingPromotionTracker {
+public final class AgingPromotionTracker {
 
   /** Side map: jobId → promotion-expiry-ms. Cleaned lazily in {@link #cleanupExpired}. */
   private final Map<String, Long> promotedJobIds = new ConcurrentHashMap<>();
@@ -62,7 +62,7 @@ final class AgingPromotionTracker {
    *
    * @param now current wall-clock time in ms
    */
-  void cleanupExpired(long now) {
+  public void cleanupExpired(long now) {
     if (!promotedJobIds.isEmpty()) {
       promotedJobIds.entrySet().removeIf(e -> e.getValue() < now);
     }
@@ -87,7 +87,7 @@ final class AgingPromotionTracker {
    * @param now current wall-clock time in ms
    * @return {@code true} if a promotion was recorded; {@code false} otherwise
    */
-  boolean recordIfEligible(String jobId, long ageMs, StatsPriorityClass cls, long now) {
+  public boolean recordIfEligible(String jobId, long ageMs, StatsPriorityClass cls, long now) {
     if (!promotedJobIds.containsKey(jobId) && ageMs > SchedulerStoreHelpers.agingThresholdMs(cls)) {
       promotedJobIds.put(jobId, now + SchedulerStoreHelpers.AGING_COOLDOWN_MS);
       total.incrementAndGet();
@@ -100,7 +100,7 @@ final class AgingPromotionTracker {
    * Returns the cumulative number of starvation-aging promotions recorded since this tracker was
    * created.
    */
-  long totalPromotions() {
+  public long totalPromotions() {
     return total.get();
   }
 }

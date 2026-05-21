@@ -19,7 +19,11 @@ package ai.floedb.floecat.service.statistics.scheduler;
 import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
 import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Comparator;
@@ -76,9 +80,14 @@ public class DefaultSchedulerProfile
   /** Maximum age before the age factor saturates at 100. Default: 24 hours in milliseconds. */
   private final long maxAgeMs;
 
+  private final Observability observability;
+
   // ---- Delta row-count thresholds ----
   private static final long DELTA_LARGE_ROWS = 1_000_000L;
   private static final long DELTA_MEDIUM_ROWS = 100_000L;
+
+  private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
+  private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "scoring");
 
   @Inject
   DefaultSchedulerProfile(
@@ -91,11 +100,13 @@ public class DefaultSchedulerProfile
       @ConfigProperty(
               name = "floecat.stats.scheduler.scoring.max-age-ms",
               defaultValue = "86400000")
-          long maxAgeMs) {
+          long maxAgeMs,
+      Observability observability) {
     this.weightCoverage = weightCoverage > 0 ? weightCoverage : 3;
     this.weightDelta = weightDelta > 0 ? weightDelta : 2;
     this.weightAge = weightAge > 0 ? weightAge : 1;
     this.maxAgeMs = maxAgeMs > 0L ? maxAgeMs : 86_400_000L;
+    this.observability = observability;
   }
 
   // ---------------------------------------------------------------------------
@@ -119,6 +130,15 @@ public class DefaultSchedulerProfile
     String tableKey = request.tableId().getId();
     long score = computeScore(request, context, tableKey);
     String laneKey = request.tableId().getAccountId() + ":" + tableKey;
+    // Record score distribution so dashboards can observe score spread per priority class.
+    // P3_BACKGROUND is always the assigned class from this path (P0/P2 are set by the orchestrator
+    // directly; P1 is set by the planner worker for new snapshots).
+    observability.summary(
+        ServiceMetrics.Reconcile.SCORING_SCORE_DIST,
+        score,
+        COMPONENT,
+        OPERATION,
+        Tag.of("priority_class", StatsPriorityClass.P3_BACKGROUND.name().toLowerCase()));
     return new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, score, laneKey);
   }
 

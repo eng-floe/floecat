@@ -219,6 +219,36 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+
+    /**
+     * Current wait time in milliseconds for the oldest queued job in a lane. Tag {@code lane_key}
+     * identifies the lane. Emitted for the top-10 most-starved lanes only.
+     */
+    public static final MetricId LANE_WAIT_MS =
+        new MetricId(
+            "floecat.service.reconcile.lane.wait_ms", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    /**
+     * Distribution of priority scores assigned to async reconcile jobs. Tag {@code priority_class}
+     * identifies the class the job was assigned to. Emitted at enqueue time by {@code
+     * DefaultSchedulerProfile.assign()}.
+     */
+    public static final MetricId SCORING_SCORE_DIST =
+        new MetricId(
+            "floecat.service.reconcile.scoring.score_dist",
+            MetricType.SUMMARY,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Info gauge emitted once at startup to identify the active scheduler profile. Value is always
+     * 1; the {@code profile_name} tag carries the profile name. Dashboards use this to annotate
+     * other metrics with the profile in effect.
+     */
+    public static final MetricId POLICY_PROFILE =
+        new MetricId(
+            "floecat.service.reconcile.policy.profile", MetricType.GAUGE, "", CONTRACT, "service");
   }
 
   public static final class Stats {

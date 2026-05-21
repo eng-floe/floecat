@@ -29,6 +29,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.reconciler.jobs.impl.AgingPromotionTracker;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -44,9 +49,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.Config;
@@ -85,6 +94,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private final String leaseOwner = "reconcile-store-" + UUID.randomUUID();
   private volatile long lastReclaimAtMs;
   private final ReentrantLock reclaimLock = new ReentrantLock();
+
+  // Scheduler state — shared with InMemoryReconcileJobStore via the extracted helpers
+  private final SchedulerBandState bandState = new SchedulerBandState();
+  private final AgingPromotionTracker agingTracker = new AgingPromotionTracker();
+  private final ConcurrentHashMap<StatsPriorityClass, AtomicLong> admissionDeferredByClass =
+      buildAdmissionDeferredMap();
 
   @PostConstruct
   void init() {
@@ -130,6 +145,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.ready-scan-limit", Integer.class)
                 .orElse(DEFAULT_READY_SCAN_LIMIT));
+  }
+
+  private static ConcurrentHashMap<StatsPriorityClass, AtomicLong> buildAdmissionDeferredMap() {
+    ConcurrentHashMap<StatsPriorityClass, AtomicLong> map = new ConcurrentHashMap<>();
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      map.put(cls, new AtomicLong(0L));
+    }
+    return map;
   }
 
   @Override
@@ -190,6 +213,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             pinnedExecutorId);
     String dedupePointerKey = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
 
+    // Compute admission deferral once — depends only on priority class and current band.
+    StatsPriorityClass enqueuePriorityClass = policy.priorityClass();
+    long enqueueDeferMs =
+        SchedulerStoreHelpers.admissionDeferMs(enqueuePriorityClass, bandState.current());
+
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
       var existing = loadActiveFromDedupe(dedupePointerKey);
       if (existing.isPresent()) {
@@ -198,10 +226,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
       String jobId = UUID.randomUUID().toString();
       long now = System.currentTimeMillis();
+      long effectiveDueAtMs = now + enqueueDeferMs;
       String canonicalKey = Keys.reconcileJobPointerById(accountId, jobId);
       String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
       String parentKey = parentPointerKey(accountId, parentJobId, jobId);
-      String readyKey = Keys.reconcileReadyPointerByDue(now, accountId, laneKey, jobId);
+      String readyKey =
+          Keys.reconcileReadyPointerByPriorityDue(
+              enqueuePriorityClass, effectiveDueAtMs, accountId, laneKey, jobId);
       String blobUri =
           Keys.reconcileJobBlobUri(accountId, jobId, "create-" + now + "-" + UUID.randomUUID());
 
@@ -231,6 +262,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               dedupeKey,
               now,
               readyKey);
+      // Apply admission deferral: override nextAttemptAtMs when the job is being delayed.
+      if (enqueueDeferMs > 0L) {
+        record.nextAttemptAtMs = effectiveDueAtMs;
+      }
       if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
         LOG.debugf(
             "enqueue persisted PLAN_SNAPSHOT jobId=%s parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
@@ -294,6 +329,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
 
+      if (enqueueDeferMs > 0L) {
+        admissionDeferredByClass.get(enqueuePriorityClass).incrementAndGet();
+      }
       return jobId;
     }
 
@@ -401,6 +439,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long running = 0L;
     long cancelling = 0L;
     long oldestQueued = 0L;
+    Map<StatsPriorityClass, Long> queuedByClass = new EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      queuedByClass.put(cls, 0L);
+    }
     String token = "";
     int pages = 0;
     while (true) {
@@ -423,6 +465,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             if (created > 0L && (oldestQueued == 0L || created < oldestQueued)) {
               oldestQueued = created;
             }
+            StatsPriorityClass cls = rec.get().executionPolicy().priorityClass();
+            queuedByClass.merge(cls, 1L, Long::sum);
           }
           case "JS_RUNNING" -> running++;
           case "JS_CANCELLING" -> cancelling++;
@@ -435,7 +479,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         break;
       }
     }
-    return new QueueStats(queued, running, cancelling, oldestQueued);
+    // Authoritatively update the health band from the full scan.
+    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, 0L);
+    // Snapshot admission deferral counters.
+    Map<StatsPriorityClass, Long> admissionSnapshot = new EnumMap<>(StatsPriorityClass.class);
+    for (Map.Entry<StatsPriorityClass, AtomicLong> e : admissionDeferredByClass.entrySet()) {
+      admissionSnapshot.put(e.getKey(), e.getValue().get());
+    }
+    return new QueueStats(
+        queued,
+        running,
+        cancelling,
+        oldestQueued,
+        queuedByClass,
+        band,
+        agingTracker.totalPromotions(),
+        admissionSnapshot);
   }
 
   @Override
@@ -652,10 +711,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.executorId = "";
           existing.nextAttemptAtMs = now + backoffMs(existing.attempt);
           existing.finishedAtMs = 0L;
-          String readyKey =
-              Keys.reconcileReadyPointerByDue(
-                  existing.nextAttemptAtMs, existing.accountId, existing.laneKey, existing.jobId);
-          existing.readyPointerKey = readyKey;
+          existing.readyPointerKey =
+              Keys.reconcileReadyPointerByPriorityDue(
+                  existing.executionPolicy().priorityClass(),
+                  existing.nextAttemptAtMs,
+                  existing.accountId,
+                  existing.laneKey,
+                  existing.jobId);
           return existing;
         });
   }
@@ -698,10 +760,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.executorId = "";
           existing.nextAttemptAtMs = System.currentTimeMillis() + baseBackoffMs;
           existing.finishedAtMs = 0L;
-          String readyKey =
-              Keys.reconcileReadyPointerByDue(
-                  existing.nextAttemptAtMs, existing.accountId, existing.laneKey, existing.jobId);
-          existing.readyPointerKey = readyKey;
+          existing.readyPointerKey =
+              Keys.reconcileReadyPointerByPriorityDue(
+                  existing.executionPolicy().priorityClass(),
+                  existing.nextAttemptAtMs,
+                  existing.accountId,
+                  existing.laneKey,
+                  existing.jobId);
           return existing;
         });
   }
@@ -779,8 +844,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               existing.leaseExpiresAtMs = Math.min(existing.leaseExpiresAtMs, cancelPokeExpiry);
             }
             existing.readyPointerKey =
-                Keys.reconcileReadyPointerByDue(
-                    now, existing.accountId, existing.laneKey, existing.jobId);
+                Keys.reconcileReadyPointerByPriorityDue(
+                    existing.executionPolicy().priorityClass(),
+                    now,
+                    existing.accountId,
+                    existing.laneKey,
+                    existing.jobId);
             existing.updatedAtMs = now;
             return existing;
           }
@@ -1541,31 +1610,78 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           record.leaseExpiresAtMs = 0L;
           record.nextAttemptAtMs = nowMs;
 
-          String readyKey =
-              Keys.reconcileReadyPointerByDue(
-                  nowMs, record.accountId, record.laneKey, record.jobId);
-          record.readyPointerKey = readyKey;
+          record.readyPointerKey =
+              Keys.reconcileReadyPointerByPriorityDue(
+                  record.executionPolicy().priorityClass(),
+                  nowMs,
+                  record.accountId,
+                  record.laneKey,
+                  record.jobId);
           return record;
         });
   }
 
+  /**
+   * Dispatches the highest-priority ready job, scanning priority classes in order P0→P3.
+   *
+   * <p>For each priority class, if any candidates are found (even if all are lane-blocked), the
+   * scan stops and does NOT fall through to a lower-priority class. This preserves the invariant
+   * that a lane-blocked P0 job is never bypassed by a P3 job in the same dispatch round.
+   *
+   * <p><b>Schema note:</b> Only priority-prefixed keys (written by the priority-aware enqueue
+   * paths) are scanned. Legacy keys (old format without priority prefix) are not dispatched.
+   */
   private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
+    agingTracker.cleanupExpired(nowMs);
+    for (StatsPriorityClass priorityClass : StatsPriorityClass.values()) {
+      // null = candidates found but all blocked (stop here, don't fall through to lower class)
+      // empty = no ready candidates in this class (fall through to next class)
+      // present = successfully leased
+      Optional<LeasedJob> result = scanClassForLease(nowMs, request, priorityClass);
+      if (result == null) {
+        // Candidates existed but were all lane-blocked — do not allow lower-priority classes to
+        // bypass them. Return empty so the caller retries after a backoff.
+        return Optional.empty();
+      }
+      if (result.isPresent()) {
+        return result;
+      }
+      // result is Optional.empty() → this class has no ready candidates → try the next class
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Scans one priority-class bucket for a leasable ready job.
+   *
+   * @return {@code Optional.of(job)} if leased; {@code Optional.empty()} if no ready candidates
+   *     were found at all (caller may fall through to the next class); {@code null} if candidates
+   *     were found but all were lane-blocked or skipped (caller must NOT fall through).
+   */
+  private Optional<LeasedJob> scanClassForLease(
+      long nowMs, LeaseRequest request, StatsPriorityClass priorityClass) {
+    String classPrefix = Keys.reconcileReadyPointerByPriorityPrefix(priorityClass);
     String token = "";
     int pages = 0;
+    boolean foundAnyDueCandidate = false;
     while (true) {
       StringBuilder next = new StringBuilder();
       List<Pointer> ready =
-          pointerStore.listPointersByPrefix(
-              Keys.reconcileReadyPointerPrefix(), readyScanLimit, token, next);
+          pointerStore.listPointersByPrefix(classPrefix, readyScanLimit, token, next);
+      if (ready.isEmpty() && !foundAnyDueCandidate) {
+        return Optional.empty(); // truly empty class
+      }
       if (ready.isEmpty()) {
-        return Optional.empty();
+        // Exhausted all items; some were due but all blocked
+        return null;
       }
 
       for (Pointer candidate : ready) {
         long dueAt = parseDueMillis(candidate.getKey());
         if (dueAt > nowMs) {
-          continue;
+          continue; // not yet due — skip but don't count as a "found candidate"
         }
+        foundAnyDueCandidate = true;
 
         var readyTarget = decodeReadyPointerTarget(candidate.getKey());
         if (readyTarget == null) {
@@ -1598,6 +1714,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 canonicalPointer,
                 record);
         if (leased.isPresent()) {
+          // Record starvation-aging promotion if this job has been waiting too long.
+          long ageMs = nowMs - Math.max(0L, record.createdAtMs);
+          agingTracker.recordIfEligible(record.jobId, ageMs, priorityClass, nowMs);
           return leased;
         }
         clearLaneLeaseIfOwned(record, canonicalPointer.getBlobUri());
@@ -1605,19 +1724,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
       String nextToken = next.toString();
       if (nextToken.isBlank()) {
-        return Optional.empty();
+        // End of this priority class's namespace
+        return foundAnyDueCandidate ? null : Optional.empty();
       }
       if (nextToken.equals(token)) {
-        LOG.warn(
-            "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
-                + " livelock");
-        return Optional.empty();
+        LOG.warnf(
+            "Reconcile ready pagination token did not advance for priority class %s; aborting",
+            priorityClass);
+        return foundAnyDueCandidate ? null : Optional.empty();
       }
       token = nextToken;
       pages++;
       if (pages >= 10_000) {
-        LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
-        return Optional.empty();
+        LOG.warnf(
+            "Reconcile ready priority scan hit safety page cap for class %s; aborting",
+            priorityClass);
+        return foundAnyDueCandidate ? null : Optional.empty();
       }
     }
   }
@@ -1765,7 +1887,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long dueAt = record.nextAttemptAtMs > 0L ? record.nextAttemptAtMs : System.currentTimeMillis();
     String readyPointerKey =
         synthesizedKey
-            ? Keys.reconcileReadyPointerByDue(dueAt, record.accountId, record.laneKey, record.jobId)
+            ? Keys.reconcileReadyPointerByPriorityDue(
+                record.executionPolicy().priorityClass(),
+                dueAt,
+                record.accountId,
+                record.laneKey,
+                record.jobId)
             : record.readyPointerKey;
     boolean repaired = upsertReadyPointer(readyPointerKey, blobUri);
     if (repaired) {
@@ -2051,6 +2178,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  /**
+   * Decodes the canonical pointer key from a ready pointer key.
+   *
+   * <p>Handles both the new priority-prefixed format ({@code
+   * {prefix}{priority}/{dueAtMs}/{accountId}/{laneKey}/{jobId}}) and the legacy format ({@code
+   * {prefix}{dueAtMs}/{accountId}/{laneKey}/{jobId}}). Detection: if the first segment after the
+   * prefix is a single character (priority digit 0–3), it's the new format.
+   */
   private ReadyPointerTarget decodeReadyPointerTarget(String readyPointerKey) {
     String normalizedKey = normalizePointerKey(readyPointerKey);
     String prefix = normalizePointerKey(Keys.reconcileReadyPointerPrefix());
@@ -2058,18 +2193,30 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return null;
     }
     String[] parts = normalizedKey.substring(prefix.length()).split("/");
-    if (parts.length < 4) {
+    // New format: [priority, dueAtMs, accountId, laneKey, jobId] — 5 parts, parts[0] length 1
+    // Old format: [dueAtMs, accountId, laneKey, jobId] — 4 parts
+    boolean isNewFormat = parts.length >= 5 && parts[0].length() == 1;
+    int accountIdx = isNewFormat ? 2 : 1;
+    int jobIdx = isNewFormat ? 4 : 3;
+    if (parts.length <= Math.max(accountIdx, jobIdx)) {
       return null;
     }
     try {
-      String accountId = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
-      String jobId = URLDecoder.decode(parts[3], StandardCharsets.UTF_8);
+      String accountId = URLDecoder.decode(parts[accountIdx], StandardCharsets.UTF_8);
+      String jobId = URLDecoder.decode(parts[jobIdx], StandardCharsets.UTF_8);
       return new ReadyPointerTarget(Keys.reconcileJobPointerById(accountId, jobId));
     } catch (Exception e) {
       return null;
     }
   }
 
+  /**
+   * Parses the due-at timestamp from a ready pointer key.
+   *
+   * <p>Handles both priority-prefixed ({@code {prefix}{priority}/{dueAtMs}/...}) and legacy ({@code
+   * {prefix}{dueAtMs}/...}) formats. Detection: if the first segment is a single character
+   * (priority digit 0–3), skip it and parse the next segment as the timestamp.
+   */
   private long parseDueMillis(String readyPointerKey) {
     if (readyPointerKey == null || readyPointerKey.isBlank()) {
       return Long.MAX_VALUE;
@@ -2079,14 +2226,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (!normalizedKey.startsWith(prefix)) {
       return Long.MAX_VALUE;
     }
-    int slash = normalizedKey.indexOf('/', prefix.length());
-    if (slash < 0) {
+    String segment = normalizedKey.substring(prefix.length());
+    int firstSlash = segment.indexOf('/');
+    if (firstSlash < 0) {
       return Long.MAX_VALUE;
     }
-
-    String token = normalizedKey.substring(prefix.length(), slash);
+    String firstPart = segment.substring(0, firstSlash);
+    String dueAtStr;
+    if (firstPart.length() == 1) {
+      // New priority-prefixed format: skip the priority digit, parse next segment
+      String rest = segment.substring(firstSlash + 1);
+      int secondSlash = rest.indexOf('/');
+      dueAtStr = secondSlash >= 0 ? rest.substring(0, secondSlash) : rest;
+    } else {
+      // Legacy format: first segment is the dueAtMs timestamp
+      dueAtStr = firstPart;
+    }
     try {
-      return Long.parseLong(token);
+      return Long.parseLong(dueAtStr);
     } catch (NumberFormatException nfe) {
       return Long.MAX_VALUE;
     }
@@ -2604,6 +2761,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String executionClass;
     public String executionLane;
     public java.util.Map<String, String> executionAttributes = java.util.Map.of();
+    public String executionPriorityClass; // null/"" → P3_BACKGROUND (backward compat)
+    public long executionPriorityScore;
     public String pinnedExecutorId;
     public String executorId;
     public String sourceNamespace;
@@ -2693,6 +2852,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.executionClass = policy.executionClass().name();
       rec.executionLane = policy.lane();
       rec.executionAttributes = policy.attributes();
+      rec.executionPriorityClass = policy.priorityClass().name();
+      rec.executionPriorityScore = policy.priorityScore();
       rec.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
       rec.executorId = "";
       ReconcileTableTask effectiveTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
@@ -2832,8 +2993,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     ReconcileExecutionPolicy executionPolicy() {
-      return ReconcileExecutionPolicy.of(
-          ReconcileExecutionClass.fromString(executionClass), executionLane, executionAttributes);
+      StatsPriorityClass cls =
+          executionPriorityClass == null || executionPriorityClass.isBlank()
+              ? StatsPriorityClass.P3_BACKGROUND
+              : safeParsePriorityClass(executionPriorityClass);
+      return new ReconcileExecutionPolicy(
+          ReconcileExecutionClass.fromString(executionClass),
+          executionLane,
+          executionAttributes,
+          cls,
+          executionPriorityScore);
+    }
+
+    private static StatsPriorityClass safeParsePriorityClass(String name) {
+      try {
+        return StatsPriorityClass.valueOf(name);
+      } catch (IllegalArgumentException e) {
+        return StatsPriorityClass.P3_BACKGROUND;
+      }
     }
 
     String pinnedExecutorId() {

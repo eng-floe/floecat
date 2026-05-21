@@ -31,29 +31,29 @@ import java.util.concurrent.ThreadLocalRandom;
  *
  * <p>All methods are package-private. No instances are created.
  */
-final class SchedulerStoreHelpers {
+public final class SchedulerStoreHelpers {
 
   // ---------------------------------------------------------------------------
   // Shared constants — referenced by stores and tests
   // ---------------------------------------------------------------------------
 
   /** How long to delay a deferred job before it becomes eligible again (ms). */
-  static final long DEFER_DELAY_MS = 5_000L;
+  public static final long DEFER_DELAY_MS = 5_000L;
 
   /** Aging threshold for P3_BACKGROUND jobs (ms). Jobs older than this are counted as promoted. */
-  static final long P3_AGING_THRESHOLD_MS = 300_000L; // 5 min
+  public static final long P3_AGING_THRESHOLD_MS = 300_000L; // 5 min
 
   /** Aging threshold for P2_REPAIR jobs (ms). */
-  static final long P2_AGING_THRESHOLD_MS = 120_000L; // 2 min
+  public static final long P2_AGING_THRESHOLD_MS = 120_000L; // 2 min
 
   /**
    * Aging threshold for P1_FRESHNESS jobs (ms). Effectively disabled — P1 jobs are already high
    * priority and should not be "promoted" further.
    */
-  static final long P1_AGING_THRESHOLD_MS = Long.MAX_VALUE;
+  public static final long P1_AGING_THRESHOLD_MS = Long.MAX_VALUE;
 
   /** Cooldown window (ms) during which a promoted job is not counted again. */
-  static final long AGING_COOLDOWN_MS = 60_000L;
+  public static final long AGING_COOLDOWN_MS = 60_000L;
 
   private SchedulerStoreHelpers() {}
 
@@ -69,7 +69,7 @@ final class SchedulerStoreHelpers {
    * @param band the current health band of the scheduler
    * @return deferral delay in ms; {@code 0} means admit without delay
    */
-  static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
+  public static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
     return switch (cls) {
       case P0_SYNC, P1_FRESHNESS -> 0L; // always admit
       case P2_REPAIR -> band == SchedulerHealthBand.RED ? DEFER_DELAY_MS : 0L;
@@ -93,7 +93,7 @@ final class SchedulerStoreHelpers {
    * @param cls the priority class of the job
    * @return aging threshold in ms; {@link Long#MAX_VALUE} means the class never ages
    */
-  static long agingThresholdMs(StatsPriorityClass cls) {
+  public static long agingThresholdMs(StatsPriorityClass cls) {
     return switch (cls) {
       case P3_BACKGROUND -> P3_AGING_THRESHOLD_MS;
       case P2_REPAIR -> P2_AGING_THRESHOLD_MS;

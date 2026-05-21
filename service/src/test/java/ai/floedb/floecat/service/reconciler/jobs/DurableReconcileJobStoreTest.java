@@ -37,6 +37,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -1187,8 +1189,14 @@ class DurableReconcileJobStoreTest {
                 store.mapper.readValue(
                     store.blobStore.get(canonicalPointer.getBlobUri()),
                     DurableReconcileJobStore.StoredReconcileJob.class));
+    // After commit 8 the ready key is priority-prefixed; enqueue() uses defaults() → P3_BACKGROUND
     String expectedReadyKey =
-        Keys.reconcileReadyPointerByDue(job.nextAttemptAtMs, job.accountId, job.laneKey, job.jobId);
+        Keys.reconcileReadyPointerByPriorityDue(
+            ai.floedb.floecat.reconciler.jobs.StatsPriorityClass.P3_BACKGROUND,
+            job.nextAttemptAtMs,
+            job.accountId,
+            job.laneKey,
+            job.jobId);
     job.readyPointerKey = "";
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, job);
 
@@ -1641,6 +1649,57 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(dueAt, parsedCanonical);
     assertEquals(dueAt, parsedNormalized);
+  }
+
+  @Test
+  void queueStatsReturnsQueuedByPriorityClass() {
+    store.init();
+
+    // Enqueue one P1_FRESHNESS job and two P3_BACKGROUND jobs (defaults → P3)
+    store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileSnapshotTask.of("table-fresh", 1L, "db", "tbl"),
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P1_FRESHNESS, "", java.util.Map.of()),
+        "parent-x",
+        "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "t1"));
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "t2"));
+
+    var stats = store.queueStats();
+
+    assertEquals(3L, stats.queued);
+    assertEquals(1L, stats.queuedByClass.getOrDefault(StatsPriorityClass.P1_FRESHNESS, 0L));
+    assertEquals(2L, stats.queuedByClass.getOrDefault(StatsPriorityClass.P3_BACKGROUND, 0L));
+    assertEquals(0L, stats.queuedByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L));
+    assertEquals(SchedulerHealthBand.GREEN, stats.healthBand);
+  }
+
+  @Test
+  void queueStatsReturnsGreenHealthBandWhenQueuesAreEmpty() {
+    store.init();
+
+    var stats = store.queueStats();
+
+    assertEquals(SchedulerHealthBand.GREEN, stats.healthBand);
+    assertEquals(0L, stats.agingPromotionsTotal);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      assertEquals(0L, stats.queuedByClass.getOrDefault(cls, 0L));
+      assertEquals(0L, stats.admissionDeferredByClass.getOrDefault(cls, 0L));
+    }
   }
 
   @Test

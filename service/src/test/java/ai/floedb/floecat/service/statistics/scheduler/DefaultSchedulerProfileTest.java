@@ -29,11 +29,18 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPreemptionPolicy.RunningJobInfo;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.NoopObservability;
+import ai.floedb.floecat.telemetry.Tag;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +57,7 @@ class DefaultSchedulerProfileTest {
 
   @BeforeEach
   void setUp() {
-    profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L);
+    profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, new NoopObservability());
   }
 
   // ---------------------------------------------------------------------------
@@ -273,6 +280,28 @@ class DefaultSchedulerProfileTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Scoring summary metric
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void assignRecordsScoringScoreDistSummary() {
+    List<Double> capturedValues = new ArrayList<>();
+    // Recording observability that captures summary() calls for SCORING_SCORE_DIST.
+    var recordingObs =
+        new CapturingSummaryObservability(
+            capturedValues, ServiceMetrics.Reconcile.SCORING_SCORE_DIST);
+    var recordingProfile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, recordingObs);
+    var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
+
+    recordingProfile.assign(req("acct", "tbl"), ctx);
+
+    assertEquals(
+        1, capturedValues.size(), "assign() should record exactly one summary observation");
+    // coverage=300, delta=100 (unknown→50×2), age=100 → 500
+    assertEquals(500.0, capturedValues.get(0), "Recorded score should equal computed score");
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -347,5 +376,60 @@ class DefaultSchedulerProfileTest {
             1L,
             StatsTarget.getDefaultInstance())
         .build();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Minimal {@link ai.floedb.floecat.telemetry.Observability} stub that records {@code summary()}
+   * calls for a specific metric into a provided list. All other methods are no-ops.
+   */
+  private static final class CapturingSummaryObservability
+      implements ai.floedb.floecat.telemetry.Observability {
+
+    private static final ai.floedb.floecat.telemetry.ObservationScope NOOP_SCOPE =
+        new ai.floedb.floecat.telemetry.ObservationScope() {
+          @Override
+          public void success() {}
+
+          @Override
+          public void error(Throwable t) {}
+
+          @Override
+          public void retry() {}
+        };
+
+    private final List<Double> captured;
+    private final MetricId target;
+
+    CapturingSummaryObservability(List<Double> captured, MetricId target) {
+      this.captured = captured;
+      this.target = target;
+    }
+
+    @Override
+    public void counter(MetricId metric, double amount, Tag... tags) {}
+
+    @Override
+    public void summary(MetricId metric, double value, Tag... tags) {
+      if (target.equals(metric)) {
+        captured.add(value);
+      }
+    }
+
+    @Override
+    public void timer(MetricId metric, Duration duration, Tag... tags) {}
+
+    @Override
+    public <T extends Number> void gauge(
+        MetricId metric, Supplier<T> supplier, String description, Tag... tags) {}
+
+    @Override
+    public ai.floedb.floecat.telemetry.ObservationScope observe(
+        Category category, String component, String operation, Tag... tags) {
+      return NOOP_SCOPE;
+    }
   }
 }
