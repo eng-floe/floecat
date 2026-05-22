@@ -24,20 +24,16 @@ import io.grpc.ServerInterceptor;
 import io.quarkus.grpc.GlobalInterceptor;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.vertx.core.Vertx;
-import io.vertx.grpc.BlockingServerInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 @GlobalInterceptor
 @Priority(0) // Must run before other interceptors
 public class BlockingInboundContextInterceptor implements ServerInterceptor {
-  private static final Logger LOG = Logger.getLogger(BlockingInboundContextInterceptor.class);
-
   private final ServerInterceptor delegate;
 
   @Inject
@@ -60,12 +56,7 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
               defaultValue = "account_id")
           String accountClaimName,
       @ConfigProperty(name = "floecat.interceptor.session.role-claim", defaultValue = "roles")
-          String roleClaimName,
-      // Escape hatch: set to true (env: FLOECAT_INTERCEPTOR_BLOCKING_LEGACY_WRAP=true) to
-      // revert to the deprecated io.vertx.grpc.BlockingServerInterceptor.wrap. Intended for
-      // before/after validation of the context-preserving fix; leave unset in production.
-      @ConfigProperty(name = "floecat.interceptor.blocking.legacy-wrap", defaultValue = "false")
-          boolean legacyWrap) {
+          String roleClaimName) {
 
     // Plain helper with your logic; does NOT implement ServerInterceptor (avoids Quarkus "unused"
     // warnings).
@@ -81,28 +72,9 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
             accountClaimName,
             roleClaimName);
 
-    // Wrap so the inner interceptor (and the rest of the chain it builds) runs on a Vert.x
-    // worker thread, off the event-loop. Replaces io.vertx.grpc.BlockingServerInterceptor.wrap,
-    // which is deprecated and does not propagate io.grpc.Context across the buffered-event
-    // replay — that gap, combined with Quarkus's GrpcDuplicatedContextGrpcInterceptor hopping
-    // via runOnContext on Vert.x-context mismatch, drops the principal/correlation context on a
-    // subset of inbound calls. The replacement below is modelled on Quarkus's internal
-    // BlockingServerInterceptor + BlockingExecutionHandler pattern (which is only active for
-    // @Blocking-annotated methods); here it applies to every method because the gRPC services
-    // in this module are uniformly blocking.
-    //
     // ServerInterceptor is a functional interface, so we pass the helper's interceptCall as a
     // method reference — no JDK Proxy or runtime classloader gymnastics required.
-    if (legacyWrap) {
-      LOG.warnf(
-          "Using deprecated io.vertx.grpc.BlockingServerInterceptor.wrap"
-              + " (floecat.interceptor.blocking.legacy-wrap=true)."
-              + " This reintroduces the gRPC Context drop documented in the fix's commit;"
-              + " expect intermittent empty PrincipalContext on inbound calls.");
-      this.delegate = BlockingServerInterceptor.wrap(vertx, inbound::interceptCall);
-    } else {
-      this.delegate = new CtxPropagatingBlockingWrap(vertx, inbound::interceptCall);
-    }
+    this.delegate = new CtxPropagatingBlockingWrap(vertx, inbound::interceptCall);
   }
 
   @Override

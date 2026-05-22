@@ -36,7 +36,6 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.vertx.core.Vertx;
-import io.vertx.grpc.BlockingServerInterceptor;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -63,24 +62,8 @@ class CtxPropagatingBlockingWrapTest {
 
   private static final Context.Key<String> KEY = Context.key("test-principal");
 
-  /**
-   * Selects which wrap the tests run against. Honours {@code
-   * floecat.interceptor.blocking.legacy-wrap} (env: {@code
-   * FLOECAT_INTERCEPTOR_BLOCKING_LEGACY_WRAP}) so the same env var that flips the production wiring
-   * also flips these tests — with the legacy wrap selected, at least one test below is expected to
-   * fail (see {@link #eventHandlerRunsOffEventLoop}).
-   */
   private static ServerInterceptor makeWrap(Vertx vertx, ServerInterceptor inner) {
-    if (legacyWrapSelected()) {
-      return BlockingServerInterceptor.wrap(vertx, inner);
-    }
     return new CtxPropagatingBlockingWrap(vertx, inner);
-  }
-
-  private static boolean legacyWrapSelected() {
-    String env = System.getenv("FLOECAT_INTERCEPTOR_BLOCKING_LEGACY_WRAP");
-    String sys = System.getProperty("floecat.interceptor.blocking.legacy-wrap");
-    return "true".equalsIgnoreCase(env) || "true".equalsIgnoreCase(sys);
   }
 
   /**
@@ -474,9 +457,7 @@ class CtxPropagatingBlockingWrapTest {
       assertEquals(
           "set-at-arrival",
           observed.get(),
-          "io.grpc.Context attached at event arrival was lost across the buffer/replay; if"
-              + " legacyWrap was selected via FLOECAT_INTERCEPTOR_BLOCKING_LEGACY_WRAP this is the"
-              + " expected failure (Context.Key.get() returns null inside the handler).");
+          "io.grpc.Context attached at event arrival was lost across the buffer/replay");
     } finally {
       vertx.close().toCompletionStage().toCompletableFuture().get();
     }
