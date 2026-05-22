@@ -52,21 +52,21 @@ public interface SchedulerPriorityPolicy {
    * orchestrator.
    *
    * <p>Default: assigns {@link StatsPriorityClass#P1_FRESHNESS} for new snapshots, {@link
-   * StatsPriorityClass#P3_BACKGROUND} otherwise. Score is 0 in both cases. Lane is derived from
-   * {@code tableId}.
+   * StatsPriorityClass#P3_BACKGROUND} otherwise. Score is 0 in both cases. Lane is supplied by the
+   * caller as {@code laneKey} (typically {@code accountId:tableId}).
    *
    * <p>Must never return a {@link PriorityAssignment} whose {@link
    * PriorityAssignment#priorityClass} is {@link StatsPriorityClass#P0_SYNC}.
    */
   default PriorityAssignment assignForReconcileJob(
       ReconcileJobKind kind,
-      String tableId,
+      String laneKey,
       long snapshotId,
       boolean isNewSnapshot,
       SchedulerContext context) {
     StatsPriorityClass cls =
         isNewSnapshot ? StatsPriorityClass.P1_FRESHNESS : StatsPriorityClass.P3_BACKGROUND;
-    return new PriorityAssignment(cls, 0L, tableId);
+    return new PriorityAssignment(cls, 0L, laneKey);
   }
 
   /**

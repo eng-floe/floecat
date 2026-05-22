@@ -48,6 +48,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -886,7 +887,10 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void tryAcquireLaneLeaseRejectsDuplicateClaimForQueuedBlob() throws Exception {
+  void tryAcquireLaneLeaseIsIdempotentForSameBlobReEntry() throws Exception {
+    // P0-1: a second tryAcquireLaneLease call for the *same* blob URI must return true so that a
+    // re-dispatched or restarted worker can re-enter the lease it already owns without being
+    // permanently blocked.
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -918,8 +922,10 @@ class DurableReconcileJobStoreTest {
             tryAcquireLaneLease.invoke(
                 store, queuedRecord, canonicalPointer.getBlobUri(), System.currentTimeMillis());
 
+    // Both calls must succeed: the lane pointer already points at our blob URI, so we own the
+    // lease and re-entry must be allowed (idempotent acquire).
     assertTrue(firstClaim);
-    assertFalse(secondClaim);
+    assertTrue(secondClaim);
   }
 
   @Test
@@ -1267,6 +1273,53 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(jobId, dedupedJobId);
     assertTrue(store.pointerStore.get(canonicalPointerKey).isPresent());
+  }
+
+  @Test
+  void enqueueDedupedQueuedJobPromotesPriorityClassAndScore() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+    ReconcileExecutionPolicy initialPolicy =
+        new ReconcileExecutionPolicy(
+            ReconcileExecutionClass.DEFAULT,
+            "acct:tbl",
+            Map.of("reason", "dedupe"),
+            StatsPriorityClass.P3_BACKGROUND,
+            5L);
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            initialPolicy,
+            "");
+
+    ReconcileExecutionPolicy promotedPolicy =
+        new ReconcileExecutionPolicy(
+            ReconcileExecutionClass.DEFAULT,
+            "acct:tbl",
+            Map.of("reason", "dedupe"),
+            StatsPriorityClass.P1_FRESHNESS,
+            75L);
+    String dedupedJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            promotedPolicy,
+            "");
+
+    assertEquals(jobId, dedupedJobId);
+    ReconcileJob promoted = store.get(jobId).orElseThrow();
+    assertEquals(StatsPriorityClass.P1_FRESHNESS, promoted.executionPolicy.priorityClass());
+    assertEquals(75L, promoted.executionPolicy.priorityScore());
+
+    var lease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, lease.jobId);
   }
 
   @Test
@@ -2112,6 +2165,278 @@ class DurableReconcileJobStoreTest {
     // Clean up the P3 job so it doesn't interfere with other tests.
     var p3Lease = store.leaseNext().orElseThrow();
     assertEquals(p3JobId, p3Lease.jobId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler: WRR lane ordering in durable store
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void leaseNextAppliesWrrAcrossLanesInSamePriorityClass() {
+    store.init();
+
+    // Lane A: enqueue and immediately dispatch once to build up virtual time
+    String laneAJob1 =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-lane-a"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-a", java.util.Map.of(), 50L),
+            "");
+    // Dispatch lane A job to increment virtual time for "lane-a"
+    var firstLease = store.leaseNext(null).orElseThrow();
+    assertEquals(laneAJob1, firstLease.jobId);
+    store.markSucceeded(laneAJob1, firstLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    // Now enqueue a second job in lane A and a job in lane B (fresh, vt=0)
+    String laneAJob2 =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-lane-a-2"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-a", java.util.Map.of(), 50L),
+            "");
+    String laneBJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-lane-b"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-b", java.util.Map.of(), 50L),
+            "");
+
+    // WRR: lane-b has virtual time 0, lane-a has virtual time 1 → lane-b should win
+    var nextLease = store.leaseNext(null).orElseThrow();
+    assertEquals(
+        laneBJob,
+        nextLease.jobId,
+        "WRR should prefer lane-b (vt=0) over lane-a (vt=1) even though both have the same score");
+  }
+
+  @Test
+  void leaseNextFallsThroughWhenP1CandidateIsLaneBlocked() {
+    store.init();
+
+    String p1Running =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p1-running"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P1_FRESHNESS, "lane-p1", java.util.Map.of(), 100L),
+            "");
+    var p1Lease = store.leaseNext(null).orElseThrow();
+    assertEquals(p1Running, p1Lease.jobId);
+
+    // Same P1 lane, cannot be leased while p1Running is in-flight.
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl-p1-blocked"),
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS, "lane-p1", java.util.Map.of(), 90L),
+        "");
+
+    String p3Job =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-p3"),
+            ReconcileExecutionPolicy.of(
+                StatsPriorityClass.P3_BACKGROUND, "lane-p3", java.util.Map.of(), 50L),
+            "");
+
+    var nextLease = store.leaseNext(null).orElseThrow();
+    assertEquals(
+        p3Job, nextLease.jobId, "Blocked non-P0 work must not prevent lower-priority fallthrough");
+
+    store.markSucceeded(p1Running, p1Lease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+  }
+
+  @Test
+  void leaseNextWrrUsesCanonicalLaneWhenPolicyLaneBlank() {
+    store.init();
+
+    ReconcileExecutionPolicy blankPolicy =
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 50L);
+
+    // First dispatch from table A builds virtual time for its canonical lane key.
+    String tableAJob1 =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-canonical-a"),
+            blankPolicy,
+            "");
+    var firstLease = store.leaseNext(null).orElseThrow();
+    assertEquals(tableAJob1, firstLease.jobId);
+    store.markSucceeded(tableAJob1, firstLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    // If durable WRR uses canonical laneKey, table B (vt=0) should win over table A (vt=1).
+    String tableAJob2 =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-canonical-a"),
+            blankPolicy,
+            "");
+    String tableBJob =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-canonical-b"),
+            blankPolicy,
+            "");
+
+    var nextLease = store.leaseNext(null).orElseThrow();
+    assertEquals(
+        tableBJob,
+        nextLease.jobId,
+        "Durable WRR should key by canonical laneKey, not blank executionPolicy.lane()");
+  }
+
+  @Test
+  void policyDeferredAttributeDelaysP1JobEvenInGreenBand() {
+    // Policy-layer DEFER must be honoured for classes (e.g. P1_FRESHNESS) that the store's
+    // band-based logic would always admit immediately. The ATTR_POLICY_DEFERRED attribute must
+    // cause at least DEFER_DELAY_MS deferral regardless of the current health band.
+    store.init();
+
+    ReconcileExecutionPolicy deferredPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS,
+            "lane-p1-deferred",
+            java.util.Map.of(
+                ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED,
+                "true"),
+            0L);
+
+    long beforeEnqueue = System.currentTimeMillis();
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-deferred-p1"),
+            deferredPolicy,
+            "");
+
+    // The job should not be immediately leasable — it must be deferred.
+    var immediate = store.leaseNext(null);
+    assertTrue(
+        immediate.isEmpty(),
+        "P1 job with ATTR_POLICY_DEFERRED=true must not be immediately leasable; "
+            + "got lease for "
+            + immediate.map(l -> l.jobId).orElse("<empty>"));
+
+    // Verify admission deferred counter incremented for P1.
+    var stats = store.queueStats();
+    long p1Deferred =
+        stats.admissionDeferredByClass.getOrDefault(StatsPriorityClass.P1_FRESHNESS, 0L);
+    assertTrue(
+        p1Deferred >= 1,
+        "admissionDeferredByClass[P1_FRESHNESS] must be >= 1 after policy-deferred enqueue");
+  }
+
+  @Test
+  void blankLaneJobsDoNotPolluteLaneServiceCounts() {
+    // When jobs have blank stored laneKeys, recordDispatch must be a no-op so laneServiceCounts
+    // does not accumulate per-job entries. Verify by dispatching many blank-lane jobs and then
+    // confirming that the WRR virtual time for the "" key remains 0 (never incremented).
+    store.init();
+
+    // Enqueue and dispatch three P3 jobs that will get blank-ish lane keys (PLAN_CONNECTOR scope
+    // has no tableId/viewId so the computed lane key is "namespaces|*").
+    ReconcileExecutionPolicy policy =
+        ReconcileExecutionPolicy.of(StatsPriorityClass.P3_BACKGROUND, "", java.util.Map.of(), 0L);
+
+    for (int i = 0; i < 3; i++) {
+      String jid =
+          store.enqueue(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              policy,
+              "");
+      var lease = store.leaseNext(null).orElseThrow();
+      assertEquals(jid, lease.jobId);
+      store.markSucceeded(jid, lease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+    }
+
+    // If recordDispatch was incorrectly called with jobId, dispatcher.laneServiceCounts would
+    // have 3 unique entries. We can't inspect that directly, but we can assert that subsequent
+    // dispatch of a named-lane job is NOT delayed by phantom virtual time from blank jobs.
+    ReconcileExecutionPolicy namedPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND, "named-lane-1", java.util.Map.of(), 0L);
+    String namedJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-named"),
+            namedPolicy,
+            "");
+    var namedLease = store.leaseNext(null);
+    assertTrue(
+        namedLease.isPresent(), "Named-lane job must be leasable after blank-lane dispatches");
+    assertEquals(namedJobId, namedLease.get().jobId);
+  }
+
+  @Test
+  void blankLaneJobIsLeasableAndReleasesLaneLease() {
+    // Pre-migration records may have null/blank laneKey. Such jobs must not be permanently stuck:
+    // tryAcquireLaneLease must synthesize a per-job lane key (jobId) and succeed, and
+    // clearLaneLeaseIfOwned must release that same key so the lane pointer is cleaned up.
+    store.init();
+
+    ReconcileExecutionPolicy blankLanePolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND, /* laneKey= */ "", java.util.Map.of(), 0L);
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            blankLanePolicy,
+            "");
+
+    var lease = store.leaseNext(null);
+    assertTrue(lease.isPresent(), "Blank-lane job must be leasable");
+    assertEquals(jobId, lease.get().jobId);
+
+    // Marking succeeded should release the synthesized lane lease without error.
+    assertDoesNotThrow(
+        () ->
+            store.markSucceeded(
+                jobId, lease.get().leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0));
   }
 
   private Optional<Pointer> firstPointerWithPrefix(String prefix) {

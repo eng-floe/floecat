@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -30,6 +31,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -39,19 +41,30 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  *
  * <p>The {@link #assign} implementation computes a {@code priorityScore} for async jobs using three
  * factors: coverage gap, row delta, and staleness age. Each factor contributes a value in [0, 100]
- * and is multiplied by a configurable weight (defaults: coverage=3, delta=2, age=1). Scores are
- * additive; higher scores are dispatched first within a priority class.
+ * and is multiplied by a configurable weight (defaults: coverage=3, delta=2, age=1). The weighted
+ * sum is then scaled by a planner demand multiplier and divided by a cost estimate for the
+ * requested stat kinds, then normalised to [0, 1000]. Higher scores are dispatched first within a
+ * priority class.
  *
  * <table>
- *   <caption>Factor contributions</caption>
- *   <tr><th>Factor</th><th>Input source</th><th>Contribution</th></tr>
+ *   <caption>Factor contributions and modifiers</caption>
+ *   <tr><th>Factor/modifier</th><th>Input source</th><th>Effect</th></tr>
  *   <tr><td>Coverage</td><td>{@link SchedulerContext#coverageLevel}</td>
- *       <td>NONE→100, PARTIAL→50, FULL→0</td></tr>
+ *       <td>NONE→100, PARTIAL→50, FULL→0 (× weight, default 3)</td></tr>
  *   <tr><td>Delta</td><td>{@link SchedulerContext#snapshotDeltaRows}</td>
- *       <td>empty→50, &gt;1M rows→80, &gt;100K rows→40, else→10</td></tr>
+ *       <td>empty→50, &gt;1M rows→80, &gt;100K rows→40, else→10 (× weight, default 2)</td></tr>
  *   <tr><td>Age</td><td>{@link SchedulerContext#lastSuccessfulCaptureMs}</td>
- *       <td>empty→100; linear 0→100 over {@code maxAgeMs} (default 24h)</td></tr>
+ *       <td>empty→100; linear 0→100 over {@code maxAgeMs} (default 24h) (× weight, default 1)</td></tr>
+ *   <tr><td>Demand multiplier</td><td>{@link SchedulerContext#recentPlannerRequestCount}</td>
+ *       <td>[floor, 1.0] — saturates at {@code demandSaturation} hits (default floor=0.15, sat=50)</td></tr>
+ *   <tr><td>Cost divisor</td><td>{@code requestedKinds}</td>
+ *       <td>ROW_COUNT/FILE_COUNT/TOTAL_BYTES→1.0, NULL_COUNT/MIN_MAX→2.0, NDV/HISTOGRAM→3.0,
+ *           empty→2.0</td></tr>
  * </table>
+ *
+ * <p>The final score is normalised to [0, 1000]: {@code min(1000, round(demandMultiplier × rawValue
+ * / costDivisor × 1000 / maxRawValue))} where {@code maxRawValue = (weightCoverage + weightDelta +
+ * weightAge) × 100}.
  *
  * <p>When a request carries non-empty {@code columnSelectors}, coverage is treated as {@link
  * CoverageLevel#NONE} for those columns regardless of the aggregate coverage level, biasing the job
@@ -81,6 +94,18 @@ public class DefaultSchedulerProfile
   /** Maximum age before the age factor saturates at 100. Default: 24 hours in milliseconds. */
   private final long maxAgeMs;
 
+  /**
+   * Floor value of the demand multiplier (applied when a table has zero recent planner demand).
+   * Range: (0, 1]. Default: 0.15 — jobs for idle tables get 15% of a fully-demanded table's score.
+   */
+  private final double demandMultiplierFloor;
+
+  /**
+   * Number of planner demand hits at which the demand multiplier saturates at 1.0. Default: 50.
+   * Tables with ≥ saturations hits get multiplier=1.0; hits above this are not rewarded further.
+   */
+  private final long demandSaturation;
+
   private final Observability observability;
 
   // ---- Delta row-count thresholds ----
@@ -102,11 +127,27 @@ public class DefaultSchedulerProfile
               name = "floecat.stats.scheduler.scoring.max-age-ms",
               defaultValue = "86400000")
           long maxAgeMs,
+      @ConfigProperty(
+              name = "floecat.stats.scheduler.scoring.demand.multiplier-floor",
+              defaultValue = "0.15")
+          double demandMultiplierFloor,
+      @ConfigProperty(
+              name = "floecat.stats.scheduler.scoring.demand.saturation",
+              defaultValue = "50")
+          long demandSaturation,
       Observability observability) {
+    // A configured weight of 0 is treated as the default (not "disable this factor").
+    // To effectively disable a factor, set its weight to a very small positive value (e.g. 1)
+    // relative to other weights.
     this.weightCoverage = weightCoverage > 0 ? weightCoverage : 3;
     this.weightDelta = weightDelta > 0 ? weightDelta : 2;
     this.weightAge = weightAge > 0 ? weightAge : 1;
     this.maxAgeMs = maxAgeMs > 0L ? maxAgeMs : 86_400_000L;
+    this.demandMultiplierFloor =
+        (demandMultiplierFloor > 0.0 && demandMultiplierFloor <= 1.0)
+            ? demandMultiplierFloor
+            : 0.15;
+    this.demandSaturation = demandSaturation > 0L ? demandSaturation : 50L;
     this.observability = Objects.requireNonNull(observability, "observability");
   }
 
@@ -128,9 +169,12 @@ public class DefaultSchedulerProfile
    */
   @Override
   public PriorityAssignment assign(StatsCaptureRequest request, SchedulerContext context) {
-    String tableKey = request.tableId().getId();
+    // tableKey must include accountId to match SchedulerSignalIndex key convention
+    // ("accountId:tableId") so that scoring signals are correctly scoped per-account.
+    String tableKey =
+        SchedulerSignalIndex.tableKey(request.tableId().getAccountId(), request.tableId().getId());
     long score = computeScore(request, context, tableKey);
-    String laneKey = request.tableId().getAccountId() + ":" + tableKey;
+    String laneKey = tableKey; // laneKey and tableKey are now the same compound form
     // DefaultSchedulerProfile always assigns P3_BACKGROUND from this path (P0/P2 are set by the
     // orchestrator directly; P1 is set by the planner worker for new snapshots). Build the
     // assignment first so the metric tag derives from the actual returned class rather than a
@@ -205,9 +249,74 @@ public class DefaultSchedulerProfile
     long coverageScore = coverageScore(request, context, tableKey);
     long deltaScore = deltaScore(context, tableKey, request.snapshotId());
     long ageScore = ageScore(context, tableKey);
-    return (long) weightCoverage * coverageScore
-        + (long) weightDelta * deltaScore
-        + (long) weightAge * ageScore;
+    long rawValue =
+        (long) weightCoverage * coverageScore
+            + (long) weightDelta * deltaScore
+            + (long) weightAge * ageScore;
+    double multiplier = computeDemandMultiplier(context, tableKey, request);
+    double costScore = computeCostScore(request.requestedKinds());
+    // Normalise to [0, 1000]: (multiplier × rawValue / costScore) / maxRawValue × 1000.
+    // maxRawValue = (weightCoverage + weightDelta + weightAge) × 100 — the theoretical maximum
+    // raw score when all three factors are at their ceiling and the demand multiplier is 1.0.
+    double maxRawValue = ((double) weightCoverage + weightDelta + weightAge) * 100.0;
+    return Math.min(1000L, Math.round((multiplier * rawValue / costScore) * 1000.0 / maxRawValue));
+  }
+
+  /**
+   * Cost estimate for the requested stat kinds. Higher-cost stat kinds reduce the effective score
+   * relative to cheaper work, biasing the scheduler toward cheap-but-valuable captures.
+   *
+   * <ul>
+   *   <li>NDV or HISTOGRAM (full-column scans) → 3.0 (expensive)
+   *   <li>NULL_COUNT or MIN_MAX (partial-column reads) → 2.0 (medium)
+   *   <li>ROW_COUNT, FILE_COUNT, TOTAL_BYTES (footer reads) → 1.0 (cheap)
+   *   <li>Empty set (kinds not specified) → 2.0 (conservative medium)
+   * </ul>
+   *
+   * <p>When a request mixes kinds, the most expensive kind dominates (max over the set).
+   */
+  private static double computeCostScore(Set<StatsKind> requestedKinds) {
+    if (requestedKinds.isEmpty()) {
+      return 2.0; // conservative medium when kinds are unspecified
+    }
+    double max = 1.0;
+    for (StatsKind kind : requestedKinds) {
+      double kindCost =
+          switch (kind) {
+            case NDV, HISTOGRAM -> 3.0;
+            case NULL_COUNT, MIN_MAX -> 2.0;
+            default -> 1.0; // ROW_COUNT, FILE_COUNT, TOTAL_BYTES
+          };
+      if (kindCost > max) {
+        max = kindCost;
+      }
+    }
+    return max;
+  }
+
+  /**
+   * Demand multiplier: scales the raw priority score by how frequently the planner has requested
+   * stats for this table (and any column selectors) in the current demand window.
+   *
+   * <p>Returns a value in [{@link #demandMultiplierFloor}, 1.0]. When {@code totalDemand} is zero
+   * (idle table), the floor is returned, biasing idle tables toward lower priority relative to
+   * heavily-queried tables. At {@link #demandSaturation} or more hits, the multiplier saturates at
+   * 1.0; additional demand is not rewarded further.
+   */
+  private double computeDemandMultiplier(
+      SchedulerContext context, String tableKey, StatsCaptureRequest request) {
+    long totalDemand = context.recentPlannerRequestCount(tableKey);
+    if (!request.columnSelectors().isEmpty()) {
+      for (String selector : request.columnSelectors()) {
+        String normalized = selector.trim().toLowerCase(java.util.Locale.ROOT);
+        totalDemand += context.recentColumnRequestCount(tableKey, normalized);
+      }
+    }
+    if (totalDemand <= 0L) {
+      return demandMultiplierFloor;
+    }
+    return demandMultiplierFloor
+        + (1.0 - demandMultiplierFloor) * Math.min(1.0, (double) totalDemand / demandSaturation);
   }
 
   /**

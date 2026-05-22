@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -28,6 +29,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -42,6 +44,7 @@ import jakarta.enterprise.inject.Instance;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 class LeasedPlannerWorkerServiceTest {
@@ -444,6 +447,49 @@ class LeasedPlannerWorkerServiceTest {
             eq(ReconcileJobKind.PLAN_SNAPSHOT), any(), eq(40L), eq(true), eq(context));
   }
 
+  @Test
+  void persistPlanSnapshotSuccessPreservesParentExecutionClassOnChildJobs() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-heavy", 77L, "ns", "tbl");
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of(
+            "plan-heavy", "group-heavy", "tbl-heavy", 77L, List.of("s3://bucket/heavy.parquet"));
+    ReconcileExecutionPolicy parentPolicy =
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "", java.util.Map.of());
+
+    when(jobs.renewLease("job-heavy", "lease-heavy")).thenReturn(true);
+    when(jobs.get("job-heavy"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-heavy", ReconcileJobKind.PLAN_SNAPSHOT, parentPolicy, snapshotTask)));
+
+    service.persistPlanSnapshotSuccess(
+        principal,
+        "job-heavy",
+        "lease-heavy",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+
+    ArgumentCaptor<ReconcileExecutionPolicy> policyCaptor =
+        ArgumentCaptor.forClass(ReconcileExecutionPolicy.class);
+    verify(jobs)
+        .enqueueFileGroupExecution(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(fullGroup.asReference()),
+            policyCaptor.capture(),
+            eq("job-heavy"),
+            eq("remote-executor"));
+
+    ReconcileExecutionPolicy childPolicy = policyCaptor.getValue();
+    assertEquals(ReconcileExecutionClass.HEAVY, childPolicy.executionClass());
+    assertEquals(StatsPriorityClass.P3_BACKGROUND, childPolicy.priorityClass());
+    assertEquals("acct:tbl-heavy", childPolicy.lane());
+  }
+
   private static ReconcileJobStore.ReconcileJob jobWithPolicy(
       String jobId, ReconcileJobKind jobKind, ReconcileExecutionPolicy policy) {
     return new ReconcileJobStore.ReconcileJob(
@@ -473,6 +519,205 @@ class LeasedPlannerWorkerServiceTest {
         ReconcileSnapshotTask.empty(),
         ReconcileFileGroupTask.empty(),
         "parent-1");
+  }
+
+  @Test
+  void policyDeferredAttributeIsNotPropagatedToChildFileGroupJobs() {
+    // A parent PLAN_SNAPSHOT job may carry ATTR_POLICY_DEFERRED in its attributes when the
+    // orchestrator-layer admission policy voted DEFER at parent enqueue time. That attribute
+    // must NOT be copied into child EXEC_FILE_GROUP policies — child admission is re-evaluated
+    // independently at each child's own enqueue time, and P1_FRESHNESS children must always ADMIT.
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("tbl-deferred", 42L, "db", "t");
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of(
+            "plan-deferred", "group-1", "tbl-deferred", 42L, List.of("s3://bucket/f.parquet"));
+    ReconcileExecutionPolicy deferredParentPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P1_FRESHNESS,
+            "acct:tbl-deferred",
+            java.util.Map.of(
+                "enqueue_reason", "new_snapshot",
+                "policy_deferred", "true"), // ATTR_POLICY_DEFERRED = "policy_deferred"
+            0L);
+
+    when(jobs.renewLease("job-deferred", "lease-deferred")).thenReturn(true);
+    when(jobs.get("job-deferred"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicy(
+                    "job-deferred",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    deferredParentPolicy,
+                    snapshotTask)));
+
+    service.persistPlanSnapshotSuccess(
+        principal,
+        "job-deferred",
+        "lease-deferred",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+
+    ArgumentCaptor<ReconcileExecutionPolicy> captor =
+        ArgumentCaptor.forClass(ReconcileExecutionPolicy.class);
+    verify(jobs)
+        .enqueueFileGroupExecution(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(),
+            eq(fullGroup.asReference()),
+            captor.capture(),
+            eq("job-deferred"),
+            eq("remote-executor"));
+
+    ReconcileExecutionPolicy childPolicy = captor.getValue();
+    assertFalse(
+        childPolicy.attributes().containsKey("policy_deferred"),
+        "ATTR_POLICY_DEFERRED must not be propagated to child EXEC_FILE_GROUP jobs");
+    // Other attributes (enqueue_reason) are still inherited.
+    assertEquals("new_snapshot", childPolicy.attributes().get("enqueue_reason"));
+  }
+
+  @Test
+  void policyDeferredAttributeIsNotPropagatedToChildTablePlanJobs() {
+    // A parent PLAN_CONNECTOR job may carry ATTR_POLICY_DEFERRED in its attributes.
+    // That attribute must NOT be copied into child PLAN_TABLE policies.
+    ReconcileExecutionPolicy deferredConnectorPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND,
+            "acct:conn",
+            java.util.Map.of(
+                "enqueue_reason", "batch_refresh",
+                "policy_deferred", "true"),
+            0L);
+
+    when(jobs.renewLease("job-conn-deferred", "lease-conn-deferred")).thenReturn(true);
+    when(jobs.get("job-conn-deferred"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicyAndKind(
+                    "job-conn-deferred",
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    deferredConnectorPolicy)));
+
+    service.persistPlanConnectorSuccess(
+        principal,
+        "job-conn-deferred",
+        "lease-conn-deferred",
+        List.of(
+            new LeasedPlannerWorkerService.PlannedTableJob(
+                ReconcileScope.empty(),
+                ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.of("ns", "t1"))),
+        List.of());
+
+    ArgumentCaptor<ReconcileExecutionPolicy> captor =
+        ArgumentCaptor.forClass(ReconcileExecutionPolicy.class);
+    verify(jobs)
+        .enqueueTablePlan(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(
+                ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode
+                    .METADATA_AND_CAPTURE),
+            any(),
+            any(),
+            captor.capture(),
+            eq("job-conn-deferred"),
+            any());
+
+    ReconcileExecutionPolicy childPolicy = captor.getValue();
+    assertFalse(
+        childPolicy.attributes().containsKey("policy_deferred"),
+        "ATTR_POLICY_DEFERRED must not be propagated to child PLAN_TABLE jobs");
+    assertEquals("batch_refresh", childPolicy.attributes().get("enqueue_reason"));
+  }
+
+  @Test
+  void policyDeferredAttributeIsNotPropagatedToChildViewPlanJobs() {
+    // Same invariant as the table case — PLAN_VIEW children must not inherit policy_deferred.
+    ReconcileExecutionPolicy deferredConnectorPolicy =
+        ReconcileExecutionPolicy.of(
+            StatsPriorityClass.P3_BACKGROUND,
+            "acct:conn",
+            java.util.Map.of(
+                "enqueue_reason", "batch_refresh",
+                "policy_deferred", "true"),
+            0L);
+
+    when(jobs.renewLease("job-conn-view-deferred", "lease-conn-view-deferred")).thenReturn(true);
+    when(jobs.get("job-conn-view-deferred"))
+        .thenReturn(
+            java.util.Optional.of(
+                jobWithPolicyAndKind(
+                    "job-conn-view-deferred",
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    deferredConnectorPolicy)));
+
+    service.persistPlanConnectorSuccess(
+        principal,
+        "job-conn-view-deferred",
+        "lease-conn-view-deferred",
+        List.of(),
+        List.of(
+            new LeasedPlannerWorkerService.PlannedViewJob(
+                ReconcileScope.empty(),
+                ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.of(
+                    "ns", "v1", "ns-id", "view-id"))));
+
+    ArgumentCaptor<ReconcileExecutionPolicy> captor =
+        ArgumentCaptor.forClass(ReconcileExecutionPolicy.class);
+    verify(jobs)
+        .enqueueViewPlan(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(
+                ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode
+                    .METADATA_AND_CAPTURE),
+            any(),
+            any(),
+            captor.capture(),
+            eq("job-conn-view-deferred"),
+            any());
+
+    ReconcileExecutionPolicy childPolicy = captor.getValue();
+    assertFalse(
+        childPolicy.attributes().containsKey("policy_deferred"),
+        "ATTR_POLICY_DEFERRED must not be propagated to child PLAN_VIEW jobs");
+    assertEquals("batch_refresh", childPolicy.attributes().get("enqueue_reason"));
+  }
+
+  private static ReconcileJobStore.ReconcileJob jobWithPolicyAndKind(
+      String jobId, ReconcileJobKind jobKind, ReconcileExecutionPolicy policy) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        policy,
+        "remote-executor",
+        "remote_connector_planner_worker",
+        jobKind,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+        "parent-0");
   }
 
   private static ReconcileJobStore.ReconcileJob jobWithPolicy(

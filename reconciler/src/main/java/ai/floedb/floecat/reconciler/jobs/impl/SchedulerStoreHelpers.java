@@ -29,7 +29,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * profile-layer {@code SchedulerAdmissionPolicy.decide()} defers P3 only at ORANGE and above — the
  * store adds YELLOW jitter on top. Neither side must be changed without updating the other.
  *
- * <p>All methods are package-private. No instances are created.
+ * <p>This class is declared {@code public} and shared across modules. It is not part of the public
+ * API and must not be used outside of job-store implementations. No instances are created.
  */
 public final class SchedulerStoreHelpers {
 
@@ -55,15 +56,32 @@ public final class SchedulerStoreHelpers {
   /** Cooldown window (ms) during which a promoted job is not counted again. */
   public static final long AGING_COOLDOWN_MS = 60_000L;
 
+  /**
+   * Execution-policy attribute key set by the orchestrator when the active admission policy returns
+   * {@link ai.floedb.floecat.stats.spi.scheduler.SchedulerAdmissionPolicy.AdmissionDecision#DEFER}.
+   * Both store implementations check this attribute at enqueue time and apply at least {@link
+   * #DEFER_DELAY_MS}, overriding the band-based logic for priority classes that the store would
+   * otherwise admit immediately (e.g. P1_FRESHNESS under a custom profile).
+   *
+   * <p>Value: {@code "true"} when the policy voted DEFER; absent or any other value means ADMIT.
+   */
+  public static final String ATTR_POLICY_DEFERRED = "policy_deferred";
+
   private SchedulerStoreHelpers() {}
 
   /**
    * Returns the admission deferral delay in milliseconds for a job of the given priority class
    * under the given health band. A return value of {@code 0} means admit immediately.
    *
-   * <p>P0_SYNC and P1_FRESHNESS are always admitted (return {@code 0}) regardless of band. P2 is
-   * deferred only under RED. P3 is deferred under ORANGE and RED, and deferred with 50% probability
-   * under YELLOW (store-layer jitter on top of the profile's ORANGE|RED-only rule).
+   * <p><b>Admission split contract:</b> this method handles the store-side half of the deferral
+   * decision. P0_SYNC and P1_FRESHNESS are always admitted (return {@code 0}) regardless of band.
+   * P2 is deferred only under RED. P3 is deferred under ORANGE and RED, and deferred with 50%
+   * probability under YELLOW (store-layer jitter on top of the profile's ORANGE|RED-only rule).
+   *
+   * <p>When the orchestrator sets {@link #ATTR_POLICY_DEFERRED} on the execution policy (because
+   * the active admission policy returned DEFER), callers should use the overload {@link
+   * #admissionDeferMs(StatsPriorityClass, SchedulerHealthBand, boolean)} to ensure the policy-layer
+   * decision is honoured even for classes the store would normally admit immediately.
    *
    * @param cls the priority class of the job being enqueued
    * @param band the current health band of the scheduler
@@ -80,6 +98,25 @@ public final class SchedulerStoreHelpers {
             case ORANGE, RED -> DEFER_DELAY_MS;
           };
     };
+  }
+
+  /**
+   * Returns the admission deferral delay in milliseconds, honouring a policy-layer DEFER vote.
+   *
+   * <p>When {@code policyDeferred} is {@code true} (the orchestrator received DEFER from the active
+   * admission policy), the returned delay is at least {@link #DEFER_DELAY_MS} regardless of the
+   * band-based result. This ensures custom profiles that defer classes the store would normally
+   * admit immediately (e.g. P1_FRESHNESS) are not silently overridden by band logic.
+   *
+   * @param cls the priority class of the job being enqueued
+   * @param band the current health band of the scheduler
+   * @param policyDeferred {@code true} when the orchestrator-layer admission policy returned DEFER
+   * @return deferral delay in ms; {@code 0} means admit without delay
+   */
+  public static long admissionDeferMs(
+      StatsPriorityClass cls, SchedulerHealthBand band, boolean policyDeferred) {
+    long bandMs = admissionDeferMs(cls, band);
+    return policyDeferred ? Math.max(DEFER_DELAY_MS, bandMs) : bandMs;
   }
 
   /**

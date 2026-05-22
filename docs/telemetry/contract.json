@@ -690,6 +690,26 @@
     "allowedTags": ["component", "operation", "priority_class"]
   },
   {
+    "name": "floecat.service.reconcile.signal.known.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of scheduler signal reads that found a value, tagged by signal_type.",
+    "requiredTags": ["component", "operation", "signal_type"],
+    "allowedTags": ["component", "operation", "signal_type"]
+  },
+  {
+    "name": "floecat.service.reconcile.signal.unknown.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of scheduler signal reads that found no value, tagged by signal_type.",
+    "requiredTags": ["component", "operation", "signal_type"],
+    "allowedTags": ["component", "operation", "signal_type"]
+  },
+  {
     "name": "floecat.service.reconcile.snapshots_processed.total",
     "type": "COUNTER",
     "unit": "",

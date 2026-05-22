@@ -53,7 +53,8 @@ class SchedulerPolicyRegistryProfileGaugeTest {
     var recordingObs = new CapturingGaugeObservability(registrations);
 
     // ---- Stub CDI Instance<> types ----
-    var profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, new NoopObservability());
+    var profile =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
     Instance<SchedulerPriorityPolicy> priorityInstance = mock(Instance.class);
     Instance<SchedulerAdmissionPolicy> admissionInstance = mock(Instance.class);
     Instance<SchedulerPreemptionPolicy> preemptionInstance = mock(Instance.class);
@@ -89,7 +90,8 @@ class SchedulerPolicyRegistryProfileGaugeTest {
             admissionInstance,
             preemptionInstance,
             jobs,
-            recordingObs);
+            recordingObs,
+            null);
 
     // ---- Trigger @PostConstruct ----
     registry.init();

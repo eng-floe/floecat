@@ -176,6 +176,29 @@ public final class PriorityReadyQueue {
   }
 
   /**
+   * Removes all queued entries for {@code jobId} across every class bucket.
+   *
+   * <p>This is intentionally O(total queued entries) and should be used only for rare control-plane
+   * operations such as priority-class upgrades on deduped queued jobs.
+   *
+   * @param jobId job identifier to remove
+   * @return number of removed entries
+   */
+  public long removeJob(String jobId) {
+    long removed = 0L;
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      var bucket = buckets.get(cls);
+      for (Entry<QKey, String> entry : bucket.entrySet()) {
+        if (jobId.equals(entry.getValue()) && bucket.remove(entry.getKey(), jobId)) {
+          sizes.get(cls).decrementAndGet();
+          removed++;
+        }
+      }
+    }
+    return removed;
+  }
+
+  /**
    * Returns the approximate number of jobs in {@code cls}.
    *
    * <p>The value may lag by at most one in-flight {@link #enqueue}/{@link #pollHighest} operation.

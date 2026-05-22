@@ -83,6 +83,9 @@ public class SchedulerPolicyRegistry {
   private final ReconcileJobStore jobs;
   private final Observability observability;
 
+  /** May be null when CDI does not provide the bean (lightweight test construction). */
+  private final SchedulerSignalIndex signalIndex;
+
   private SchedulerPriorityPolicy activePriorityPolicy;
   private SchedulerAdmissionPolicy activeAdmissionPolicy;
   // null if no bean with the active profile implements SchedulerPreemptionPolicy
@@ -103,13 +106,18 @@ public class SchedulerPolicyRegistry {
       @Any Instance<SchedulerAdmissionPolicy> admissionPolicies,
       @Any Instance<SchedulerPreemptionPolicy> preemptionPolicies,
       ReconcileJobStore jobs,
-      Observability observability) {
+      Observability observability,
+      Instance<SchedulerSignalIndex> signalIndexInstance) {
     this.profileName = profileName;
     this.priorityPolicies = priorityPolicies;
     this.admissionPolicies = admissionPolicies;
     this.preemptionPolicies = preemptionPolicies;
     this.jobs = jobs;
     this.observability = observability;
+    this.signalIndex =
+        signalIndexInstance == null || signalIndexInstance.isUnsatisfied()
+            ? null
+            : signalIndexInstance.get();
   }
 
   @PostConstruct
@@ -141,7 +149,7 @@ public class SchedulerPolicyRegistry {
     Instance<SchedulerPreemptionPolicy> selectedPreemption = preemptionPolicies.select(qualifier);
     activePreemptionPolicy = selectedPreemption.isUnsatisfied() ? null : selectedPreemption.get();
 
-    context = new ReconcileJobStoreContext(jobs);
+    context = new ReconcileJobStoreContext(jobs, signalIndex);
 
     validateInvariants();
 
@@ -328,9 +336,9 @@ public class SchedulerPolicyRegistry {
    * <p>{@link #currentBand()} and {@link #queueDepthByClass()} share a single {@link
    * ReconcileJobStore#queueStats()} snapshot cached for {@link #SNAPSHOT_TTL_MS} milliseconds.
    * Policy methods that call both in the same decision therefore see consistent band and depth
-   * values. Coverage, delta, and last-capture data are not yet tracked at this layer and return
-   * conservative defaults: coverage returns {@link CoverageLevel#NONE} and delta / last-capture
-   * return empty. These will be wired with real data sources in a future update.
+   * values. Coverage, delta, last-capture, and demand signals are served from {@link
+   * SchedulerSignalIndex} when present; lightweight test paths without CDI may leave the signal
+   * index absent, in which case conservative defaults are used.
    */
   private static final class ReconcileJobStoreContext implements SchedulerContext {
 
@@ -338,11 +346,16 @@ public class SchedulerPolicyRegistry {
     private static final long SNAPSHOT_TTL_MS = 100L;
 
     private final ReconcileJobStore jobs;
+
+    /** May be null when the signal index bean is absent (lightweight test paths). */
+    private final SchedulerSignalIndex signalIndex;
+
     private volatile ReconcileJobStore.QueueStats cachedStats;
     private volatile long cachedAtMs;
 
-    ReconcileJobStoreContext(ReconcileJobStore jobs) {
+    ReconcileJobStoreContext(ReconcileJobStore jobs, SchedulerSignalIndex signalIndex) {
       this.jobs = jobs;
+      this.signalIndex = signalIndex;
     }
 
     /**
@@ -358,6 +371,9 @@ public class SchedulerPolicyRegistry {
         return cached;
       }
       ReconcileJobStore.QueueStats fresh = jobs.queueStats();
+      // Write cachedStats BEFORE cachedAtMs. A reader that observes a fresh timestamp is then
+      // guaranteed to observe a matching or newer snapshot object, avoiding a "fresh timestamp +
+      // stale snapshot" window.
       this.cachedStats = fresh;
       this.cachedAtMs = now;
       return fresh;
@@ -374,41 +390,71 @@ public class SchedulerPolicyRegistry {
     }
 
     /**
-     * Returns empty — last-capture timestamp is not yet tracked at this layer.
+     * Returns the last successful stats capture epoch-ms for the table, or empty if not yet
+     * recorded. Delegates to {@link SchedulerSignalIndex#lastSuccessfulCaptureMs(String)} when the
+     * index is wired; returns empty otherwise (conservative default — treats every table as never
+     * captured, biasing toward freshness).
      *
-     * <p><b>TODO (scoring context wiring):</b> wire this to the catalog stats metadata store once
-     * planner integration is complete. Until then, the age scoring factor treats every table as
-     * "never captured" (score=100), which biases scheduling toward freshness at the cost of some
-     * false urgency for recently-captured tables.
+     * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form (as
+     * produced by {@link SchedulerSignalIndex#tableKey(String, String)}).
      */
     @Override
     public OptionalLong lastSuccessfulCaptureMs(String tableId) {
-      return OptionalLong.empty();
+      if (signalIndex == null) return OptionalLong.empty();
+      return signalIndex.lastSuccessfulCaptureMs(tableId);
     }
 
     /**
-     * Returns {@link CoverageLevel#NONE} for all tables — per-table coverage tracking is not yet
-     * wired at this layer.
+     * Returns the coverage level for the given (table, snapshot) pair. Delegates to {@link
+     * SchedulerSignalIndex#coverageLevel(String, long)} when the index is wired; returns {@link
+     * CoverageLevel#NONE} otherwise (conservative default — biases toward capturing).
      *
-     * <p><b>TODO (scoring context wiring):</b> wire this to the catalog coverage metadata once
-     * available. NONE is the safe conservative default: it causes the coverage factor to contribute
-     * its maximum score (100), so under-tracked tables are never deprioritised.
+     * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form.
      */
     @Override
     public CoverageLevel coverageLevel(String tableId, long snapshotId) {
-      return CoverageLevel.NONE;
+      if (signalIndex == null) return CoverageLevel.NONE;
+      return signalIndex.coverageLevel(tableId, snapshotId);
     }
 
     /**
-     * Returns empty — snapshot delta row counts are not yet tracked at this layer.
+     * Returns the estimated delta row count for the given (table, snapshot) pair, or empty if not
+     * recorded. Delegates to {@link SchedulerSignalIndex#snapshotDeltaRows(String, long)} when the
+     * index is wired; returns empty otherwise (neutral mid-range delta score fallback).
      *
-     * <p><b>TODO (scoring context wiring):</b> wire this to snapshot metadata once planner
-     * integration provides row deltas. Until then, the delta factor uses its "unknown" fallback
-     * score (50), which is a neutral mid-range contribution.
+     * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form.
      */
     @Override
     public OptionalLong snapshotDeltaRows(String tableId, long snapshotId) {
-      return OptionalLong.empty();
+      if (signalIndex == null) return OptionalLong.empty();
+      return signalIndex.snapshotDeltaRows(tableId, snapshotId);
+    }
+
+    /**
+     * Returns the rolling planner demand count for the table. Delegates to {@link
+     * SchedulerSignalIndex#recentTableDemand(String)} when the index is wired; returns 0 (neutral
+     * demand multiplier) otherwise.
+     *
+     * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form.
+     */
+    @Override
+    public long recentPlannerRequestCount(String tableId) {
+      if (signalIndex == null) return 0L;
+      return signalIndex.recentTableDemand(tableId);
+    }
+
+    /**
+     * Returns the rolling demand count for the normalized column selector. Delegates to {@link
+     * SchedulerSignalIndex#recentColumnDemand(String, String)} when the index is wired; returns 0
+     * otherwise.
+     *
+     * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form. The
+     * {@code normalizedColumnSelector} must already be trimmed and lowercased.
+     */
+    @Override
+    public long recentColumnRequestCount(String tableId, String normalizedColumnSelector) {
+      if (signalIndex == null) return 0L;
+      return signalIndex.recentColumnDemand(tableId, normalizedColumnSelector);
     }
   }
 

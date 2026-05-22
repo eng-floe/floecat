@@ -249,6 +249,33 @@ public final class ServiceMetrics {
     public static final MetricId POLICY_PROFILE =
         new MetricId(
             "floecat.service.reconcile.policy.profile", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Count of scheduler signal reads that returned a real value (cache hit). Tag {@code
+     * signal_type} identifies the signal: {@code last_capture}, {@code coverage}, or {@code delta}.
+     * Drained and reset on each metrics refresh cycle.
+     */
+    public static final MetricId SIGNAL_KNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.known.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Count of scheduler signal reads that found no record (cache miss). Tag {@code signal_type}
+     * identifies the signal: {@code last_capture}, {@code coverage}, or {@code delta}. A
+     * persistently high unknown rate means the signal feed is not writing before the scheduler
+     * reads.
+     */
+    public static final MetricId SIGNAL_UNKNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.unknown.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {

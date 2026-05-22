@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -34,6 +35,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
@@ -78,6 +80,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   // ---------------------------------------------------------------------------
   // Scheduler constants — live in SchedulerStoreHelpers and SchedulerBandState; kept here as
   // package-private aliases so existing tests that import them directly continue to compile.
+  // TODO: migrate test imports to SchedulerStoreHelpers directly and remove these aliases.
   // ---------------------------------------------------------------------------
   static final long P3_AGING_THRESHOLD_MS = SchedulerStoreHelpers.P3_AGING_THRESHOLD_MS;
   static final long P2_AGING_THRESHOLD_MS = SchedulerStoreHelpers.P2_AGING_THRESHOLD_MS;
@@ -86,15 +89,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   static final long DEFER_DELAY_MS = SchedulerStoreHelpers.DEFER_DELAY_MS;
 
   // ---------------------------------------------------------------------------
-  // WRR constants
+  // Scheduler constants
   // ---------------------------------------------------------------------------
-  /**
-   * Maximum number of <em>eligible</em> candidates compared in one WRR tournament per priority
-   * class. Ineligible jobs (backoff, filter mismatch, lane-blocked, snapshot-blocked) do not count
-   * against this limit — they are skipped until {@link #MAX_TOTAL_POLL} is reached.
-   */
-  private static final int MAX_WRR_CANDIDATES = 8;
-
   /**
    * Hard cap on total {@link PriorityReadyQueue#pollHighest} calls per priority class per {@code
    * leaseNext()} invocation. Bounds the worst case when many jobs are ineligible (e.g. all lanes
@@ -141,9 +137,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       new EnumMap<>(StatsPriorityClass.class);
 
   // ---------------------------------------------------------------------------
-  // WRR state
+  // WRR + P0 guard state (shared with DurableReconcileJobStore via SchedulerDispatcher)
   // ---------------------------------------------------------------------------
-  private final Map<String, Long> laneServiceCounts = new ConcurrentHashMap<>();
+  private final SchedulerDispatcher dispatcher = new SchedulerDispatcher();
 
   public InMemoryReconcileJobStore() {
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
@@ -256,6 +252,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     if (activeJobId != null) {
       ReconcileJob existing = jobs.get(activeJobId);
       if (existing != null && !isTerminalState(existing.state)) {
+        maybePromoteDedupedQueuedJob(activeJobId, existing, effectivePolicy);
         return activeJobId;
       }
       activeJobIdByDedupeKey.remove(dedupeKey, activeJobId);
@@ -331,9 +328,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       oldestP0AgeMs = now - oldestP0CreatedAt;
     }
     bandState.maybeEscalate(now, depths, oldestP0AgeMs);
+    boolean policyDeferred =
+        "true"
+            .equals(
+                effectivePolicy
+                    .attributes()
+                    .getOrDefault(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED, ""));
     long deferMs =
         SchedulerStoreHelpers.admissionDeferMs(
-            effectivePolicy.priorityClass(), bandState.current());
+            effectivePolicy.priorityClass(), bandState.current(), policyDeferred);
     if (deferMs > 0) {
       nextAttemptAtMs.put(id, now + deferMs);
       admissionDeferred.get(effectivePolicy.priorityClass()).incrementAndGet();
@@ -352,6 +355,116 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       return Optional.empty();
     }
     return Optional.of(withPinnedExecutor(job));
+  }
+
+  /**
+   * Promotes the scheduling priority of an existing deduped queued job when a stronger enqueue
+   * request arrives for the same logical work.
+   *
+   * <p>Promotion rules:
+   *
+   * <ul>
+   *   <li>Only applies to {@code JS_QUEUED} jobs.
+   *   <li>Priority class can only move to a higher urgency class (e.g. P3 → P1), never downgrade.
+   *   <li>Within the same class, score is raised to the max(current, requested).
+   *   <li>Deferred jobs are pulled forward to {@code now} so urgent follow-up requests are not
+   *       blocked behind old defer timers.
+   * </ul>
+   */
+  private void maybePromoteDedupedQueuedJob(
+      String jobId, ReconcileJob existing, ReconcileExecutionPolicy requestedPolicy) {
+    if (existing == null
+        || existing.executionPolicy == null
+        || requestedPolicy == null
+        || !"JS_QUEUED".equals(existing.state)) {
+      return;
+    }
+    ReconcileExecutionPolicy currentPolicy = existing.executionPolicy;
+    ReconcileExecutionPolicy promoted =
+        promotedPriorityPolicy(
+            currentPolicy.priorityClass(),
+            currentPolicy.priorityScore(),
+            requestedPolicy.priorityClass(),
+            requestedPolicy.priorityScore(),
+            currentPolicy.executionClass(),
+            currentPolicy.lane(),
+            currentPolicy.attributes());
+    if (promoted.priorityClass() == currentPolicy.priorityClass()
+        && promoted.priorityScore() == currentPolicy.priorityScore()) {
+      return;
+    }
+
+    long now = System.currentTimeMillis();
+    long nextDue = Math.min(nextAttemptAtMs.getOrDefault(jobId, now), now);
+    nextAttemptAtMs.put(jobId, nextDue);
+
+    readyQueue.removeJob(jobId);
+    readyQueue.enqueue(jobId, promoted.priorityClass(), promoted.priorityScore());
+
+    jobs.computeIfPresent(
+        jobId,
+        (id, job) -> {
+          if (!"JS_QUEUED".equals(job.state)) {
+            return job;
+          }
+          return withExecutionPolicy(job, promoted);
+        });
+  }
+
+  private static ReconcileExecutionPolicy promotedPriorityPolicy(
+      StatsPriorityClass currentClass,
+      long currentScore,
+      StatsPriorityClass requestedClass,
+      long requestedScore,
+      ReconcileExecutionClass executionClass,
+      String lane,
+      Map<String, String> attributes) {
+    StatsPriorityClass effectiveCurrent =
+        currentClass == null ? StatsPriorityClass.P3_BACKGROUND : currentClass;
+    StatsPriorityClass effectiveRequested =
+        requestedClass == null ? StatsPriorityClass.P3_BACKGROUND : requestedClass;
+    StatsPriorityClass promotedClass =
+        effectiveRequested.ordinal() < effectiveCurrent.ordinal()
+            ? effectiveRequested
+            : effectiveCurrent;
+    long promotedScore =
+        (promotedClass == effectiveCurrent && promotedClass == effectiveRequested)
+            ? Math.max(currentScore, requestedScore)
+            : (promotedClass == effectiveRequested
+                ? Math.max(0L, requestedScore)
+                : Math.max(0L, currentScore));
+    return new ReconcileExecutionPolicy(
+        executionClass, lane, attributes, promotedClass, promotedScore);
+  }
+
+  private static ReconcileJob withExecutionPolicy(
+      ReconcileJob job, ReconcileExecutionPolicy executionPolicy) {
+    return new ReconcileJob(
+        job.jobId,
+        job.accountId,
+        job.connectorId,
+        job.state,
+        job.message,
+        job.startedAtMs,
+        job.finishedAtMs,
+        job.tablesScanned,
+        job.tablesChanged,
+        job.viewsScanned,
+        job.viewsChanged,
+        job.errors,
+        job.fullRescan,
+        job.captureMode,
+        job.snapshotsProcessed,
+        job.statsProcessed,
+        job.scope,
+        executionPolicy,
+        job.executorId,
+        job.jobKind,
+        job.tableTask,
+        job.viewTask,
+        job.snapshotTask,
+        job.fileGroupTask,
+        job.parentJobId);
   }
 
   @Override
@@ -506,11 +619,17 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
 
     // Compute top-10 lanes by oldest queued job wait time (most-starved first).
+    // Use LinkedHashMap to preserve the sort order in the returned map.
     Map<String, Long> topLaneWaitMs =
         laneOldestCreatedAtMs.entrySet().stream()
-            .sorted(Map.Entry.comparingByValue()) // oldest created-at first
+            .sorted(Map.Entry.comparingByValue()) // oldest created-at first = most-starved first
             .limit(10)
-            .collect(Collectors.toMap(Map.Entry::getKey, e -> now - e.getValue()));
+            .collect(
+                Collectors.toMap(
+                    Map.Entry::getKey,
+                    e -> now - e.getValue(),
+                    (a, b) -> a,
+                    java.util.LinkedHashMap::new));
 
     return new QueueStats(
         queued,
@@ -609,47 +728,47 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     // Lazily clean expired aging promotions.
     agingTracker.cleanupExpired(now);
 
-    // Dispatch loop: iterate priority classes from most- to least-urgent.
+    // Dispatch loop: scan priority classes P0→P3 in order.
     //
-    // For each class we run a bounded WRR tournament. Two independent limits are applied:
-    //   • MAX_WRR_CANDIDATES: max eligible jobs that enter the WRR comparison.
-    //   • MAX_TOTAL_POLL:     hard cap on total pollHighest() calls, so ineligible jobs
-    //                         (backoff, filter, lane-blocked, snapshot-blocked) cannot cause
-    //                         head-of-line blocking when they pile up at the queue head.
+    // For each class we collect up to MAX_WRR_CANDIDATES eligible candidates (each having passed
+    // backoff, filter, lane-mutex, and snapshot-lease checks), then run a WRR tournament via
+    // SchedulerDispatcher.selectWinner(). The lane with the lowest virtual-time counter wins;
+    // ties broken by score. Non-winners have their snapshot leases released and are requeued.
     //
-    // The lane key stored in laneKeysByJobId is the canonical key for both the lane-mutex and the
-    // WRR virtual-time counter.  It is set at enqueue time (caller-supplied policy lane when
-    // non-blank, otherwise computed from scope+job-kind), so both sub-systems always agree.
-    //
-    // P0_SYNC guard: if any P0 job was requeued (backoff-deferred, lane-blocked, filter-rejected,
-    // snapshot-lease-blocked, or displaced as a WRR loser), we return empty rather than falling
-    // through to P1/P2/P3.  Sync-capture jobs must not wait behind async work — even a P0 job
-    // that is temporarily lane-blocked holds the dispatch slot open until the blocker clears.
-    //
-    // anyP0Requeued is set for WRR displacement too (when a second P0 candidate loses the
-    // tournament to a better-virtual-time lane). This is intentional: we never dispatch P1/P2/P3
-    // while any P0 job is visible in the queue, regardless of why it wasn't dispatched this tick.
+    // P0_SYNC guard: if any P0-compatible candidate was blocked (backoff, lane, snapshot, or WRR
+    // loser), we return empty rather than falling through to P1/P2/P3. Filter-rejected candidates
+    // (wrong execution class / pinned executor) do NOT trigger the guard — this executor cannot
+    // help them and should remain productive on lower-priority work it can actually run.
     //
     // Known limitation: laneServiceCounts values can overflow for very long-lived deployments
-    // (long wraps at ~9.2 × 10^18 increments). A periodic reset or virtual-time modulo would
-    // address this; current deployment lifetimes make it unrealistic in practice.
-    boolean anyP0Requeued = false;
+    // (long wraps at ~9.2e18 increments). SchedulerDispatcher holds these counters in-memory;
+    // a periodic reset or virtual-time modulo would address the overflow; current deployment
+    // lifetimes make it unrealistic.
+
+    // blockedCount tracks P0 candidates that THIS EXECUTOR COULD RUN but cannot right now
+    // (lane-held, backoff-deferred, snapshot-blocked, WRR loser). Filter-rejected P0 candidates
+    // (wrong execution class / pinned executor) do NOT count — this executor cannot help them.
+    int p0BlockedCount = 0;
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
       if (readyQueue.sizeByClass(cls) == 0) {
         continue;
       }
 
-      String bestJobId = null;
-      ReconcileJob bestJob = null;
-      String bestLaneKey = null;
-      long bestVirtualTime = Long.MAX_VALUE;
-
-      // Sample class depth once. This caps the poll loop at the number of jobs that actually
-      // existed when the scan began, preventing re-polls of requeued WRR losers from inflating
-      // the iteration count and scrambling FIFO order within a tied-score group.
+      // Collect up to MAX_WRR_CANDIDATES eligible candidates for WRR tournament.
+      // Each candidate has its snapshot lease acquired; losers are released after the tournament.
       int scanLimit = (int) Math.min(readyQueue.sizeByClass(cls), MAX_TOTAL_POLL);
       int candidatesFound = 0;
-      for (int i = 0; i < scanLimit && candidatesFound < MAX_WRR_CANDIDATES; i++) {
+      int blockedThisClass = 0;
+
+      // Use a small fixed-size list; capacity = MAX_WRR_CANDIDATES
+      List<SchedulerDispatcher.WrrCandidate> candidates =
+          new ArrayList<>(SchedulerDispatcher.MAX_WRR_CANDIDATES);
+      // Parallel list: snapshot-lease bookkeeping per candidate index
+      List<String> candidateJobIds = new ArrayList<>(SchedulerDispatcher.MAX_WRR_CANDIDATES);
+
+      for (int i = 0;
+          i < scanLimit && candidatesFound < SchedulerDispatcher.MAX_WRR_CANDIDATES;
+          i++) {
         String jobId = readyQueue.pollHighest(cls);
         if (jobId == null) {
           break;
@@ -657,25 +776,40 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
         var job = jobs.get(jobId);
         if (job == null) {
-          // Job was removed from the store; discard without triggering the P0 guard.
+          // Removed from store — discard, no P0 effect.
           continue;
         }
 
         if (!"JS_QUEUED".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
-          // Terminal or already-running: discard without triggering the P0 guard.
+          // Terminal or already-running — discard, no P0 effect.
+          continue;
+        }
+
+        StatsPriorityClass authoritativeClass =
+            job.executionPolicy == null
+                ? StatsPriorityClass.P3_BACKGROUND
+                : job.executionPolicy.priorityClass();
+        if (authoritativeClass != cls) {
+          // Stale ready-queue entry (e.g. dedupe priority upgrade): move it to the
+          // authoritative class before continuing. Do not count this as "blocked" for P0 guard.
+          readyQueue.requeue(
+              jobId,
+              authoritativeClass,
+              job.executionPolicy == null ? 0L : job.executionPolicy.priorityScore());
           continue;
         }
 
         if (nextAttemptAtMs.getOrDefault(jobId, 0L) > now) {
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
-          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+          blockedThisClass++;
           continue;
         }
 
         if (!effective.matches(
             job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""), job.jobKind)) {
+          // Filter-rejected: this executor cannot run this job regardless.
+          // Requeue but do NOT count as blocked — it must not trigger the P0 guard.
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
-          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
           continue;
         }
 
@@ -684,64 +818,66 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           String laneOwner = activeJobIdByLaneKey.get(laneKey);
           if (laneOwner != null && !laneOwner.equals(jobId) && hasLiveLaneLease(laneOwner, now)) {
             readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
-            if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+            blockedThisClass++;
             continue;
           }
         }
 
         if (!tryAcquireSnapshotLease(job, jobId, now)) {
           readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
-          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+          blockedThisClass++;
           continue;
         }
 
-        // Eligible candidate: enter WRR tournament.
-        // laneKey is the canonical key for both lane-mutex and WRR virtual-time (unified at
-        // enqueue).
+        // Eligible: add to WRR tournament pool.
+        candidates.add(
+            new SchedulerDispatcher.WrrCandidate(
+                jobId, laneKey, job.executionPolicy.priorityScore()));
+        candidateJobIds.add(jobId);
         candidatesFound++;
-        long vt = laneServiceCounts.getOrDefault(laneKey, 0L);
-
-        if (bestJobId == null || vt < bestVirtualTime) {
-          // Displace previous best candidate (if any) back to queue
-          if (bestJobId != null) {
-            releaseSnapshotLease(bestJobId);
-            readyQueue.requeue(
-                bestJobId,
-                cls,
-                jobs.get(bestJobId) != null
-                    ? jobs.get(bestJobId).executionPolicy.priorityScore()
-                    : 0L);
-            if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
-          }
-          bestJobId = jobId;
-          bestJob = job;
-          bestLaneKey = laneKey;
-          bestVirtualTime = vt;
-        } else {
-          // This candidate loses; requeue it
-          releaseSnapshotLease(jobId);
-          readyQueue.requeue(jobId, cls, job.executionPolicy.priorityScore());
-          if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
-        }
       }
 
-      if (bestJobId == null) {
-        // P0 guard: stop after the P0 class scan if any live P0 job was deferred.
-        if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
+      if (cls == StatsPriorityClass.P0_SYNC) {
+        p0BlockedCount += blockedThisClass;
+      }
+
+      // Run WRR tournament
+      Optional<SchedulerDispatcher.WrrCandidate> winnerOpt = dispatcher.selectWinner(candidates);
+
+      if (winnerOpt.isEmpty()) {
+        // No eligible candidate in this class.
+        if (SchedulerDispatcher.shouldBlockLowerClasses(cls, p0BlockedCount)) {
+          // Release all held snapshot leases (candidates is empty here, but be safe)
+          for (String id : candidateJobIds) {
+            releaseSnapshotLease(id);
+          }
           return Optional.empty();
         }
         continue;
       }
 
-      // Starvation aging: record that a long-waiting job was dispatched (or is about to be).
-      // agingTracker counts jobs that exceeded the aging threshold — it does NOT represent queue
-      // reordering. A future enhancement could apply a temporary class override in WRR accounting
-      // to give these jobs a real dispatch-order boost.
-      long ageMs = now - createdAtMs.getOrDefault(bestJobId, now);
-      agingTracker.recordIfEligible(bestJobId, ageMs, cls, now);
+      SchedulerDispatcher.WrrCandidate winner = winnerOpt.get();
 
-      final String finalBestJobId = bestJobId;
-      final String finalBestLaneKey = bestLaneKey;
+      // Release snapshot leases for all non-winners; requeue them.
+      for (int idx = 0; idx < candidateJobIds.size(); idx++) {
+        String id = candidateJobIds.get(idx);
+        if (!id.equals(winner.jobId())) {
+          releaseSnapshotLease(id);
+          ReconcileJob loserJob = jobs.get(id);
+          readyQueue.requeue(
+              id, cls, loserJob != null ? loserJob.executionPolicy.priorityScore() : 0L);
+          if (cls == StatsPriorityClass.P0_SYNC) {
+            p0BlockedCount++;
+          }
+        }
+      }
+
+      // Starvation aging
+      long ageMs = now - createdAtMs.getOrDefault(winner.jobId(), now);
+      agingTracker.recordIfEligible(winner.jobId(), ageMs, cls, now);
+
+      final String finalBestJobId = winner.jobId();
+      final String finalBestLaneKey = winner.laneKey();
 
       if (leased.add(finalBestJobId)) {
         String leaseEpoch = UUID.randomUUID().toString();
@@ -750,12 +886,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         if (!finalBestLaneKey.isBlank()) {
           activeJobIdByLaneKey.put(finalBestLaneKey, finalBestJobId);
         }
-        // Only update WRR virtual time for jobs that carry a lane key; blank-lane jobs
-        // (e.g. internal PLAN_CONNECTOR jobs with no scope table) have no fairness unit and must
-        // not accumulate in laneServiceCounts, which would cause unbounded map growth.
-        if (!finalBestLaneKey.isBlank()) {
-          laneServiceCounts.merge(finalBestLaneKey, 1L, Long::sum);
-        }
+        dispatcher.recordDispatch(finalBestLaneKey);
         jobs.computeIfPresent(
             finalBestJobId,
             (id, current) ->
@@ -786,38 +917,57 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                     current.fileGroupTask,
                     current.parentJobId));
         ReconcileJob leasedJob = jobs.get(finalBestJobId);
-        bandState.maybeClearRedOnP0Drain(readyQueue.sizeByAllClasses());
-        return Optional.of(
-            new LeasedJob(
-                leasedJob.jobId,
-                leasedJob.accountId,
-                leasedJob.connectorId,
-                leasedJob.fullRescan,
-                leasedJob.captureMode,
-                leasedJob.scope,
-                leasedJob.executionPolicy,
-                leaseEpoch,
-                pinnedExecutors.getOrDefault(finalBestJobId, ""),
-                leasedJob.executorId,
-                leasedJob.jobKind,
-                leasedJob.tableTask,
-                leasedJob.viewTask,
-                leasedJob.snapshotTask,
-                leasedJob.fileGroupTask,
-                leasedJob.parentJobId));
+        if (leasedJob == null) {
+          // Job was removed between leased.add() and jobs.get() — treat as a failed lease.
+          leased.remove(finalBestJobId);
+          leaseEpochs.remove(finalBestJobId);
+          leaseExpiresAtMs.remove(finalBestJobId);
+          if (!finalBestLaneKey.isBlank()) {
+            activeJobIdByLaneKey.remove(finalBestLaneKey, finalBestJobId);
+          }
+          releaseSnapshotLease(finalBestJobId);
+          readyQueue.requeue(finalBestJobId, cls, 0L);
+          if (cls == StatsPriorityClass.P0_SYNC) {
+            p0BlockedCount++;
+          }
+          // Fall through to P0 guard check below.
+        } else {
+          bandState.maybeClearRedOnP0Drain(readyQueue.sizeByAllClasses());
+          return Optional.of(
+              new LeasedJob(
+                  leasedJob.jobId,
+                  leasedJob.accountId,
+                  leasedJob.connectorId,
+                  leasedJob.fullRescan,
+                  leasedJob.captureMode,
+                  leasedJob.scope,
+                  leasedJob.executionPolicy,
+                  leaseEpoch,
+                  pinnedExecutors.getOrDefault(finalBestJobId, ""),
+                  leasedJob.executorId,
+                  leasedJob.jobKind,
+                  leasedJob.tableTask,
+                  leasedJob.viewTask,
+                  leasedJob.snapshotTask,
+                  leasedJob.fileGroupTask,
+                  leasedJob.parentJobId));
+        } // end else (leasedJob != null)
       } else {
-        // leased.add() returned false: another executor still holds the original lease (e.g. a
-        // JS_CANCELLING job that was re-enqueued by cancel() before its lease expires).  Requeue
-        // so the job stays in the skip-list and will be dispatched again once the lease expires and
-        // reclaimExpiredLeasesIfDue() clears it — or immediately if the lease expires first.
-        // Silently discarding here would cause a ~6 s cancel-poke latency gap.
+        // leased.add() returned false: another executor holds the original lease.
         releaseSnapshotLease(finalBestJobId);
-        readyQueue.requeue(finalBestJobId, cls, bestJob.executionPolicy.priorityScore());
-        if (cls == StatsPriorityClass.P0_SYNC) anyP0Requeued = true;
+        readyQueue.requeue(
+            finalBestJobId,
+            cls,
+            jobs.get(finalBestJobId) != null
+                ? jobs.get(finalBestJobId).executionPolicy.priorityScore()
+                : 0L);
+        if (cls == StatsPriorityClass.P0_SYNC) {
+          p0BlockedCount++;
+        }
       }
 
-      // P0 guard check after attempting to lease
-      if (cls == StatsPriorityClass.P0_SYNC && anyP0Requeued) {
+      // P0 guard check after attempting to lease the winner
+      if (SchedulerDispatcher.shouldBlockLowerClasses(cls, p0BlockedCount)) {
         return Optional.empty();
       }
     }
@@ -1568,7 +1718,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
    * key, or 0 if the lane has never been dispatched.
    */
   long laneServiceCountForTest(String laneKey) {
-    return laneServiceCounts.getOrDefault(laneKey, 0L);
+    return dispatcher.virtualTimeFor(laneKey);
   }
 
   private long backoffMs(int attempts) {

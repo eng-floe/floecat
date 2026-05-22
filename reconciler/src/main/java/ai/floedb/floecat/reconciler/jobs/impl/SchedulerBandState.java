@@ -25,9 +25,10 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Encapsulates the mutable health-band state for a single job-store instance.
  *
- * <p>Health band transitions follow asymmetric hysteresis: escalation is fast (within 1 s), while
- * YELLOW/ORANGE downgrade requires a full-state snapshot and is controlled by the caller (typically
- * at a 15 s cadence). RED clearance is immediate once the P0 ready queue empties.
+ * <p>Health band transitions follow asymmetric update paths: enqueue-time escalation is fast
+ * (within 1 s, via bounded depth checks), while full-scan recomputation (typically every 15 s)
+ * applies an authoritative value in either direction. RED clearance is immediate once the P0 ready
+ * queue empties.
  *
  * <p>Three methods cover the three call sites that affect band state:
  *
@@ -35,12 +36,18 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li>{@link #maybeEscalate} — called at enqueue time; rate-limited to once per second via CAS.
  *   <li>{@link #maybeClearRedOnP0Drain} — called after every successful dispatch; O(1) on the
  *       common path (not RED).
- *   <li>{@link #computeAndSet} — called from the periodic {@code queueStats()} full scan; the only
- *       place that can downgrade YELLOW or ORANGE.
+ *   <li>{@link #computeAndSet} — called from the periodic {@code queueStats()} full scan; applies
+ *       the authoritative band from the full snapshot.
  * </ol>
  *
- * <p>This class is package-private and shared by all {@link
- * ai.floedb.floecat.reconciler.jobs.ReconcileJobStore} implementations.
+ * <p>P1_FRESHNESS depth is intentionally excluded from band computation — P1 jobs are expected to
+ * drain within seconds of dispatch and should not affect the backpressure signal. A large P1
+ * backlog may therefore show GREEN band; monitor {@code queue.depth_by_class} with {@code
+ * priority_class=P1_FRESHNESS} separately if P1 SLO alerting is needed.
+ *
+ * <p>This class is declared {@code public} and shared across modules — used by both the in-memory
+ * store ({@code reconciler} module) and the durable store ({@code service} module). It is not part
+ * of the public API and must not be used outside of job-store implementations.
  */
 public final class SchedulerBandState {
 
@@ -142,19 +149,17 @@ public final class SchedulerBandState {
   /**
    * Authoritatively sets the band from a full-state snapshot.
    *
-   * <p>Called from the periodic {@code queueStats()} full scan — the only place that can downgrade
-   * YELLOW or ORANGE. Hard-sets (not CAS) because the caller holds the authoritative view of queue
-   * state at the time of the scan.
+   * <p>Called from the periodic {@code queueStats()} full scan. The full scan is authoritative for
+   * both escalation and downgrade because it has a complete queue snapshot (including oldest queued
+   * P0 age), unlike enqueue-time escalation which intentionally uses a bounded approximation.
    *
-   * <p>Known transient: if {@link #maybeEscalate} concurrently CAS-escalates to RED between the
-   * caller's snapshot collection and this call, the hard-set may overwrite RED. The next {@link
-   * #maybeEscalate} (within 1 s) re-escalates, but callers that only refresh via periodic {@code
-   * queueStats()} can observe the lower band for up to one full refresh interval (15 s by default
-   * in current service metrics scheduling).
+   * <p>This method therefore applies the computed band in both directions (up and down). A
+   * concurrent enqueue-time {@link #maybeEscalate} can still race with this write, but the next
+   * full scan (or next enqueue-time escalate) converges quickly.
    *
    * @param depths ready-queue depth by priority class (from the full scan)
    * @param oldestP0AgeMs age of the oldest P0 queued job; pass {@code 0L} if no P0 jobs
-   * @return the band that was computed and set
+   * @return the band that was computed and written
    */
   public SchedulerHealthBand computeAndSet(
       Map<StatsPriorityClass, Long> depths, long oldestP0AgeMs) {

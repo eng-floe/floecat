@@ -31,6 +31,7 @@ import ai.floedb.floecat.service.statistics.scheduler.SchedulerPreemptionPolicy.
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.NoopObservability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -58,7 +59,7 @@ class DefaultSchedulerProfileTest {
 
   @BeforeEach
   void setUp() {
-    profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, new NoopObservability());
+    profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
   }
 
   // ---------------------------------------------------------------------------
@@ -68,22 +69,22 @@ class DefaultSchedulerProfileTest {
   @Test
   void coverageNoneProducesHighestScore() {
     long score = scoreWith(ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty()));
-    // coverage=3*100=300, delta=2*50=100, age=1*100=100 → 500
-    assertEquals(500L, score);
+    // raw=3*100+2*50+1*100=500; normalised=round(500*500/600)=round(416.67)=417
+    assertEquals(417L, score);
   }
 
   @Test
   void coveragePartialProducesMidScore() {
     long score = scoreWith(ctx(CoverageLevel.PARTIAL, OptionalLong.empty(), OptionalLong.empty()));
-    // coverage=3*50=150, delta=2*50=100, age=1*100=100 → 350
-    assertEquals(350L, score);
+    // raw=3*50+2*50+1*100=350; normalised=round(350*500/600)=round(291.67)=292
+    assertEquals(292L, score);
   }
 
   @Test
   void coverageFullProducesZeroCoverageContribution() {
     long score = scoreWith(ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.empty()));
-    // coverage=3*0=0, delta=2*50=100, age=1*100=100 → 200
-    assertEquals(200L, score);
+    // raw=3*0+2*50+1*100=200; normalised=round(200*500/600)=round(166.67)=167
+    assertEquals(167L, score);
   }
 
   // ---------------------------------------------------------------------------
@@ -94,30 +95,30 @@ class DefaultSchedulerProfileTest {
   void largeDeltaProducesHighDeltaScore() {
     long score =
         scoreWith(ctx(CoverageLevel.NONE, OptionalLong.of(2_000_000L), OptionalLong.empty()));
-    // coverage=300, delta=2*80=160, age=100 → 560
-    assertEquals(560L, score);
+    // raw=300+160+100=560; normalised=round(560*500/600)=round(466.67)=467
+    assertEquals(467L, score);
   }
 
   @Test
   void mediumDeltaProducesMediumDeltaScore() {
     long score =
         scoreWith(ctx(CoverageLevel.NONE, OptionalLong.of(500_000L), OptionalLong.empty()));
-    // coverage=300, delta=2*40=80, age=100 → 480
-    assertEquals(480L, score);
+    // raw=300+80+100=480; normalised=round(480*500/600)=round(400.0)=400
+    assertEquals(400L, score);
   }
 
   @Test
   void smallDeltaProducesLowDeltaScore() {
     long score = scoreWith(ctx(CoverageLevel.NONE, OptionalLong.of(1_000L), OptionalLong.empty()));
-    // coverage=300, delta=2*10=20, age=100 → 420
-    assertEquals(420L, score);
+    // raw=300+20+100=420; normalised=round(420*500/600)=round(350.0)=350
+    assertEquals(350L, score);
   }
 
   @Test
   void unknownDeltaProducesMidDeltaScore() {
     long score = scoreWith(ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty()));
-    // coverage=300, delta=2*50=100 (unknown→50), age=100 → 500
-    assertEquals(500L, score);
+    // raw=300+100+100=500 (unknown delta→50); normalised=417
+    assertEquals(417L, score);
   }
 
   // ---------------------------------------------------------------------------
@@ -128,8 +129,8 @@ class DefaultSchedulerProfileTest {
   void neverCapturedProducesMaxAgeScore() {
     // lastCaptureMs absent → age=100; delta unknown → 50
     long score = scoreWith(ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.empty()));
-    // coverage=3*0=0, delta=2*50=100, age=1*100=100 → 200
-    assertEquals(200L, score);
+    // raw=0+100+100=200; normalised=round(200*500/600)=167
+    assertEquals(167L, score);
   }
 
   @Test
@@ -137,8 +138,8 @@ class DefaultSchedulerProfileTest {
     long lastCaptureMs = System.currentTimeMillis();
     long score =
         scoreWith(ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.of(lastCaptureMs)));
-    // coverage=0, delta=100 (unknown), age≈0 → ≈100; allow small clock skew
-    assertTrue(score < 110L, "Recent capture should yield low age contribution, got: " + score);
+    // raw=0+100+≈0=≈100; normalised≈round(100*500/600)=round(83.33)=83; allow small clock skew
+    assertTrue(score < 92L, "Recent capture should yield low age contribution, got: " + score);
   }
 
   @Test
@@ -147,8 +148,8 @@ class DefaultSchedulerProfileTest {
     long lastCaptureMs = System.currentTimeMillis() - halfAgeMs;
     long score =
         scoreWith(ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.of(lastCaptureMs)));
-    // coverage=0, delta=100 (unknown), age≈50 → ≈150; allow ±2 for clock drift
-    assertTrue(score >= 148L && score <= 152L, "Half-age capture should yield ~150, got: " + score);
+    // raw=0+100+≈50=≈150; normalised=round(150*500/600)=round(125.0)=125; allow ±2 for clock drift
+    assertTrue(score >= 123L && score <= 127L, "Half-age capture should yield ~125, got: " + score);
   }
 
   @Test
@@ -157,8 +158,8 @@ class DefaultSchedulerProfileTest {
     long lastCaptureMs = System.currentTimeMillis() - overdueMs;
     long score =
         scoreWith(ctx(CoverageLevel.FULL, OptionalLong.empty(), OptionalLong.of(lastCaptureMs)));
-    // coverage=0, delta=100 (unknown), age=100 (clamped) → 200
-    assertEquals(200L, score);
+    // raw=0+100+100=200 (age clamped); normalised=167
+    assertEquals(167L, score);
   }
 
   // ---------------------------------------------------------------------------
@@ -284,6 +285,163 @@ class DefaultSchedulerProfileTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Demand multiplier
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void zeroDemandAppliesFloorMultiplier() {
+    // floor=0.15, saturation=50; demand=0 → multiplier=0.15
+    // raw=500, costScore=2.0, maxRaw=600 → normalised=round(0.15*500/2.0*1000/600)=round(62.5)=63
+    var profile15 =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
+    long score =
+        profile15
+            .assign(
+                req("acct", "tbl"),
+                ctxWithDemand(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty(), 0L))
+            .score();
+    assertEquals(63L, score, "demand=0 should apply floor multiplier 0.15, normalised to 63");
+  }
+
+  @Test
+  void saturationDemandGivesMultiplierOne() {
+    // demand=50 (at saturation) → multiplier=1.0; normalised=417
+    long score = scoreWith(ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty()));
+    assertEquals(417L, score, "demand at saturation should give multiplier=1.0, normalised to 417");
+  }
+
+  @Test
+  void halfSaturationDemandGivesMidMultiplier() {
+    // floor=0.15, saturation=50; demand=25 → multiplier=0.15 + 0.85*0.5 = 0.575
+    // raw=500, costScore=2.0, maxRaw=600 →
+    // normalised=round(0.575*500/2.0*1000/600)=round(239.58)=240
+    var profile15 =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
+    long score =
+        profile15
+            .assign(
+                req("acct", "tbl"),
+                ctxWithDemand(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty(), 25L))
+            .score();
+    assertEquals(
+        240L, score, "demand=25 (half saturation) should give multiplier=0.575, normalised to 240");
+  }
+
+  @Test
+  void demandAboveSaturationDoesNotExceedMultiplierOne() {
+    // demand=200 (4× saturation) → multiplier still capped at 1.0; normalised=417
+    var profile15 =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
+    long score =
+        profile15
+            .assign(
+                req("acct", "tbl"),
+                ctxWithDemand(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty(), 200L))
+            .score();
+    assertEquals(
+        417L, score, "demand above saturation must not exceed multiplier=1.0, normalised to 417");
+  }
+
+  @Test
+  void higherDemandProducesHigherScoreThanLowerDemand() {
+    var lowCtx = ctxWithDemand(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty(), 5L);
+    var highCtx =
+        ctxWithDemand(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty(), 40L);
+    long lowScore = profile.assign(req("acct", "tbl"), lowCtx).score();
+    long highScore = profile.assign(req("acct", "tbl"), highCtx).score();
+    assertTrue(highScore > lowScore, "higher demand should produce higher score");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cost scoring
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void expensiveKindsReduceScoreRelativeToCheapKinds() {
+    // Same coverage/delta/age/demand; NDV is expensive (3.0) vs ROW_COUNT is cheap (1.0).
+    var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
+    var expensiveReq =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.NDV))
+            .build();
+    var cheapReq =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .build();
+    long expensiveScore = profile.assign(expensiveReq, ctx).score();
+    long cheapScore = profile.assign(cheapReq, ctx).score();
+    assertTrue(
+        cheapScore > expensiveScore,
+        "cheap kinds should produce higher score than expensive kinds");
+  }
+
+  @Test
+  void ndvOrHistogramCostIsThree() {
+    // costScore=3.0 for NDV: raw=500, multiplier=1.0, maxRaw=600
+    // normalised=round(500/3.0*1000/600)=round(277.78)=278
+    var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
+    var reqNdv =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.NDV))
+            .build();
+    assertEquals(278L, profile.assign(reqNdv, ctx).score());
+
+    var reqHist =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.HISTOGRAM))
+            .build();
+    assertEquals(278L, profile.assign(reqHist, ctx).score());
+  }
+
+  @Test
+  void rowCountCostIsOne() {
+    // costScore=1.0 for ROW_COUNT: raw=500, multiplier=1.0, maxRaw=600
+    // normalised=round(500/1.0*1000/600)=round(833.33)=833
+    var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
+    var reqRowCount =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .build();
+    assertEquals(833L, profile.assign(reqRowCount, ctx).score());
+  }
+
+  @Test
+  void mixedKindsUsesMostExpensiveCost() {
+    // NDV (3.0) mixed with ROW_COUNT (1.0) → costScore=3.0 → normalised=278
+    var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
+    var reqMixed =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl").build(),
+                1L,
+                ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance())
+            .requestedKinds(Set.of(StatsKind.NDV, StatsKind.ROW_COUNT))
+            .build();
+    assertEquals(278L, profile.assign(reqMixed, ctx).score());
+  }
+
+  @Test
+  void emptyKindsFallsBackToMediumCost() {
+    // Empty requestedKinds → costScore=2.0 → normalised=417
+    long score = scoreWith(ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty()));
+    assertEquals(417L, score, "empty kinds should use medium cost 2.0");
+  }
+
+  // ---------------------------------------------------------------------------
   // Lane key derivation
   // ---------------------------------------------------------------------------
 
@@ -321,15 +479,16 @@ class DefaultSchedulerProfileTest {
     var recordingObs =
         new CapturingSummaryObservability(
             capturedValues, ServiceMetrics.Reconcile.SCORING_SCORE_DIST);
-    var recordingProfile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, recordingObs);
+    var recordingProfile =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, recordingObs);
     var ctx = ctx(CoverageLevel.NONE, OptionalLong.empty(), OptionalLong.empty());
 
     recordingProfile.assign(req("acct", "tbl"), ctx);
 
     assertEquals(
         1, capturedValues.size(), "assign() should record exactly one summary observation");
-    // coverage=300, delta=100 (unknown→50×2), age=100 → 500
-    assertEquals(500.0, capturedValues.get(0), "Recorded score should equal computed score");
+    // raw=300+100+100=500, costScore=2.0 (empty kinds), maxRaw=600, multiplier=1.0 → normalised=417
+    assertEquals(417.0, capturedValues.get(0), "Recorded score should equal computed score");
   }
 
   // ---------------------------------------------------------------------------
@@ -340,9 +499,20 @@ class DefaultSchedulerProfileTest {
     return profile.assign(req("acct", "tbl"), context).score();
   }
 
-  /** Stub context with fixed coverage, delta, and lastCapture values. Band is always GREEN. */
+  /**
+   * Stub context with fixed coverage, delta, and lastCapture values. Band is always GREEN.
+   *
+   * <p>Returns demand at saturation (50) so the demand multiplier is 1.0, keeping existing score
+   * assertions numerically clean. Use {@link #ctxWithDemand} when testing the multiplier directly.
+   */
   private static SchedulerContext ctx(
       CoverageLevel coverage, OptionalLong deltaRows, OptionalLong lastCaptureMs) {
+    return ctxWithDemand(coverage, deltaRows, lastCaptureMs, 50L);
+  }
+
+  /** Stub context with configurable demand count, in addition to coverage/delta/lastCapture. */
+  private static SchedulerContext ctxWithDemand(
+      CoverageLevel coverage, OptionalLong deltaRows, OptionalLong lastCaptureMs, long demand) {
     return new SchedulerContext() {
       @Override
       public SchedulerHealthBand currentBand() {
@@ -367,6 +537,11 @@ class DefaultSchedulerProfileTest {
       @Override
       public OptionalLong snapshotDeltaRows(String tableId, long snapshotId) {
         return deltaRows;
+      }
+
+      @Override
+      public long recentPlannerRequestCount(String tableId) {
+        return demand;
       }
     };
   }

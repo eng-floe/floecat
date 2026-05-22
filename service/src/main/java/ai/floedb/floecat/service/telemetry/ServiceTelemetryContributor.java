@@ -56,6 +56,7 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Set<String> schedulerLaneRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, "lane_key");
     Set<String> schedulerProfileRequired =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, "profile_name");
+    Set<String> schedulerSignalRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, "signal_type");
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsAllowed =
         Set.of(
@@ -343,6 +344,18 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         schedulerProfileRequired,
         "Info gauge identifying the active scheduler profile (value=1; profile_name tag carries"
             + " the name). Emitted once at startup.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+        schedulerSignalRequired,
+        schedulerSignalRequired,
+        "Total number of scheduler signal reads that found a value, tagged by signal_type.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+        schedulerSignalRequired,
+        schedulerSignalRequired,
+        "Total number of scheduler signal reads that found no value, tagged by signal_type.");
     return Collections.unmodifiableMap(defs);
   }
 

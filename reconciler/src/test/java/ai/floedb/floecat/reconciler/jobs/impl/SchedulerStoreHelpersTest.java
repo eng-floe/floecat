@@ -151,4 +151,81 @@ class SchedulerStoreHelpersTest {
         SchedulerStoreHelpers.P2_AGING_THRESHOLD_MS,
         SchedulerStoreHelpers.agingThresholdMs(StatsPriorityClass.P2_REPAIR));
   }
+
+  // ---------------------------------------------------------------------------
+  // admissionDeferMs(cls, band, policyDeferred) — policy-layer DEFER override
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void policyDeferredFalseMatchesBandOnlyOverload() {
+    // When policyDeferred=false the three-arg overload must produce a value in the same outcome
+    // set as the two-arg overload for every (class, band) combination.
+    //
+    // For deterministic cases the values must be equal (two independent calls to either overload
+    // always return the same constant). For the probabilistic P3_BACKGROUND/YELLOW case, both
+    // overloads flip an independent coin — asserting equality between two independent draws would
+    // be a flawed test. Instead we verify that the three-arg result is drawn from the same
+    // outcome set {0, DEFER_DELAY_MS} and that it is *not* always DEFER_DELAY_MS (i.e. the
+    // policyDeferred=false path does not pin the result to the deferred constant).
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      for (SchedulerHealthBand band : SchedulerHealthBand.values()) {
+        boolean isProbabilistic =
+            cls == StatsPriorityClass.P3_BACKGROUND && band == SchedulerHealthBand.YELLOW;
+
+        if (isProbabilistic) {
+          // Both outcomes must be possible — same contract as the two-arg overload.
+          boolean sawZero = false;
+          boolean sawDelay = false;
+          for (int i = 0; i < 200 && !(sawZero && sawDelay); i++) {
+            long v = SchedulerStoreHelpers.admissionDeferMs(cls, band, false);
+            if (v == 0L) sawZero = true;
+            else if (v == SchedulerStoreHelpers.DEFER_DELAY_MS) sawDelay = true;
+          }
+          assertTrue(sawZero, "P3/YELLOW policyDeferred=false must occasionally return 0");
+          assertTrue(
+              sawDelay, "P3/YELLOW policyDeferred=false must occasionally return DEFER_DELAY_MS");
+        } else {
+          // Deterministic: two calls must agree.
+          long bandOnly = SchedulerStoreHelpers.admissionDeferMs(cls, band);
+          long withFalse = SchedulerStoreHelpers.admissionDeferMs(cls, band, false);
+          assertEquals(
+              bandOnly,
+              withFalse,
+              "policyDeferred=false must match two-arg overload for " + cls + "/" + band);
+        }
+      }
+    }
+  }
+
+  @Test
+  void policyDeferredTrueAppliesAtLeastDeferDelayForAllClasses() {
+    // When policyDeferred=true, the result must be >= DEFER_DELAY_MS for every (class, band)
+    // pair — including P0_SYNC and P1_FRESHNESS which the store would otherwise always admit.
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      for (SchedulerHealthBand band : SchedulerHealthBand.values()) {
+        long result = SchedulerStoreHelpers.admissionDeferMs(cls, band, true);
+        assertTrue(
+            result >= SchedulerStoreHelpers.DEFER_DELAY_MS,
+            "policyDeferred=true must produce >= DEFER_DELAY_MS for "
+                + cls
+                + "/"
+                + band
+                + "; got "
+                + result);
+      }
+    }
+  }
+
+  @Test
+  void policyDeferredTruePreservesHigherBandDelayWhenApplicable() {
+    // When the band-based deferral already equals DEFER_DELAY_MS, policyDeferred=true should
+    // not reduce it (result is max of band and DEFER_DELAY_MS).
+    long p3Orange =
+        SchedulerStoreHelpers.admissionDeferMs(
+            StatsPriorityClass.P3_BACKGROUND, SchedulerHealthBand.ORANGE, true);
+    assertEquals(
+        SchedulerStoreHelpers.DEFER_DELAY_MS,
+        p3Orange,
+        "P3/ORANGE with policyDeferred=true should equal DEFER_DELAY_MS");
+  }
 }

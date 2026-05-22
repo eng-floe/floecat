@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.jobs.impl.AgingPromotionTracker;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerDispatcher;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -100,6 +101,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   // Scheduler state — shared with InMemoryReconcileJobStore via the extracted helpers
   private final SchedulerBandState bandState = new SchedulerBandState();
   private final AgingPromotionTracker agingTracker = new AgingPromotionTracker();
+  // ---------------------------------------------------------------------------
+  // WRR + P0 guard state (shared with InMemoryReconcileJobStore via SchedulerDispatcher)
+  // ---------------------------------------------------------------------------
+  private final SchedulerDispatcher dispatcher = new SchedulerDispatcher();
   private final ConcurrentHashMap<StatsPriorityClass, AtomicLong> admissionDeferredByClass =
       buildAdmissionDeferredMap();
 
@@ -219,14 +224,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             pinnedExecutorId);
     String dedupePointerKey = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
 
-    // Compute admission deferral once — depends only on priority class and current band.
+    // Compute admission deferral once — depends only on priority class, current band, and whether
+    // the orchestrator-layer admission policy voted DEFER for this job.
     StatsPriorityClass enqueuePriorityClass = policy.priorityClass();
+    boolean policyDeferred =
+        "true"
+            .equals(
+                policy.attributes().getOrDefault(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED, ""));
     long enqueueDeferMs =
-        SchedulerStoreHelpers.admissionDeferMs(enqueuePriorityClass, bandState.current());
+        SchedulerStoreHelpers.admissionDeferMs(
+            enqueuePriorityClass, bandState.current(), policyDeferred);
 
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
       var existing = loadActiveFromDedupe(dedupePointerKey);
       if (existing.isPresent()) {
+        maybePromoteDedupedQueuedJob(existing.get(), policy, System.currentTimeMillis());
         return existing.get().jobId;
       }
 
@@ -573,6 +585,41 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return pointers.size();
   }
 
+  /**
+   * Mirrors {@link
+   * ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState#maybeClearRedOnP0Drain} for the
+   * durable store. Called after every successful dispatch; O(1) on the common path (band not RED).
+   * When RED, performs bounded prefix scans for all classes to determine the target band after P0
+   * drains, then delegates to {@code bandState.maybeClearRedOnP0Drain(depths)}.
+   *
+   * <p>Threshold scan limits mirror {@link
+   * ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState#P2_ORANGE_THRESHOLD} (200) and {@link
+   * ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState#P3_YELLOW_THRESHOLD} (500). Keep
+   * these values in sync with those constants.
+   */
+  private void maybeClearRedAfterDispatch(long nowMs) {
+    if (bandState.current() != SchedulerHealthBand.RED) {
+      return; // O(1) fast path — RED is an emergency state, rare in steady state
+    }
+    Map<StatsPriorityClass, Long> depths = new EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      depths.put(cls, 0L);
+    }
+    // Sample all classes to determine the correct target band after RED clears.
+    // Limit=1 for P0 (only need presence); limits for P2/P3 match band thresholds +1
+    // so computeRequired() can distinguish GREEN vs YELLOW vs ORANGE correctly.
+    depths.put(
+        StatsPriorityClass.P0_SYNC, countReadyPointersByClassUpTo(StatsPriorityClass.P0_SYNC, 1));
+    depths.put(
+        StatsPriorityClass.P2_REPAIR,
+        countReadyPointersByClassUpTo(StatsPriorityClass.P2_REPAIR, 201)); // P2_ORANGE_THRESHOLD+1
+    depths.put(
+        StatsPriorityClass.P3_BACKGROUND,
+        countReadyPointersByClassUpTo(
+            StatsPriorityClass.P3_BACKGROUND, 501)); // P3_YELLOW_THRESHOLD+1
+    bandState.maybeClearRedOnP0Drain(depths);
+  }
+
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
@@ -792,7 +839,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   existing.executionPolicy().priorityClass(),
                   existing.nextAttemptAtMs,
                   existing.accountId,
-                  existing.laneKey,
+                  effectiveLaneKey(existing),
                   existing.jobId);
           return existing;
         });
@@ -841,7 +888,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   existing.executionPolicy().priorityClass(),
                   existing.nextAttemptAtMs,
                   existing.accountId,
-                  existing.laneKey,
+                  effectiveLaneKey(existing),
                   existing.jobId);
           return existing;
         });
@@ -924,7 +971,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     existing.executionPolicy().priorityClass(),
                     now,
                     existing.accountId,
-                    existing.laneKey,
+                    effectiveLaneKey(existing),
                     existing.jobId);
             existing.updatedAtMs = now;
             return existing;
@@ -1389,13 +1436,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (record == null
         || record.accountId == null
         || record.accountId.isBlank()
-        || record.laneKey == null
-        || record.laneKey.isBlank()
         || blobUri == null
         || blobUri.isBlank()) {
       return false;
     }
-    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    // Use effectiveLaneKey so pre-migration records with null/blank laneKey are not permanently
+    // stuck — they get a per-job lane key (record.jobId) that is always valid and unique.
+    String lanePointerKey =
+        Keys.reconcileLaneLeasePointer(record.accountId, effectiveLaneKey(record));
     for (int i = 0; i < CAS_MAX; i++) {
       Pointer existing = pointerStore.get(lanePointerKey).orElse(null);
       if (existing == null) {
@@ -1407,7 +1455,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       if (blobUri.equals(existing.getBlobUri())) {
-        return false;
+        // The lane pointer already references our current blob URI — we own this lease (either
+        // from a prior dispatch attempt on the same canonical version that did not complete, or
+        // from a re-entry after restart). Treat as already-acquired and proceed.
+        return true;
       }
 
       var owner = currentJobRecordForBlobUri(existing.getBlobUri());
@@ -1443,13 +1494,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (record == null
         || record.accountId == null
         || record.accountId.isBlank()
-        || record.laneKey == null
-        || record.laneKey.isBlank()
         || expectedBlobUri == null
         || expectedBlobUri.isBlank()) {
       return;
     }
-    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    // Mirror effectiveLaneKey from tryAcquireLaneLease — must use the same key to release.
+    String lanePointerKey =
+        Keys.reconcileLaneLeasePointer(record.accountId, effectiveLaneKey(record));
     Pointer existing = pointerStore.get(lanePointerKey).orElse(null);
     if (existing == null) {
       return;
@@ -1539,6 +1590,77 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         pointerStore.get(canonicalPointerKey).orElse(canonicalPointer);
     var repairedRecordOpt = readRecord(repairedCanonicalPointer);
     return repairedRecordOpt.isPresent() ? repairedRecordOpt : Optional.of(record);
+  }
+
+  /**
+   * Promotes a deduped queued job when a stronger enqueue request arrives for the same logical
+   * work.
+   *
+   * <p>Only queued jobs are promoted. Running/cancelling jobs keep their existing priority until
+   * they requeue naturally.
+   */
+  private void maybePromoteDedupedQueuedJob(
+      StoredReconcileJob existing, ReconcileExecutionPolicy requestedPolicy, long now) {
+    if (existing == null
+        || requestedPolicy == null
+        || !"JS_QUEUED".equals(existing.state)
+        || blank(existing.accountId)
+        || blank(existing.jobId)) {
+      return;
+    }
+    ReconcileExecutionPolicy currentPolicy = existing.executionPolicy();
+    ReconcileExecutionPolicy promoted = promotedPriorityPolicy(currentPolicy, requestedPolicy);
+    if (promoted.priorityClass() == currentPolicy.priorityClass()
+        && promoted.priorityScore() == currentPolicy.priorityScore()) {
+      return;
+    }
+    String canonicalPointerKey = Keys.reconcileJobPointerById(existing.accountId, existing.jobId);
+    mutateByCanonicalPointer(
+        canonicalPointerKey,
+        record -> {
+          if (!"JS_QUEUED".equals(record.state)) {
+            return record;
+          }
+          ReconcileExecutionPolicy livePolicy = record.executionPolicy();
+          ReconcileExecutionPolicy livePromoted =
+              promotedPriorityPolicy(livePolicy, requestedPolicy);
+          if (livePromoted.priorityClass() == livePolicy.priorityClass()
+              && livePromoted.priorityScore() == livePolicy.priorityScore()) {
+            return record;
+          }
+          record.executionPriorityClass = livePromoted.priorityClass().name();
+          record.executionPriorityScore = livePromoted.priorityScore();
+          long dueAt = Math.min(Math.max(0L, record.nextAttemptAtMs), now);
+          record.nextAttemptAtMs = dueAt;
+          record.readyPointerKey =
+              Keys.reconcileReadyPointerByPriorityDue(
+                  livePromoted.priorityClass(),
+                  dueAt,
+                  record.accountId,
+                  effectiveLaneKey(record),
+                  record.jobId);
+          return record;
+        });
+  }
+
+  private static ReconcileExecutionPolicy promotedPriorityPolicy(
+      ReconcileExecutionPolicy currentPolicy, ReconcileExecutionPolicy requestedPolicy) {
+    StatsPriorityClass currentClass = currentPolicy.priorityClass();
+    StatsPriorityClass requestedClass = requestedPolicy.priorityClass();
+    StatsPriorityClass promotedClass =
+        requestedClass.ordinal() < currentClass.ordinal() ? requestedClass : currentClass;
+    long promotedScore =
+        (promotedClass == currentClass && promotedClass == requestedClass)
+            ? Math.max(currentPolicy.priorityScore(), requestedPolicy.priorityScore())
+            : (promotedClass == requestedClass
+                ? requestedPolicy.priorityScore()
+                : currentPolicy.priorityScore());
+    return new ReconcileExecutionPolicy(
+        currentPolicy.executionClass(),
+        currentPolicy.lane(),
+        currentPolicy.attributes(),
+        promotedClass,
+        promotedScore);
   }
 
   private void reclaimExpiredLeasesIfDue(long nowMs) {
@@ -1691,7 +1813,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   record.executionPolicy().priorityClass(),
                   nowMs,
                   record.accountId,
-                  record.laneKey,
+                  effectiveLaneKey(record),
                   record.jobId);
           return record;
         });
@@ -1700,20 +1822,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   /**
    * Dispatches the highest-priority ready job, scanning priority classes in order P0→P3.
    *
-   * <p>For each priority class, if any candidates are found (even if all are lane-blocked), the
-   * scan stops and does NOT fall through to a lower-priority class. This preserves the invariant
-   * that a lane-blocked P0 job is never bypassed by a P3 job in the same dispatch round.
+   * <p>For each priority class we lease one candidate if possible. If a class has no
+   * request-matching due jobs, or only jobs this executor cannot run (execution class / pinned
+   * filters), dispatch falls through to the next class.
+   *
+   * <p>Lower-class blocking is P0-only: if a request-matching P0 job exists but cannot be leased
+   * due to lane/snapshot contention or CAS races, dispatch returns empty rather than bypassing it
+   * with P1/P2/P3 work. Non-P0 contention does not block lower classes.
    *
    * <p><b>Schema note:</b> Only priority-prefixed keys (written by the priority-aware enqueue
    * paths) are scanned. Legacy keys (old format without priority prefix) are not dispatched; a
    * service restart is sufficient to clear them.
-   *
-   * <p><b>TODO (WRR fairness, Phase 2 deferral):</b> Within-class dispatch selects by score only.
-   * Weighted round-robin across lanes (to prevent one large tenant monopolising a priority bucket)
-   * is not yet implemented in this store. The {@link InMemoryReconcileJobStore} also does not
-   * implement WRR in the current codebase; it is deferred to a future phase alongside planner
-   * integration. Until then, a high-volume tenant with many high-score P3 jobs can starve other
-   * tenants within the same class.
    *
    * <p><b>TODO (preemption wiring, Phase 4):</b> Preemption (cancelling a running P3 job to free a
    * worker for an incoming P0/P1 job) requires: (1) checking {@code
@@ -1728,11 +1847,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     for (StatsPriorityClass priorityClass : StatsPriorityClass.values()) {
       ClassLeaseScanResult result = scanClassForLease(nowMs, request, priorityClass);
       if (result.leased().isPresent()) {
+        // Best-effort RED clearance: if P0 queue has drained, downgrade RED immediately rather
+        // than waiting for the next queueStats() refresh cycle. Unlike the in-memory store (which
+        // calls maybeClearRedOnP0Drain() O(1) after every dispatch via
+        // readyQueue.sizeByAllClasses),
+        // the durable store needs bounded prefix scans — so this is called only when RED is active.
+        maybeClearRedAfterDispatch(nowMs);
         return result.leased();
       }
-      if (result.blockLowerClasses()) {
+      if (result.blockLowerClasses()
+          && SchedulerDispatcher.shouldBlockLowerClasses(priorityClass, 1)) {
         // Request-matching candidates existed in this class but could not be leased (lane/snapshot
-        // contention or CAS races). Do not allow lower classes to bypass them.
+        // contention or CAS races). Do not allow lower classes to bypass blocked P0 work.
         return Optional.empty();
       }
       // No request-matching due candidates in this class; fall through to lower classes.
@@ -1746,10 +1872,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
    * @return a {@link ClassLeaseScanResult} indicating one of:
    *     <ul>
    *       <li>leased: a job was leased
-   *       <li>no-ready: no request-matching due candidates exist in this class (caller may fall
-   *           through)
-   *       <li>blocked: request-matching due candidates exist but could not be leased (caller must
-   *           not fall through)
+   *       <li>no-ready: no due candidates exist in this class, or none match this executor's
+   *           capabilities (execution class / pinned-executor filter). Caller may fall through to
+   *           lower priority classes — an executor that cannot run a HEAVY P0 job should still be
+   *           allowed to dispatch P3 DEFAULT work.
+   *       <li>blocked: this executor <em>could</em> run these jobs but none could be leased due to
+   *           lane-mutex contention or CAS races. Caller applies the P0-only guard policy.
    *     </ul>
    */
   private ClassLeaseScanResult scanClassForLease(
@@ -1759,7 +1887,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     int pages = 0;
     boolean foundAnyDueCandidate = false;
     boolean foundAnyMatchingDueCandidate = false;
-    List<ReadyLeaseCandidate> dueCandidates = new ArrayList<>();
+    Map<String, ReadyLeaseCandidate> laneRepresentatives = new LinkedHashMap<>();
     while (true) {
       StringBuilder next = new StringBuilder();
       List<Pointer> ready =
@@ -1796,8 +1924,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           continue;
         }
         foundAnyMatchingDueCandidate = true;
-        dueCandidates.add(
-            new ReadyLeaseCandidate(candidate, readyTarget, canonicalPointer, record, dueAt));
+        // Build one representative candidate per lane while scanning.
+        // This avoids materializing every due candidate in memory before WRR selection.
+        ReadyLeaseCandidate candidateEntry =
+            new ReadyLeaseCandidate(candidate, readyTarget, canonicalPointer, record, dueAt);
+        String lane = candidateEntry.record().laneKey;
+        if (lane == null || lane.isBlank()) {
+          lane =
+              candidateEntry.record()
+                  .jobId; // blank-lane jobs don't share a fairness unit; treat each as its own
+        }
+        laneRepresentatives.merge(
+            lane,
+            candidateEntry,
+            (existing, challenger) ->
+                challenger.record().executionPolicy().priorityScore()
+                        > existing.record().executionPolicy().priorityScore()
+                    ? challenger
+                    : existing);
       }
 
       if (hitFutureDue) {
@@ -1824,20 +1968,28 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
 
-    if (!foundAnyDueCandidate || !foundAnyMatchingDueCandidate || dueCandidates.isEmpty()) {
+    if (!foundAnyDueCandidate || !foundAnyMatchingDueCandidate || laneRepresentatives.isEmpty()) {
+      // No due candidates in this class that match this executor's capabilities (execution class,
+      // pinned-executor filter). Allow fallthrough to lower priority classes — a DEFAULT executor
+      // cannot help a HEAVY P0 job regardless, so blocking it would only reduce throughput.
+      // Note: the lane-blocked and CAS-raced cases are handled by the blocked() return at the end
+      // of the candidate loop below, which correctly prevents lower-priority fallthrough when
+      // this executor *could* run these jobs but the lane mutex is currently held.
       return ClassLeaseScanResult.noReadyCandidates();
     }
 
-    // Sort globally across all due pages, not page-by-page, so high-score jobs are never starved
-    // behind lower-score jobs that happen to appear earlier in key order.
-    dueCandidates.sort(
-        Comparator.comparingLong(
-                (ReadyLeaseCandidate c) -> c.record().executionPolicy().priorityScore())
-            .reversed()
-            .thenComparingLong(ReadyLeaseCandidate::dueAt)
-            .thenComparing(c -> c.record().jobId));
+    // Sort lane representatives: lowest WRR virtual time first; ties by score desc then due asc.
+    List<Map.Entry<String, ReadyLeaseCandidate>> orderedLanes =
+        new ArrayList<>(laneRepresentatives.entrySet());
+    orderedLanes.sort(
+        Comparator.<Map.Entry<String, ReadyLeaseCandidate>, Long>comparing(
+                e -> dispatcher.virtualTimeFor(e.getKey()))
+            .thenComparingLong(e -> -e.getValue().record().executionPolicy().priorityScore())
+            .thenComparingLong(e -> e.getValue().dueAt()));
 
-    for (ReadyLeaseCandidate candidate : dueCandidates) {
+    // Try to lease in WRR order. The first lane that succeeds wins this dispatch slot.
+    for (Map.Entry<String, ReadyLeaseCandidate> entry : orderedLanes) {
+      ReadyLeaseCandidate candidate = entry.getValue();
       StoredReconcileJob record = candidate.record();
       if (!tryAcquireLaneLease(record, candidate.canonicalPointer().getBlobUri(), nowMs)) {
         continue;
@@ -1855,14 +2007,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               candidate.canonicalPointer(),
               record);
       if (leased.isPresent()) {
-        // Record starvation-aging promotion if this job has been waiting too long.
         long ageMs = nowMs - Math.max(0L, record.createdAtMs);
         agingTracker.recordIfEligible(record.jobId, ageMs, priorityClass, nowMs);
+        // Use the canonical stored laneKey, not the WRR map key. For blank-lane jobs the WRR map
+        // key is record.jobId (so they sort as independent slots), but recordDispatch must receive
+        // the actual laneKey — blank laneKey is a no-op in SchedulerDispatcher and prevents the
+        // laneServiceCounts map from accumulating unbounded per-job entries.
+        dispatcher.recordDispatch(record.laneKey);
         return ClassLeaseScanResult.leased(leased.get());
       }
+      // leaseCanonical exhausted its CAS retries. The ready pointer was already deleted by
+      // compareAndDelete above — re-insert it so the job remains visible to future dispatch
+      // cycles. Without this, the job would be invisible until reclaim detects the inconsistency.
+      upsertReadyPointer(
+          candidate.readyPointer().getKey(), candidate.canonicalPointer().getBlobUri());
       clearLaneLeaseIfOwned(record, candidate.canonicalPointer().getBlobUri());
     }
 
+    // All compatible candidates were blocked (lane contention, CAS races).
+    // The P0 guard in leaseReadyDue() uses this result to prevent lower-priority fallthrough.
     return ClassLeaseScanResult.blocked();
   }
 
@@ -2013,7 +2176,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 record.executionPolicy().priorityClass(),
                 dueAt,
                 record.accountId,
-                record.laneKey,
+                effectiveLaneKey(record),
                 record.jobId)
             : record.readyPointerKey;
     boolean repaired = upsertReadyPointer(readyPointerKey, blobUri);
@@ -2235,8 +2398,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (hasActiveLaneLease(current, now) && !currentLanePointerKey.isBlank()) {
       if (!upsertBlobPointer(currentLanePointerKey, newBlobUri)) {
         LOG.warnf(
-            "Failed to update reconcile lane lease pointer for job %s laneKey=%s",
-            current.jobId, current.laneKey);
+            "Failed to update reconcile lane lease pointer for job %s effectiveLaneKey=%s",
+            current.jobId, effectiveLaneKey(current));
       }
     }
     if (!previousLanePointerKey.isBlank()
@@ -2445,14 +2608,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private static String laneLeasePointerKey(StoredReconcileJob record) {
-    if (record == null
-        || record.accountId == null
-        || record.accountId.isBlank()
-        || record.laneKey == null
-        || record.laneKey.isBlank()) {
+    if (record == null || record.accountId == null || record.accountId.isBlank()) {
       return "";
     }
-    return Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    // Use effectiveLaneKey so pre-migration records with null/blank laneKey produce the same
+    // pointer key that tryAcquireLaneLease / clearLaneLeaseIfOwned use. Without this, canonical
+    // blob rotations and terminal transitions in reconcileIndexPointers() compute a blank key for
+    // legacy records, skip the update/clear, and leak stale lane pointer blobs.
+    return Keys.reconcileLaneLeasePointer(record.accountId, effectiveLaneKey(record));
   }
 
   private static String dedupePointerKey(StoredReconcileJob record) {
@@ -2824,6 +2987,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return value == null ? "" : value.trim();
   }
 
+  /**
+   * Returns the canonical lane key for use in ready-pointer key synthesis. Falls back to the job ID
+   * when the stored lane key is null or blank (pre-migration records that predate the laneKey
+   * field). Using jobId as a fallback produces a valid, unique key segment and mirrors the WRR
+   * grouping logic in {@link #scanClassForLease} which also uses jobId for blank-lane slots.
+   */
+  private static String effectiveLaneKey(StoredReconcileJob record) {
+    return (record.laneKey != null && !record.laneKey.isBlank()) ? record.laneKey : record.jobId;
+  }
+
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value.trim();
   }
@@ -2865,7 +3038,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private record ClassLeaseScanResult(Optional<LeasedJob> leased, boolean blockLowerClasses) {
     private static ClassLeaseScanResult leased(LeasedJob leasedJob) {
-      return new ClassLeaseScanResult(Optional.of(leasedJob), true);
+      // blockLowerClasses=false: leaseReadyDue() returns before reaching the blockLowerClasses
+      // check when leased().isPresent(), so this field is not consulted on the success path.
+      // Using false avoids misleading readers into thinking a successful lease triggers the P0
+      // guard.
+      return new ClassLeaseScanResult(Optional.of(leasedJob), false);
     }
 
     private static ClassLeaseScanResult blocked() {

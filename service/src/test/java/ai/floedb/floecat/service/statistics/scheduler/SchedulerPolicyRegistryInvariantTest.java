@@ -158,7 +158,8 @@ class SchedulerPolicyRegistryInvariantTest {
 
   @Test
   void bootPassesForDefaultSchedulerProfile() {
-    var profile = new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, new NoopObservability());
+    var profile =
+        new DefaultSchedulerProfile(3, 2, 1, 86_400_000L, 0.15, 50L, new NoopObservability());
     var ctx = stubContext();
     // Should not throw — DefaultSchedulerProfile satisfies all three invariants.
     SchedulerPolicyRegistry.validateAdmissionP0Invariant(profile, ctx);

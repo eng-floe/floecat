@@ -75,4 +75,36 @@ public interface SchedulerContext {
    * conservative mid-range contribution.
    */
   OptionalLong snapshotDeltaRows(String tableId, long snapshotId);
+
+  /**
+   * Number of planner stats-resolution hits for the table in the current + previous demand window.
+   * A hit is recorded each time the planner calls {@code StatsOrchestrator.resolve()} or {@code
+   * resolveBatch()} for this table.
+   *
+   * <p>Used by the demand multiplier: heavily-requested tables receive a higher multiplier, causing
+   * their jobs to sort first within a priority class.
+   *
+   * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form.
+   *
+   * <p>Default implementation returns 0 (neutral — no demand multiplier applied), suitable for
+   * implementations that do not track demand.
+   */
+  default long recentPlannerRequestCount(String tableId) {
+    return 0L;
+  }
+
+  /**
+   * Number of planner demand hits for a specific column selector in the current + previous demand
+   * window. The {@code normalizedColumnSelector} must already be trimmed and lowercased.
+   *
+   * <p>Used by the demand multiplier when column-scoped stats jobs are being scored: columns that
+   * are actively requested by the planner receive a higher multiplier.
+   *
+   * <p>The {@code tableId} parameter must be in compound {@code accountId:tableId} form.
+   *
+   * <p>Default implementation returns 0.
+   */
+  default long recentColumnRequestCount(String tableId, String normalizedColumnSelector) {
+    return 0L;
+  }
 }

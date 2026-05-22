@@ -618,7 +618,7 @@ class StatsOrchestratorTest {
 
     StatsOrchestrator orchestrator =
         new StatsOrchestrator(
-            statsStore, jobStore, tableRepository, syncCapture, true, null, registryInstance);
+            statsStore, jobStore, tableRepository, syncCapture, true, null, registryInstance, null);
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(
@@ -651,7 +651,7 @@ class StatsOrchestratorTest {
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
     return new StatsOrchestrator(
-        statsStore, jobStore, tableRepository, syncCapture, true, null, null);
+        statsStore, jobStore, tableRepository, syncCapture, true, null, null, null);
   }
 
   private static StatsCaptureRequest tableRequest(StatsExecutionMode mode) {

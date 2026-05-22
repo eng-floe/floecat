@@ -91,6 +91,8 @@ This lists all metrics currently available in the repository:
 | floecat.service.reconcile.queue.depth_by_class | GAUGE |  | v1 | Current number of queued reconcile jobs broken down by priority class. | component, operation, priority_class | component, operation, priority_class |
 | floecat.service.reconcile.queue.oldest_age | GAUGE | ms | v1 | Age in milliseconds of the oldest queued reconcile job. | component, operation | component, operation |
 | floecat.service.reconcile.scoring.score_dist | SUMMARY |  | v1 | Distribution of priority scores assigned at enqueue time by the active scheduler profile. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.signal.known.total | COUNTER |  | v1 | Total number of scheduler signal reads that found a value, tagged by signal_type. | component, operation, signal_type | component, operation, signal_type |
+| floecat.service.reconcile.signal.unknown.total | COUNTER |  | v1 | Total number of scheduler signal reads that found no value, tagged by signal_type. | component, operation, signal_type | component, operation, signal_type |
 | floecat.service.reconcile.snapshots_processed.total | COUNTER |  | v1 | Snapshots processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.start_capture.total | COUNTER |  | v1 | StartCapture request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.stats_processed.total | COUNTER |  | v1 | Statistics payloads processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

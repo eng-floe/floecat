@@ -38,8 +38,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * agingTracker.recordIfEligible(bestJobId, ageMs, bestCls, now);
  * }</pre>
  *
- * <p>This class is package-private and shared by all {@link
- * ai.floedb.floecat.reconciler.jobs.ReconcileJobStore} implementations.
+ * <p>This class is declared {@code public} and shared across modules — used by both the in-memory
+ * store ({@code reconciler} module) and the durable store ({@code service} module). It is not part
+ * of the public API and must not be used outside of job-store implementations.
  */
 public final class AgingPromotionTracker {
 
@@ -64,7 +65,7 @@ public final class AgingPromotionTracker {
    */
   public void cleanupExpired(long now) {
     if (!promotedJobIds.isEmpty()) {
-      promotedJobIds.entrySet().removeIf(e -> e.getValue() < now);
+      promotedJobIds.entrySet().removeIf(e -> e.getValue() <= now);
     }
   }
 

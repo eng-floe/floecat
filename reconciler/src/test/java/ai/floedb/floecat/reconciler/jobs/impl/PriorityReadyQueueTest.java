@@ -163,6 +163,21 @@ class PriorityReadyQueueTest {
     assertNull(q.pollHighest(StatsPriorityClass.P1_FRESHNESS));
   }
 
+  @Test
+  void removeJobRemovesEntriesAcrossAllBuckets() {
+    PriorityReadyQueue q = new PriorityReadyQueue();
+    q.enqueue("shared", StatsPriorityClass.P3_BACKGROUND, 10L);
+    q.enqueue("shared", StatsPriorityClass.P2_REPAIR, 20L);
+    q.enqueue("shared", StatsPriorityClass.P1_FRESHNESS, 30L);
+    q.enqueue("other", StatsPriorityClass.P1_FRESHNESS, 40L);
+
+    long removed = q.removeJob("shared");
+    assertEquals(3L, removed);
+    assertEquals("other", q.pollHighest(StatsPriorityClass.P1_FRESHNESS));
+    assertNull(q.pollHighest(StatsPriorityClass.P2_REPAIR));
+    assertNull(q.pollHighest(StatsPriorityClass.P3_BACKGROUND));
+  }
+
   // ---- size tracking -------------------------------------------------------
 
   @Test

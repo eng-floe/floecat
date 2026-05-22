@@ -18,12 +18,14 @@ package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.EnumMap;
 import java.util.Map;
@@ -37,6 +39,7 @@ public class ReconcileQueueMetrics {
 
   @Inject ReconcileJobStore jobs;
   @Inject Observability observability;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   private final AtomicLong queued = new AtomicLong();
   private final AtomicLong running = new AtomicLong();
@@ -187,6 +190,71 @@ public class ReconcileQueueMetrics {
               al.set(0L);
             }
           });
+
+      // Drain and emit signal unknown-rate counters so operators can detect when the scoring
+      // signals are not being populated. High unknown rates indicate that the write path (e.g.
+      // SnapshotFinalizeReconcileExecutor or LeasedPlannerWorkerService) is not running or is
+      // failing before the signal recording calls.
+      if (signalIndexInstance != null && !signalIndexInstance.isUnsatisfied()) {
+        SchedulerSignalIndex signalIndex = signalIndexInstance.get();
+        long lastCaptureKnown = signalIndex.drainLastCaptureKnown();
+        long lastCaptureUnknown = signalIndex.drainLastCaptureUnknown();
+        long coverageKnown = signalIndex.drainCoverageKnown();
+        long coverageUnknown = signalIndex.drainCoverageUnknown();
+        long deltaKnown = signalIndex.drainDeltaKnown();
+        long deltaUnknown = signalIndex.drainDeltaUnknown();
+        Tag signalTypeLastCapture = Tag.of("signal_type", "last_capture");
+        Tag signalTypeCoverage = Tag.of("signal_type", "coverage");
+        Tag signalTypeDelta = Tag.of("signal_type", "delta");
+        if (lastCaptureKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              lastCaptureKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeLastCapture);
+        }
+        if (lastCaptureUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              lastCaptureUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeLastCapture);
+        }
+        if (coverageKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              coverageKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeCoverage);
+        }
+        if (coverageUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              coverageUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeCoverage);
+        }
+        if (deltaKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              deltaKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeDelta);
+        }
+        if (deltaUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              deltaUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeDelta);
+        }
+      }
     } catch (RuntimeException e) {
       // Warn rather than debug: a silent metrics failure leaves all gauges stale and is invisible
       // to on-call unless warn-level logging is enabled.

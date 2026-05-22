@@ -29,10 +29,12 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -50,6 +52,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   @Override
   public String id() {
@@ -302,6 +305,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     for (TargetStatsRecord aggregateStat : aggregateStats) {
       statsStore.putTargetStats(aggregateStat);
     }
+    // Signal the scheduler: this snapshot is now fully captured with stats outputs.
+    // Must be called only after the stats records are persisted — not on early-return paths.
+    recordFinalizedSnapshotSignal(
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
     return ExecutionResult.success(
         0,
         0,
@@ -339,6 +346,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 .setTotalSizeBytes(0L)
                 .build(),
             null));
+    // Signal the scheduler: empty snapshot is a valid finalized capture.
+    recordFinalizedSnapshotSignal(
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
     return 1L;
   }
 
@@ -611,6 +621,28 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return message.isBlank()
         ? describeGroup(expectedGroup)
         : describeGroup(expectedGroup) + ": " + message;
+  }
+
+  /**
+   * Records a finalized snapshot signal in the {@link SchedulerSignalIndex}. Called only from the
+   * two paths that successfully write stats outputs: the normal aggregate-stats write loop and the
+   * empty-snapshot completion marker. Must NOT be called on early-return paths that skip stats
+   * output (e.g. {@code !requestsStatsOutputs} or {@code aggregateKinds.isEmpty()}).
+   */
+  private void recordFinalizedSnapshotSignal(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) return;
+    try {
+      signalIndexInstance
+          .get()
+          .recordFinalizedSnapshot(accountId, tableId, snapshotId, System.currentTimeMillis());
+    } catch (RuntimeException e) {
+      // Signal recording is best-effort — never fail the finalization path.
+      LOG.debugf(
+          e,
+          "scheduler_signal_index error recording finalized snapshot table=%s snap=%d",
+          tableId,
+          snapshotId);
+    }
   }
 
   private static String blankToUnknown(String value) {

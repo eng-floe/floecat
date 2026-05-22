@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
@@ -30,10 +31,12 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.control.ActivateRequestContext;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,6 +54,8 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
   @Inject QueryContextStore queryStore;
 
   @Inject UserObjectBundleService bundles;
+
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   private static final Logger LOG = Logger.getLogger(UserObjectsServiceImpl.class);
 
@@ -101,6 +106,23 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                               QUERY_NOT_ACTIVE,
                               Map.of("query_id", queryId, "state", ctx.getState().name())));
                       return;
+                    }
+
+                    // Record per-table planner demand for scheduler scoring only after the
+                    // query context is validated and active.
+                    SchedulerSignalIndex signalIndex =
+                        signalIndexInstance == null || signalIndexInstance.isUnsatisfied()
+                            ? null
+                            : signalIndexInstance.get();
+                    if (signalIndex != null) {
+                      for (var candidate : request.getTablesList()) {
+                        for (QueryInput input : candidate.getCandidatesList()) {
+                          if (input.getTargetCase() == QueryInput.TargetCase.TABLE_ID) {
+                            signalIndex.recordTableDemand(
+                                input.getTableId().getAccountId(), input.getTableId().getId());
+                          }
+                        }
+                      }
                     }
 
                     var subscription =

@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
@@ -94,6 +95,12 @@ public class StatsOrchestrator {
    */
   private final SchedulerPolicyRegistry schedulerRegistry;
 
+  /**
+   * Signal index for in-process scoring signals. May be null in lightweight test paths that bypass
+   * CDI. When null, demand recording is skipped silently.
+   */
+  private final SchedulerSignalIndex signalIndex;
+
   @Inject
   public StatsOrchestrator(
       StatsStore statsStore,
@@ -103,7 +110,8 @@ public class StatsOrchestrator {
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
           boolean syncEnabled,
       Instance<Observability> observability,
-      Instance<SchedulerPolicyRegistry> schedulerRegistry) {
+      Instance<SchedulerPolicyRegistry> schedulerRegistry,
+      Instance<SchedulerSignalIndex> signalIndex) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
@@ -115,6 +123,8 @@ public class StatsOrchestrator {
         schedulerRegistry == null || schedulerRegistry.isUnsatisfied()
             ? null
             : schedulerRegistry.get();
+    this.signalIndex =
+        signalIndex == null || signalIndex.isUnsatisfied() ? null : signalIndex.get();
   }
 
   public StatsOrchestrator(
@@ -125,6 +135,7 @@ public class StatsOrchestrator {
         tableRepository,
         new StatsSyncCapture(reconcileJobStore),
         true,
+        null,
         null,
         null);
   }
@@ -138,6 +149,7 @@ public class StatsOrchestrator {
    */
   public StatsResolutionResult resolve(StatsCaptureRequest request) {
     long startNanos = System.nanoTime();
+    recordDemandSignals(request);
     Optional<TargetStatsRecord> stored = readStore(request);
     if (stored.isPresent()) {
       observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
@@ -199,6 +211,7 @@ public class StatsOrchestrator {
     ArrayList<StatsCaptureRequest> unresolvedForAsync = new ArrayList<>();
 
     for (StatsCaptureRequest request : requests) {
+      recordDemandSignals(request);
       Optional<TargetStatsRecord> stored = readStore(request);
       if (stored.isPresent()) {
         resolved.add(StatsResolutionResult.hit(stored.get()));
@@ -281,9 +294,32 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
+    // Record partial coverage so the scheduler can prefer incomplete snapshots over ones that
+    // have never been attempted. Done before enqueue so the signal is visible at assignment time.
+    if (signalIndex != null) {
+      signalIndex.recordPartialCoverage(
+          request.tableId().getAccountId(), request.tableId().getId(), request.snapshotId());
+    }
     // P2_REPAIR: async follow-up after a sync outcome of PARTIAL, TIMEOUT, or FAILED.
     // These jobs fill missing coverage without blocking the planner again.
     enqueueAsyncCaptureBatch(List.of(request), StatsPriorityClass.P2_REPAIR, reason);
+  }
+
+  /**
+   * Records planner demand signals for a single stats resolution request. Called at the top of
+   * {@link #resolve} and inside the {@link #resolveBatch} loop so that every planner stats read
+   * contributes to the scoring window regardless of outcome (hit, sync, or async fallback).
+   *
+   * <p>No-ops when {@link #signalIndex} is null (lightweight test paths without CDI).
+   */
+  private void recordDemandSignals(StatsCaptureRequest request) {
+    if (signalIndex == null) return;
+    String accountId = request.tableId().getAccountId();
+    String tableId = request.tableId().getId();
+    signalIndex.recordTableDemand(accountId, tableId);
+    for (String selector : request.columnSelectors()) {
+      signalIndex.recordColumnDemand(accountId, tableId, selector);
+    }
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -445,10 +481,13 @@ public class StatsOrchestrator {
               .max(Comparator.comparingLong(SchedulerPriorityPolicy.PriorityAssignment::score))
               .orElseGet(() -> computeAssignment(first, schedulerRegistry, fallbackLaneKey));
 
-      // Admission control: REJECT skips the enqueue entirely and returns a degraded result.
-      // DEFER and ADMIT both proceed to enqueue; band-based deferral timing is applied inside
-      // InMemoryReconcileJobStore, which enforces the same admit/defer/defer logic derived from
-      // the active health band.
+      // Admission control:
+      //   REJECT — skip enqueue entirely; return degraded result.
+      //   DEFER  — enqueue with policy_deferred=true in attributes; both stores honour this flag
+      //            to apply at least DEFER_DELAY_MS regardless of their band-based logic. This
+      //            ensures custom profile DEFER semantics take effect even for priority classes
+      //            (e.g. P1_FRESHNESS) that the store would otherwise admit without delay.
+      //   ADMIT  — enqueue with no deferral override; store band logic applies as normal.
       SchedulerAdmissionPolicy.AdmissionDecision admissionDecision =
           computeAdmissionDecision(assignment, priorityClass, schedulerRegistry);
       if (admissionDecision == SchedulerAdmissionPolicy.AdmissionDecision.REJECT) {
@@ -470,12 +509,29 @@ public class StatsOrchestrator {
             .toList();
       }
 
+      boolean policyDeferred =
+          admissionDecision == SchedulerAdmissionPolicy.AdmissionDecision.DEFER;
+      if (policyDeferred) {
+        LOG.debugf(
+            "stats_enqueue outcome=DEFERRED_BY_POLICY table=%s reason=%s priority=%s",
+            first.tableId(), enqueueReason, priorityClass);
+        incrementCounter(
+            ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+            1,
+            Tag.of("priority_class", priorityClass.name().toLowerCase()),
+            Tag.of(TagKey.REASON, enqueueReason));
+      }
+      Map<String, String> attrs =
+          policyDeferred
+              ? Map.of(
+                  "enqueue_reason",
+                  enqueueReason,
+                  ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED,
+                  "true")
+              : Map.of("enqueue_reason", enqueueReason);
       ReconcileExecutionPolicy executionPolicy =
           ReconcileExecutionPolicy.of(
-              priorityClass,
-              assignment.laneKey(),
-              Map.of("enqueue_reason", enqueueReason),
-              assignment.score());
+              priorityClass, assignment.laneKey(), attrs, assignment.score());
 
       String jobId =
           reconcileJobStore.enqueue(
