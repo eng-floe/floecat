@@ -124,7 +124,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       ResourceId tableId = request.getTableId();
       SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
       EngineContext engineCtx = engineContext.engineContext();
-      var statsProvider = statsFactory.forQuery(queryCtx, correlationIdHolder.get());
+      var statsProvider = statsFactory.forSystemScan(queryCtx, correlationIdHolder.get());
       SystemObjectScanContext ctx =
           new SystemObjectScanContext(
               graph,

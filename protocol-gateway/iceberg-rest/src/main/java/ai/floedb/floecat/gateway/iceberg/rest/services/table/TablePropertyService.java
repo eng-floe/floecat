@@ -31,6 +31,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -46,15 +47,10 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class TablePropertyService {
   private static final Logger LOG = Logger.getLogger(TablePropertyService.class);
-  private static final Set<String> RESERVED_REMOVE_PROPERTIES = Set.of("format-version");
+  private static final Set<String> RESERVED_REMOVE_PROPERTIES =
+      Set.of(ManagedTableProperties.FORMAT_VERSION);
   private static final Set<String> TABLE_DEFINITION_PROPERTY_KEYS =
-      Set.of(
-          "format-version",
-          "last-column-id",
-          "current-schema-id",
-          "default-spec-id",
-          "last-partition-id",
-          "default-sort-order-id");
+      ManagedTableProperties.tableDefinitionKeys();
 
   @Inject TableCommitMetadataMutator metadataMutator;
 

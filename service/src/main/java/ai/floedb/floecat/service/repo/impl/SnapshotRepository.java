@@ -94,18 +94,19 @@ public class SnapshotRepository {
     }
     String currentSnapshotId = table.get().getPropertiesMap().get("current-snapshot-id");
     if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
-      return Optional.empty();
+      return latestSnapshotByTime(tableId);
     }
     long snapshotId;
     try {
       snapshotId = Long.parseLong(currentSnapshotId);
     } catch (NumberFormatException e) {
-      return Optional.empty();
+      return latestSnapshotByTime(tableId);
     }
     if (snapshotId < 0) {
-      return Optional.empty();
+      return latestSnapshotByTime(tableId);
     }
-    return getById(tableId, snapshotId);
+    Optional<Snapshot> current = getById(tableId, snapshotId);
+    return current.isPresent() ? current : latestSnapshotByTime(tableId);
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
@@ -157,5 +158,35 @@ public class SnapshotRepository {
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
     return repo.metaForSafe(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  private Optional<Snapshot> latestSnapshotByTime(ResourceId tableId) {
+    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    Snapshot best = null;
+    long bestCreatedMs = Long.MIN_VALUE;
+
+    do {
+      List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
+      for (Snapshot snapshot : batch) {
+        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
+        if (best == null) {
+          best = snapshot;
+          bestCreatedMs = createdMs;
+          continue;
+        }
+        if (createdMs != bestCreatedMs) {
+          return Optional.of(best);
+        }
+        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
+          best = snapshot;
+        }
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+
+    return Optional.ofNullable(best);
   }
 }

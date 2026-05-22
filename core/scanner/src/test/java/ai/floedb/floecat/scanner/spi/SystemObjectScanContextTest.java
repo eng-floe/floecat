@@ -78,7 +78,6 @@ class SystemObjectScanContextTest {
             Optional.empty(), // currentSnapshot
             Optional.empty(), // previousSnapshot
             Optional.empty(), // resolvedSnapshots
-            Optional.empty(), // statsSummary
             List.of(), // dependentViews
             Map.of(), // engineHints
             Map.of()); // columnHints
@@ -114,7 +113,6 @@ class SystemObjectScanContextTest {
             Optional.empty(), // currentSnapshot
             Optional.empty(), // previousSnapshot
             Optional.empty(), // resolvedSnapshots
-            Optional.empty(), // statsSummary
             List.of(), // dependentViews
             Map.of(), // engineHints
             Map.of()); // columnHints
@@ -171,7 +169,6 @@ class SystemObjectScanContextTest {
             "{}",
             Map.of(),
             List.of(),
-            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),

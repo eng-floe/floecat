@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import io.quarkus.arc.Unremovable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
@@ -38,6 +39,7 @@ import org.jboss.logging.Logger;
 
 /** Stores and updates encoded engine hints inside table/view metadata. */
 @ApplicationScoped
+@Unremovable
 public final class EngineHintPersistenceImpl implements EngineHintPersistence {
 
   private static final Logger LOG = Logger.getLogger(EngineHintPersistenceImpl.class);

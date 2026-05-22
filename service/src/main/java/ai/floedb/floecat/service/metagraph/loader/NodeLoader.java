@@ -170,7 +170,6 @@ public class NodeLoader {
         Optional.<SnapshotRef>empty(),
         Optional.<SnapshotRef>empty(),
         Optional.empty(),
-        Optional.empty(),
         List.of(),
         hints.engineHints(),
         hints.columnHints());

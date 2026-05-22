@@ -217,5 +217,15 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId SYNC_OUTCOMES_TOTAL =
+        new MetricId(
+            "floecat.service.stats.sync_outcomes.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId SYNC_LATENCY =
+        new MetricId(
+            "floecat.service.stats.sync.latency", MetricType.TIMER, "ms", CONTRACT, "service");
   }
 }

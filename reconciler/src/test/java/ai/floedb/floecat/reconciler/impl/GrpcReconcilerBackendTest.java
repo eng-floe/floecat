@@ -65,6 +65,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngine;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
@@ -739,36 +740,6 @@ class GrpcReconcilerBackendTest {
             "output_columns");
   }
 
-  private static ReconcileContext reconcileContext() {
-    return new ReconcileContext(
-        "corr",
-        PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
-        "svc",
-        Instant.now(),
-        Optional.empty());
-  }
-
-  @SuppressWarnings("unchecked")
-  private static List<PutTargetStatsRequest> invokeGroupTargetRequests(
-      GrpcReconcilerBackend backend, List<TargetStatsRecord> stats) throws Exception {
-    Method method =
-        GrpcReconcilerBackend.class.getDeclaredMethod("groupTargetRequests", List.class);
-    method.setAccessible(true);
-    return (List<PutTargetStatsRequest>) method.invoke(backend, stats);
-  }
-
-  private static TargetStatsRecord fileStatsRecord(
-      ResourceId tableId, long snapshotId, String filePath) {
-    return TargetStatsRecord.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setTarget(
-            StatsTarget.newBuilder()
-                .setFile(FileStatsTarget.newBuilder().setFilePath(filePath).build())
-                .build())
-        .build();
-  }
-
   @Test
   void updateTableByIdRetriesFailedPreconditionAndSucceeds() {
     GrpcReconcilerBackend backend =
@@ -819,7 +790,7 @@ class GrpcReconcilerBackendTest {
             tableId,
             namespaceId,
             NameRef.newBuilder().setCatalog("cat").addPath("main").setName("orders").build(),
-            new ReconcilerBackend.TableSpecDescriptor(
+            new TableSpecDescriptor(
                 "main",
                 "orders",
                 "{}",
@@ -839,5 +810,35 @@ class GrpcReconcilerBackendTest {
     assertThat(changed).isTrue();
     verify(backend.table, org.mockito.Mockito.times(2)).updateTable(any());
     verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
+  }
+
+  private static ReconcileContext reconcileContext() {
+    return new ReconcileContext(
+        "corr",
+        PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
+        "svc",
+        Instant.now(),
+        Optional.empty());
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<PutTargetStatsRequest> invokeGroupTargetRequests(
+      GrpcReconcilerBackend backend, List<TargetStatsRecord> stats) throws Exception {
+    Method method =
+        GrpcReconcilerBackend.class.getDeclaredMethod("groupTargetRequests", List.class);
+    method.setAccessible(true);
+    return (List<PutTargetStatsRequest>) method.invoke(backend, stats);
+  }
+
+  private static TargetStatsRecord fileStatsRecord(
+      ResourceId tableId, long snapshotId, String filePath) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setTarget(
+            StatsTarget.newBuilder()
+                .setFile(FileStatsTarget.newBuilder().setFilePath(filePath).build())
+                .build())
+        .build();
   }
 }

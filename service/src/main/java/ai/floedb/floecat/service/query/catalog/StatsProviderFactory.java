@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -26,13 +27,18 @@ import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsResolutionResult;
+import io.smallrye.config.ConfigMapping;
+import io.smallrye.config.WithDefault;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -48,20 +54,58 @@ public final class StatsProviderFactory {
   private final StatsOrchestrator statsOrchestrator;
   private final TableRepository tableRepository;
   private final QueryContextStore queryStore;
+  private final SnapshotRepository snapshotRepository;
+  private final Duration syncLatencyBudget;
+  private final Duration syncMaxLatencyBudget;
+  private final boolean syncEnabled;
 
   @Inject
   public StatsProviderFactory(
       StatsOrchestrator statsOrchestrator,
       TableRepository tableRepository,
-      QueryContextStore queryStore) {
+      QueryContextStore queryStore,
+      SnapshotRepository snapshotRepository,
+      StatsProviderFactoryConfig config) {
     this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
     this.queryStore = queryStore;
+    this.snapshotRepository = snapshotRepository;
+    this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
+    this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
+    this.syncEnabled = config.syncEnabled();
+  }
+
+  public StatsProviderFactory(
+      StatsOrchestrator statsOrchestrator,
+      TableRepository tableRepository,
+      QueryContextStore queryStore) {
+    this(statsOrchestrator, tableRepository, queryStore, null, defaultConfig());
   }
 
   public StatsProvider forQuery(QueryContext ctx, String correlationId) {
     return new CachedStatsProvider(
-        statsOrchestrator, tableRepository, queryStore, ctx, correlationId);
+        statsOrchestrator,
+        tableRepository,
+        queryStore,
+        snapshotRepository,
+        ctx,
+        correlationId,
+        false,
+        syncLatencyBudget,
+        syncEnabled);
+  }
+
+  public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
+    return new CachedStatsProvider(
+        statsOrchestrator,
+        tableRepository,
+        queryStore,
+        snapshotRepository,
+        ctx,
+        correlationId,
+        true,
+        syncLatencyBudget,
+        syncEnabled);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -72,31 +116,68 @@ public final class StatsProviderFactory {
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
+    private final SnapshotRepository snapshotRepository;
     private final SnapshotPinResolver pinResolver;
     private final String correlationId;
+    private final boolean allowUnpinnedLatestSnapshotFallback;
+    private final Duration syncLatencyBudget;
+    private final boolean syncEnabled;
     private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
         tableCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<ResourceId, OptionalLong> latestSnapshotCache =
+        new ConcurrentHashMap<>();
 
     private CachedStatsProvider(
         StatsOrchestrator statsOrchestrator,
         TableRepository tableRepository,
         QueryContextStore queryStore,
+        SnapshotRepository snapshotRepository,
         QueryContext ctx,
-        String correlationId) {
+        String correlationId,
+        boolean allowUnpinnedLatestSnapshotFallback,
+        Duration syncLatencyBudget,
+        boolean syncEnabled) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
+      this.snapshotRepository = snapshotRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
+      this.syncLatencyBudget = syncLatencyBudget;
+      this.syncEnabled = syncEnabled;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
+      this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
 
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
-      return pinResolver.withPinnedSnapshot(
-          tableId,
-          snapshotId ->
-              tableCache.computeIfAbsent(
-                  SnapshotScopedRelationKey.of(tableId, snapshotId),
-                  key -> safeTableStats(tableId, snapshotId)));
+      if (allowUnpinnedLatestSnapshotFallback) {
+        return latestSnapshotTableStats(tableId);
+      }
+      Optional<StatsProvider.TableStatsView> pinnedStats =
+          pinResolver.withPinnedSnapshot(
+              tableId,
+              snapshotId ->
+                  tableCache.computeIfAbsent(
+                      SnapshotScopedRelationKey.of(tableId, snapshotId),
+                      key -> safeTableStats(tableId, snapshotId)));
+      if (pinnedStats.isPresent()) {
+        return pinnedStats;
+      }
+      return Optional.empty();
+    }
+
+    private Optional<StatsProvider.TableStatsView> latestSnapshotTableStats(ResourceId tableId) {
+      if (!allowUnpinnedLatestSnapshotFallback || tableId == null || snapshotRepository == null) {
+        return Optional.empty();
+      }
+      OptionalLong latestSnapshotId =
+          latestSnapshotCache.computeIfAbsent(tableId, id -> resolveLatestSnapshotId(id));
+      if (latestSnapshotId.isEmpty()) {
+        return Optional.empty();
+      }
+      long snapshotId = latestSnapshotId.getAsLong();
+      return tableCache.computeIfAbsent(
+          SnapshotScopedRelationKey.of(tableId, snapshotId),
+          key -> safeTableStats(tableId, snapshotId));
     }
 
     @Override
@@ -108,6 +189,18 @@ public final class StatsProviderFactory {
     @Override
     public OptionalLong pinnedSnapshotId(ResourceId tableId) {
       return pinResolver.pinnedSnapshotId(tableId);
+    }
+
+    private OptionalLong resolveLatestSnapshotId(ResourceId tableId) {
+      try {
+        Optional<Snapshot> snapshot = snapshotRepository.getCurrentSnapshot(tableId);
+        if (snapshot.isPresent()) {
+          return OptionalLong.of(snapshot.get().getSnapshotId());
+        }
+      } catch (RuntimeException e) {
+        LOG.debugf(e, "latest snapshot lookup failed for %s", tableId);
+      }
+      return OptionalLong.empty();
     }
 
     private Optional<StatsProvider.TableStatsView> safeTableStats(
@@ -123,12 +216,14 @@ public final class StatsProviderFactory {
                 .columnSelectors(Set.of())
                 // Empty requested kinds means "accept any available stat family".
                 .requestedKinds(Set.of())
-                .executionMode(StatsExecutionMode.SYNC)
+                .executionMode(syncEnabled ? StatsExecutionMode.SYNC : StatsExecutionMode.ASYNC)
                 .connectorType(connectorTypeFor(tableId))
                 .correlationId(correlationId)
+                .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
-        return statsOrchestrator
-            .resolve(request)
+        StatsResolutionResult result = statsOrchestrator.resolve(request);
+        return result
+            .stats()
             .filter(TargetStatsRecord::hasTable)
             .map(CachedStatsProvider::toTableStatsView);
       } catch (RuntimeException e) {
@@ -146,12 +241,14 @@ public final class StatsProviderFactory {
                 .columnSelectors(Set.of())
                 // Empty requested kinds means "accept any available stat family".
                 .requestedKinds(Set.of())
-                .executionMode(StatsExecutionMode.SYNC)
+                .executionMode(syncEnabled ? StatsExecutionMode.SYNC : StatsExecutionMode.ASYNC)
                 .connectorType(connectorTypeFor(tableId))
                 .correlationId(correlationId)
+                .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
-        return statsOrchestrator
-            .resolve(request)
+        StatsResolutionResult result = statsOrchestrator.resolve(request);
+        return result
+            .stats()
             .filter(TargetStatsRecord::hasScalar)
             .map(CachedStatsProvider::toColumnStatsView);
       } catch (RuntimeException e) {
@@ -250,5 +347,58 @@ public final class StatsProviderFactory {
     stats.rowCountValue().ifPresent(builder::setRowCount);
     stats.totalSizeBytesValue().ifPresent(builder::setTotalSizeBytes);
     return builder.build();
+  }
+
+  @ConfigMapping(prefix = "floecat.stats.sync")
+  interface StatsProviderFactoryConfig {
+    @WithDefault("1s")
+    Duration latencyBudget();
+
+    @WithDefault("true")
+    boolean enabled();
+
+    @WithDefault("10s")
+    Duration maxLatencyBudget();
+
+    default Duration syncLatencyBudget() {
+      return latencyBudget();
+    }
+
+    default boolean syncEnabled() {
+      return enabled();
+    }
+
+    default Duration syncMaxLatencyBudget() {
+      return maxLatencyBudget();
+    }
+  }
+
+  private static StatsProviderFactoryConfig defaultConfig() {
+    return new StatsProviderFactoryConfig() {
+      @Override
+      public Duration latencyBudget() {
+        return Duration.ofSeconds(1);
+      }
+
+      @Override
+      public boolean enabled() {
+        return true;
+      }
+
+      @Override
+      public Duration maxLatencyBudget() {
+        return Duration.ofSeconds(10);
+      }
+    };
+  }
+
+  private static Duration clampToMax(Duration requested, Duration max) {
+    if (requested == null) {
+      return max;
+    }
+    if (max == null || max.isZero() || max.isNegative()) {
+      return requested;
+    }
+    return requested.compareTo(max) > 0 ? max : requested;
   }
 }

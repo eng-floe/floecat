@@ -47,7 +47,6 @@ public final class TestNodes {
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
-        Optional.empty(),
         List.of(),
         Map.of(),
         Map.of());

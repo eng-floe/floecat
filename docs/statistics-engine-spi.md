@@ -77,11 +77,12 @@ This SPI does **not** implement by itself:
 
 - target-native planner payload evolution
 - compute expression engines
-- sync budget orchestration
-- async reconcile policy
 - multi-provider field-level composition
 
 This is intentionally a thin orchestration layer; engine quality/policy evolves independently.
+
+See [stats-sync-policy.md](stats-sync-policy.md) for the sync-first resolution policy and
+config knobs.
 
 ## Capability model
 
@@ -104,21 +105,36 @@ order.
 
 ## Routing behavior
 
-`StatsOrchestrator.resolve(request)` / `resolveBatch(batchRequest)`:
+`StatsOrchestrator.resolve(request)`:
 
-1. checks `StatsStore` for an existing record
-2. for `SYNC`, calls `StatsEngineRegistry.captureBatch()` on miss (single-item requests are
-   wrapped via `StatsCaptureBatchRequest.of(request)`)
-3. if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped `CAPTURE_ONLY` follow-up carrying the
-   unresolved table-scoped stats requests and returns empty for unresolved items
+Returns a `StatsResolutionResult` carrying an outcome enum and optional stats payload.
 
-Current enqueue policy:
+1. Reads `StatsStore` → **HIT**: returns stats immediately, no capture triggered.
+2. On miss, if `executionMode == SYNC` and a `latencyBudget` is present and
+   `floecat.stats.sync.enabled=true`:
+   - Enqueues a `CAPTURE_ONLY` reconcile job and polls every 100 ms until the job reaches a
+     terminal state or the budget expires.
+   - On success, re-reads the store → **CAPTURED**: returns stats + schedules no follow-up.
+   - On timeout (budget exceeded) → **TIMEOUT**: enqueues async follow-up, returns empty.
+   - On failure (no connector, job error) → **FAILED**: enqueues async follow-up, returns empty.
+3. Otherwise (ASYNC mode, no budget, or sync disabled) → **SKIPPED**: enqueues async reconcile job
+   and returns empty.
 
-- enqueue fallback is currently miss-based
-- enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
-  candidate for the requested target
-- async enqueue scope is table-scoped and uses reconcile `ScopedStatsRequest` payloads:
-  `table_id` + `snapshot_id` + encoded `target_spec` + `column_selectors`
+`StatsOrchestrator.resolveBatch(batchRequest)`:
+
+Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
+Each item is a store read; misses fall back to async enqueue with `SKIPPED` outcome.
+
+Async enqueue policy:
+
+- Enqueue scope is table-scoped using `ReconcileScope.ScopedCaptureRequest` payloads:
+  `table_id` + `snapshot_id` + encoded `target_spec` + `column_selectors`.
+- `columnSelectors` from the original request are preserved unchanged in follow-up enqueues
+  (no scope widening).
+- Follow-up enqueues are tagged with a reason: `sync_followup_timeout`, `sync_followup_failed`,
+  `sync_followup_partial`, or `async_mode` / `no_budget` / `sync_disabled` for SKIPPED outcomes.
+
+See [stats-sync-policy.md](stats-sync-policy.md) for configuration, tuning, and troubleshooting.
 
 `StatsEngineRegistry.captureBatch(batchRequest)`:
 
@@ -221,4 +237,5 @@ CDI guidance:
 ## Typical extensions
 
 - Add compute-backed expression engines through this SPI.
-- Add budgeted sync orchestration and async follow-up on partial outcomes.
+- Tune sync capture budgets via `floecat.stats.sync.latency-budget` (see
+  [stats-sync-policy.md](stats-sync-policy.md)).
