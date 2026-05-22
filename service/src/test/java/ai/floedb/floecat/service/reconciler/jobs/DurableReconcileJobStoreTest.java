@@ -2757,6 +2757,74 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void maintenanceRepairsMissingLeaseExpiryPointerForRunningJob() {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "5000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
+    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+
+    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
+    DurableReconcileJobStore.StoredJobLease storedLease =
+        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
+    String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
+    deletePointerIfPresent(expiryKey);
+
+    store.runMaintenanceOnce(1_000L);
+
+    assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, jobId).orElseThrow().state);
+    assertEquals(
+        Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
+        store.pointerStore.get(expiryKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
+  void maintenanceFinalizesCancellingJobWhenLeaseExpiryPointerIsMissing() throws Exception {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
+    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
+    store.cancel(ACCOUNT_ID, jobId, "stop");
+
+    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
+    DurableReconcileJobStore.StoredJobLease storedLease =
+        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
+    String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
+    deletePointerIfPresent(expiryKey);
+
+    Thread.sleep(1150L);
+
+    store.runMaintenanceOnce(1_000L);
+
+    ReconcileJob cancelled = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals("JS_CANCELLED", cancelled.state);
+    assertEquals("stop", cancelled.message);
+    assertTrue(store.pointerStore.get(leaseKey).isEmpty());
+    assertTrue(store.pointerStore.get(expiryKey).isEmpty());
+  }
+
+  @Test
   void maintenanceReclaimUsesLeaseExpiryIndexWithoutGlobalCanonicalScan() throws Exception {
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;

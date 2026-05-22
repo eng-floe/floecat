@@ -95,6 +95,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
   private static final long REVERSE_SORT_MAX_MS = Long.MAX_VALUE;
   private static final int MAX_PENDING_REPAIR_HINTS = 4_096;
+  private static final int ACTIVE_STATE_RECLAIM_FALLBACK_PAGE_BUDGET = 1;
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -2367,6 +2368,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       lastReclaimAtMs = nowMs;
 
       scanLeaseExpiryPointersForReclaim(nowMs);
+      scanActiveStatePointersForLeaseRepairAndReclaim(
+          nowMs, "JS_RUNNING", ACTIVE_STATE_RECLAIM_FALLBACK_PAGE_BUDGET);
+      scanActiveStatePointersForLeaseRepairAndReclaim(
+          nowMs, "JS_CANCELLING", ACTIVE_STATE_RECLAIM_FALLBACK_PAGE_BUDGET);
     } finally {
       reclaimLock.unlock();
     }
@@ -2456,6 +2461,87 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (nowMs - lease.expiresAtMs <= leaseRenewGraceMs) {
       return;
     }
+    reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
+  }
+
+  private void scanActiveStatePointersForLeaseRepairAndReclaim(
+      long nowMs, String state, int pageBudget) {
+    if (blank(state) || pageBudget <= 0) {
+      return;
+    }
+    String token = "";
+    int pages = 0;
+    String prefix = statePointerPrefix(state);
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> statePointers =
+          pointerStore.listPointersByPrefix(prefix, readyScanLimit, token, next);
+      if (statePointers.isEmpty()) {
+        return;
+      }
+      for (Pointer statePointer : statePointers) {
+        repairAndReclaimFromStatePointer(statePointer, state, nowMs);
+      }
+      String nextToken = next.toString();
+      if (nextToken.isBlank()) {
+        return;
+      }
+      if (nextToken.equals(token)) {
+        LOG.warnf(
+            "Reconcile %s state reclaim pagination token did not advance; aborting scan",
+            blankToEmpty(state));
+        return;
+      }
+      token = nextToken;
+      pages++;
+      if (pages >= pageBudget) {
+        return;
+      }
+    }
+  }
+
+  private void repairAndReclaimFromStatePointer(
+      Pointer statePointer, String expectedState, long nowMs) {
+    if (statePointer == null || blank(statePointer.getBlobUri())) {
+      if (statePointer != null) {
+        pointerStore.compareAndDelete(statePointer.getKey(), statePointer.getVersion());
+      }
+      return;
+    }
+    String canonicalKey = statePointer.getBlobUri();
+    var canonicalRecordOpt =
+        readCurrentRecordFromStateIndexPointer(
+            statePointer, record -> expectedState.equals(blankToEmpty(record.state)));
+    if (canonicalRecordOpt.isEmpty()) {
+      return;
+    }
+    StoredReconcileJob canonicalRecord = canonicalRecordOpt.get();
+    StoredJobLease lease = loadLease(canonicalRecord).orElse(null);
+    if (lease == null || blank(lease.epoch) || lease.expiresAtMs <= 0L) {
+      return;
+    }
+    String expectedLeaseExpiryKey = leaseExpiryPointerKey(lease);
+    if (expectedLeaseExpiryKey.isBlank()) {
+      return;
+    }
+    Pointer leaseExpiryPointer = pointerStore.get(expectedLeaseExpiryKey).orElse(null);
+    if (leaseExpiryPointer == null || !canonicalKey.equals(leaseExpiryPointer.getBlobUri())) {
+      if (!upsertReferencePointer(expectedLeaseExpiryKey, canonicalKey)) {
+        LOG.errorf(
+            "Failed to repair reconcile lease-expiry pointer from state scan jobId=%s"
+                + " canonicalKey=%s",
+            canonicalRecord.jobId, canonicalKey);
+        return;
+      }
+    }
+    if (lease.expiresAtMs > nowMs || nowMs - lease.expiresAtMs <= leaseRenewGraceMs) {
+      return;
+    }
+    reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
+  }
+
+  private void reclaimRunningOrCancellingJob(
+      String canonicalKey, StoredReconcileJob canonicalRecord, StoredJobLease lease, long nowMs) {
     if (!"JS_RUNNING".equals(canonicalRecord.state)
         && !"JS_CANCELLING".equals(canonicalRecord.state)) {
       clearLeaseIfEpochMatches(canonicalRecord.accountId, canonicalRecord.jobId, lease.epoch);
@@ -5236,6 +5322,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             parentEnvelope.record.accountId, parentEnvelope.record.jobId);
     DirectChildCounts directChildCounts = countDirectChildStates(contributions);
     ProjectedPublicJob projected = projectPublicJob(parentEnvelope.record, false, false);
+    StoredReconcileJob priorParent = copyStoredJob(parentEnvelope.record);
     Optional<StoredEnvelope> updated =
         mutateByCanonicalPointerReturningRecord(
             parentEnvelope.canonicalPointerKey,
@@ -5313,6 +5400,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               existing.cancelledChildJobs = directChildCounts.cancelled;
               return existing;
             });
+    if (updated.isPresent()) {
+      logAncestorRollupUpdate(
+          priorParent, updated.get().record, projected, directChildCounts, contributions.size());
+    } else {
+      logAncestorRollupNoop(priorParent, projected, directChildCounts, contributions.size());
+    }
     return updated.map(env -> env.record).orElse(parentEnvelope.record);
   }
 
@@ -5357,6 +5450,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Keys.reconcileJobContributionPointer(
             contribution.accountId, contribution.parentJobId, contribution.childJobId),
         encodeInlineJobContribution(contribution));
+    LOG.debugf(
+        "reconcile contribution upsert parentJobId=%s childJobId=%s childKind=%s childState=%s projection=%s includeSelfProjectionPayloads=%s",
+        contribution.parentJobId,
+        contribution.childJobId,
+        childJob.jobKind(),
+        blankToEmpty(contribution.state),
+        formatContributionProjection(contribution),
+        includeSelfProjectionPayloads);
   }
 
   private StoredJobContribution contributionSnapshot(
@@ -5401,6 +5502,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     return "";
+  }
+
+  private StoredReconcileJob copyStoredJob(StoredReconcileJob stored) {
+    if (stored == null) {
+      return null;
+    }
+    return mapper.convertValue(stored, StoredReconcileJob.class);
   }
 
   private static long firstNonZeroMin(
@@ -5731,6 +5839,80 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         blankToEmpty(current.state),
         blankToEmpty(current.readyPointerKey),
         blankToEmpty(current.message));
+  }
+
+  private void logAncestorRollupUpdate(
+      StoredReconcileJob previous,
+      StoredReconcileJob current,
+      ProjectedPublicJob projected,
+      DirectChildCounts directChildCounts,
+      int contributionCount) {
+    LOG.debugf(
+        "reconcile ancestor rollup updated parentJobId=%s kind=%s oldState=%s newState=%s childCounts=%s contributionCount=%d oldProjection=%s newProjection=%s projectedState=%s projectedMessage=%s leaseOwnsState=%s",
+        current.jobId,
+        current.jobKind(),
+        blankToEmpty(previous.state),
+        blankToEmpty(current.state),
+        formatDirectChildCounts(directChildCounts),
+        contributionCount,
+        formatStoredProjection(previous),
+        formatStoredProjection(current),
+        blankToEmpty(projected.state),
+        blankToEmpty(projected.message),
+        hasLiveLease(current, true, System.currentTimeMillis()));
+  }
+
+  private void logAncestorRollupNoop(
+      StoredReconcileJob parent,
+      ProjectedPublicJob projected,
+      DirectChildCounts directChildCounts,
+      int contributionCount) {
+    LOG.debugf(
+        "reconcile ancestor rollup noop parentJobId=%s kind=%s state=%s childCounts=%s contributionCount=%d projection=%s projectedState=%s projectedMessage=%s",
+        parent.jobId,
+        parent.jobKind(),
+        blankToEmpty(parent.state),
+        formatDirectChildCounts(directChildCounts),
+        contributionCount,
+        formatStoredProjection(parent),
+        blankToEmpty(projected.state),
+        blankToEmpty(projected.message));
+  }
+
+  private static String formatDirectChildCounts(DirectChildCounts counts) {
+    if (counts == null) {
+      return "completed=0 failed=0 cancelled=0";
+    }
+    return String.format(
+        "completed=%d failed=%d cancelled=%d", counts.completed, counts.failed, counts.cancelled);
+  }
+
+  private static String formatStoredProjection(StoredReconcileJob stored) {
+    if (stored == null) {
+      return "plannedGroups=0 completedGroups=0 failedGroups=0 plannedFiles=0 completedFiles=0 failedFiles=0";
+    }
+    return String.format(
+        "plannedGroups=%d completedGroups=%d failedGroups=%d plannedFiles=%d completedFiles=%d failedFiles=%d",
+        stored.plannedFileGroups,
+        stored.completedFileGroups,
+        stored.failedFileGroups,
+        stored.plannedFiles,
+        stored.completedFiles,
+        stored.failedFiles);
+  }
+
+  private static String formatContributionProjection(StoredJobContribution contribution) {
+    if (contribution == null) {
+      return "plannedGroups=0 completedGroups=0 failedGroups=0 plannedFiles=0 completedFiles=0 failedFiles=0";
+    }
+    return String.format(
+        "plannedGroups=%d completedGroups=%d failedGroups=%d plannedFiles=%d completedFiles=%d failedFiles=%d",
+        contribution.plannedFileGroups,
+        contribution.completedFileGroups,
+        contribution.failedFileGroups,
+        contribution.plannedFiles,
+        contribution.completedFiles,
+        contribution.failedFiles);
   }
 
   private static boolean isTerminalState(String state) {
