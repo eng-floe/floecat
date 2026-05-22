@@ -1,0 +1,2189 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/scheduler-spi/">
+      
+      
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Scheduler Policy SPI - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#scheduler-policy-spi" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Scheduler Policy SPI
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-scheduler-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the scheduler does
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#priority-classes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Priority classes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#health-bands-and-admission" class="md-nav__link">
+    <span class="md-ellipsis">
+      Health bands and admission
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-policy-interfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      The three policy interfaces
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The three policy interfaces">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schedulerprioritypolicy" class="md-nav__link">
+    <span class="md-ellipsis">
+      SchedulerPriorityPolicy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scheduleradmissionpolicy" class="md-nav__link">
+    <span class="md-ellipsis">
+      SchedulerAdmissionPolicy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#schedulerpreemptionpolicy" class="md-nav__link">
+    <span class="md-ellipsis">
+      SchedulerPreemptionPolicy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#schedulercontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      SchedulerContext
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tuning-without-writing-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tuning without writing code
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-custom-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      Writing a custom profile
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Writing a custom profile">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-create-the-bean" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1 — Create the bean
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-register-your-jar" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2 — Register your JAR
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-activate-the-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3 — Activate the profile
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-4-write-tests-using-testschedulerprioritypolicy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4 — Write tests using TestSchedulerPriorityPolicy
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#boot-time-invariant-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Boot-time invariant validation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics-emitted-by-the-scheduler" class="md-nav__link">
+    <span class="md-ellipsis">
+      Metrics emitted by the scheduler
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      Module boundaries
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mr-stats-async-policy-spi/docs/scheduler-spi.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="scheduler-policy-spi">Scheduler Policy SPI<a class="headerlink" href="#scheduler-policy-spi" title="Permanent link">&para;</a></h1>
+<p>This document explains how the stats scheduler works, how to tune it through
+configuration, and how to write a custom scheduler profile as a CDI bean.</p>
+<h2 id="what-the-scheduler-does">What the scheduler does<a class="headerlink" href="#what-the-scheduler-does" title="Permanent link">&para;</a></h2>
+<p>Every async stats capture job — whether triggered by a user batch request, a
+new snapshot, or a repair follow-up — passes through the scheduler before it
+lands in the reconcile job queue. The scheduler decides:</p>
+<ol>
+<li><strong>Priority class</strong> — which of the four dispatch buckets the job belongs to</li>
+<li><strong>Score</strong> — tie-breaking order within a priority class (higher score dispatched first)</li>
+<li><strong>Lane</strong> — which fairness lane the job belongs to (WRR across lanes)</li>
+<li><strong>Admission</strong> — whether to admit, defer, or reject the job given current queue health</li>
+</ol>
+<p>Synchronous P0 jobs bypass the scheduler entirely; they are always enqueued at
+<code>P0_SYNC</code> directly by <code>StatsOrchestrator</code> and cannot be intercepted by a policy.</p>
+<h2 id="priority-classes">Priority classes<a class="headerlink" href="#priority-classes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Ordinal</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>P0_SYNC</code></td>
+<td>0</td>
+<td>Query-time synchronous stats. Hardcoded in <code>StatsOrchestrator</code>. Policy never sees these.</td>
+</tr>
+<tr>
+<td><code>P1_FRESHNESS</code></td>
+<td>1</td>
+<td>New-snapshot indexing. Must be dispatched before background work. Always admitted.</td>
+</tr>
+<tr>
+<td><code>P2_REPAIR</code></td>
+<td>2</td>
+<td>Async follow-up after a partial or failed sync capture.</td>
+</tr>
+<tr>
+<td><code>P3_BACKGROUND</code></td>
+<td>3</td>
+<td>Routine refresh and maintenance. May be deferred under queue pressure.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="health-bands-and-admission">Health bands and admission<a class="headerlink" href="#health-bands-and-admission" title="Permanent link">&para;</a></h2>
+<p>The store tracks a health band (<code>GREEN</code> → <code>YELLOW</code> → <code>ORANGE</code> → <code>RED</code>) based on
+queue depths and P0 starvation. The band influences admission:</p>
+<table>
+<thead>
+<tr>
+<th>Band</th>
+<th>P0</th>
+<th>P1</th>
+<th>P2</th>
+<th>P3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GREEN</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>YELLOW</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>50% admit</td>
+</tr>
+<tr>
+<td>ORANGE</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>Deferred</td>
+</tr>
+<tr>
+<td>RED</td>
+<td>✅</td>
+<td>✅</td>
+<td>Deferred</td>
+<td>Deferred</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>reconcile.health_band</code> metric (value = band ordinal) is the recommended
+autoscaler trigger. At <code>ORANGE</code> or above, scale out executor capacity.</p>
+<h2 id="the-three-policy-interfaces">The three policy interfaces<a class="headerlink" href="#the-three-policy-interfaces" title="Permanent link">&para;</a></h2>
+<p>All three live in <code>core/stats/src/main/java/ai/floedb/floecat/stats/spi/scheduler/</code>.</p>
+<h3 id="schedulerprioritypolicy"><code>SchedulerPriorityPolicy</code><a class="headerlink" href="#schedulerprioritypolicy" title="Permanent link">&para;</a></h3>
+<p>Called at enqueue time for every async job. Returns a <code>PriorityAssignment</code>
+carrying the priority class, score, and lane key.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SchedulerPriorityPolicy</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">    </span><span class="n">PriorityAssignment</span><span class="w"> </span><span class="nf">assign</span><span class="p">(</span><span class="n">StatsCaptureRequest</span><span class="w"> </span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+
+<span class="w">    </span><span class="c1">// Called for PLAN_SNAPSHOT and EXEC_FILE_GROUP reconcile jobs (not stats-orchestrator jobs).</span>
+<span class="w">    </span><span class="c1">// Default implementation: P1_FRESHNESS when isNewSnapshot=true, P3_BACKGROUND otherwise.</span>
+<span class="w">    </span><span class="k">default</span><span class="w"> </span><span class="n">PriorityAssignment</span><span class="w"> </span><span class="nf">assignForReconcileJob</span><span class="p">(</span>
+<span class="w">        </span><span class="n">ReconcileJobKind</span><span class="w"> </span><span class="n">kind</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">snapshotId</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">boolean</span><span class="w"> </span><span class="n">isNewSnapshot</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="kd">record</span> <span class="nc">PriorityAssignment</span><span class="p">(</span><span class="n">StatsPriorityClass</span><span class="w"> </span><span class="n">priorityClass</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">score</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">laneKey</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Rules:</strong>
+- Must never return <code>P0_SYNC</code>. The registry validates this at boot and throws if violated.
+- Must not perform blocking I/O. The method is called on the enqueue hot path.</p>
+<h3 id="scheduleradmissionpolicy"><code>SchedulerAdmissionPolicy</code><a class="headerlink" href="#scheduleradmissionpolicy" title="Permanent link">&para;</a></h3>
+<p>Called immediately after priority assignment. Returns <code>ADMIT</code>, <code>DEFER</code>, or
+<code>REJECT</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SchedulerAdmissionPolicy</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">    </span><span class="n">AdmissionDecision</span><span class="w"> </span><span class="nf">decide</span><span class="p">(</span><span class="n">PriorityAssignment</span><span class="w"> </span><span class="n">assignment</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerHealthBand</span><span class="w"> </span><span class="n">currentBand</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kd">enum</span><span class="w"> </span><span class="n">AdmissionDecision</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">ADMIT</span><span class="p">,</span><span class="w"> </span><span class="n">DEFER</span><span class="p">,</span><span class="w"> </span><span class="n">REJECT</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Rules:</strong>
+- Must return <code>ADMIT</code> for <code>P0_SYNC</code> and <code>P1_FRESHNESS</code> in every health band.
+  The registry validates both at boot and throws if violated.
+- <code>DEFER</code> causes the job to be enqueued with a delayed <code>nextAttemptAtMs</code>. The
+  store adds its own band-based deferral on top; the effective delay is the max
+  of the two.
+- <code>REJECT</code> discards the job entirely and returns a degraded result to the caller.
+  Never use <code>REJECT</code> for P0 or P1.
+- Must not perform blocking I/O.</p>
+<h3 id="schedulerpreemptionpolicy"><code>SchedulerPreemptionPolicy</code><a class="headerlink" href="#schedulerpreemptionpolicy" title="Permanent link">&para;</a></h3>
+<p>Selects a victim <code>EXEC_FILE_GROUP</code> job to cancel when a high-priority job
+cannot be dispatched because all workers are busy.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SchedulerPreemptionPolicy</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">    </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">selectVictim</span><span class="p">(</span>
+<span class="w">        </span><span class="n">String</span><span class="w"> </span><span class="n">incomingJobId</span><span class="p">,</span>
+<span class="w">        </span><span class="n">List</span><span class="o">&lt;</span><span class="n">RunningJobInfo</span><span class="o">&gt;</span><span class="w"> </span><span class="n">candidates</span><span class="p">,</span>
+<span class="w">        </span><span class="n">SchedulerContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kd">record</span> <span class="nc">RunningJobInfo</span><span class="p">(</span>
+<span class="w">        </span><span class="n">String</span><span class="w"> </span><span class="n">jobId</span><span class="p">,</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="w"> </span><span class="n">priorityClass</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">long</span><span class="w"> </span><span class="n">startedAtMs</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">completedFiles</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">totalFiles</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Rules:</strong>
+- Must never return a job with <code>priorityClass == P0_SYNC</code>. The registry
+  validates this at boot.
+- Return <code>Optional.empty()</code> if no suitable victim exists.
+- Preemption is gated by <code>floecat.stats.scheduler.preemption.enabled</code> (default:
+  <code>false</code>). This interface is defined for forward compatibility; the dispatch
+  loop does not call it until the flag is set.</p>
+<h3 id="schedulercontext"><code>SchedulerContext</code><a class="headerlink" href="#schedulercontext" title="Permanent link">&para;</a></h3>
+<p>Read-only view of scheduler state passed to all policy calls.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SchedulerContext</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">SchedulerHealthBand</span><span class="w"> </span><span class="nf">currentBand</span><span class="p">();</span>
+<span class="w">    </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">StatsPriorityClass</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">queueDepthByClass</span><span class="p">();</span>
+<span class="w">    </span><span class="n">OptionalLong</span><span class="w"> </span><span class="nf">lastSuccessfulCaptureMs</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">);</span><span class="w">  </span><span class="c1">// for age scoring</span>
+<span class="w">    </span><span class="n">CoverageLevel</span><span class="w"> </span><span class="nf">coverageLevel</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">snapshotId</span><span class="p">);</span><span class="w">  </span><span class="c1">// NONE/PARTIAL/FULL</span>
+<span class="w">    </span><span class="n">OptionalLong</span><span class="w"> </span><span class="nf">snapshotDeltaRows</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">snapshotId</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="nf">recentPlannerRequestCount</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="nf">recentColumnRequestCount</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tableId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">normalizedColumnSelector</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><code>lastSuccessfulCaptureMs</code>, <code>coverageLevel</code>, and <code>snapshotDeltaRows</code> are backed
+by the in-process <code>SchedulerSignalIndex</code> populated by finalize/planner paths.
+Custom profiles should still tolerate empty returns for cold-start or partial
+signal-population windows.</p>
+<hr />
+<h2 id="tuning-without-writing-code">Tuning without writing code<a class="headerlink" href="#tuning-without-writing-code" title="Permanent link">&para;</a></h2>
+<p>For most deployments, tuning the default profile via configuration is sufficient.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Active profile name. Changing this requires a restart.</span>
+<span class="na">floecat.stats.scheduler.profile</span><span class="o">=</span><span class="s">default</span>
+
+<span class="c1"># Scoring factor weights (default profile only).</span>
+<span class="c1"># Higher weight → that factor dominates within-class ordering.</span>
+<span class="na">floecat.stats.scheduler.scoring.weight.coverage</span><span class="o">=</span><span class="s">3</span>
+<span class="na">floecat.stats.scheduler.scoring.weight.delta</span><span class="o">=</span><span class="s">2</span>
+<span class="na">floecat.stats.scheduler.scoring.weight.age</span><span class="o">=</span><span class="s">1</span>
+
+<span class="c1"># Age at which the age factor saturates at its maximum contribution (default: 24h).</span>
+<span class="na">floecat.stats.scheduler.scoring.max-age-ms</span><span class="o">=</span><span class="s">86400000</span>
+
+<span class="c1"># Preemption (disabled by default — enable only after soak testing).</span>
+<span class="na">floecat.stats.scheduler.preemption.enabled</span><span class="o">=</span><span class="s">false</span>
+</code></pre></div>
+<p>The default profile's admission logic:
+- P0 and P1: always <code>ADMIT</code>
+- P2: <code>DEFER</code> only in <code>RED</code>
+- P3: <code>DEFER</code> in <code>ORANGE</code> and <code>RED</code>; <code>YELLOW</code> is handled probabilistically by
+  the store's own deferral layer</p>
+<hr />
+<h2 id="writing-a-custom-profile">Writing a custom profile<a class="headerlink" href="#writing-a-custom-profile" title="Permanent link">&para;</a></h2>
+<p>A custom profile is a CDI bean that implements one or more of the three
+interfaces and carries <code>@SchedulerProfile(name = "my-profile")</code>.</p>
+<h3 id="step-1-create-the-bean">Step 1 — Create the bean<a class="headerlink" href="#step-1-create-the-bean" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="kn">package</span><span class="w"> </span><span class="nn">com.example.floecat</span><span class="p">;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.stats.spi.scheduler.SchedulerAdmissionPolicy</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.stats.spi.scheduler.SchedulerContext</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.stats.spi.scheduler.SchedulerPreemptionPolicy</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.stats.spi.scheduler.SchedulerPriorityPolicy</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.stats.spi.scheduler.SchedulerProfile</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.reconciler.jobs.StatsPriorityClass</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">jakarta.enterprise.context.ApplicationScoped</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.util.List</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.util.Optional</span><span class="p">;</span>
+
+<span class="nd">@ApplicationScoped</span>
+<span class="nd">@SchedulerProfile</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;latency-first&quot;</span><span class="p">)</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LatencyFirstSchedulerProfile</span>
+<span class="w">    </span><span class="kd">implements</span><span class="w"> </span><span class="n">SchedulerPriorityPolicy</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerAdmissionPolicy</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerPreemptionPolicy</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">    </span><span class="c1">// --- SchedulerPriorityPolicy ---</span>
+
+<span class="w">    </span><span class="nd">@Override</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">PriorityAssignment</span><span class="w"> </span><span class="nf">assign</span><span class="p">(</span><span class="n">StatsCaptureRequest</span><span class="w"> </span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// Always prefer freshness over background work.</span>
+<span class="w">        </span><span class="n">StatsPriorityClass</span><span class="w"> </span><span class="n">cls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="na">columnSelectors</span><span class="p">().</span><span class="na">isEmpty</span><span class="p">()</span>
+<span class="w">            </span><span class="o">?</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P3_BACKGROUND</span>
+<span class="w">            </span><span class="p">:</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P1_FRESHNESS</span><span class="p">;</span>
+<span class="w">        </span><span class="n">String</span><span class="w"> </span><span class="n">laneKey</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="na">tableId</span><span class="p">().</span><span class="na">getAccountId</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">&quot;:&quot;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="na">tableId</span><span class="p">().</span><span class="na">getId</span><span class="p">();</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityAssignment</span><span class="p">(</span><span class="n">cls</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="n">L</span><span class="p">,</span><span class="w"> </span><span class="n">laneKey</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// --- SchedulerAdmissionPolicy ---</span>
+
+<span class="w">    </span><span class="nd">@Override</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">AdmissionDecision</span><span class="w"> </span><span class="nf">decide</span><span class="p">(</span><span class="n">PriorityAssignment</span><span class="w"> </span><span class="n">assignment</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerHealthBand</span><span class="w"> </span><span class="n">band</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// P0 and P1 MUST always be ADMIT — the registry validates this at boot.</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">assignment</span><span class="p">.</span><span class="na">priorityClass</span><span class="p">().</span><span class="na">order</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P1_FRESHNESS</span><span class="p">.</span><span class="na">order</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">AdmissionDecision</span><span class="p">.</span><span class="na">ADMIT</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="c1">// Defer all background work under any non-GREEN band.</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">band</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">SchedulerHealthBand</span><span class="p">.</span><span class="na">GREEN</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">assignment</span><span class="p">.</span><span class="na">priorityClass</span><span class="p">()</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P3_BACKGROUND</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">AdmissionDecision</span><span class="p">.</span><span class="na">DEFER</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">AdmissionDecision</span><span class="p">.</span><span class="na">ADMIT</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// --- SchedulerPreemptionPolicy ---</span>
+
+<span class="w">    </span><span class="nd">@Override</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">selectVictim</span><span class="p">(</span>
+<span class="w">        </span><span class="n">String</span><span class="w"> </span><span class="n">incomingJobId</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">RunningJobInfo</span><span class="o">&gt;</span><span class="w"> </span><span class="n">candidates</span><span class="p">,</span><span class="w"> </span><span class="n">SchedulerContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// Most recently started job has the least completed work — cheapest to redo.</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">candidates</span><span class="p">.</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">            </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">c</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">c</span><span class="p">.</span><span class="na">priorityClass</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P0_SYNC</span><span class="p">)</span>
+<span class="w">            </span><span class="p">.</span><span class="na">max</span><span class="p">(</span><span class="n">java</span><span class="p">.</span><span class="na">util</span><span class="p">.</span><span class="na">Comparator</span><span class="p">.</span><span class="na">comparingLong</span><span class="p">(</span><span class="n">RunningJobInfo</span><span class="p">::</span><span class="n">startedAtMs</span><span class="p">))</span>
+<span class="w">            </span><span class="p">.</span><span class="na">map</span><span class="p">(</span><span class="n">RunningJobInfo</span><span class="p">::</span><span class="n">jobId</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>You do not need to implement all three interfaces. The registry falls back to
+the default profile's implementation for any interface your bean does not cover.
+If you only want to customize admission, implement only <code>SchedulerAdmissionPolicy</code>.</p>
+<h3 id="step-2-register-your-jar">Step 2 — Register your JAR<a class="headerlink" href="#step-2-register-your-jar" title="Permanent link">&para;</a></h3>
+<p>Put the bean in a JAR on the Quarkus classpath. Quarkus CDI will discover it
+automatically via bean discovery. No <code>beans.xml</code> descriptor is needed for
+<code>@ApplicationScoped</code> beans.</p>
+<h3 id="step-3-activate-the-profile">Step 3 — Activate the profile<a class="headerlink" href="#step-3-activate-the-profile" title="Permanent link">&para;</a></h3>
+<p>Set the config key to match the name in your <code>@SchedulerProfile</code> annotation:</p>
+<div class="highlight"><pre><span></span><code><span class="na">floecat.stats.scheduler.profile</span><span class="o">=</span><span class="s">latency-first</span>
+</code></pre></div>
+<p>A restart is required. On startup the registry will:
+1. Find all beans annotated <code>@SchedulerProfile(name = "latency-first")</code>.
+2. Wire the first matching bean for each interface.
+3. Validate the three safety invariants. If any fails, startup aborts with a
+   clear error message before the service accepts traffic.</p>
+<h3 id="step-4-write-tests-using-testschedulerprioritypolicy">Step 4 — Write tests using <code>TestSchedulerPriorityPolicy</code><a class="headerlink" href="#step-4-write-tests-using-testschedulerprioritypolicy" title="Permanent link">&para;</a></h3>
+<p><code>TestSchedulerPriorityPolicy</code> (in <code>core/stats</code>, package
+<code>ai.floedb.floecat.stats.spi.testing</code>) provides a simple deterministic policy
+for unit tests that does not require CDI:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">var</span><span class="w"> </span><span class="n">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TestSchedulerPriorityPolicy</span><span class="p">.</span><span class="na">alwaysP1</span><span class="p">();</span>
+<span class="n">PriorityAssignment</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">policy</span><span class="p">.</span><span class="na">assign</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">mockContext</span><span class="p">);</span>
+<span class="n">assertEquals</span><span class="p">(</span><span class="n">StatsPriorityClass</span><span class="p">.</span><span class="na">P1_FRESHNESS</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="na">priorityClass</span><span class="p">());</span>
+</code></pre></div>
+<hr />
+<h2 id="boot-time-invariant-validation">Boot-time invariant validation<a class="headerlink" href="#boot-time-invariant-validation" title="Permanent link">&para;</a></h2>
+<p>The registry validates these invariants before the application accepts traffic.
+Violations throw <code>IllegalStateException</code> with a descriptive message.</p>
+<table>
+<thead>
+<tr>
+<th>Invariant</th>
+<th>What is checked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0 always admitted</td>
+<td><code>admissionPolicy.decide(P0_SYNC_assignment, band)</code> returns <code>ADMIT</code> for all four bands</td>
+</tr>
+<tr>
+<td>P1 always admitted</td>
+<td><code>admissionPolicy.decide(P1_FRESHNESS_assignment, band)</code> returns <code>ADMIT</code> for all four bands</td>
+</tr>
+<tr>
+<td>No P0 preemption victim</td>
+<td><code>preemptionPolicy.selectVictim(...)</code> never returns a P0 job from a synthetic candidate list</td>
+</tr>
+<tr>
+<td>No P0 assignment</td>
+<td><code>priorityPolicy.assign(...)</code> never returns <code>PriorityAssignment(P0_SYNC, ...)</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="metrics-emitted-by-the-scheduler">Metrics emitted by the scheduler<a class="headerlink" href="#metrics-emitted-by-the-scheduler" title="Permanent link">&para;</a></h2>
+<p>All metrics are defined in <code>ServiceMetrics.Reconcile</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Tags</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reconcile.queue.depth_by_class</code></td>
+<td>GAUGE</td>
+<td><code>priority_class</code></td>
+<td>Ready jobs per class</td>
+</tr>
+<tr>
+<td><code>reconcile.health_band</code></td>
+<td>GAUGE</td>
+<td>—</td>
+<td>Current band ordinal (0=GREEN … 3=RED). <strong>Autoscaler trigger</strong></td>
+</tr>
+<tr>
+<td><code>reconcile.admission.deferred</code></td>
+<td>COUNTER</td>
+<td><code>priority_class</code>, <code>reason</code></td>
+<td>Jobs deferred by policy or band</td>
+</tr>
+<tr>
+<td><code>reconcile.admission.rejected</code></td>
+<td>COUNTER</td>
+<td><code>priority_class</code>, <code>reason</code></td>
+<td>Jobs rejected by policy</td>
+</tr>
+<tr>
+<td><code>reconcile.aging.promotions</code></td>
+<td>COUNTER</td>
+<td><code>from_class</code></td>
+<td>Jobs promoted to a higher class after waiting</td>
+</tr>
+<tr>
+<td><code>reconcile.lane.wait_ms</code></td>
+<td>GAUGE</td>
+<td><code>lane_key</code></td>
+<td>Wait time for the top-10 busiest lanes</td>
+</tr>
+<tr>
+<td><code>reconcile.scoring.score_dist</code></td>
+<td>SUMMARY</td>
+<td><code>priority_class</code></td>
+<td>Score distribution at enqueue</td>
+</tr>
+<tr>
+<td><code>reconcile.policy.profile</code></td>
+<td>GAUGE (info)</td>
+<td><code>profile_name</code></td>
+<td>Active profile name, value=1</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="module-boundaries">Module boundaries<a class="headerlink" href="#module-boundaries" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Module</th>
+<th>What lives here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SPI contracts</td>
+<td><code>core/stats</code></td>
+<td><code>SchedulerPriorityPolicy</code>, <code>SchedulerAdmissionPolicy</code>, <code>SchedulerPreemptionPolicy</code>, <code>SchedulerContext</code>, <code>@SchedulerProfile</code></td>
+</tr>
+<tr>
+<td>Test support</td>
+<td><code>core/stats</code></td>
+<td><code>TestSchedulerPriorityPolicy</code></td>
+</tr>
+<tr>
+<td>Default implementation</td>
+<td><code>service</code></td>
+<td><code>DefaultSchedulerProfile</code></td>
+</tr>
+<tr>
+<td>Registry and wiring</td>
+<td><code>service</code></td>
+<td><code>SchedulerPolicyRegistry</code></td>
+</tr>
+<tr>
+<td>Store integration</td>
+<td><code>reconciler</code>, <code>service</code></td>
+<td><code>SchedulerStoreHelpers</code>, <code>SchedulerBandState</code>, <code>AgingPromotionTracker</code></td>
+</tr>
+</tbody>
+</table>
+<p>Custom profiles only need to depend on <code>core/stats</code>. They do not need to
+reference anything from the <code>service</code> or <code>reconciler</code> modules.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
