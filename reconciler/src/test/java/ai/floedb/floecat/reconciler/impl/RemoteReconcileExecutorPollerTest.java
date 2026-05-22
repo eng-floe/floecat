@@ -1061,10 +1061,6 @@ class RemoteReconcileExecutorPollerTest {
     };
   }
 
-  private static RemoteLeasedJob leasedJob(String jobId) {
-    return leasedJob(jobId, ReconcileJobKind.PLAN_CONNECTOR);
-  }
-
   private static RemoteLeasedJob leasedJob(String jobId, ReconcileJobKind jobKind) {
     return new RemoteLeasedJob(
         new ReconcileJobStore.LeasedJob(

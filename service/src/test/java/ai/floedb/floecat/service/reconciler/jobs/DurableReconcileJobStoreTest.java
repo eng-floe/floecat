@@ -41,6 +41,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseManager;
+import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -70,8 +75,6 @@ import org.junit.jupiter.api.Test;
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
-  private static final String CATALOG = "cat-1";
-  private static final List<String> NAMESPACE_PATH = List.of("ns");
   private static final String LEASE_EXPIRY_POINTER_PREFIX =
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
   private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
@@ -231,8 +234,7 @@ class DurableReconcileJobStoreTest {
             "",
             "");
 
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
     assertFalse(record.dedupeKeyHash.isBlank());
     assertEquals(
@@ -467,7 +469,7 @@ class DurableReconcileJobStoreTest {
         1, store.pointerStore.countByPrefix(Keys.reconcileJobStateRowByIdPrefix(ACCOUNT_ID)));
     assertEquals(
         1, store.pointerStore.countByPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)));
-    DurableReconcileJobStore.StoredReconcileJob stored =
+    StoredReconcileJob stored =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, result.items.get(0).jobId));
     assertTrue(store.pointerStore.get(stored.readyPointerKey).isPresent());
     assertEquals(
@@ -557,7 +559,7 @@ class DurableReconcileJobStoreTest {
 
     result.requireAllSucceeded("bulk expected child count");
 
-    DurableReconcileJobStore.StoredReconcileJob parent =
+    StoredReconcileJob parent =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     assertEquals(3L, parent.expectedChildJobs);
   }
@@ -608,9 +610,9 @@ class DurableReconcileJobStoreTest {
 
     result.requireAllSucceeded("bulkEnqueue sparse-scope plan tables");
 
-    DurableReconcileJobStore.StoredReconcileJob first =
+    StoredReconcileJob first =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, result.items.get(0).jobId));
-    DurableReconcileJobStore.StoredReconcileJob second =
+    StoredReconcileJob second =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, result.items.get(1).jobId));
 
     assertEquals("table-source|db|orders", first.laneKey);
@@ -992,6 +994,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
 
@@ -1275,8 +1278,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
     assertTrue(store.blobStore.delete(record.definitionBlobUri));
 
@@ -1301,7 +1303,7 @@ class DurableReconcileJobStoreTest {
             "parent-1",
             "");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob corrupted = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob corrupted = readStoredRecord(canonicalPointerKey);
     corrupted.definitionBlobUri = "blob://missing-definition";
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, corrupted);
 
@@ -1317,7 +1319,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store.pointerStore.get(Keys.reconcileSnapshotLeasePointer("table-1", 55L)).isEmpty());
 
-    DurableReconcileJobStore.StoredReconcileJob restored = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob restored = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", restored.state);
     assertEquals("Queued", restored.message);
     assertTrue(restored.readyPointerKey != null && !restored.readyPointerKey.isBlank());
@@ -1346,8 +1348,7 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "parent-1",
             "");
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
     assertTrue(store.blobStore.delete(record.snapshotPlanBlobUri));
 
@@ -1376,8 +1377,7 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "parent-1",
             "");
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
     assertTrue(store.blobStore.delete(record.fileGroupPlanBlobUri));
 
@@ -1946,8 +1946,7 @@ class DurableReconcileJobStoreTest {
     var firstLease = store.leaseNext().orElseThrow();
     assertEquals(firstJob, firstLease.jobId);
     String firstCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstLease.jobId);
-    DurableReconcileJobStore.StoredReconcileJob firstRecord =
-        readStoredRecord(firstCanonicalPointerKey);
+    StoredReconcileJob firstRecord = readStoredRecord(firstCanonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, firstRecord.laneKey);
     assertTrue(store.pointerStore.get(lanePointerKey).isPresent());
 
@@ -1968,7 +1967,7 @@ class DurableReconcileJobStoreTest {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
     var firstLease = store.leaseNext().orElseThrow();
 
-    DurableReconcileJobStore.StoredReconcileJob currentJob = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob currentJob = readStoredRecord(canonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, currentJob.laneKey);
     Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
     assertTrue(
@@ -2000,8 +1999,7 @@ class DurableReconcileJobStoreTest {
     var firstLease = store.leaseNext().orElseThrow();
     store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
-    DurableReconcileJobStore.StoredReconcileJob terminalRecord =
-        readStoredRecord(firstCanonicalPointerKey);
+    StoredReconcileJob terminalRecord = readStoredRecord(firstCanonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, terminalRecord.laneKey);
     assertTrue(
         store.pointerStore.compareAndSet(
@@ -2037,8 +2035,7 @@ class DurableReconcileJobStoreTest {
     Pointer currentCanonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
     assertTrue(currentCanonical.getVersion() > initialCanonical.getVersion());
 
-    DurableReconcileJobStore.StoredReconcileJob activeRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob activeRecord = readStoredRecord(canonicalPointerKey);
 
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, activeRecord.laneKey);
     Pointer lanePointer = store.pointerStore.get(lanePointerKey).orElseThrow();
@@ -2052,15 +2049,8 @@ class DurableReconcileJobStoreTest {
                 .setVersion(lanePointer.getVersion() + 1)
                 .build()));
 
-    Method clearLaneLeaseIfOwned =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "clearLaneLeaseIfOwned",
-            DurableReconcileJobStore.StoredReconcileJob.class,
-            String.class);
-    clearLaneLeaseIfOwned.setAccessible(true);
-
-    assertDoesNotThrow(
-        () -> clearLaneLeaseIfOwned.invoke(store, activeRecord, canonicalPointerKey));
+    ReconcileLeaseManager leaseManager = leaseManager();
+    assertDoesNotThrow(() -> leaseManager.clearLaneLeaseIfOwned(activeRecord, canonicalPointerKey));
 
     Pointer repairedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
     assertEquals(canonicalPointerKey, repairedPointer.getBlobUri());
@@ -2074,30 +2064,21 @@ class DurableReconcileJobStoreTest {
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
 
-    Method tryAcquireLaneLease =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "tryAcquireLaneLease",
-            DurableReconcileJobStore.StoredReconcileJob.class,
-            String.class,
-            long.class);
-    tryAcquireLaneLease.setAccessible(true);
+    ReconcileLeaseManager leaseManager = leaseManager();
 
     boolean firstClaim =
-        (boolean)
-            tryAcquireLaneLease.invoke(
-                store, queuedRecord, canonicalPointerKey, System.currentTimeMillis());
+        leaseManager.tryAcquireLaneLease(
+            queuedRecord, canonicalPointerKey, System.currentTimeMillis());
     Pointer staleLanePointer =
         store
             .pointerStore
             .get(Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey))
             .orElseThrow();
     boolean secondClaim =
-        (boolean)
-            tryAcquireLaneLease.invoke(
-                store, queuedRecord, canonicalPointerKey, System.currentTimeMillis());
+        leaseManager.tryAcquireLaneLease(
+            queuedRecord, canonicalPointerKey, System.currentTimeMillis());
 
     assertTrue(firstClaim);
     assertTrue(secondClaim);
@@ -2119,8 +2100,7 @@ class DurableReconcileJobStoreTest {
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
     Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
 
     String aliasCanonicalKey = canonicalPointerKey + "-alias";
@@ -2145,18 +2125,11 @@ class DurableReconcileJobStoreTest {
                 .setVersion(1L)
                 .build()));
 
-    Method tryAcquireLaneLease =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "tryAcquireLaneLease",
-            DurableReconcileJobStore.StoredReconcileJob.class,
-            String.class,
-            long.class);
-    tryAcquireLaneLease.setAccessible(true);
+    ReconcileLeaseManager leaseManager = leaseManager();
 
     boolean acquired =
-        (boolean)
-            tryAcquireLaneLease.invoke(
-                store, queuedRecord, canonicalPointerKey, System.currentTimeMillis());
+        leaseManager.tryAcquireLaneLease(
+            queuedRecord, canonicalPointerKey, System.currentTimeMillis());
 
     assertTrue(acquired);
     assertEquals(
@@ -2176,30 +2149,21 @@ class DurableReconcileJobStoreTest {
 
     var firstLease = store.leaseNext().orElseThrow();
     String firstCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
-    DurableReconcileJobStore.StoredReconcileJob firstRecord =
-        readStoredRecord(firstCanonicalPointerKey);
+    StoredReconcileJob firstRecord = readStoredRecord(firstCanonicalPointerKey);
     firstRecord.state = "JS_QUEUED";
     overwriteCanonicalRecordWithoutSync(firstCanonicalPointerKey, firstRecord);
 
     String secondCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, secondJob);
-    DurableReconcileJobStore.StoredReconcileJob secondRecord =
-        readStoredRecord(secondCanonicalPointerKey);
+    StoredReconcileJob secondRecord = readStoredRecord(secondCanonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, secondRecord.laneKey);
     String laneOwnerBeforeAcquire =
         store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri();
 
-    Method tryAcquireLaneLease =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "tryAcquireLaneLease",
-            DurableReconcileJobStore.StoredReconcileJob.class,
-            String.class,
-            long.class);
-    tryAcquireLaneLease.setAccessible(true);
+    ReconcileLeaseManager leaseManager = leaseManager();
 
     boolean acquired =
-        (boolean)
-            tryAcquireLaneLease.invoke(
-                store, secondRecord, secondCanonicalPointerKey, System.currentTimeMillis());
+        leaseManager.tryAcquireLaneLease(
+            secondRecord, secondCanonicalPointerKey, System.currentTimeMillis());
 
     assertFalse(acquired);
     assertEquals(
@@ -2310,18 +2274,11 @@ class DurableReconcileJobStoreTest {
                 .setVersion(snapshotLeasePointer.getVersion() + 1)
                 .build()));
 
-    DurableReconcileJobStore.StoredReconcileJob activeRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob activeRecord = readStoredRecord(canonicalPointerKey);
 
-    Method clearSnapshotLeaseIfOwned =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "clearSnapshotLeaseIfOwned",
-            DurableReconcileJobStore.StoredReconcileJob.class,
-            String.class);
-    clearSnapshotLeaseIfOwned.setAccessible(true);
-
+    ReconcileLeaseManager leaseManager = leaseManager();
     assertDoesNotThrow(
-        () -> clearSnapshotLeaseIfOwned.invoke(store, activeRecord, canonicalPointerKey));
+        () -> leaseManager.clearSnapshotLeaseIfOwned(activeRecord, canonicalPointerKey));
 
     Pointer repairedPointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
     assertEquals(canonicalPointerKey, repairedPointer.getBlobUri());
@@ -2493,7 +2450,7 @@ class DurableReconcileJobStoreTest {
 
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
+    StoredReconcileJob queuedRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey);
 
@@ -2515,7 +2472,7 @@ class DurableReconcileJobStoreTest {
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob job = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob job = readStoredRecord(canonicalPointerKey);
     String expectedReadyKey =
         Keys.reconcileReadyPointerByDue(job.nextAttemptAtMs, job.accountId, job.laneKey, job.jobId);
     job.readyPointerKey = "";
@@ -2549,8 +2506,7 @@ class DurableReconcileJobStoreTest {
     Pointer repairedDedupePointer =
         firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
     assertEquals(canonicalPointerKey, repairedDedupePointer.getBlobUri());
-    DurableReconcileJobStore.StoredReconcileJob unrepairedJob =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob unrepairedJob = readStoredRecord(canonicalPointerKey);
     assertTrue(unrepairedJob.readyPointerKey == null || unrepairedJob.readyPointerKey.isBlank());
 
     assertTrue(store.leaseNext().isEmpty());
@@ -2596,8 +2552,7 @@ class DurableReconcileJobStoreTest {
 
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     Pointer leasePointer = store.pointerStore.get(leaseKey).orElseThrow();
-    DurableReconcileJobStore.StoredJobLease storedLease =
-        readStoredLease(leasePointer.getBlobUri());
+    StoredJobLease storedLease = readStoredLease(leasePointer.getBlobUri());
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
 
     assertEquals(lease.leaseEpoch, storedLease.epoch);
@@ -2621,14 +2576,14 @@ class DurableReconcileJobStoreTest {
 
     var lease = store.leaseNext().orElseThrow();
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredJobLease beforeRenew =
+    StoredJobLease beforeRenew =
         readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
     String oldExpiryKey = leaseExpiryPointerKey(beforeRenew.expiresAtMs, ACCOUNT_ID, jobId);
     Thread.sleep(650L);
 
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
 
-    DurableReconcileJobStore.StoredJobLease afterRenew =
+    StoredJobLease afterRenew =
         readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
     assertTrue(afterRenew.expiresAtMs > beforeRenew.expiresAtMs);
     String newExpiryKey = leaseExpiryPointerKey(afterRenew.expiresAtMs, ACCOUNT_ID, jobId);
@@ -2655,8 +2610,7 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     Pointer beforeLeasePointer = store.pointerStore.get(leaseKey).orElseThrow();
-    DurableReconcileJobStore.StoredJobLease beforeLease =
-        readStoredLease(beforeLeasePointer.getBlobUri());
+    StoredJobLease beforeLease = readStoredLease(beforeLeasePointer.getBlobUri());
     String expiryKey = leaseExpiryPointerKey(beforeLease.expiresAtMs, ACCOUNT_ID, jobId);
     Pointer beforeExpiryPointer = store.pointerStore.get(expiryKey).orElseThrow();
 
@@ -2731,11 +2685,10 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
 
-    DurableReconcileJobStore.StoredReconcileJob running = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob running = readStoredRecord(canonicalPointerKey);
     running.readyPointerKey = "";
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, running);
 
@@ -2750,7 +2703,7 @@ class DurableReconcileJobStoreTest {
             .isEmpty());
     store.runMaintenanceOnce(1_000L);
 
-    DurableReconcileJobStore.StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", requeued.state);
     assertFalse(requeued.readyPointerKey.isBlank());
     assertTrue(store.pointerStore.get(requeued.readyPointerKey).isPresent());
@@ -2775,7 +2728,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
 
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredJobLease storedLease =
+    StoredJobLease storedLease =
         readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
     deletePointerIfPresent(expiryKey);
@@ -2808,7 +2761,7 @@ class DurableReconcileJobStoreTest {
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredJobLease storedLease =
+    StoredJobLease storedLease =
         readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
     deletePointerIfPresent(expiryKey);
@@ -2923,7 +2876,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
+    StoredReconcileJob queuedRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey);
     var firstLease = store.leaseNext().orElseThrow();
@@ -3013,8 +2966,7 @@ class DurableReconcileJobStoreTest {
             "parent-a",
             "");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey);
     String snapshotLeasePointerKey = Keys.reconcileSnapshotLeasePointer("table-1", 55L);
 
@@ -3052,8 +3004,7 @@ class DurableReconcileJobStoreTest {
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queuedRecord =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey);
 
     assertTrue(
@@ -3386,8 +3337,7 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "canonical-only"));
 
     String canonicalOnlyKey = Keys.reconcileJobPointerById(ACCOUNT_ID, canonicalOnlyJobId);
-    DurableReconcileJobStore.StoredReconcileJob canonicalOnlyRecord =
-        readStoredRecord(canonicalOnlyKey);
+    StoredReconcileJob canonicalOnlyRecord = readStoredRecord(canonicalOnlyKey);
     String connectorIndexKey = canonicalOnlyRecord.connectorIndexPointerKey;
     assertFalse(connectorIndexKey.isBlank());
     Pointer connectorIndexPointer = store.pointerStore.get(connectorIndexKey).orElseThrow();
@@ -3605,8 +3555,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    Pointer canonicalPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
-    DurableReconcileJobStore.StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
     String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
     Pointer lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
     assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
@@ -3731,10 +3679,10 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
-    DurableReconcileJobStore.StoredReconcileJob running = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob running = readStoredRecord(canonicalPointerKey);
     long dueAtMs = System.currentTimeMillis();
-    DurableReconcileJobStore.StoredReconcileJob staleReadyProjection =
-        store.mapper.convertValue(running, DurableReconcileJobStore.StoredReconcileJob.class);
+    StoredReconcileJob staleReadyProjection =
+        store.mapper.convertValue(running, StoredReconcileJob.class);
     staleReadyProjection.state = "JS_QUEUED";
     staleReadyProjection.nextAttemptAtMs = dueAtMs;
     List<String> staleReadyKeys = readyPointerKeysFor(staleReadyProjection);
@@ -3757,7 +3705,7 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
-    DurableReconcileJobStore.StoredReconcileJob cancelling = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob cancelling = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_CANCELLING", cancelling.state);
     assertTrue(cancelling.readyPointerKey == null || cancelling.readyPointerKey.isBlank());
     assertTrue(staleReadyKeys.stream().allMatch(key -> store.pointerStore.get(key).isEmpty()));
@@ -3775,7 +3723,7 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
     String originalReadyKey = queued.readyPointerKey;
 
     assertDoesNotThrow(
@@ -3796,7 +3744,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void queuedReadyRepairDoesNotReindexCancellingJobs() throws Exception {
+  void queuedReadyRepairDoesNotReindexCancellingJobs() {
     store.init();
 
     String jobId =
@@ -3811,19 +3759,12 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
-    DurableReconcileJobStore.StoredReconcileJob cancelling = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob cancelling = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_CANCELLING", cancelling.state);
     assertTrue(cancelling.readyPointerKey == null || cancelling.readyPointerKey.isBlank());
 
-    Method repairQueuedReadyPointersIfNeeded =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "repairQueuedReadyPointersIfNeeded", long.class, ReconcileJobStore.LeaseRequest.class);
-    repairQueuedReadyPointersIfNeeded.setAccessible(true);
-
-    assertFalse(
-        (boolean)
-            repairQueuedReadyPointersIfNeeded.invoke(
-                store, System.currentTimeMillis(), ReconcileJobStore.LeaseRequest.all()));
+    assertTrue(store.leaseNext().isEmpty());
+    store.runMaintenanceOnce(1_000L);
     assertEquals("JS_CANCELLING", readStoredRecord(canonicalPointerKey).state);
     assertEquals(0, store.pointerStore.countByPrefix(Keys.reconcileReadyPointerPrefix()));
   }
@@ -3904,7 +3845,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, secondLease.leaseEpoch, 300L, "executor-2");
     store.markSucceeded(jobId, secondLease.leaseEpoch, 400L, 5L, 5L, 0L, 0L, 6L, 7L);
 
-    DurableReconcileJobStore.StoredReconcileJob succeeded =
+    StoredReconcileJob succeeded =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     assertEquals("JS_SUCCEEDED", succeeded.state);
     assertEquals(0L, succeeded.errors);
@@ -3978,8 +3919,7 @@ class DurableReconcileJobStoreTest {
 
     store.runMaintenanceOnce(1_000L);
 
-    DurableReconcileJobStore.StoredReconcileJob stillRunning =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob stillRunning = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_RUNNING", stillRunning.state);
     assertTrue(store.getLeaseView(jobId).isPresent());
     assertEquals("JS_RUNNING", store.getLeaseView(jobId).orElseThrow().state);
@@ -3990,15 +3930,15 @@ class DurableReconcileJobStoreTest {
   void parseDueMillisAcceptsReadyKeyWithoutLeadingSlash() throws Exception {
     store.init();
     Method parseDueMillis =
-        DurableReconcileJobStore.class.getDeclaredMethod("parseDueMillis", String.class);
+        ReconcileReadyQueue.class.getDeclaredMethod("parseDueMillis", String.class);
     parseDueMillis.setAccessible(true);
 
     long dueAt = 123456789L;
     String canonical = Keys.reconcileReadyPointerByDue(dueAt, ACCOUNT_ID, "lane", "job-1");
     String normalized = canonical.substring(1);
 
-    long parsedCanonical = (long) parseDueMillis.invoke(store, canonical);
-    long parsedNormalized = (long) parseDueMillis.invoke(store, normalized);
+    long parsedCanonical = (long) parseDueMillis.invoke(readyQueue(), canonical);
+    long parsedNormalized = (long) parseDueMillis.invoke(readyQueue(), normalized);
 
     assertEquals(dueAt, parsedCanonical);
     assertEquals(dueAt, parsedNormalized);
@@ -4029,7 +3969,7 @@ class DurableReconcileJobStoreTest {
     long futureDueAt = System.currentTimeMillis() + 60_000L;
     for (String jobId : List.of(firstJobId, secondJobId)) {
       String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-      DurableReconcileJobStore.StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
+      StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
       String oldReadyKey = record.readyPointerKey;
       Pointer oldReadyPointer = store.pointerStore.get(oldReadyKey).orElseThrow();
       assertTrue(store.pointerStore.compareAndDelete(oldReadyKey, oldReadyPointer.getVersion()));
@@ -4100,18 +4040,18 @@ class DurableReconcileJobStoreTest {
   void decodeReadyPointerTargetUsesCorrectOrderedKeySegments() throws Exception {
     store.init();
     Method decodeReadyPointerTarget =
-        DurableReconcileJobStore.class.getDeclaredMethod(
+        ReconcileReadyQueue.class.getDeclaredMethod(
             "decodeReadyPointerTarget",
             String.class,
             Class.forName(
-                "ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore$ReadyIndexSelection"));
+                "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexSelection"));
     decodeReadyPointerTarget.setAccessible(true);
     Class<?> readyIndexTypeClass =
         Class.forName(
-            "ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore$ReadyIndexType");
+            "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexType");
     Class<?> readyIndexSelectionClass =
         Class.forName(
-            "ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore$ReadyIndexSelection");
+            "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexSelection");
     var ctor =
         readyIndexSelectionClass.getDeclaredConstructor(
             String.class, readyIndexTypeClass, String.class);
@@ -4144,35 +4084,37 @@ class DurableReconcileJobStoreTest {
             ReconcileJobKind.PLAN_VIEW.name());
 
     String globalKey = Keys.reconcileReadyPointerByDue(123L, ACCOUNT_ID, "lane-1", "job-1");
-    Object globalTarget = decodeReadyPointerTarget.invoke(store, globalKey, globalSelection);
+    Object globalTarget = decodeReadyPointerTarget.invoke(readyQueue(), globalKey, globalSelection);
     Method accountId = globalTarget.getClass().getDeclaredMethod("accountId");
     Method jobId = globalTarget.getClass().getDeclaredMethod("jobId");
+    accountId.setAccessible(true);
+    jobId.setAccessible(true);
     assertEquals(ACCOUNT_ID, accountId.invoke(globalTarget));
     assertEquals("job-1", jobId.invoke(globalTarget));
 
     String classKey =
         Keys.reconcileReadyByExecutionClassPointerByDue(
             123L, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, "job-2");
-    Object classTarget = decodeReadyPointerTarget.invoke(store, classKey, classSelection);
+    Object classTarget = decodeReadyPointerTarget.invoke(readyQueue(), classKey, classSelection);
     assertEquals(ACCOUNT_ID, accountId.invoke(classTarget));
     assertEquals("job-2", jobId.invoke(classTarget));
 
     String laneKey =
         Keys.reconcileReadyByExecutionLanePointerByDue(123L, "lane-1", ACCOUNT_ID, "job-3");
-    Object laneTarget = decodeReadyPointerTarget.invoke(store, laneKey, laneSelection);
+    Object laneTarget = decodeReadyPointerTarget.invoke(readyQueue(), laneKey, laneSelection);
     assertEquals(ACCOUNT_ID, accountId.invoke(laneTarget));
     assertEquals("job-3", jobId.invoke(laneTarget));
 
     String pinnedKey =
         Keys.reconcileReadyByPinnedExecutorPointerByDue(123L, "executor-1", ACCOUNT_ID, "job-4");
-    Object pinnedTarget = decodeReadyPointerTarget.invoke(store, pinnedKey, pinnedSelection);
+    Object pinnedTarget = decodeReadyPointerTarget.invoke(readyQueue(), pinnedKey, pinnedSelection);
     assertEquals(ACCOUNT_ID, accountId.invoke(pinnedTarget));
     assertEquals("job-4", jobId.invoke(pinnedTarget));
 
     String kindKey =
         Keys.reconcileReadyByJobKindPointerByDue(
             123L, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, "job-5");
-    Object kindTarget = decodeReadyPointerTarget.invoke(store, kindKey, kindSelection);
+    Object kindTarget = decodeReadyPointerTarget.invoke(readyQueue(), kindKey, kindSelection);
     assertEquals(ACCOUNT_ID, accountId.invoke(kindTarget));
     assertEquals("job-5", jobId.invoke(kindTarget));
   }
@@ -4382,7 +4324,7 @@ class DurableReconcileJobStoreTest {
             "",
             "executor-retry");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
     long oldDueAt = queued.nextAttemptAtMs;
     String oldGlobalReadyKey = queued.readyPointerKey;
     String oldClassReadyKey =
@@ -4407,7 +4349,7 @@ class DurableReconcileJobStoreTest {
     store.markFailed(
         lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "retry", 0, 0, 0, 0, 1, 0, 0);
 
-    DurableReconcileJobStore.StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
     long newDueAt = requeued.nextAttemptAtMs;
     assertNotEquals(oldDueAt, newDueAt);
 
@@ -4505,8 +4447,7 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "tbl-stale-filter"),
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", Map.of()),
             "");
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     String staleClassKey =
         Keys.reconcileReadyByExecutionClassPointerByDue(
             record.nextAttemptAtMs, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId);
@@ -4545,7 +4486,7 @@ class DurableReconcileJobStoreTest {
             "",
             "executor-cancel");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
     long dueAt = queued.nextAttemptAtMs;
 
     store.cancel(ACCOUNT_ID, jobId, "cancel");
@@ -4597,8 +4538,7 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, jobId, "cancel");
 
-    DurableReconcileJobStore.StoredReconcileJob record =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     assertEquals("JS_CANCELLING", record.state);
     assertTrue(record.nextAttemptAtMs > 0L);
     assertTrue(record.readyPointerKey == null || record.readyPointerKey.isBlank());
@@ -4713,12 +4653,11 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queued = readStoredRecord(canonicalPointerKey);
 
     assertTrue(store.leaseNext().isEmpty());
 
-    DurableReconcileJobStore.StoredReconcileJob afterAttempt =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob afterAttempt = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", afterAttempt.state);
     assertEquals(queued.readyPointerKey, afterAttempt.readyPointerKey);
     assertTrue(store.pointerStore.get(queued.readyPointerKey).isPresent());
@@ -4763,7 +4702,7 @@ class DurableReconcileJobStoreTest {
             "executor-repair");
 
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
     String classKey =
         Keys.reconcileReadyByExecutionClassPointerByDue(
             record.nextAttemptAtMs, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId);
@@ -4834,7 +4773,7 @@ class DurableReconcileJobStoreTest {
             "",
             "executor-repair-global");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
     long dueAt = record.nextAttemptAtMs;
     String expectedGlobalKey =
         Keys.reconcileReadyPointerByDue(dueAt, ACCOUNT_ID, record.laneKey, jobId);
@@ -4877,12 +4816,12 @@ class DurableReconcileJobStoreTest {
 
     Method repairReadyPointer =
         DurableReconcileJobStore.class.getDeclaredMethod(
-            "repairReadyPointer", String.class, DurableReconcileJobStore.StoredReconcileJob.class);
+            "repairReadyPointer", String.class, StoredReconcileJob.class);
     repairReadyPointer.setAccessible(true);
 
     assertTrue((boolean) repairReadyPointer.invoke(store, canonicalPointerKey, record));
 
-    DurableReconcileJobStore.StoredReconcileJob repaired = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob repaired = readStoredRecord(canonicalPointerKey);
     assertEquals(expectedGlobalKey, repaired.readyPointerKey);
     assertTrue(store.pointerStore.get(expectedGlobalKey).isPresent());
     assertTrue(store.pointerStore.get(classKey).isPresent());
@@ -4906,7 +4845,7 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.BATCH, "lane-hot-path", Map.of()),
             "");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
 
     deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
     for (String statePointerKey : statePointerKeysFor(record)) {
@@ -4921,12 +4860,10 @@ class DurableReconcileJobStoreTest {
             assertDoesNotThrow(
                 () ->
                     invokePrivateMethod(
+                        indexes(),
                         "repairCanonicalPointersIfNeeded",
                         new Class<?>[] {
-                          String.class,
-                          DurableReconcileJobStore.StoredReconcileJob.class,
-                          String.class,
-                          String.class
+                          String.class, StoredReconcileJob.class, String.class, String.class
                         },
                         canonicalPointerKey,
                         record,
@@ -4961,6 +4898,7 @@ class DurableReconcileJobStoreTest {
             assertEquals(
                 "DEFERRED",
                 invokePrivateMethod(
+                        indexes(),
                         "repairLookupPointerDisposition",
                         new Class<?>[] {String.class, String.class, String.class, String.class},
                         jobId,
@@ -4998,6 +4936,7 @@ class DurableReconcileJobStoreTest {
           String firstCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
           String secondCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, secondJob);
           invokePrivateMethod(
+              indexes(),
               "repairLookupPointerDisposition",
               new Class<?>[] {String.class, String.class, String.class, String.class},
               firstJob,
@@ -5005,6 +4944,7 @@ class DurableReconcileJobStoreTest {
               "test_seed_hint",
               "lookup_pointer_missing");
           invokePrivateMethod(
+              indexes(),
               "repairLookupPointerDisposition",
               new Class<?>[] {String.class, String.class, String.class, String.class},
               secondJob,
@@ -5030,6 +4970,7 @@ class DurableReconcileJobStoreTest {
           assertEquals(
               "FAILED",
               invokePrivateMethod(
+                      indexes(),
                       "repairLookupPointerDisposition",
                       new Class<?>[] {String.class, String.class, String.class, String.class},
                       "",
@@ -5040,6 +4981,7 @@ class DurableReconcileJobStoreTest {
           assertEquals(
               "FAILED",
               invokePrivateMethod(
+                      indexes(),
                       "repairLookupPointerDisposition",
                       new Class<?>[] {String.class, String.class, String.class, String.class},
                       "job-1",
@@ -5050,12 +4992,10 @@ class DurableReconcileJobStoreTest {
           assertEquals(
               "FAILED",
               invokePrivateMethod(
+                      indexes(),
                       "repairReadyPointerDisposition",
                       new Class<?>[] {
-                        String.class,
-                        DurableReconcileJobStore.StoredReconcileJob.class,
-                        String.class,
-                        String.class
+                        String.class, StoredReconcileJob.class, String.class, String.class
                       },
                       "/canonical/key",
                       null,
@@ -5065,12 +5005,10 @@ class DurableReconcileJobStoreTest {
           assertEquals(
               "FAILED",
               invokePrivateMethod(
+                      indexes(),
                       "repairStatePointerDisposition",
                       new Class<?>[] {
-                        String.class,
-                        DurableReconcileJobStore.StoredReconcileJob.class,
-                        String.class,
-                        String.class
+                        String.class, StoredReconcileJob.class, String.class, String.class
                       },
                       "/canonical/key",
                       null,
@@ -5102,6 +5040,7 @@ class DurableReconcileJobStoreTest {
         () -> {
           deferred[0] =
               invokePrivateMethod(
+                      indexes(),
                       "repairLookupPointerDisposition",
                       new Class<?>[] {String.class, String.class, String.class, String.class},
                       jobId,
@@ -5112,6 +5051,7 @@ class DurableReconcileJobStoreTest {
           handled[0] =
               (boolean)
                   invokePrivateMethod(
+                      indexes(),
                       "repairLookupPointer",
                       new Class<?>[] {String.class, String.class, String.class, String.class},
                       jobId,
@@ -5126,6 +5066,7 @@ class DurableReconcileJobStoreTest {
 
     Object repaired =
         invokePrivateMethod(
+            indexes(),
             "repairLookupPointerDisposition",
             new Class<?>[] {String.class, String.class, String.class, String.class},
             jobId,
@@ -5244,7 +5185,7 @@ class DurableReconcileJobStoreTest {
 
     var lease = store.leaseNext().orElseThrow();
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    DurableReconcileJobStore.StoredJobLease storedLease =
+    StoredJobLease storedLease =
         readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
 
@@ -5910,7 +5851,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(parentJobId, parentLease.leaseEpoch, 100L, "executor-parent");
     store.markSucceeded(parentJobId, parentLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L);
 
-    DurableReconcileJobStore.StoredReconcileJob completedParent =
+    StoredReconcileJob completedParent =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     assertEquals("JS_SUCCEEDED", completedParent.state);
     assertTrue(
@@ -5929,7 +5870,7 @@ class DurableReconcileJobStoreTest {
             parentJobId,
             "");
 
-    DurableReconcileJobStore.StoredReconcileJob canonicalParent =
+    StoredReconcileJob canonicalParent =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     assertEquals("JS_WAITING", canonicalParent.state);
     assertTrue(
@@ -6103,8 +6044,7 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId);
-    DurableReconcileJobStore.StoredReconcileJob queuedParent =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob queuedParent = readStoredRecord(canonicalPointerKey);
     List<String> staleReadyKeys = readyPointerKeysFor(queuedParent);
 
     ReconcileJobStore.LeasedJob connectorLease =
@@ -6126,8 +6066,7 @@ class DurableReconcileJobStoreTest {
 
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
 
-    DurableReconcileJobStore.StoredReconcileJob waitingParent =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob waitingParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_WAITING", waitingParent.state);
     assertTrue(waitingParent.readyPointerKey == null || waitingParent.readyPointerKey.isBlank());
     assertTrue(waitingParent.nextAttemptAtMs > 0L);
@@ -6146,8 +6085,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
     store.markSucceeded(tableJobId, tableLease.leaseEpoch, 300L, 1L, 1L, 0L, 0L);
 
-    DurableReconcileJobStore.StoredReconcileJob succeededParent =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob succeededParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_SUCCEEDED", succeededParent.state);
     assertTrue(
         staleReadyKeys.stream()
@@ -6298,7 +6236,7 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_WAITING", stillWaitingParent.state);
     assertEquals("Waiting on child work", stillWaitingParent.message);
 
-    DurableReconcileJobStore.StoredReconcileJob storedParent =
+    StoredReconcileJob storedParent =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_WAITING", storedParent.state);
     assertEquals("Waiting on child work", storedParent.message);
@@ -6337,16 +6275,14 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
 
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId);
-    DurableReconcileJobStore.StoredReconcileJob waitingParent =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob waitingParent = readStoredRecord(canonicalPointerKey);
     waitingParent.expectedChildJobs = 0L;
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, waitingParent);
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
 
-    DurableReconcileJobStore.StoredReconcileJob storedParent =
-        readStoredRecord(canonicalPointerKey);
+    StoredReconcileJob storedParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_WAITING", storedParent.state);
     assertEquals("Waiting on child work", storedParent.message);
 
@@ -6720,10 +6656,10 @@ class DurableReconcileJobStoreTest {
   }
 
   private void withInlineRepairSuppressed(ThrowingRunnable runnable) throws Exception {
-    Field suppressField = DurableReconcileJobStore.class.getDeclaredField("suppressInlineRepair");
+    Field suppressField = ReconcileJobIndexes.class.getDeclaredField("suppressInlineRepair");
     suppressField.setAccessible(true);
     @SuppressWarnings("unchecked")
-    ThreadLocal<Boolean> suppressInlineRepair = (ThreadLocal<Boolean>) suppressField.get(store);
+    ThreadLocal<Boolean> suppressInlineRepair = (ThreadLocal<Boolean>) suppressField.get(indexes());
     Boolean prior = suppressInlineRepair.get();
     suppressInlineRepair.set(true);
     try {
@@ -6739,9 +6675,14 @@ class DurableReconcileJobStoreTest {
 
   private Object invokePrivateMethod(String name, Class<?>[] parameterTypes, Object... args)
       throws Exception {
-    Method method = DurableReconcileJobStore.class.getDeclaredMethod(name, parameterTypes);
+    return invokePrivateMethod(store, name, parameterTypes, args);
+  }
+
+  private Object invokePrivateMethod(
+      Object target, String name, Class<?>[] parameterTypes, Object... args) throws Exception {
+    Method method = target.getClass().getDeclaredMethod(name, parameterTypes);
     method.setAccessible(true);
-    return method.invoke(store, args);
+    return method.invoke(target, args);
   }
 
   private void deletePointerIfPresent(String key) {
@@ -6751,28 +6692,24 @@ class DurableReconcileJobStoreTest {
         .ifPresent(pointer -> store.pointerStore.compareAndDelete(key, pointer.getVersion()));
   }
 
-  private List<String> statePointerKeysFor(DurableReconcileJobStore.StoredReconcileJob record)
-      throws Exception {
-    @SuppressWarnings("unchecked")
-    List<String> keys =
-        (List<String>)
-            invokePrivateMethod(
-                "statePointerKeys",
-                new Class<?>[] {DurableReconcileJobStore.StoredReconcileJob.class},
-                record);
-    return keys;
+  private List<String> statePointerKeysFor(StoredReconcileJob record) throws Exception {
+    return indexes().statePointerKeys(record);
   }
 
-  private List<String> readyPointerKeysFor(DurableReconcileJobStore.StoredReconcileJob record)
-      throws Exception {
-    @SuppressWarnings("unchecked")
-    List<String> keys =
-        (List<String>)
-            invokePrivateMethod(
-                "readyPointerKeys",
-                new Class<?>[] {DurableReconcileJobStore.StoredReconcileJob.class},
-                record);
-    return keys;
+  private List<String> readyPointerKeysFor(StoredReconcileJob record) throws Exception {
+    return readyQueue().readyPointerKeys(record);
+  }
+
+  private ReconcileLeaseManager leaseManager() throws Exception {
+    return (ReconcileLeaseManager) invokePrivateMethod("leaseManager", new Class<?>[] {});
+  }
+
+  private ReconcileReadyQueue readyQueue() throws Exception {
+    return (ReconcileReadyQueue) invokePrivateMethod("readyQueue", new Class<?>[] {});
+  }
+
+  private ReconcileJobIndexes indexes() throws Exception {
+    return (ReconcileJobIndexes) invokePrivateMethod("indexes", new Class<?>[] {});
   }
 
   private Optional<Pointer> firstPointerWithPrefix(String prefix) {
@@ -6805,7 +6742,7 @@ class DurableReconcileJobStoreTest {
     throw new IllegalStateException("Unable to lease job " + jobId);
   }
 
-  private DurableReconcileJobStore.StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
+  private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
     Pointer pointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
     String reference = pointer.getBlobUri();
     assertTrue(reference.startsWith("inline:reconcile-job:"));
@@ -6814,17 +6751,17 @@ class DurableReconcileJobStoreTest {
             store.mapper.readValue(
                 java.util.Base64.getUrlDecoder()
                     .decode(reference.substring("inline:reconcile-job:".length())),
-                DurableReconcileJobStore.StoredReconcileJob.class));
+                StoredReconcileJob.class));
   }
 
-  private DurableReconcileJobStore.StoredJobLease readStoredLease(String reference) {
+  private StoredJobLease readStoredLease(String reference) {
     assertTrue(reference.startsWith(INLINE_JOB_LEASE_PREFIX));
     return assertDoesNotThrow(
         () ->
             store.mapper.readValue(
                 java.util.Base64.getUrlDecoder()
                     .decode(reference.substring(INLINE_JOB_LEASE_PREFIX.length())),
-                DurableReconcileJobStore.StoredJobLease.class));
+                StoredJobLease.class));
   }
 
   private com.fasterxml.jackson.databind.JsonNode readBlobJson(String blobUri) {
@@ -6833,7 +6770,7 @@ class DurableReconcileJobStoreTest {
 
   private static String leaseExpiryPointerKey(long expiresAtMs, String accountId, String jobId) {
     return String.format(
-        "%s%019d/%s/%s",
+        "%s%019d/accounts/%s/jobs/%s",
         LEASE_EXPIRY_POINTER_PREFIX,
         expiresAtMs,
         Keys.encodeSegment(accountId),
@@ -6841,7 +6778,7 @@ class DurableReconcileJobStoreTest {
   }
 
   private Pointer overwriteCanonicalRecordWithoutSync(
-      String canonicalPointerKey, DurableReconcileJobStore.StoredReconcileJob record) {
+      String canonicalPointerKey, StoredReconcileJob record) {
     Pointer currentPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
     Pointer nextPointer =
         Pointer.newBuilder()

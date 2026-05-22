@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -277,7 +278,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   private void expireLease(String jobId) {
     String pointerKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     Pointer pointer = store.pointerStore.get(pointerKey).orElseThrow();
-    DurableReconcileJobStore.StoredJobLease lease = readStoredLease(pointer.getBlobUri());
+    StoredJobLease lease = readStoredLease(pointer.getBlobUri());
     lease.expiresAtMs = System.currentTimeMillis() - 1L;
     Pointer expiredPointer =
         Pointer.newBuilder()
@@ -294,13 +295,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertTrue(store.pointerStore.compareAndSet(pointerKey, pointer.getVersion(), expiredPointer));
   }
 
-  private DurableReconcileJobStore.StoredJobLease readStoredLease(String reference) {
+  private StoredJobLease readStoredLease(String reference) {
     assertTrue(reference.startsWith(INLINE_JOB_LEASE_PREFIX));
     return org.junit.jupiter.api.Assertions.assertDoesNotThrow(
         () ->
             store.mapper.readValue(
                 java.util.Base64.getUrlDecoder()
                     .decode(reference.substring(INLINE_JOB_LEASE_PREFIX.length())),
-                DurableReconcileJobStore.StoredJobLease.class));
+                StoredJobLease.class));
   }
 }
