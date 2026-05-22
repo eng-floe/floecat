@@ -45,13 +45,13 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseMan
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue.LeaseScanStats;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes.RepairDisposition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobRepository;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
+import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
@@ -68,10 +68,15 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 @IfBuildProperty(name = "floecat.reconciler.job-store", stringValue = "durable")
+// Domain model:
+// 1. Canonical job state owns all derived job-index pointers and updates them transactionally.
+// 2. Lease coordination pointers are a separate runtime ownership domain owned by
+//    ReconcileLeaseManager.
+// 3. Contribution pointers and file-group result pointers are projection/payload-reference state,
+//    not part of the canonical job-index invariant.
 // This store expects the post-port inline canonical reconcile layout only. It does not read
 // legacy StoredJobReference indirection, lane queue/head scheduling rows, or separate lease-state
-// blobs. Aggregate parent counters are derived from dedicated contribution pointers, not from the
-// canonical job blob.
+// blobs.
 public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final Logger LOG = Logger.getLogger(DurableReconcileJobStore.class);
 
@@ -84,12 +89,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   private static final int CAS_MAX = 16;
-  private static final int LIST_SCAN_MAX_PAGES = 1_000;
   private static final String LEASE_EXPIRY_POINTER_PREFIX =
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
-  private static final int MAX_PENDING_REPAIR_HINTS = 4_096;
-  private static final int ACTIVE_STATE_RECLAIM_FALLBACK_PAGE_BUDGET = 1;
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -152,15 +154,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       jobIndexes = new ReconcileJobIndexes();
     }
     jobIndexes.bind(
-        pointerStore,
-        MAX_PENDING_REPAIR_HINTS,
-        this::upsertReferencePointer,
-        this::readCanonicalRecordByKey,
-        this::mutateByCanonicalPointer,
-        DurableReconcileJobStore::requiresReadyPointer,
-        this::readyPointerKeys,
-        this::readyPointerDueAt,
-        (record, dueAtMs) -> readyPointerKeyFor(record, dueAtMs.longValue()));
+        pointerStore, DurableReconcileJobStore::requiresReadyPointer, this::readyPointerKeys);
     return jobIndexes;
   }
 
@@ -193,7 +187,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     env ->
                         new ReconcileContributionRollupService.CanonicalEnvelope(
                             env.canonicalPointerKey, env.record)),
-        readyQueue()::readCurrentRecordFromIndexPointer,
         this::upsertReferencePointer,
         (canonicalPointerKey, mutator) ->
             mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
@@ -217,23 +210,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         leaseRenewGraceMs,
         this::readCanonicalRecordByKey,
         this::readRecord,
-        this::upsertReferencePointer,
         this::readCurrentRecordFromStateIndexPointer,
         this::mutateByCanonicalPointer,
-        this::hasValidLookupPointer,
-        this::repairLookupPointer,
-        DurableReconcileJobStore::requiresReadyPointer,
-        this::hasValidReadyPointers,
-        this::repairReadyPointer,
         (record, dueAtMs) -> readyPointerKeyFor(record, dueAtMs.longValue()),
         this::refreshContributionChain,
         this::cloneStoredRecord,
         DurableReconcileJobStore::isTerminalState,
-        this::clearDedupeIfOwned,
-        this::clearReadyPointersIfOwned,
-        this::repairReadyPointersIfStillCurrent,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
-        this::reconcilePointerBatchOps);
+        this::buildJobIndexPointerBatchOps);
     return leaseManager;
   }
 
@@ -246,19 +230,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         payloads(),
         leaseManager(),
         readyScanLimit,
-        this::readCanonicalRecordByKey,
         this::readRecord,
-        this::statePointerKeys,
-        this::hasValidLookupPointer,
-        this::repairLookupPointer,
-        this::hasValidReadyPointers,
-        this::repairReadyPointer,
-        this::repairCanonicalPointersIfNeeded,
-        (repairPhase, repairReason, repairTargetKind, canonicalPointerKey, jobId, state) ->
-            deferRepairIfHotPath(
-                    repairPhase, repairReason, repairTargetKind, canonicalPointerKey, jobId, state)
-                == RepairDisposition.DEFERRED,
-        this::clearReadyPointersIfOwned,
         DurableReconcileJobStore::requiresReadyPointer,
         DurableReconcileJobStore::isTerminalState);
     return readyQueue;
@@ -305,7 +277,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue,
         readyQueue()::loadActiveFromDedupe,
-        this::writeFileGroupResultPayload,
+        this::writeFileGroupResultPayloadBlobReference,
         this::incrementExpectedChildJobs,
         (record, includeSelfProjectionPayloads) ->
             refreshAncestorContributionRollups(
@@ -347,19 +319,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     maintenanceService.bind(
         pointerStore,
-        this::drainPendingRepairHintsForMaintenance,
-        this::statePointerPrefix,
-        readyQueue()::readCurrentRecordFromStateIndexPointer,
-        readyQueue()::matchesLeaseRequest,
-        this::hasValidReadyPointers,
-        this::repairReadyPointer,
         this::parseLeaseExpiryMillis,
-        this::repairAndReclaimCanonicalJob,
-        this::repairAndReclaimFromStatePointer,
-        MAX_PENDING_REPAIR_HINTS,
+        this::reclaimExpiredLeaseFromCanonicalPointer,
         readyScanLimit,
-        LIST_SCAN_MAX_PAGES,
-        ACTIVE_STATE_RECLAIM_FALLBACK_PAGE_BUDGET,
         reclaimIntervalMs,
         INVALID_ORDERED_POINTER_MS);
     return maintenanceService;
@@ -1082,35 +1044,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private void onHotPath(Runnable runnable) {
-    indexes().onHotPath(runnable);
+    runnable.run();
   }
 
   private <T> T onHotPath(Supplier<T> supplier) {
-    return indexes().onHotPath(supplier);
-  }
-
-  // This only defers DurableReconcileJobStore pointer/index repair. It is intentionally scoped to
-  // this class; lower storage layers remain responsible for their own repair policy.
-  private RepairDisposition deferRepairIfHotPath(
-      String repairPhase,
-      String repairReason,
-      String repairTargetKind,
-      String canonicalPointerKey,
-      String jobId,
-      String state) {
-    return indexes()
-        .deferRepairIfHotPath(
-            repairPhase, repairReason, repairTargetKind, canonicalPointerKey, jobId, state);
-  }
-
-  // This is the only supported production drain entrypoint for deferred repair hints. It is
-  // intended for explicit maintenance cadence, not lease acquisition or other hot-path mutations.
-  void drainPendingRepairHintsForMaintenance(int maxHints, long maxMillis) {
-    indexes().drainPendingRepairHintsForMaintenance(maxHints, maxMillis);
-  }
-
-  int pendingRepairHintCount() {
-    return indexes().pendingRepairHintCount();
+    return supplier.get();
   }
 
   private Optional<StoredEnvelope> loadByAnyAccount(String jobId) {
@@ -1178,13 +1116,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return renewed != null;
   }
 
-  private void repairAndReclaimCanonicalJob(Pointer leaseExpiryPointer, long nowMs) {
-    leaseManager().repairAndReclaimCanonicalJob(leaseExpiryPointer, nowMs);
-  }
-
-  private void repairAndReclaimFromStatePointer(
-      Pointer statePointer, String expectedState, long nowMs) {
-    leaseManager().repairAndReclaimFromStatePointer(statePointer, expectedState, nowMs);
+  private void reclaimExpiredLeaseFromCanonicalPointer(Pointer leaseExpiryPointer, long nowMs) {
+    leaseManager().reclaimExpiredLeaseFromCanonicalPointer(leaseExpiryPointer, nowMs);
   }
 
   private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
@@ -1214,7 +1147,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (existing == null) {
         Pointer created =
             Pointer.newBuilder().setKey(pointerKey).setBlobUri(reference).setVersion(1L).build();
-        if (pointerStore.compareAndSet(pointerKey, 0L, created)) {
+        if (pointerStore.compareAndSetBatch(List.of(new CasUpsert(pointerKey, 0L, created)))) {
           return true;
         }
         continue;
@@ -1229,7 +1162,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               .setBlobUri(reference)
               .setVersion(existing.getVersion() + 1)
               .build();
-      if (pointerStore.compareAndSet(pointerKey, existing.getVersion(), next)) {
+      if (pointerStore.compareAndSetBatch(
+          List.of(new CasUpsert(pointerKey, existing.getVersion(), next)))) {
         return true;
       }
     }
@@ -1237,74 +1171,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return false;
   }
 
-  private void clearDedupeIfOwned(StoredReconcileJob record) {
-    repository().clearDedupeIfOwned(record);
-  }
-
-  private void clearReadyPointersIfOwned(StoredReconcileJob record, String canonicalPointerKey) {
-    repository().clearReadyPointersIfOwned(record, canonicalPointerKey);
-  }
-
   private boolean hasValidReadyPointers(StoredReconcileJob record, String expectedReference) {
     return indexes().hasValidReadyPointers(record, expectedReference);
-  }
-
-  private boolean hasValidLookupPointer(String jobId, String expectedReference) {
-    return indexes().hasValidLookupPointer(jobId, expectedReference);
-  }
-
-  private boolean repairLookupPointer(String jobId, String canonicalPointerKey) {
-    return indexes().repairLookupPointer(jobId, canonicalPointerKey);
-  }
-
-  private boolean repairLookupPointer(
-      String jobId, String canonicalPointerKey, String repairPhase, String repairReason) {
-    return indexes().repairLookupPointer(jobId, canonicalPointerKey, repairPhase, repairReason);
-  }
-
-  private StoredReconcileJob repairCanonicalPointersIfNeeded(
-      String canonicalPointerKey, StoredReconcileJob record) {
-    return indexes().repairCanonicalPointersIfNeeded(canonicalPointerKey, record);
-  }
-
-  private StoredReconcileJob repairCanonicalPointersIfNeeded(
-      String canonicalPointerKey,
-      StoredReconcileJob record,
-      String repairPhase,
-      String repairReason) {
-    return indexes()
-        .repairCanonicalPointersIfNeeded(canonicalPointerKey, record, repairPhase, repairReason);
-  }
-
-  private boolean repairReadyPointer(String canonicalPointerKey, StoredReconcileJob record) {
-    return indexes().repairReadyPointer(canonicalPointerKey, record);
-  }
-
-  private boolean repairReadyPointer(
-      String canonicalPointerKey,
-      StoredReconcileJob record,
-      String repairPhase,
-      String repairReason) {
-    return indexes().repairReadyPointer(canonicalPointerKey, record, repairPhase, repairReason);
   }
 
   private Optional<StoredReconcileJob> readCanonicalRecordByKey(String canonicalPointerKey) {
     return repository().readCanonicalRecordByKey(canonicalPointerKey);
   }
 
-  private List<CasOp> reconcilePointerBatchOps(
+  private List<CasOp> buildJobIndexPointerBatchOps(
       String canonicalPointerKey,
       Pointer currentPointer,
       StoredReconcileJob previous,
       StoredReconcileJob current,
       Pointer nextPointer) {
     return repository()
-        .reconcilePointerBatchOps(
+        .buildJobIndexPointerBatchOps(
             canonicalPointerKey, currentPointer, previous, current, nextPointer);
-  }
-
-  private void repairReadyPointersIfStillCurrent(String canonicalPointerKey) {
-    readyQueue().repairReadyPointersIfStillCurrent(canonicalPointerKey);
   }
 
   @Override
@@ -1442,25 +1325,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private String writeFileGroupResultPayload(
       String accountId, String jobId, ReconcileFileGroupTask fileGroupTask) {
     String pointerKey = Keys.reconcileJobResultPointerById(accountId, jobId);
-    String nextBlobUri =
-        Keys.reconcileJobResultBlobUri(
-            accountId,
-            jobId,
-            "file-group-result-" + System.currentTimeMillis() + "-" + UUID.randomUUID());
-    ReconcileFileGroupTask effective =
-        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
-    payloads()
-        .writeBlob(
-            nextBlobUri,
-            StoredFileGroupResultPayload.of(effective),
-            "Failed to persist file group result payload");
+    String nextBlobUri = writeFileGroupResultPayloadBlobReference(accountId, jobId, fileGroupTask);
 
     for (int i = 0; i < CAS_MAX; i++) {
       Pointer currentPointer = pointerStore.get(pointerKey).orElse(null);
       if (currentPointer == null) {
         Pointer created =
             Pointer.newBuilder().setKey(pointerKey).setBlobUri(nextBlobUri).setVersion(1L).build();
-        if (pointerStore.compareAndSet(pointerKey, 0L, created)) {
+        if (pointerStore.compareAndSetBatch(List.of(new CasUpsert(pointerKey, 0L, created)))) {
           return nextBlobUri;
         }
         continue;
@@ -1474,7 +1346,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               .setBlobUri(nextBlobUri)
               .setVersion(currentPointer.getVersion() + 1L)
               .build();
-      if (pointerStore.compareAndSet(pointerKey, currentPointer.getVersion(), nextPointer)) {
+      if (pointerStore.compareAndSetBatch(
+          List.of(new CasUpsert(pointerKey, currentPointer.getVersion(), nextPointer)))) {
         return nextBlobUri;
       }
     }
@@ -1483,6 +1356,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       blobStore.delete(nextBlobUri);
     }
     throw new IllegalStateException("Failed to update reconcile job result pointer");
+  }
+
+  // File-group result payload references are intentionally outside the canonical job-index
+  // invariant. They are payload-linkage state, not derived scheduling/index pointers.
+  private String writeFileGroupResultPayloadBlobReference(
+      String accountId, String jobId, ReconcileFileGroupTask fileGroupTask) {
+    String nextBlobUri =
+        Keys.reconcileJobResultBlobUri(
+            accountId,
+            jobId,
+            "file-group-result-" + System.currentTimeMillis() + "-" + UUID.randomUUID());
+    ReconcileFileGroupTask effective =
+        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+    payloads()
+        .writeBlob(
+            nextBlobUri,
+            StoredFileGroupResultPayload.of(effective),
+            "Failed to persist file group result payload");
+    return nextBlobUri;
   }
 
   private static SnapshotPlanBlob snapshotPlanBlob(List<ReconcileFileGroupTask> fileGroups) {

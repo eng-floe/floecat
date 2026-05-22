@@ -84,7 +84,6 @@ public class ReconcileJobRepository {
     String canonicalPointerKey = lookup.getBlobUri();
     Pointer canonicalPointer = pointerStore.get(canonicalPointerKey).orElse(null);
     if (canonicalPointer == null) {
-      pointerStore.compareAndDelete(lookupKey, lookup.getVersion());
       return Optional.empty();
     }
     var canonicalRec = readRecord(canonicalPointer);
@@ -96,7 +95,6 @@ public class ReconcileJobRepository {
       LOG.warnf(
           "Reconcile lookup pointer mismatch jobId=%s canonicalKey=%s canonicalJobId=%s",
           jobId, canonicalPointerKey, current.jobId);
-      pointerStore.compareAndDelete(lookupKey, lookup.getVersion());
       return Optional.empty();
     }
     return Optional.of(new CanonicalEnvelope(canonicalPointerKey, current));
@@ -142,7 +140,7 @@ public class ReconcileJobRepository {
               .build();
 
       List<CasOp> pointerOps =
-          reconcilePointerBatchOps(
+          buildJobIndexPointerBatchOps(
               canonicalPointerKey, currentPointer, baseline, nextRecord, nextPointer);
       if (pointerStore.compareAndSetBatch(pointerOps)) {
         logStateTransition.accept(baseline, nextRecord, "mutate");
@@ -170,73 +168,9 @@ public class ReconcileJobRepository {
     return record;
   }
 
-  public void clearDedupeIfOwned(StoredReconcileJob record) {
-    if (record.dedupeKeyHash == null || record.dedupeKeyHash.isBlank()) {
-      return;
-    }
-    String dedupeKey = Keys.reconcileDedupePointer(record.accountId, record.dedupeKeyHash);
-    Pointer existing = pointerStore.get(dedupeKey).orElse(null);
-    if (existing == null) {
-      return;
-    }
-    var owner = readCanonicalRecordByKey(existing.getBlobUri());
-    if (owner.isPresent()
-        && record.jobId.equals(owner.get().jobId)
-        && record.accountId.equals(owner.get().accountId)) {
-      pointerStore.compareAndDelete(dedupeKey, existing.getVersion());
-    }
-  }
-
-  public void clearReadyPointersIfOwned(StoredReconcileJob record, String canonicalPointerKey) {
-    if (record == null || blank(canonicalPointerKey)) {
-      return;
-    }
-    for (String readyPointerKey : readyPointerKeysForCleanup(record)) {
-      Pointer existing = pointerStore.get(readyPointerKey).orElse(null);
-      if (existing != null && canonicalPointerKey.equals(existing.getBlobUri())) {
-        pointerStore.compareAndDelete(readyPointerKey, existing.getVersion());
-      }
-    }
-  }
-
-  public void clearPointerIfMatches(String pointerKey, String expectedReference) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return;
-    }
-    Pointer existing = pointerStore.get(pointerKey).orElse(null);
-    if (existing == null) {
-      return;
-    }
-    if (expectedReference != null
-        && !expectedReference.isBlank()
-        && !expectedReference.equals(existing.getBlobUri())) {
-      return;
-    }
-    pointerStore.compareAndDelete(pointerKey, existing.getVersion());
-  }
-
-  public boolean deletePointerIfPresent(String pointerKey) {
-    Pointer existing = pointerStore.get(pointerKey).orElse(null);
-    return existing != null && pointerStore.compareAndDelete(pointerKey, existing.getVersion());
-  }
-
-  public void clearPointerIfOwnedByJob(String pointerKey, StoredReconcileJob ownerRecord) {
-    if (pointerKey == null || pointerKey.isBlank() || ownerRecord == null) {
-      return;
-    }
-    Pointer existing = pointerStore.get(pointerKey).orElse(null);
-    if (existing == null) {
-      return;
-    }
-    var currentOwner = readCanonicalRecordByKey(existing.getBlobUri());
-    if (currentOwner.isPresent()
-        && ownerRecord.jobId.equals(currentOwner.get().jobId)
-        && ownerRecord.accountId.equals(currentOwner.get().accountId)) {
-      pointerStore.compareAndDelete(pointerKey, existing.getVersion());
-    }
-  }
-
-  public List<CasOp> reconcilePointerBatchOps(
+  // Job-index pointers are derived from canonical job state and are only mutated from
+  // canonical job transitions.
+  public List<CasOp> buildJobIndexPointerBatchOps(
       String canonicalPointerKey,
       Pointer currentPointer,
       StoredReconcileJob previous,

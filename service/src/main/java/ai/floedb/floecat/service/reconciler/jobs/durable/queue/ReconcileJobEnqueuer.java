@@ -205,11 +205,12 @@ public class ReconcileJobEnqueuer {
 
   private BulkEnqueueItemResult commitBulkEntry(PendingBulkEnqueue entry) {
     for (int attempt = 0; attempt < casMax; attempt++) {
+      Pointer existingDedupePointer = pointerStore.get(entry.dedupePointerKey).orElse(null);
       var existing = loadActiveFromDedupe.load(entry.dedupePointerKey);
       if (existing.isPresent()) {
         return new BulkEnqueueItemResult(entry.index, existing.get().jobId, false, "");
       }
-      if (pointerStore.compareAndSetBatch(bulkEnqueuePointerOps(entry))) {
+      if (pointerStore.compareAndSetBatch(bulkEnqueuePointerOps(entry, existingDedupePointer))) {
         return null;
       }
     }
@@ -466,7 +467,6 @@ public class ReconcileJobEnqueuer {
       entry.resultBlobUri =
           writeFileGroupResultPayload.write(
               entry.record.accountId, entry.record.jobId, entry.resultPayloadTask);
-      entry.resultPointerWritten = true;
     }
   }
 
@@ -483,25 +483,26 @@ public class ReconcileJobEnqueuer {
     if (entry.fileGroupPlanWritten) {
       blobStore.delete(entry.fileGroupPlanBlobUri);
     }
-    if (entry.resultPointerWritten) {
-      deletePointerIfPresent(
-          Keys.reconcileJobResultPointerById(entry.record.accountId, entry.record.jobId));
-    }
     if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
       blobStore.delete(entry.resultBlobUri);
     }
   }
 
-  private List<CasOp> bulkEnqueuePointerOps(PendingBulkEnqueue entry) {
+  private List<CasOp> bulkEnqueuePointerOps(
+      PendingBulkEnqueue entry, Pointer existingDedupePointer) {
     List<CasOp> ops = new ArrayList<>();
+    long dedupeExpectedVersion =
+        existingDedupePointer == null ? 0L : existingDedupePointer.getVersion();
+    long dedupeNextVersion =
+        existingDedupePointer == null ? 1L : existingDedupePointer.getVersion() + 1L;
     ops.add(
         new CasUpsert(
             entry.dedupePointerKey,
-            0L,
+            dedupeExpectedVersion,
             Pointer.newBuilder()
                 .setKey(entry.dedupePointerKey)
                 .setBlobUri(entry.canonicalKey)
-                .setVersion(1L)
+                .setVersion(dedupeNextVersion)
                 .build()));
     ops.add(
         new CasUpsert(
@@ -565,12 +566,20 @@ public class ReconcileJobEnqueuer {
                   .setVersion(1L)
                   .build()));
     }
+    if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
+      String resultPointerKey =
+          Keys.reconcileJobResultPointerById(entry.record.accountId, entry.record.jobId);
+      ops.add(
+          new CasUpsert(
+              resultPointerKey,
+              0L,
+              Pointer.newBuilder()
+                  .setKey(resultPointerKey)
+                  .setBlobUri(entry.resultBlobUri)
+                  .setVersion(1L)
+                  .build()));
+    }
     return ops;
-  }
-
-  private boolean deletePointerIfPresent(String pointerKey) {
-    Pointer existing = pointerStore.get(pointerKey).orElse(null);
-    return existing != null && pointerStore.compareAndDelete(pointerKey, existing.getVersion());
   }
 
   private BulkEnqueueItemResult failedBulkEnqueue(int index, RuntimeException error) {
@@ -998,7 +1007,6 @@ public class ReconcileJobEnqueuer {
     boolean definitionWritten;
     boolean snapshotPlanWritten;
     boolean fileGroupPlanWritten;
-    boolean resultPointerWritten;
     String resultBlobUri;
 
     private PendingBulkEnqueue(

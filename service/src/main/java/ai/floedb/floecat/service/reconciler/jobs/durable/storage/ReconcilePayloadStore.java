@@ -185,6 +185,7 @@ public class ReconcilePayloadStore {
     if (state == null) {
       return Optional.empty();
     }
+    // Result payload pointers are payload references, not canonical job-index pointers.
     if (!blank(state.accountId) && !blank(state.jobId)) {
       Pointer resultPointer =
           pointerStore

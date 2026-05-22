@@ -31,7 +31,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
@@ -40,13 +39,14 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcileContributionRollupService {
   private static final Logger LOG = Logger.getLogger(ReconcileContributionRollupService.class);
+  // Contribution pointers are projection state for parent rollups. They are not part of the
+  // canonical job-index pointer invariant and are not repaired on reads.
 
   private PointerStore pointerStore;
   private ReconcilePayloadStore payloadStore;
   private ReconcileJobProjector projector;
   private ReconcileLeaseManager leaseManager;
   private Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount;
-  private Function<Pointer, Optional<StoredReconcileJob>> readCurrentRecordFromIndexPointer;
   private BiFunction<String, String, Boolean> upsertReferencePointer;
   private CanonicalMutator mutateByCanonicalPointerReturningRecord;
   private Function<StoredReconcileJob, StoredReconcileJob> copyStoredJob;
@@ -57,7 +57,6 @@ public class ReconcileContributionRollupService {
       ReconcileJobProjector projector,
       ReconcileLeaseManager leaseManager,
       Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount,
-      Function<Pointer, Optional<StoredReconcileJob>> readCurrentRecordFromIndexPointer,
       BiFunction<String, String, Boolean> upsertReferencePointer,
       CanonicalMutator mutateByCanonicalPointerReturningRecord,
       Function<StoredReconcileJob, StoredReconcileJob> copyStoredJob) {
@@ -66,16 +65,13 @@ public class ReconcileContributionRollupService {
     this.projector = projector;
     this.leaseManager = leaseManager;
     this.loadByAnyAccount = loadByAnyAccount;
-    this.readCurrentRecordFromIndexPointer = readCurrentRecordFromIndexPointer;
     this.upsertReferencePointer = upsertReferencePointer;
     this.mutateByCanonicalPointerReturningRecord = mutateByCanonicalPointerReturningRecord;
     this.copyStoredJob = copyStoredJob;
   }
 
   public ProjectedPublicJob projectPublicJob(
-      StoredReconcileJob stored,
-      boolean includeSelfProjectionPayloads,
-      boolean allowContributionRepair) {
+      StoredReconcileJob stored, boolean includeSelfProjectionPayloads) {
     if (stored == null) {
       return ProjectedPublicJob.empty();
     }
@@ -85,9 +81,7 @@ public class ReconcileContributionRollupService {
     }
 
     List<StoredJobContribution> contributions =
-        allowContributionRepair
-            ? loadDirectContributionsWithRepair(stored.accountId, stored.jobId)
-            : loadDirectContributionsNoRepair(stored.accountId, stored.jobId);
+        loadDirectContributionsNoRepair(stored.accountId, stored.jobId);
     if (contributions.isEmpty()) {
       return ProjectedPublicJob.self(stored, selfProjection);
     }
@@ -97,12 +91,7 @@ public class ReconcileContributionRollupService {
 
   public List<StoredJobContribution> loadDirectContributionsNoRepair(
       String accountId, String parentJobId) {
-    return loadDirectContributions(accountId, parentJobId, false);
-  }
-
-  public List<StoredJobContribution> loadDirectContributionsWithRepair(
-      String accountId, String parentJobId) {
-    return loadDirectContributions(accountId, parentJobId, true);
+    return loadDirectContributions(accountId, parentJobId);
   }
 
   public void refreshContributionChain(StoredReconcileJob record) {
@@ -134,7 +123,7 @@ public class ReconcileContributionRollupService {
   }
 
   private List<StoredJobContribution> loadDirectContributions(
-      String accountId, String parentJobId, boolean allowRepair) {
+      String accountId, String parentJobId) {
     if (blank(accountId) || blank(parentJobId)) {
       return List.of();
     }
@@ -160,10 +149,6 @@ public class ReconcileContributionRollupService {
         break;
       }
     }
-    if (out.isEmpty() && allowRepair && hasDirectChildren(accountId, parentJobId)) {
-      rebuildDirectChildContributions(accountId, parentJobId);
-      return loadDirectContributions(accountId, parentJobId, false);
-    }
     return out;
   }
 
@@ -172,66 +157,6 @@ public class ReconcileContributionRollupService {
       return Optional.empty();
     }
     return payloadStore.readInlineJobContribution(pointer.getBlobUri());
-  }
-
-  private boolean hasDirectChildren(String accountId, String parentJobId) {
-    StringBuilder next = new StringBuilder();
-    return !pointerStore
-        .listPointersByPrefix(
-            Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId), 1, "", next)
-        .isEmpty();
-  }
-
-  private void rebuildDirectChildContributions(String accountId, String parentJobId) {
-    if (blank(accountId) || blank(parentJobId)) {
-      return;
-    }
-    String prefix = Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId);
-    String token = "";
-    Set<String> activeChildIds = new java.util.HashSet<>();
-    while (true) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> childPointers = pointerStore.listPointersByPrefix(prefix, 256, token, next);
-      if (childPointers.isEmpty()) {
-        break;
-      }
-      for (Pointer childPointer : childPointers) {
-        var child = readCurrentRecordFromIndexPointer.apply(childPointer);
-        if (child.isEmpty()) {
-          continue;
-        }
-        activeChildIds.add(child.get().jobId);
-        upsertContributionForParent(child.get());
-      }
-      token = next.toString();
-      if (token.isBlank()) {
-        break;
-      }
-    }
-    cleanupStaleContributionPointers(accountId, parentJobId, activeChildIds);
-  }
-
-  private void cleanupStaleContributionPointers(
-      String accountId, String parentJobId, Set<String> activeChildIds) {
-    String prefix = Keys.reconcileJobContributionPointerPrefix(accountId, parentJobId);
-    String token = "";
-    while (true) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 256, token, next);
-      if (pointers.isEmpty()) {
-        return;
-      }
-      for (Pointer pointer : pointers) {
-        StoredJobContribution contribution = readContribution(pointer).orElse(null);
-        if (contribution == null || !activeChildIds.contains(contribution.childJobId)) {
-          pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
-        }
-      }
-      token = next.toString();
-      if (token.isBlank()) {
-        return;
-      }
-    }
   }
 
   private StoredReconcileJob refreshCanonicalCountersFromContributions(
@@ -245,7 +170,7 @@ public class ReconcileContributionRollupService {
         loadDirectContributionsNoRepair(
             parentEnvelope.record().accountId, parentEnvelope.record().jobId);
     DirectChildCounts directChildCounts = projector.countDirectChildStates(contributions);
-    ProjectedPublicJob projected = projectPublicJob(parentEnvelope.record(), false, false);
+    ProjectedPublicJob projected = projectPublicJob(parentEnvelope.record(), false);
     StoredReconcileJob priorParent = copyStoredJob.apply(parentEnvelope.record());
     Optional<CanonicalEnvelope> updated =
         mutateByCanonicalPointerReturningRecord.apply(
@@ -364,7 +289,7 @@ public class ReconcileContributionRollupService {
       String parentJobId,
       StoredReconcileJob childJob,
       boolean includeSelfProjectionPayloads) {
-    ProjectedPublicJob projected = projectPublicJob(childJob, includeSelfProjectionPayloads, false);
+    ProjectedPublicJob projected = projectPublicJob(childJob, includeSelfProjectionPayloads);
     return StoredJobContribution.of(
         parentAccountId,
         parentJobId,

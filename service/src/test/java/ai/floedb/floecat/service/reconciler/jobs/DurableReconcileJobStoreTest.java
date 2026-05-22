@@ -54,7 +54,6 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -620,7 +619,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void bulkEnqueueDefersLookupRepairOnHotPathUntilMaintenanceFlow() {
+  void duplicateEnqueueLeavesMissingLookupPointerUnrepaired() {
     store.init();
 
     ReconcileJobStore.BulkEnqueueSpec spec =
@@ -642,12 +641,10 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, duplicate.items.getFirst().jobId);
     assertTrue(
         store.pointerStore.get(lookupKey).isEmpty(),
-        "duplicate enqueue should not repair lookup inline on the hot path");
+        "duplicate enqueue should not restore the lookup pointer on the hot path");
 
     var leased = store.leaseNext().orElseThrow();
-
     assertEquals(jobId, leased.jobId);
-    assertEquals(canonicalKey, store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
   }
 
   @Test
@@ -885,9 +882,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         "s3://bucket/data/file-1.parquet",
         job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
-    assertEquals(
-        Keys.reconcileJobStateRowById(ACCOUNT_ID, jobId),
-        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+    assertTrue(store.pointerStore.get(lookupKey).isPresent());
   }
 
   @Test
@@ -1040,7 +1035,6 @@ class DurableReconcileJobStoreTest {
     assertEquals("table-1", firstLease.snapshotTask.tableId());
     assertEquals(55L, firstLease.snapshotTask.snapshotId());
     assertTrue(firstLease.snapshotTask.fileGroupPlanRecorded());
-    assertTrue(store.leaseNext().isEmpty());
   }
 
   @Test
@@ -1416,7 +1410,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void persistFileGroupResultUpdatesStoredExecFileGroupTask() {
+  void persistFileGroupResultUpdatesPayloadReferenceWithoutCanonicalMutation() {
     store.init();
 
     String jobId =
@@ -2052,12 +2046,12 @@ class DurableReconcileJobStoreTest {
     ReconcileLeaseManager leaseManager = leaseManager();
     assertDoesNotThrow(() -> leaseManager.clearLaneLeaseIfOwned(activeRecord, canonicalPointerKey));
 
-    Pointer repairedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
-    assertEquals(canonicalPointerKey, repairedPointer.getBlobUri());
+    Pointer retainedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
+    assertEquals(canonicalPointerKey, retainedPointer.getBlobUri());
   }
 
   @Test
-  void tryAcquireLaneLeaseReacquiresStaleSelfOwnedLanePointer() throws Exception {
+  void tryAcquireLaneLeaseRetainsStaleSelfOwnedLanePointerForSameJob() throws Exception {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2082,18 +2076,17 @@ class DurableReconcileJobStoreTest {
 
     assertTrue(firstClaim);
     assertTrue(secondClaim);
-    Pointer repairedLanePointer =
+    Pointer retainedLanePointer =
         store
             .pointerStore
             .get(Keys.reconcileLaneLeasePointer(ACCOUNT_ID, queuedRecord.laneKey))
             .orElseThrow();
-    assertEquals(staleLanePointer.getVersion(), repairedLanePointer.getVersion());
-    assertEquals(canonicalPointerKey, repairedLanePointer.getBlobUri());
+    assertEquals(staleLanePointer.getVersion(), retainedLanePointer.getVersion());
+    assertEquals(canonicalPointerKey, retainedLanePointer.getBlobUri());
   }
 
   @Test
-  void tryAcquireLaneLeaseCanonicalizesStaleSameJobPointerWithoutSelfAuthorizing()
-      throws Exception {
+  void tryAcquireLaneLeaseAcceptsStaleSameJobAliasPointerWithoutSelfAuthorizing() throws Exception {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2133,7 +2126,7 @@ class DurableReconcileJobStoreTest {
 
     assertTrue(acquired);
     assertEquals(
-        canonicalPointerKey, store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri());
+        aliasCanonicalKey, store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri());
   }
 
   @Test
@@ -2280,8 +2273,8 @@ class DurableReconcileJobStoreTest {
     assertDoesNotThrow(
         () -> leaseManager.clearSnapshotLeaseIfOwned(activeRecord, canonicalPointerKey));
 
-    Pointer repairedPointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
-    assertEquals(canonicalPointerKey, repairedPointer.getBlobUri());
+    Pointer retainedPointer = store.pointerStore.get(snapshotLeasePointerKey).orElseThrow();
+    assertEquals(canonicalPointerKey, retainedPointer.getBlobUri());
   }
 
   @Test
@@ -2465,7 +2458,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueueRepairsMissingSecondaryPointersForDedupedQueuedJob() {
+  void duplicateEnqueueLeavesMissingSecondaryPointersUnrepaired() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2503,22 +2496,21 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, dedupedJobId);
     assertTrue(store.pointerStore.get(lookupKey).isEmpty());
     assertTrue(store.pointerStore.get(expectedReadyKey).isEmpty());
-    Pointer repairedDedupePointer =
+    Pointer retainedDedupePointer =
         firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
-    assertEquals(canonicalPointerKey, repairedDedupePointer.getBlobUri());
+    assertEquals(canonicalPointerKey, retainedDedupePointer.getBlobUri());
     StoredReconcileJob unrepairedJob = readStoredRecord(canonicalPointerKey);
     assertTrue(unrepairedJob.readyPointerKey == null || unrepairedJob.readyPointerKey.isBlank());
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
-    var lease = store.leaseNext().orElseThrow();
-    assertEquals(jobId, lease.jobId);
-    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+    assertTrue(store.leaseNext().isEmpty());
+    assertTrue(store.pointerStore.get(lookupKey).isEmpty());
     assertTrue(store.pointerStore.get(expectedReadyKey).isEmpty());
   }
 
   @Test
-  void leaseNextRepairsMissingLookupPointerFromReadyReference() {
+  void leaseNextLeasesReadyJobWithoutRestoringMissingLookupPointer() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2531,9 +2523,7 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
 
     assertEquals(jobId, lease.jobId);
-    assertEquals(
-        Keys.reconcileJobStateRowById(ACCOUNT_ID, jobId),
-        store.pointerStore.get(lookupKey).orElseThrow().getBlobUri());
+    assertTrue(store.pointerStore.get(lookupKey).isEmpty());
   }
 
   @Test
@@ -2625,7 +2615,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void nonTerminalMutationDoesNotRepairMissingDedupePointer() {
+  void nonTerminalMutationLeavesMissingDedupePointerUnrepaired() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2707,74 +2697,6 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_QUEUED", requeued.state);
     assertFalse(requeued.readyPointerKey.isBlank());
     assertTrue(store.pointerStore.get(requeued.readyPointerKey).isPresent());
-  }
-
-  @Test
-  void maintenanceRepairsMissingLeaseExpiryPointerForRunningJob() {
-    System.setProperty("floecat.reconciler.job-store.lease-ms", "5000");
-    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
-    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
-    store.init();
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    var lease = store.leaseNext().orElseThrow();
-    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
-
-    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    StoredJobLease storedLease =
-        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
-    String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
-    deletePointerIfPresent(expiryKey);
-
-    store.runMaintenanceOnce(1_000L);
-
-    assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, jobId).orElseThrow().state);
-    assertEquals(
-        Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
-        store.pointerStore.get(expiryKey).orElseThrow().getBlobUri());
-  }
-
-  @Test
-  void maintenanceFinalizesCancellingJobWhenLeaseExpiryPointerIsMissing() throws Exception {
-    System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
-    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
-    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
-    store.init();
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    var lease = store.leaseNext().orElseThrow();
-    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
-    store.cancel(ACCOUNT_ID, jobId, "stop");
-
-    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    StoredJobLease storedLease =
-        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
-    String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
-    deletePointerIfPresent(expiryKey);
-
-    Thread.sleep(1150L);
-
-    store.runMaintenanceOnce(1_000L);
-
-    ReconcileJob cancelled = store.get(ACCOUNT_ID, jobId).orElseThrow();
-    assertEquals("JS_CANCELLED", cancelled.state);
-    assertEquals("stop", cancelled.message);
-    assertTrue(store.pointerStore.get(leaseKey).isEmpty());
-    assertTrue(store.pointerStore.get(expiryKey).isEmpty());
   }
 
   @Test
@@ -3236,7 +3158,7 @@ class DurableReconcileJobStoreTest {
     var page = store.list(ACCOUNT_ID, 10, "", CONNECTOR_ID, java.util.Set.of());
 
     assertEquals(List.of(liveJobId), page.jobs.stream().map(job -> job.jobId).toList());
-    assertTrue(store.pointerStore.get(staleIndexKey).isEmpty());
+    assertTrue(store.pointerStore.get(staleIndexKey).isPresent());
   }
 
   @Test
@@ -3543,7 +3465,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void leaseNextRepairsLookupPointerWhenReadyPointerStillExists() {
+  void leaseNextLeavesLookupPointerMissingWhenReadyPointerStillExists() {
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     store.init();
 
@@ -3559,10 +3481,9 @@ class DurableReconcileJobStoreTest {
     Pointer lookupPointer = store.pointerStore.get(lookupKey).orElseThrow();
     assertTrue(store.pointerStore.compareAndDelete(lookupKey, lookupPointer.getVersion()));
 
-    var repairedLease = store.leaseNext().orElseThrow();
-
-    assertEquals(jobId, repairedLease.jobId);
-    assertTrue(store.pointerStore.get(lookupKey).isPresent());
+    var leased = store.leaseNext().orElseThrow();
+    assertEquals(jobId, leased.jobId);
+    assertTrue(store.pointerStore.get(lookupKey).isEmpty());
   }
 
   @Test
@@ -3712,7 +3633,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void maintenanceRepairsMissingReadyPointersForQueuedJob() {
+  void maintenanceLeavesMissingReadyPointersUnrepairedForQueuedJob() {
     store.init();
 
     String jobId =
@@ -3737,14 +3658,13 @@ class DurableReconcileJobStoreTest {
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
-    var repairedLease = store.leaseNext().orElseThrow();
+    assertTrue(store.leaseNext().isEmpty());
 
-    assertEquals(jobId, repairedLease.jobId);
     assertTrue(store.pointerStore.get(originalReadyKey).isEmpty());
   }
 
   @Test
-  void queuedReadyRepairDoesNotReindexCancellingJobs() {
+  void maintenanceDoesNotReindexCancellingJobs() {
     store.init();
 
     String jobId =
@@ -4305,7 +4225,7 @@ class DurableReconcileJobStoreTest {
                 ReconcileJobStore.LeaseRequest.of(
                     Set.of(ReconcileExecutionClass.DEFAULT), Set.of()))
             .isPresent());
-    assertTrue(store.pointerStore.get(staleKey).isEmpty());
+    assertTrue(store.pointerStore.get(staleKey).isPresent());
   }
 
   @Test
@@ -4467,7 +4387,7 @@ class DurableReconcileJobStoreTest {
             .leaseNext(
                 ReconcileJobStore.LeaseRequest.of(Set.of(ReconcileExecutionClass.BATCH), Set.of()))
             .isEmpty());
-    assertTrue(store.pointerStore.get(staleClassKey).isEmpty());
+    assertTrue(store.pointerStore.get(staleClassKey).isPresent());
   }
 
   @Test
@@ -4606,8 +4526,8 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
 
     assertEquals(liveJobId, lease.jobId);
-    assertTrue(store.pointerStore.get(malformedKey).isEmpty());
-    assertTrue(store.pointerStore.get(orphanKey).isEmpty());
+    assertTrue(store.pointerStore.get(malformedKey).isPresent());
+    assertTrue(store.pointerStore.get(orphanKey).isPresent());
   }
 
   @Test
@@ -4636,7 +4556,7 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
 
     assertEquals(liveJobId, lease.jobId);
-    assertTrue(store.pointerStore.get(malformedKey).isEmpty());
+    assertTrue(store.pointerStore.get(malformedKey).isPresent());
   }
 
   @Test
@@ -4683,7 +4603,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void duplicateEnqueueRepairsMissingSecondaryReadyIndexes() {
+  void duplicateEnqueueLeavesMissingSecondaryReadyIndexesUnrepaired() {
     store.init();
 
     ReconcileScope scope = ReconcileScope.ofView(List.of(), "tbl-repair");
@@ -4752,328 +4672,6 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.pointerStore.get(laneKey).isEmpty());
     assertTrue(store.pointerStore.get(pinnedKey).isEmpty());
     assertTrue(store.pointerStore.get(kindKey).isEmpty());
-  }
-
-  @Test
-  @SuppressWarnings("unchecked")
-  void repairReadyPointerRepairsDerivedIndexesAndCanonicalGlobalKeyWhenDrifted() throws Exception {
-    store.init();
-
-    String jobId =
-        store.enqueueViewPlan(
-            ACCOUNT_ID,
-            "conn-repair-global",
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.ofView(List.of(), "view-repair-global"),
-            ReconcileViewTask.of(
-                "src-ns", "src-view", "dest-ns", "view-repair-global", "Repair Global"),
-            ReconcileExecutionPolicy.of(
-                ReconcileExecutionClass.BATCH, "lane-repair-global", Map.of()),
-            "",
-            "executor-repair-global");
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
-    long dueAt = record.nextAttemptAtMs;
-    String expectedGlobalKey =
-        Keys.reconcileReadyPointerByDue(dueAt, ACCOUNT_ID, record.laneKey, jobId);
-    String driftedGlobalKey =
-        Keys.reconcileReadyPointerByDue(dueAt + 999L, ACCOUNT_ID, record.laneKey, jobId);
-    String classKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            dueAt, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId);
-    String laneKey =
-        Keys.reconcileReadyByExecutionLanePointerByDue(
-            dueAt, "lane-repair-global", ACCOUNT_ID, jobId);
-    String pinnedKey =
-        Keys.reconcileReadyByPinnedExecutorPointerByDue(
-            dueAt, "executor-repair-global", ACCOUNT_ID, jobId);
-    String kindKey =
-        Keys.reconcileReadyByJobKindPointerByDue(
-            dueAt, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, jobId);
-
-    Pointer globalPointer = store.pointerStore.get(expectedGlobalKey).orElseThrow();
-    assertTrue(store.pointerStore.compareAndDelete(expectedGlobalKey, globalPointer.getVersion()));
-    store
-        .pointerStore
-        .get(classKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(classKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(laneKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(laneKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(pinnedKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(pinnedKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(kindKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(kindKey, pointer.getVersion()));
-
-    record.readyPointerKey = driftedGlobalKey;
-    overwriteCanonicalRecordWithoutSync(canonicalPointerKey, record);
-
-    Method repairReadyPointer =
-        DurableReconcileJobStore.class.getDeclaredMethod(
-            "repairReadyPointer", String.class, StoredReconcileJob.class);
-    repairReadyPointer.setAccessible(true);
-
-    assertTrue((boolean) repairReadyPointer.invoke(store, canonicalPointerKey, record));
-
-    StoredReconcileJob repaired = readStoredRecord(canonicalPointerKey);
-    assertEquals(expectedGlobalKey, repaired.readyPointerKey);
-    assertTrue(store.pointerStore.get(expectedGlobalKey).isPresent());
-    assertTrue(store.pointerStore.get(classKey).isPresent());
-    assertTrue(store.pointerStore.get(laneKey).isPresent());
-    assertTrue(store.pointerStore.get(pinnedKey).isPresent());
-    assertTrue(store.pointerStore.get(kindKey).isPresent());
-    assertTrue(store.pointerStore.get(driftedGlobalKey).isEmpty());
-  }
-
-  @Test
-  void hotPathRepairSuppressionDefersCanonicalPointerRepairHints() throws Exception {
-    store.init();
-
-    String jobId =
-        store.enqueuePlan(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "tbl-hot-path"),
-            ReconcileExecutionPolicy.of(ReconcileExecutionClass.BATCH, "lane-hot-path", Map.of()),
-            "");
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
-
-    deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
-    for (String statePointerKey : statePointerKeysFor(record)) {
-      deletePointerIfPresent(statePointerKey);
-    }
-    for (String readyPointerKey : readyPointerKeysFor(record)) {
-      deletePointerIfPresent(readyPointerKey);
-    }
-
-    withInlineRepairSuppressed(
-        () ->
-            assertDoesNotThrow(
-                () ->
-                    invokePrivateMethod(
-                        indexes(),
-                        "repairCanonicalPointersIfNeeded",
-                        new Class<?>[] {
-                          String.class, StoredReconcileJob.class, String.class, String.class
-                        },
-                        canonicalPointerKey,
-                        record,
-                        "test_hot_path",
-                        "pointer_drift")));
-
-    assertEquals(1, store.pendingRepairHintCount());
-    assertTrue(store.pointerStore.get(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
-    assertTrue(
-        statePointerKeysFor(record).stream()
-            .allMatch(key -> store.pointerStore.get(key).isEmpty()));
-    assertTrue(
-        readyPointerKeysFor(record).stream()
-            .allMatch(key -> store.pointerStore.get(key).isEmpty()));
-  }
-
-  @Test
-  void leaseNextDoesNotDrainPendingRepairHints() throws Exception {
-    store.init();
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-
-    withInlineRepairSuppressed(
-        () ->
-            assertEquals(
-                "DEFERRED",
-                invokePrivateMethod(
-                        indexes(),
-                        "repairLookupPointerDisposition",
-                        new Class<?>[] {String.class, String.class, String.class, String.class},
-                        jobId,
-                        canonicalPointerKey,
-                        "test_seed_hint",
-                        "lookup_pointer_missing")
-                    .toString()));
-
-    assertEquals(1, store.pendingRepairHintCount());
-    assertTrue(store.leaseNext().isPresent());
-    assertEquals(1, store.pendingRepairHintCount());
-  }
-
-  @Test
-  void maintenanceDrainRespectsMaxHintsAndMaxMillis() throws Exception {
-    store.init();
-
-    String firstJob =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "tbl-drain-1"));
-    String secondJob =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "tbl-drain-2"));
-
-    withInlineRepairSuppressed(
-        () -> {
-          String firstCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, firstJob);
-          String secondCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, secondJob);
-          invokePrivateMethod(
-              indexes(),
-              "repairLookupPointerDisposition",
-              new Class<?>[] {String.class, String.class, String.class, String.class},
-              firstJob,
-              firstCanonical,
-              "test_seed_hint",
-              "lookup_pointer_missing");
-          invokePrivateMethod(
-              indexes(),
-              "repairLookupPointerDisposition",
-              new Class<?>[] {String.class, String.class, String.class, String.class},
-              secondJob,
-              secondCanonical,
-              "test_seed_hint",
-              "lookup_pointer_missing");
-        });
-
-    assertEquals(2, store.pendingRepairHintCount());
-    store.drainPendingRepairHintsForMaintenance(1, 1_000L);
-    assertEquals(1, store.pendingRepairHintCount());
-
-    store.drainPendingRepairHintsForMaintenance(10, 0L);
-    assertEquals(1, store.pendingRepairHintCount());
-  }
-
-  @Test
-  void invalidRepairRequestsDoNotEnqueueHints() throws Exception {
-    store.init();
-
-    withInlineRepairSuppressed(
-        () -> {
-          assertEquals(
-              "FAILED",
-              invokePrivateMethod(
-                      indexes(),
-                      "repairLookupPointerDisposition",
-                      new Class<?>[] {String.class, String.class, String.class, String.class},
-                      "",
-                      "/canonical/key",
-                      "test_invalid",
-                      "blank_job_id")
-                  .toString());
-          assertEquals(
-              "FAILED",
-              invokePrivateMethod(
-                      indexes(),
-                      "repairLookupPointerDisposition",
-                      new Class<?>[] {String.class, String.class, String.class, String.class},
-                      "job-1",
-                      "",
-                      "test_invalid",
-                      "blank_canonical_key")
-                  .toString());
-          assertEquals(
-              "FAILED",
-              invokePrivateMethod(
-                      indexes(),
-                      "repairReadyPointerDisposition",
-                      new Class<?>[] {
-                        String.class, StoredReconcileJob.class, String.class, String.class
-                      },
-                      "/canonical/key",
-                      null,
-                      "test_invalid",
-                      "null_ready_record")
-                  .toString());
-          assertEquals(
-              "FAILED",
-              invokePrivateMethod(
-                      indexes(),
-                      "repairStatePointerDisposition",
-                      new Class<?>[] {
-                        String.class, StoredReconcileJob.class, String.class, String.class
-                      },
-                      "/canonical/key",
-                      null,
-                      "test_invalid",
-                      "null_state_record")
-                  .toString());
-        });
-
-    assertEquals(0, store.pendingRepairHintCount());
-  }
-
-  @Test
-  void deferredRepairDispositionIsDistinctFromRepaired() throws Exception {
-    store.init();
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "tbl-disposition"));
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
-
-    final String[] deferred = new String[1];
-    final boolean[] handled = new boolean[1];
-    withInlineRepairSuppressed(
-        () -> {
-          deferred[0] =
-              invokePrivateMethod(
-                      indexes(),
-                      "repairLookupPointerDisposition",
-                      new Class<?>[] {String.class, String.class, String.class, String.class},
-                      jobId,
-                      canonicalPointerKey,
-                      "test_deferred",
-                      "lookup_pointer_missing")
-                  .toString();
-          handled[0] =
-              (boolean)
-                  invokePrivateMethod(
-                      indexes(),
-                      "repairLookupPointer",
-                      new Class<?>[] {String.class, String.class, String.class, String.class},
-                      jobId,
-                      canonicalPointerKey,
-                      "test_deferred",
-                      "lookup_pointer_missing");
-        });
-
-    assertEquals("DEFERRED", deferred[0]);
-    assertTrue(handled[0]);
-    assertEquals(1, store.pendingRepairHintCount());
-
-    Object repaired =
-        invokePrivateMethod(
-            indexes(),
-            "repairLookupPointerDisposition",
-            new Class<?>[] {String.class, String.class, String.class, String.class},
-            jobId,
-            canonicalPointerKey,
-            "test_inline",
-            "lookup_pointer_missing");
-    assertEquals("REPAIRED", repaired.toString());
   }
 
   @Test
@@ -5196,7 +4794,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void reclaimDeletesStaleExpiryIndexEntryWithoutGlobalRepairScan() {
+  void maintenanceLeavesStaleExpiryIndexEntryWithoutGlobalRepairScan() {
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     store.init();
 
@@ -5214,7 +4812,7 @@ class DurableReconcileJobStoreTest {
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
-    assertTrue(store.pointerStore.get(staleExpiryKey).isEmpty());
+    assertTrue(store.pointerStore.get(staleExpiryKey).isPresent());
   }
 
   @Test
@@ -5257,7 +4855,7 @@ class DurableReconcileJobStoreTest {
     }
 
     assertEquals(jobId, reclaimed.orElseThrow().jobId);
-    assertTrue(store.pointerStore.get(malformedExpiryKey).isEmpty());
+    assertTrue(store.pointerStore.get(malformedExpiryKey).isPresent());
   }
 
   @Test
@@ -5418,7 +5016,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void readPathsDoNotRebuildMissingContributionPointers() {
+  void readPathsDoNotRebuildMissingContributionProjectionPointers() {
     store.init();
 
     String parentJobId =
@@ -6655,24 +6253,6 @@ class DurableReconcileJobStoreTest {
         "");
   }
 
-  private void withInlineRepairSuppressed(ThrowingRunnable runnable) throws Exception {
-    Field suppressField = ReconcileJobIndexes.class.getDeclaredField("suppressInlineRepair");
-    suppressField.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    ThreadLocal<Boolean> suppressInlineRepair = (ThreadLocal<Boolean>) suppressField.get(indexes());
-    Boolean prior = suppressInlineRepair.get();
-    suppressInlineRepair.set(true);
-    try {
-      runnable.run();
-    } finally {
-      if (Boolean.TRUE.equals(prior)) {
-        suppressInlineRepair.set(true);
-      } else {
-        suppressInlineRepair.remove();
-      }
-    }
-  }
-
   private Object invokePrivateMethod(String name, Class<?>[] parameterTypes, Object... args)
       throws Exception {
     return invokePrivateMethod(store, name, parameterTypes, args);
@@ -6827,11 +6407,6 @@ class DurableReconcileJobStoreTest {
       }
       return super.compareAndSetBatch(ops);
     }
-  }
-
-  @FunctionalInterface
-  private interface ThrowingRunnable {
-    void run() throws Exception;
   }
 
   private static final class NthPrefixFailingPointerStore extends InMemoryPointerStore {

@@ -50,8 +50,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcilePlannerScheduler {
   private static final Logger LOG = Logger.getLogger(ReconcilePlannerScheduler.class);
-  private static final int DEFAULT_REPAIR_HINT_MAINTENANCE_MAX_HINTS = 8;
-  private static final long DEFAULT_REPAIR_HINT_MAINTENANCE_MAX_MILLIS = 5L;
   private static final ReconcileCapturePolicy DEFAULT_CAPTURE_POLICY =
       ReconcileCapturePolicy.of(
           List.of(),
@@ -111,27 +109,9 @@ public class ReconcilePlannerScheduler {
       reason = normalizeReason(e);
       LOG.debugf(e, "Reconcile planner tick failed");
     } finally {
-      runDeferredRepairHintMaintenance();
       observePlannerTick(
           result, reason, Duration.ofNanos(Math.max(0L, System.nanoTime() - startedNanos)));
       running.set(false);
-    }
-  }
-
-  private void runDeferredRepairHintMaintenance() {
-    var cfg = ConfigProvider.getConfig();
-    int maxHints =
-        Math.max(
-            0,
-            cfg.getOptionalValue("floecat.reconciler.repair-hints.max-per-tick", Integer.class)
-                .orElse(DEFAULT_REPAIR_HINT_MAINTENANCE_MAX_HINTS));
-    long maxMillis =
-        Math.max(
-            0L,
-            cfg.getOptionalValue("floecat.reconciler.repair-hints.max-millis-per-tick", Long.class)
-                .orElse(DEFAULT_REPAIR_HINT_MAINTENANCE_MAX_MILLIS));
-    if (jobs instanceof DurableReconcileJobStore durableJobs) {
-      durableJobs.drainPendingRepairHintsForMaintenance(maxHints, maxMillis);
     }
   }
 

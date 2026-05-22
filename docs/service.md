@@ -134,7 +134,7 @@ idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob p
 CAS blobs with no remaining pointers once they exceed the configured min-age. `PointerGc` removes
 orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
 intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. `SeedRunner`
+terminal jobs. It is retention-oriented GC, not a queue repair loop. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope

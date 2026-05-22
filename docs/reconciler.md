@@ -128,10 +128,22 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **View reconciliation semantics**: reconcile is current-state, not history-preserving. When an
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
   place rather than appending a backend version history.
-- **Job leasing**: `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
-  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort
-  interval. Failed jobs are retried with backoff up to configured attempt limits before terminal
-  failure.
+- **Durable queue ownership model**: `DurableReconcileJobStore` is split into explicit state
+  domains:
+  - canonical job state owns derived job-index pointers transactionally (`lookup`, `state`,
+    `ready`, `dedupe`, parent, and other job-state indexes)
+  - lease coordination owns runtime worker-ownership pointers separately (`lease`, `lease-expiry`,
+    lane lease, snapshot lease)
+  - contribution pointers and file-group result pointers are separate projection and
+    payload-reference state
+- **Job leasing**: workers lease from persisted ready pointers, mark jobs
+  running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
+  configured interval. Failed jobs are retried with backoff up to configured attempt limits before
+  terminal failure.
+- **No queue self-healing**: read paths, lease scans, and maintenance do not rebuild missing or
+  stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
+  job-state transitions update them together. Lease maintenance reclaims expired leases, but it does
+  not repair unrelated queue state.
 
 ### gRPC auth
 - Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker

@@ -87,6 +87,11 @@ The reconciler runs in three shapes from the same artifact:
 - **Control plane**: `QUARKUS_PROFILE=reconciler-control`; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.
 - **Executor plane**: `QUARKUS_PROFILE=reconciler-executor`; disables local queue ownership and automatic scheduling, then leases work remotely from the control plane over gRPC.
 
+The durable queue is intentionally split into domains. The control plane owns canonical job-state
+transitions plus the derived job-index pointers that move with them transactionally. Executors
+participate through the separate lease-coordination domain when they lease, renew, cancel, and
+complete work. Reads and maintenance do not repair queue drift.
+
 Key reconciler mode flags live in `service/src/main/resources/application.properties`:
 
 ```properties

@@ -30,8 +30,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.BiConsumer;
-import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import org.jboss.logging.Logger;
@@ -40,41 +38,6 @@ import org.jboss.logging.Logger;
 public class ReconcileReadyQueue {
   private static final Logger LOG = Logger.getLogger(ReconcileReadyQueue.class);
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
-
-  @FunctionalInterface
-  public interface RepairLookupPointer {
-    boolean apply(
-        String jobId, String canonicalPointerKey, String repairPhase, String repairReason);
-  }
-
-  @FunctionalInterface
-  public interface RepairReadyPointer {
-    boolean apply(
-        String canonicalPointerKey,
-        StoredReconcileJob record,
-        String repairPhase,
-        String repairReason);
-  }
-
-  @FunctionalInterface
-  public interface RepairCanonicalPointersIfNeeded {
-    StoredReconcileJob apply(
-        String canonicalPointerKey,
-        StoredReconcileJob record,
-        String repairPhase,
-        String repairReason);
-  }
-
-  @FunctionalInterface
-  public interface DeferRepairIfHotPath {
-    boolean apply(
-        String repairPhase,
-        String repairReason,
-        String repairTargetKind,
-        String canonicalPointerKey,
-        String jobId,
-        String state);
-  }
 
   public enum ReadyIndexType {
     GLOBAL,
@@ -103,16 +66,7 @@ public class ReconcileReadyQueue {
   private ReconcilePayloadStore payloadStore;
   private ReconcileLeaseManager leaseManager;
   private int readyScanLimit;
-  private Function<String, Optional<StoredReconcileJob>> readCanonicalRecordByKey;
   private Function<Pointer, Optional<StoredReconcileJob>> readRecord;
-  private Function<StoredReconcileJob, List<String>> statePointerKeys;
-  private BiPredicate<String, String> hasValidLookupPointer;
-  private RepairLookupPointer repairLookupPointer;
-  private BiPredicate<StoredReconcileJob, String> hasValidReadyPointers;
-  private RepairReadyPointer repairReadyPointer;
-  private RepairCanonicalPointersIfNeeded repairCanonicalPointersIfNeeded;
-  private DeferRepairIfHotPath deferRepairIfHotPath;
-  private BiConsumer<StoredReconcileJob, String> clearReadyPointersIfOwned;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
   private Predicate<String> isTerminalState;
 
@@ -121,32 +75,14 @@ public class ReconcileReadyQueue {
       ReconcilePayloadStore payloadStore,
       ReconcileLeaseManager leaseManager,
       int readyScanLimit,
-      Function<String, Optional<StoredReconcileJob>> readCanonicalRecordByKey,
       Function<Pointer, Optional<StoredReconcileJob>> readRecord,
-      Function<StoredReconcileJob, List<String>> statePointerKeys,
-      BiPredicate<String, String> hasValidLookupPointer,
-      RepairLookupPointer repairLookupPointer,
-      BiPredicate<StoredReconcileJob, String> hasValidReadyPointers,
-      RepairReadyPointer repairReadyPointer,
-      RepairCanonicalPointersIfNeeded repairCanonicalPointersIfNeeded,
-      DeferRepairIfHotPath deferRepairIfHotPath,
-      BiConsumer<StoredReconcileJob, String> clearReadyPointersIfOwned,
       Predicate<StoredReconcileJob> requiresReadyPointer,
       Predicate<String> isTerminalState) {
     this.pointerStore = pointerStore;
     this.payloadStore = payloadStore;
     this.leaseManager = leaseManager;
     this.readyScanLimit = readyScanLimit;
-    this.readCanonicalRecordByKey = readCanonicalRecordByKey;
     this.readRecord = readRecord;
-    this.statePointerKeys = statePointerKeys;
-    this.hasValidLookupPointer = hasValidLookupPointer;
-    this.repairLookupPointer = repairLookupPointer;
-    this.hasValidReadyPointers = hasValidReadyPointers;
-    this.repairReadyPointer = repairReadyPointer;
-    this.repairCanonicalPointersIfNeeded = repairCanonicalPointersIfNeeded;
-    this.deferRepairIfHotPath = deferRepairIfHotPath;
-    this.clearReadyPointersIfOwned = clearReadyPointersIfOwned;
     this.requiresReadyPointer = requiresReadyPointer;
     this.isTerminalState = isTerminalState;
   }
@@ -158,7 +94,6 @@ public class ReconcileReadyQueue {
     String canonicalPointerKey = indexPointer.getBlobUri();
     Pointer canonicalPointer = pointerStore.get(canonicalPointerKey).orElse(null);
     if (canonicalPointer == null) {
-      pointerStore.compareAndDelete(indexPointer.getKey(), indexPointer.getVersion());
       return Optional.empty();
     }
     var canonicalRecord = readRecord.apply(canonicalPointer);
@@ -177,9 +112,6 @@ public class ReconcileReadyQueue {
     if (filter == null || filter.test(current.get())) {
       return current;
     }
-    if (!statePointerKeys.apply(current.get()).contains(indexPointer.getKey())) {
-      pointerStore.compareAndDelete(indexPointer.getKey(), indexPointer.getVersion());
-    }
     return Optional.empty();
   }
 
@@ -192,39 +124,17 @@ public class ReconcileReadyQueue {
     String canonicalPointerKey = dedupePointer.getBlobUri();
     Pointer canonicalPointer = pointerStore.get(canonicalPointerKey).orElse(null);
     if (canonicalPointer == null) {
-      pointerStore.compareAndDelete(dedupePointerKey, dedupePointer.getVersion());
       return Optional.empty();
     }
 
     var canonicalRecordOpt = readRecord.apply(canonicalPointer);
     if (canonicalRecordOpt.isEmpty()) {
-      pointerStore.compareAndDelete(dedupePointerKey, dedupePointer.getVersion());
       return Optional.empty();
     }
     StoredReconcileJob record = canonicalRecordOpt.get();
 
     if (Boolean.TRUE.equals(isTerminalState.test(record.state))) {
-      pointerStore.compareAndDelete(dedupePointerKey, dedupePointer.getVersion());
       return Optional.empty();
-    }
-
-    record =
-        repairCanonicalPointersIfNeeded.apply(
-            canonicalPointerKey, record, "active_dedupe_lookup", "canonical_pointer_drift");
-    if (Boolean.TRUE.equals(requiresReadyPointer.test(record))
-        && !hasValidReadyPointers.test(record, canonicalPointerKey)
-        && !repairReadyPointer.apply(
-            canonicalPointerKey, record, "active_dedupe_lookup", "ready_pointer_missing")) {
-      LOG.warnf(
-          "Active reconcile job %s state=%s has invalid reconcile ready pointers and repair failed",
-          record.jobId, record.state);
-    }
-    if (!hasValidLookupPointer.test(record.jobId, canonicalPointerKey)
-        && !repairLookupPointer.apply(
-            record.jobId, canonicalPointerKey, "active_dedupe_lookup", "lookup_pointer_missing")) {
-      LOG.warnf(
-          "Active reconcile job %s state=%s has no valid lookup pointer and repair failed",
-          record.jobId, record.state);
     }
 
     return Optional.of(record);
@@ -340,29 +250,6 @@ public class ReconcileReadyQueue {
     return readyKeys;
   }
 
-  public void repairReadyPointersIfStillCurrent(String canonicalPointerKey) {
-    var current = readCanonicalRecordByKey.apply(canonicalPointerKey);
-    current.ifPresent(
-        record -> {
-          if (Boolean.TRUE.equals(requiresReadyPointer.test(record))) {
-            if (deferRepairIfHotPath.apply(
-                "lease_conflict",
-                "ready_pointer_missing_after_lease_conflict",
-                "ready_pointer",
-                canonicalPointerKey,
-                record.jobId,
-                record.state)) {
-              return;
-            }
-            repairReadyPointer.apply(
-                canonicalPointerKey,
-                record,
-                "lease_conflict",
-                "ready_pointer_missing_after_lease_conflict");
-          }
-        });
-  }
-
   private Optional<LeasedJob> leaseReadyDueFromPrefix(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
     String token = "";
@@ -384,44 +271,28 @@ public class ReconcileReadyQueue {
         }
         var readyTarget = decodeReadyPointerTarget(candidate.getKey(), selection);
         if (readyTarget == null) {
-          if (!shouldSkipMalformedReadyPointer(candidate.getKey(), selection)) {
-            pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
-          }
           continue;
         }
         if (readyTarget.dueAtMs() > nowMs) {
           return Optional.empty();
         }
         if (!readyTarget.canonicalPointerKey().equals(candidate.getBlobUri())) {
-          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
         }
         Pointer canonicalPointer = pointerStore.get(readyTarget.canonicalPointerKey()).orElse(null);
         if (canonicalPointer == null) {
-          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
         }
         var recordOpt = readRecord.apply(canonicalPointer);
         if (recordOpt.isEmpty()) {
-          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
         }
         StoredReconcileJob record = recordOpt.get();
         if ("JS_WAITING".equals(record.state)) {
-          clearReadyPointersIfOwned.accept(record, readyTarget.canonicalPointerKey());
-          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
         }
         if (!readyPointerMatchesRecord(candidate.getKey(), readyTarget, record)) {
-          pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion());
           continue;
-        }
-        if (!hasValidLookupPointer.test(record.jobId, readyTarget.canonicalPointerKey())) {
-          repairLookupPointer.apply(
-              record.jobId,
-              readyTarget.canonicalPointerKey(),
-              "ready_scan",
-              "lookup_pointer_missing");
         }
         if (!matchesLeaseRequest(record, request)) {
           continue;
@@ -439,7 +310,6 @@ public class ReconcileReadyQueue {
         if (leased.isPresent()) {
           return leased;
         }
-        restoreReadyPointerIfStillCurrent(candidate.getKey(), readyTarget);
         leaseManager.clearLaneLeaseIfOwned(record, readyTarget.canonicalPointerKey());
       }
 
@@ -605,22 +475,6 @@ public class ReconcileReadyQueue {
       case PINNED_EXECUTOR -> target.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> target.filterValue().equals(record.jobKind().name());
     };
-  }
-
-  private void restoreReadyPointerIfStillCurrent(
-      String readyPointerKey, ReadyPointerTarget target) {
-    if (readyPointerKey == null || readyPointerKey.isBlank() || target == null) {
-      return;
-    }
-    Pointer existing = pointerStore.get(readyPointerKey).orElse(null);
-    if (existing != null && target.canonicalPointerKey().equals(existing.getBlobUri())) {
-      return;
-    }
-    var current = readCanonicalRecordByKey.apply(target.canonicalPointerKey());
-    if (current.isEmpty() || !readyPointerMatchesRecord(readyPointerKey, target, current.get())) {
-      return;
-    }
-    repairReadyPointer.apply(target.canonicalPointerKey(), current.get(), "", "");
   }
 
   private boolean shouldSkipMalformedReadyPointer(
