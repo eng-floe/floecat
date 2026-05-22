@@ -160,6 +160,22 @@ class SchedulerSignalIndexTest {
     assertFalse(index.snapshotDeltaRows(TABLE_KEY, SNAP + 1).isPresent());
   }
 
+  @Test
+  void snapshotSignalCachesAreBoundedByConfiguredMaxEntries() {
+    SchedulerSignalIndex bounded = new SchedulerSignalIndex(3_600_000L, 3L, 86_400_000L);
+    for (int i = 0; i < 25; i++) {
+      String table = "tbl-" + i;
+      bounded.recordPartialCoverage(ACCOUNT, table, SNAP + i);
+      bounded.recordSnapshotDelta(ACCOUNT, table, SNAP + i, OptionalLong.of(i));
+    }
+
+    assertTrue(
+        bounded.coverageEntryCount() <= 3L,
+        "coverage cache must stay within configured max entries");
+    assertTrue(
+        bounded.deltaEntryCount() <= 3L, "delta cache must stay within configured max entries");
+  }
+
   // ── demand counters ───────────────────────────────────────────────────────
 
   @Test

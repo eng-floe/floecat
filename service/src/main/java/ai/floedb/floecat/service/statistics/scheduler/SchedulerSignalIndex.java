@@ -17,8 +17,11 @@
 package ai.floedb.floecat.service.statistics.scheduler;
 
 import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,12 +59,15 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  *
  * <h2>Memory note</h2>
  *
- * <p>{@code coverageByKey} and {@code deltaByKey} are unbounded {@link ConcurrentHashMap}s. At
- * current deployment scale (thousands of active snapshots) this is safe. Add Caffeine-backed
- * eviction before production deployments that sustain &gt;100k concurrent active snapshots.
+ * <p>{@code coverageByKey} and {@code deltaByKey} are bounded Caffeine caches with configurable max
+ * entries and idle TTL. This prevents unbounded growth at large snapshot cardinality while keeping
+ * O(1) lookups and writes on the enqueue hot path.
  */
 @ApplicationScoped
 public class SchedulerSignalIndex {
+
+  private static final long DEFAULT_SNAPSHOT_SIGNAL_MAX_ENTRIES = 100_000L;
+  private static final long DEFAULT_SNAPSHOT_SIGNAL_TTL_MS = 86_400_000L; // 24h
 
   // ── Per-table last successful capture time ────────────────────────
   // key: accountId + ":" + tableId
@@ -69,11 +75,11 @@ public class SchedulerSignalIndex {
 
   // ── Per-snapshot coverage state ───────────────────────────────────
   // key: accountId + ":" + tableId + ":" + snapshotId
-  private final ConcurrentHashMap<String, CoverageEntry> coverageByKey = new ConcurrentHashMap<>();
+  private final Cache<String, CoverageEntry> coverageByKey;
 
   // ── Per-snapshot delta row counts ─────────────────────────────────
   // key: accountId + ":" + tableId + ":" + snapshotId
-  private final ConcurrentHashMap<String, Long> deltaByKey = new ConcurrentHashMap<>();
+  private final Cache<String, Long> deltaByKey;
 
   // ── Rolling demand window ─────────────────────────────────────────
   private final AtomicReference<DemandWindow> window;
@@ -92,9 +98,36 @@ public class SchedulerSignalIndex {
       @ConfigProperty(
               name = "floecat.stats.scheduler.scoring.demand.window-ms",
               defaultValue = "3600000")
-          long windowMs) {
+          long windowMs,
+      @ConfigProperty(
+              name = "floecat.stats.scheduler.signals.snapshot.max-entries",
+              defaultValue = "100000")
+          long snapshotSignalMaxEntries,
+      @ConfigProperty(
+              name = "floecat.stats.scheduler.signals.snapshot.ttl-ms",
+              defaultValue = "86400000")
+          long snapshotSignalTtlMs) {
     this.windowMs = windowMs > 0L ? windowMs : 3_600_000L;
+    long maxEntries =
+        snapshotSignalMaxEntries > 0L
+            ? snapshotSignalMaxEntries
+            : DEFAULT_SNAPSHOT_SIGNAL_MAX_ENTRIES;
+    long ttlMs = snapshotSignalTtlMs > 0L ? snapshotSignalTtlMs : DEFAULT_SNAPSHOT_SIGNAL_TTL_MS;
+    this.coverageByKey =
+        Caffeine.newBuilder()
+            .maximumSize(maxEntries)
+            .expireAfterAccess(Duration.ofMillis(ttlMs))
+            .build();
+    this.deltaByKey =
+        Caffeine.newBuilder()
+            .maximumSize(maxEntries)
+            .expireAfterAccess(Duration.ofMillis(ttlMs))
+            .build();
     this.window = new AtomicReference<>(new DemandWindow(System.currentTimeMillis()));
+  }
+
+  public SchedulerSignalIndex(long windowMs) {
+    this(windowMs, DEFAULT_SNAPSHOT_SIGNAL_MAX_ENTRIES, DEFAULT_SNAPSHOT_SIGNAL_TTL_MS);
   }
 
   // ── Write methods ─────────────────────────────────────────────────
@@ -124,12 +157,14 @@ public class SchedulerSignalIndex {
    * Ignored if the snapshot has already been marked {@link CoverageLevel#FULL} and closed.
    */
   public void recordPartialCoverage(String accountId, String tableId, long snapshotId) {
-    coverageByKey.compute(
-        snapshotKey(accountId, tableId, snapshotId),
-        (k, existing) -> {
-          if (existing != null && existing.closed) return existing; // closed — never downgrade
-          return CoverageEntry.PARTIAL_OPEN;
-        });
+    coverageByKey
+        .asMap()
+        .compute(
+            snapshotKey(accountId, tableId, snapshotId),
+            (k, existing) -> {
+              if (existing != null && existing.closed) return existing; // closed — never downgrade
+              return CoverageEntry.PARTIAL_OPEN;
+            });
   }
 
   /**
@@ -203,7 +238,7 @@ public class SchedulerSignalIndex {
   public CoverageLevel coverageLevel(String tableKey, long snapshotId) {
     // Reconstruct the full snapshot key from the compound tableKey.
     // tableKey is already "accountId:tableId"; snapshotKey storage uses "accountId:tableId:sid".
-    CoverageEntry entry = coverageByKey.get(tableKey + ':' + snapshotId);
+    CoverageEntry entry = coverageByKey.getIfPresent(tableKey + ':' + snapshotId);
     if (entry == null) {
       coverageUnknown.increment();
       return CoverageLevel.NONE;
@@ -220,7 +255,7 @@ public class SchedulerSignalIndex {
    * @param snapshotId snapshot identifier
    */
   public OptionalLong snapshotDeltaRows(String tableKey, long snapshotId) {
-    Long rows = deltaByKey.get(tableKey + ':' + snapshotId);
+    Long rows = deltaByKey.getIfPresent(tableKey + ':' + snapshotId);
     if (rows == null) {
       deltaUnknown.increment();
       return OptionalLong.empty();
@@ -285,6 +320,17 @@ public class SchedulerSignalIndex {
   /** Drains and returns the count of delta reads that found no record. */
   public long drainDeltaUnknown() {
     return deltaUnknown.sumThenReset();
+  }
+
+  // Test-only observability helpers.
+  long coverageEntryCount() {
+    coverageByKey.cleanUp();
+    return coverageByKey.estimatedSize();
+  }
+
+  long deltaEntryCount() {
+    deltaByKey.cleanUp();
+    return deltaByKey.estimatedSize();
   }
 
   // ── Key builders ──────────────────────────────────────────────────

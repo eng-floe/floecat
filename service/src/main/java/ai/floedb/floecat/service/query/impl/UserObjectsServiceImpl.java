@@ -19,7 +19,10 @@ package ai.floedb.floecat.service.query.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.QueryInput;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -39,6 +42,7 @@ import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -116,12 +120,10 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                             : signalIndexInstance.get();
                     if (signalIndex != null) {
                       for (var candidate : request.getTablesList()) {
-                        for (QueryInput input : candidate.getCandidatesList()) {
-                          if (input.getTargetCase() == QueryInput.TargetCase.TABLE_ID) {
-                            signalIndex.recordTableDemand(
-                                input.getTableId().getAccountId(), input.getTableId().getId());
-                          }
-                        }
+                        resolvedConsensusTableIdForDemandSignal(candidate)
+                            .ifPresent(
+                                rid ->
+                                    signalIndex.recordTableDemand(rid.getAccountId(), rid.getId()));
                       }
                     }
 
@@ -172,5 +174,66 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                   "query_id=%s correlation_id=%s tables=%d dispatchMs=%.1f outcome=completed",
                   request.getQueryId(), correlationRef.get(), request.getTablesCount(), dispatchMs);
             });
+  }
+
+  private static Optional<ResourceId> tableIdForDemandSignal(QueryInput input) {
+    if (input == null) {
+      return Optional.empty();
+    }
+    if (input.getTargetCase() == QueryInput.TargetCase.TABLE_ID) {
+      ResourceId rid = input.getTableId();
+      if (!rid.getAccountId().isBlank() && !rid.getId().isBlank()) {
+        return Optional.of(rid);
+      }
+      return Optional.empty();
+    }
+    if (input.getTargetCase() == QueryInput.TargetCase.NAME && input.getName().hasResourceId()) {
+      ResourceId rid = input.getName().getResourceId();
+      if ((rid.getKind() == ResourceKind.RK_TABLE || rid.getKind() == ResourceKind.RK_UNSPECIFIED)
+          && !rid.getAccountId().isBlank()
+          && !rid.getId().isBlank()) {
+        return Optional.of(rid);
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns a table ID when all <em>resolved</em> alternatives in a {@link TableReferenceCandidate}
+   * agree on the same concrete table.
+   *
+   * <p>Unresolved alternatives (for example a name candidate without a resolved resource ID yet)
+   * are ignored for demand attribution. Demand is recorded only when there is no conflict among
+   * resolved candidates. If two resolved alternatives point to different tables, this method
+   * returns empty.
+   */
+  private static Optional<ResourceId> resolvedConsensusTableIdForDemandSignal(
+      TableReferenceCandidate candidate) {
+    if (candidate == null || candidate.getCandidatesCount() == 0) {
+      return Optional.empty();
+    }
+    ResourceId chosen = null;
+    for (QueryInput input : candidate.getCandidatesList()) {
+      Optional<ResourceId> candidateRid = tableIdForDemandSignal(input);
+      if (candidateRid.isEmpty()) {
+        continue;
+      }
+      ResourceId rid = candidateRid.get();
+      if (chosen == null) {
+        chosen = rid;
+        continue;
+      }
+      if (!sameTable(chosen, rid)) {
+        return Optional.empty();
+      }
+    }
+    return Optional.ofNullable(chosen);
+  }
+
+  private static boolean sameTable(ResourceId left, ResourceId right) {
+    return left != null
+        && right != null
+        && left.getAccountId().equals(right.getAccountId())
+        && left.getId().equals(right.getId());
   }
 }

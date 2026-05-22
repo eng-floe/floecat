@@ -68,8 +68,8 @@ This lists all metrics currently available in the repository:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
-| floecat.service.reconcile.admission.deferred.total | COUNTER |  | v1 | Total number of jobs deferred at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class |
-| floecat.service.reconcile.admission.rejected.total | COUNTER |  | v1 | Total number of jobs rejected at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.admission.deferred.total | COUNTER |  | v1 | Total number of jobs deferred at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class, reason |
+| floecat.service.reconcile.admission.rejected.total | COUNTER |  | v1 | Total number of jobs rejected at enqueue time due to the current health band. | component, operation, priority_class | component, operation, priority_class, reason |
 | floecat.service.reconcile.aging.promotions.total | COUNTER |  | v1 | Total number of times a queued job was temporarily promoted to a higher priority class due to starvation aging. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |

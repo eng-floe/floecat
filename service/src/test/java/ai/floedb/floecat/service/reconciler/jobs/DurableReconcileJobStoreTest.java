@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -47,6 +49,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -123,6 +126,57 @@ class DurableReconcileJobStoreTest {
             "");
 
     assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeAcrossDifferentCapturePolicyMaxCost() {
+    store.init();
+    ReconcileScope cheapScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                JobCostHint.CHEAP));
+    ReconcileScope expensiveScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                JobCostHint.EXPENSIVE));
+
+    String cheapId =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, cheapScope);
+    String expensiveId =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, expensiveScope);
+
+    assertNotEquals(cheapId, expensiveId);
+  }
+
+  @Test
+  void enqueueAndGetPreservesCapturePolicyMaxCost() {
+    store.init();
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                JobCostHint.CHEAP));
+
+    String jobId = store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, scope);
+    ReconcileJob job = store.get(ACCOUNT_ID, jobId).orElseThrow();
+
+    assertEquals(JobCostHint.CHEAP, job.scope.capturePolicy().maxCost());
   }
 
   @Test

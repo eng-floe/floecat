@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.jobs.impl.SchedulerDispatcher;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -2939,7 +2940,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
-    if (policy == null || policy.isEmpty()) {
+    if (policy == null) {
       return "";
     }
     String columns =
@@ -2952,7 +2953,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             .orElse("");
     String outputs =
         policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns + "|" + outputs;
+    return columns + "|" + outputs + "|" + policy.maxCost().name();
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
@@ -3098,6 +3099,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public List<ReconcileScope.ScopedCaptureRequest> destinationCaptureRequests = List.of();
     public List<ReconcileCapturePolicy.Column> capturePolicyColumns = List.of();
     public List<String> capturePolicyOutputs = List.of();
+    public String capturePolicyMaxCost;
     public String state;
     public String message;
     public long startedAtMs;
@@ -3204,6 +3206,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.destinationCaptureRequests = scope.destinationCaptureRequests();
       rec.capturePolicyColumns = scope.capturePolicy().columns();
       rec.capturePolicyOutputs = scope.capturePolicy().outputs().stream().map(Enum::name).toList();
+      rec.capturePolicyMaxCost = scope.capturePolicy().maxCost().name();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -3237,7 +3240,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               capturePolicyColumns,
               capturePolicyOutputs.stream()
                   .map(ReconcileCapturePolicy.Output::valueOf)
-                  .collect(java.util.stream.Collectors.toSet())));
+                  .collect(java.util.stream.Collectors.toSet()),
+              safeParseCostHint(capturePolicyMaxCost)));
     }
 
     ReconcileJobKind jobKind() {
@@ -3316,6 +3320,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return StatsPriorityClass.valueOf(name);
       } catch (IllegalArgumentException e) {
         return StatsPriorityClass.P3_BACKGROUND;
+      }
+    }
+
+    private static JobCostHint safeParseCostHint(String name) {
+      if (name == null || name.isBlank()) {
+        return JobCostHint.EXPENSIVE;
+      }
+      try {
+        return JobCostHint.valueOf(name);
+      } catch (IllegalArgumentException e) {
+        return JobCostHint.EXPENSIVE;
       }
     }
 

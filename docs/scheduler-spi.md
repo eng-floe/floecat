@@ -299,8 +299,8 @@ All metrics are defined in `ServiceMetrics.Reconcile`.
 |---|---|---|---|
 | `reconcile.queue.depth_by_class` | GAUGE | `priority_class` | Ready jobs per class |
 | `reconcile.health_band` | GAUGE | — | Current band ordinal (0=GREEN … 3=RED). **Autoscaler trigger** |
-| `reconcile.admission.deferred` | COUNTER | `priority_class`, `enqueue_reason` | Jobs deferred by policy or band |
-| `reconcile.admission.rejected` | COUNTER | `priority_class`, `enqueue_reason` | Jobs rejected by policy |
+| `reconcile.admission.deferred` | COUNTER | `priority_class`, `reason` | Jobs deferred by policy or band |
+| `reconcile.admission.rejected` | COUNTER | `priority_class`, `reason` | Jobs rejected by policy |
 | `reconcile.aging.promotions` | COUNTER | `from_class` | Jobs promoted to a higher class after waiting |
 | `reconcile.lane.wait_ms` | GAUGE | `lane_key` | Wait time for the top-10 busiest lanes |
 | `reconcile.scoring.score_dist` | SUMMARY | `priority_class` | Score distribution at enqueue |

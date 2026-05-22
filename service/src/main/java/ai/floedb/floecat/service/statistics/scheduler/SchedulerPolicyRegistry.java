@@ -206,8 +206,9 @@ public class SchedulerPolicyRegistry {
    *
    * <p>Queue band and depth are derived from a short-lived {@link ReconcileJobStore#queueStats()}
    * snapshot (TTL: {@code ReconcileJobStoreContext.SNAPSHOT_TTL_MS} ms) so that multiple reads
-   * within a single policy invocation see consistent data. Coverage, delta, and last-capture values
-   * return conservative defaults until those data sources are wired.
+   * within a single policy invocation see consistent data. Coverage, delta, last-capture, and
+   * demand signals are served from {@link SchedulerSignalIndex} when available; conservative
+   * defaults are used only when the signal index bean is unavailable.
    */
   public SchedulerContext activeContext() {
     return context;

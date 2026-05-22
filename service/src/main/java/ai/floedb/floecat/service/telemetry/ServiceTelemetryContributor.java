@@ -53,6 +53,8 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> schedulerClassRequired =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, "priority_class");
+    Set<String> schedulerClassWithReasonAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, "priority_class", TagKey.REASON);
     Set<String> schedulerLaneRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, "lane_key");
     Set<String> schedulerProfileRequired =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, "profile_name");
@@ -317,13 +319,13 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         defs,
         ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
         schedulerClassRequired,
-        schedulerClassRequired,
+        schedulerClassWithReasonAllowed,
         "Total number of jobs deferred at enqueue time due to the current health band.");
     add(
         defs,
         ServiceMetrics.Reconcile.ADMISSION_REJECTED,
         schedulerClassRequired,
-        schedulerClassRequired,
+        schedulerClassWithReasonAllowed,
         "Total number of jobs rejected at enqueue time due to the current health band.");
     add(
         defs,

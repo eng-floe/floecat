@@ -467,7 +467,7 @@
     "origin": "service",
     "description": "Total number of jobs deferred at enqueue time due to the current health band.",
     "requiredTags": ["component", "operation", "priority_class"],
-    "allowedTags": ["component", "operation", "priority_class"]
+    "allowedTags": ["component", "operation", "priority_class", "reason"]
   },
   {
     "name": "floecat.service.reconcile.admission.rejected.total",
@@ -477,7 +477,7 @@
     "origin": "service",
     "description": "Total number of jobs rejected at enqueue time due to the current health band.",
     "requiredTags": ["component", "operation", "priority_class"],
-    "allowedTags": ["component", "operation", "priority_class"]
+    "allowedTags": ["component", "operation", "priority_class", "reason"]
   },
   {
     "name": "floecat.service.reconcile.aging.promotions.total",

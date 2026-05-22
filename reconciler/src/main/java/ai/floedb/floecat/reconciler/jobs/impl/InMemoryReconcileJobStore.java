@@ -1962,7 +1962,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
-    if (policy == null || policy.isEmpty()) {
+    if (policy == null) {
       return "";
     }
     String columns =
@@ -1975,7 +1975,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             .orElse("");
     String outputs =
         policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns + "|" + outputs;
+    return columns + "|" + outputs + "|" + policy.maxCost().name();
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
