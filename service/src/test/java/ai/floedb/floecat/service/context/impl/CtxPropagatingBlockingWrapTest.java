@@ -46,6 +46,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -476,6 +478,67 @@ class CtxPropagatingBlockingWrapTest {
               + " legacyWrap was selected via FLOECAT_INTERCEPTOR_BLOCKING_LEGACY_WRAP this is the"
               + " expected failure (Context.Key.get() returns null inside the handler).");
     } finally {
+      vertx.close().toCompletionStage().toCompletableFuture().get();
+    }
+  }
+
+  /**
+   * Models the gRPC service implementation shape: the listener callback observes the request
+   * context, captures it, returns, and only then runs the actual service work on another executor.
+   * This covers the extra async hop used by Mutiny service methods.
+   */
+  @Test
+  void capturedGrpcContextSurvivesAsyncWorkAfterListenerCallbackReturns() throws Exception {
+    Vertx vertx = Vertx.vertx();
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      ServerInterceptor inner =
+          new ServerInterceptor() {
+            @Override
+            public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+                ServerCall<ReqT, RespT> call,
+                Metadata headers,
+                ServerCallHandler<ReqT, RespT> next) {
+              Context ctx = Context.current().withValue(KEY, "set-by-inner");
+              return Contexts.interceptCall(ctx, call, headers, next);
+            }
+          };
+      ServerInterceptor wrap = makeWrap(vertx, inner);
+
+      CountDownLatch callbackReturned = new CountDownLatch(1);
+      CountDownLatch releaseAsyncWork = new CountDownLatch(1);
+      CountDownLatch asyncDone = new CountDownLatch(1);
+      AtomicReference<String> observed = new AtomicReference<>("<unset>");
+
+      ServerCallHandler<Object, Object> handler =
+          (call, headers) ->
+              new ServerCall.Listener<>() {
+                @Override
+                public void onHalfClose() {
+                  Context captured = Context.current();
+                  executor.execute(
+                      () -> {
+                        try {
+                          releaseAsyncWork.await(10, TimeUnit.SECONDS);
+                          observed.set(captured.call(KEY::get));
+                        } catch (Exception e) {
+                          observed.set("error=" + e.getClass().getSimpleName());
+                        } finally {
+                          asyncDone.countDown();
+                        }
+                      });
+                  callbackReturned.countDown();
+                }
+              };
+
+      drive(vertx, wrap, handler);
+      assertTrue(callbackReturned.await(10, TimeUnit.SECONDS), "listener callback never returned");
+      releaseAsyncWork.countDown();
+
+      assertTrue(asyncDone.await(10, TimeUnit.SECONDS), "async service work never ran");
+      assertEquals("set-by-inner", observed.get());
+    } finally {
+      executor.shutdownNow();
       vertx.close().toCompletionStage().toCompletableFuture().get();
     }
   }
