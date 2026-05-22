@@ -1842,11 +1842,11 @@ layer for:</p>
 <ul>
 <li>target-native planner payload evolution</li>
 <li>compute expression engines</li>
-<li>sync budget orchestration</li>
-<li>async reconcile policy</li>
 <li>multi-provider field-level composition</li>
 </ul>
 <p>This is intentionally a thin orchestration layer; engine quality/policy evolves independently.</p>
+<p>See <a href="../stats-sync-policy/">stats-sync-policy.md</a> for the sync-first resolution policy and
+config knobs.</p>
 <h2 id="capability-model">Capability model<a class="headerlink" href="#capability-model" title="Permanent link">&para;</a></h2>
 <p>Each <code>StatsCaptureEngine</code> advertises:</p>
 <ul>
@@ -1865,22 +1865,33 @@ layer for:</p>
 <p><code>StatsEngineRegistry</code> uses these capabilities plus <code>priority()</code> to select candidate engines in
 order.</p>
 <h2 id="routing-behavior">Routing behavior<a class="headerlink" href="#routing-behavior" title="Permanent link">&para;</a></h2>
-<p><code>StatsOrchestrator.resolve(request)</code> / <code>resolveBatch(batchRequest)</code>:</p>
+<p><code>StatsOrchestrator.resolve(request)</code>:</p>
+<p>Returns a <code>StatsResolutionResult</code> carrying an outcome enum and optional stats payload.</p>
 <ol>
-<li>checks <code>StatsStore</code> for an existing record</li>
-<li>for <code>SYNC</code>, calls <code>StatsEngineRegistry.captureBatch()</code> on miss (single-item requests are
-   wrapped via <code>StatsCaptureBatchRequest.of(request)</code>)</li>
-<li>if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped <code>CAPTURE_ONLY</code> follow-up carrying the
-   unresolved table-scoped stats requests and returns empty for unresolved items</li>
+<li>Reads <code>StatsStore</code> → <strong>HIT</strong>: returns stats immediately, no capture triggered.</li>
+<li>On miss, if <code>executionMode == SYNC</code> and a <code>latencyBudget</code> is present and
+   <code>floecat.stats.sync.enabled=true</code>:</li>
+<li>Enqueues a <code>CAPTURE_ONLY</code> reconcile job and polls every 100 ms until the job reaches a
+     terminal state or the budget expires.</li>
+<li>On success, re-reads the store → <strong>CAPTURED</strong>: returns stats + schedules no follow-up.</li>
+<li>On timeout (budget exceeded) → <strong>TIMEOUT</strong>: enqueues async follow-up, returns empty.</li>
+<li>On failure (no connector, job error) → <strong>FAILED</strong>: enqueues async follow-up, returns empty.</li>
+<li>Otherwise (ASYNC mode, no budget, or sync disabled) → <strong>SKIPPED</strong>: enqueues async reconcile job
+   and returns empty.</li>
 </ol>
-<p>Current enqueue policy:</p>
+<p><code>StatsOrchestrator.resolveBatch(batchRequest)</code>:</p>
+<p>Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
+Each item is a store read; misses fall back to async enqueue with <code>SKIPPED</code> outcome.</p>
+<p>Async enqueue policy:</p>
 <ul>
-<li>enqueue fallback is currently miss-based</li>
-<li>enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
-  candidate for the requested target</li>
-<li>async enqueue scope is table-scoped and uses reconcile <code>ScopedStatsRequest</code> payloads:
-  <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code></li>
+<li>Enqueue scope is table-scoped using <code>ReconcileScope.ScopedCaptureRequest</code> payloads:
+  <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code>.</li>
+<li><code>columnSelectors</code> from the original request are preserved unchanged in follow-up enqueues
+  (no scope widening).</li>
+<li>Follow-up enqueues are tagged with a reason: <code>sync_followup_timeout</code>, <code>sync_followup_failed</code>,
+  <code>sync_followup_partial</code>, or <code>async_mode</code> / <code>no_budget</code> / <code>sync_disabled</code> for SKIPPED outcomes.</li>
 </ul>
+<p>See <a href="../stats-sync-policy/">stats-sync-policy.md</a> for configuration, tuning, and troubleshooting.</p>
 <p><code>StatsEngineRegistry.captureBatch(batchRequest)</code>:</p>
 <ol>
 <li>filters candidates per request by <code>supports(request)</code> / capabilities</li>
@@ -1975,7 +1986,8 @@ to avoid extra source scans for follow-up target requests.</p>
 <h2 id="typical-extensions">Typical extensions<a class="headerlink" href="#typical-extensions" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Add compute-backed expression engines through this SPI.</li>
-<li>Add budgeted sync orchestration and async follow-up on partial outcomes.</li>
+<li>Tune sync capture budgets via <code>floecat.stats.sync.latency-budget</code> (see
+  <a href="../stats-sync-policy/">stats-sync-policy.md</a>).</li>
 </ul>
 
 

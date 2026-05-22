@@ -10,13 +10,9 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/system-scans/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/stats-sync-policy/">
       
       
-        <link rel="prev" href="../system-objects/">
-      
-      
-        <link rel="next" href="../system-scans-grpc/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +20,7 @@
     
     
       
-        <title>System Scans - Floecat Documentation</title>
+        <title>Stats Sync-First Resolution Policy - Floecat Documentation</title>
       
     
     
@@ -78,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#system-table-scans" class="md-skip">
+        <a href="#stats-sync-first-resolution-policy" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              System Scans
+              Stats Sync-First Resolution Policy
             
           </span>
         </div>
@@ -621,8 +617,6 @@
       
   
   
-    
-  
   
   
     
@@ -635,11 +629,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -655,7 +651,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -712,32 +708,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    System Scans
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
         
   
   
@@ -748,89 +722,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#which-document-to-read" class="md-nav__link">
-    <span class="md-ellipsis">
-      Which document to read
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-execution-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      Shared execution model
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#transport-comparison" class="md-nav__link">
-    <span class="md-ellipsis">
-      Transport comparison
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-filteringprojection-semantics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Shared filtering/projection semantics
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#optional-statistics-shared-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      Optional statistics (shared behavior)
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#memory-and-cancellation" class="md-nav__link">
-    <span class="md-ellipsis">
-      Memory and cancellation
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-knobs-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration knobs (summary)
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1630,63 +1521,54 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#which-document-to-read" class="md-nav__link">
+  <a href="#resolution-flow" class="md-nav__link">
     <span class="md-ellipsis">
-      Which document to read
+      Resolution flow
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-execution-model" class="md-nav__link">
+  <a href="#outcome-reference" class="md-nav__link">
     <span class="md-ellipsis">
-      Shared execution model
+      Outcome reference
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#transport-comparison" class="md-nav__link">
+  <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      Transport comparison
+      Configuration
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-filteringprojection-semantics" class="md-nav__link">
+  <a href="#planner-integration" class="md-nav__link">
     <span class="md-ellipsis">
-      Shared filtering/projection semantics
+      Planner integration
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#optional-statistics-shared-behavior" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
-      Optional statistics (shared behavior)
+      Metrics
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#memory-and-cancellation" class="md-nav__link">
+  <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
-      Memory and cancellation
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-knobs-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration knobs (summary)
+      Troubleshooting
     </span>
   </a>
   
@@ -1708,7 +1590,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/mc-connector-scope/docs/system-scans.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/mc-connector-scope/docs/stats-sync-policy.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1716,107 +1598,166 @@
   
 
 
-<h1 id="system-table-scans">System table scans<a class="headerlink" href="#system-table-scans" title="Permanent link">&para;</a></h1>
-<p>This document is the high-level overview for system-table scanning in Floecat.</p>
-<p>System-table scans are exposed over two transports:</p>
-<ul>
-<li>gRPC streaming (<code>QuerySystemScanService</code>)</li>
-<li>Arrow Flight (<code>GetFlightInfo</code> + <code>GetStream</code>)</li>
-</ul>
-<p>Both transports use the same scanner resolution, filter/projection semantics, and Arrow execution
-pipeline. Transport differences are mostly protocol and framing.</p>
-<h2 id="which-document-to-read">Which document to read<a class="headerlink" href="#which-document-to-read" title="Permanent link">&para;</a></h2>
-<ul>
-<li>gRPC protocol details: <a href="../system-scans-grpc/">system-scans-grpc.md</a></li>
-<li>Arrow Flight protocol + producer/consumer implementation: <a href="../arrow-flight/">arrow-flight.md</a></li>
-<li>System object/scanner model: <a href="../system-objects/">system-objects.md</a></li>
-</ul>
-<h2 id="shared-execution-model">Shared execution model<a class="headerlink" href="#shared-execution-model" title="Permanent link">&para;</a></h2>
-<p>Regardless of transport:</p>
-<ol>
-<li>Resolve the system scanner for the target table.</li>
-<li>Apply canonical predicates (<code>SystemRowFilter</code>) and column projection (<code>required_columns</code>).</li>
-<li>Build an <code>ArrowScanPlan</code> and stream batches through <code>ArrowBatchSerializer</code>.</li>
-<li>Enforce allocator limits and close native resources on completion/cancel/error.</li>
-</ol>
-<p>gRPC callers can request either <code>ARROW_IPC</code> or <code>ROWS</code>. Arrow is the primary transport format, and
-<code>ROWS</code> is a row-stream response mode on the same execution pipeline.</p>
-<p>Scanner resolution is shared across transports and uses the same engine-context-aware path. When an
-engine-specific table ID is presented, resolver translation (<code>translateToDefault</code>) can remap to the
-default FLOECAT catalog ID where applicable.</p>
-<h2 id="transport-comparison">Transport comparison<a class="headerlink" href="#transport-comparison" title="Permanent link">&para;</a></h2>
+<h1 id="stats-sync-first-resolution-policy">Stats Sync-First Resolution Policy<a class="headerlink" href="#stats-sync-first-resolution-policy" title="Permanent link">&para;</a></h1>
+<p><code>StatsOrchestrator.resolve()</code> follows a sync-first policy: on a store miss it attempts a
+bounded synchronous capture before falling back to an async reconcile job. This lets queries
+receive fresh statistics within a latency budget rather than always degrading to no-stats-available
+on a cold cache.</p>
+<h2 id="resolution-flow">Resolution flow<a class="headerlink" href="#resolution-flow" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>resolve(StatsCaptureRequest)
+   │
+   ├─ store read ──────────────────────────────────────── HIT  (stats returned, no capture)
+   │
+   └─ miss
+       │
+       ├─ executionMode == SYNC
+       │  &amp;&amp; latencyBudget present
+       │  &amp;&amp; floecat.stats.sync.enabled == true
+       │      │
+       │      ├─ enqueue CAPTURE_ONLY reconcile job
+       │      │   poll every 100 ms until terminal or budget exceeded
+       │      │      │
+       │      │      ├─ job succeeded → re-read store
+       │      │      │       ├─ record present ───────── CAPTURED (stats returned, no follow-up)
+       │      │      │       └─ record absent ─────────  PARTIAL  (async follow-up enqueued)
+       │      │      │
+       │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
+       │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
+       │
+       └─ otherwise (ASYNC mode / no budget / sync disabled)
+               └────────────────────────────────────── SKIPPED  (async job enqueued)
+</code></pre></div>
+<h2 id="outcome-reference">Outcome reference<a class="headerlink" href="#outcome-reference" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Area</th>
-<th>gRPC scan stream</th>
-<th>Arrow Flight</th>
+<th>Outcome</th>
+<th style="text-align: center;">Stats present</th>
+<th style="text-align: center;">Async follow-up</th>
+<th>When</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Entry point</td>
-<td><code>ScanSystemTable</code></td>
-<td><code>GetFlightInfo</code> then <code>GetStream</code></td>
+<td><code>HIT</code></td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">no</td>
+<td>Record already in store</td>
 </tr>
 <tr>
-<td>Request identity</td>
-<td><code>query_id</code> in request</td>
-<td><code>query_id</code> in command and/or <code>x-query-id</code> header</td>
+<td><code>CAPTURED</code></td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">no</td>
+<td>Sync capture succeeded; record now in store</td>
 </tr>
 <tr>
-<td>Target table</td>
-<td><code>table_id</code> (<code>ResourceId</code>)</td>
-<td><code>target</code> (<code>name</code> or <code>id</code>)</td>
+<td><code>PARTIAL</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture succeeded but record not yet visible</td>
 </tr>
 <tr>
-<td>Result framing</td>
-<td><code>ScanSystemTableChunk</code> union</td>
-<td>Arrow Flight schema + record batches</td>
+<td><code>TIMEOUT</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture exceeded latency budget</td>
 </tr>
 <tr>
-<td>Discovery</td>
-<td>Direct service endpoint</td>
-<td><code>FlightEndpointRef</code> in catalog bundle + <code>FlightInfo</code> endpoint</td>
+<td><code>FAILED</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>Sync capture error or no upstream connector</td>
+</tr>
+<tr>
+<td><code>SKIPPED</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+<td>ASYNC mode, no budget, or sync disabled</td>
 </tr>
 </tbody>
 </table>
-<h2 id="shared-filteringprojection-semantics">Shared filtering/projection semantics<a class="headerlink" href="#shared-filteringprojection-semantics" title="Permanent link">&para;</a></h2>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>floecat.stats.sync.enabled</code></td>
+<td><code>true</code></td>
+<td>Master switch for sync-first resolution</td>
+</tr>
+<tr>
+<td><code>floecat.stats.sync.latency-budget</code></td>
+<td><code>1s</code></td>
+<td>Per-request sync capture budget</td>
+</tr>
+<tr>
+<td><code>floecat.stats.sync.max-latency-budget</code></td>
+<td><code>10s</code></td>
+<td>Hard ceiling applied to any request budget</td>
+</tr>
+</tbody>
+</table>
+<p>Environment variable overrides follow the pattern <code>FLOECAT_STATS_SYNC_ENABLED</code>,
+<code>FLOECAT_STATS_SYNC_LATENCY_BUDGET</code>, <code>FLOECAT_STATS_SYNC_MAX_LATENCY_BUDGET</code>.</p>
+<h2 id="planner-integration">Planner integration<a class="headerlink" href="#planner-integration" title="Permanent link">&para;</a></h2>
+<p><code>StatsProviderFactory</code> reads <code>floecat.stats.sync.enabled</code> and <code>floecat.stats.sync.latency-budget</code>
+at startup and sets <code>executionMode(SYNC)</code> + <code>latencyBudget(...)</code> on every
+<code>StatsCaptureRequest</code> it creates for query-time resolution. Set <code>enabled=false</code> to revert to
+async-only for all queries without changing other behavior.</p>
+<p><code>PlannerStatsBundleService</code> maps <code>StatsResolutionResult</code> outcomes to planner quality:</p>
 <ul>
-<li><code>required_columns</code> is optional. Empty means “all columns”.</li>
-<li>Unknown projected columns are ignored (dropped from output).</li>
-<li>Predicate trees are canonicalized through <code>SystemRowFilter.EXPRESSION_PROVIDER</code>.</li>
-<li>Projection order is preserved in output schema/batches.</li>
+<li><code>HIT</code> / <code>CAPTURED</code> → <code>FOUND</code></li>
+<li><code>TIMEOUT</code> / <code>FAILED</code> / <code>SKIPPED</code> → <code>NOT_FOUND</code> (planner proceeds without stats)</li>
 </ul>
-<h2 id="optional-statistics-shared-behavior">Optional statistics (shared behavior)<a class="headerlink" href="#optional-statistics-shared-behavior" title="Permanent link">&para;</a></h2>
-<p>Scanners receive a best-effort <code>StatsProvider</code> in scan context.</p>
-<ul>
-<li>System scans resolve table-level stats from the table's latest snapshot (snapshot-independent),
-  even when the query context pins a different snapshot.</li>
-<li>Column stats still use query snapshot pins when present.</li>
-<li>Missing stats are allowed and must be treated as advisory only.</li>
-</ul>
-<h2 id="memory-and-cancellation">Memory and cancellation<a class="headerlink" href="#memory-and-cancellation" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Per-stream allocators are child allocators with an explicit cap.</li>
-<li>Cancellation signals terminate streaming work as early as practical.</li>
-<li>Stream cleanup always closes sink/batches/allocators to avoid native memory leaks.</li>
-</ul>
-<h2 id="configuration-knobs-summary">Configuration knobs (summary)<a class="headerlink" href="#configuration-knobs-summary" title="Permanent link">&para;</a></h2>
-<ul>
-<li><code>ai.floedb.floecat.arrow.max-bytes</code>: per-stream Arrow allocator cap.</li>
-<li><code>floecat.flight.memory.max-bytes</code>: Flight server parent allocator cap.</li>
-<li><code>floecat.flight.advertised-host</code>: host advertised to consumers.</li>
-<li><code>floecat.flight.advertised-port</code>: port advertised to consumers.</li>
-<li><code>quarkus.grpc.server.port</code> and <code>quarkus.grpc.server.plain-text</code>: actual shared gRPC/Flight
-  listener and transport mode.</li>
-</ul>
-<p>See:</p>
-<ul>
-<li><a href="../system-scans-grpc/">system-scans-grpc.md</a></li>
-<li><a href="../arrow-flight/">arrow-flight.md</a></li>
-<li><a href="../operations/">operations.md</a></li>
-</ul>
+<h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Tags</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>floecat.service.stats.sync_outcomes.total</code></td>
+<td>counter</td>
+<td><code>result</code>, <code>component</code>, <code>operation</code></td>
+<td>Count per sync outcome</td>
+</tr>
+<tr>
+<td><code>floecat.service.stats.sync.latency</code></td>
+<td>timer (ms)</td>
+<td><code>result</code>, <code>component</code>, <code>operation</code></td>
+<td>End-to-end resolve latency</td>
+</tr>
+</tbody>
+</table>
+<p><code>result</code> values match <code>StatsSyncOutcome</code> names: <code>HIT</code>, <code>CAPTURED</code>, <code>PARTIAL</code>, <code>TIMEOUT</code>,
+<code>FAILED</code>, <code>SKIPPED</code>.</p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<p><strong>High TIMEOUT rate</strong></p>
+<p>The most common cause is the capture budget being shorter than actual connector round-trip time.
+Check <code>floecat.service.stats.sync.latency</code> (p95) against <code>floecat.stats.sync.latency-budget</code>.
+Increase the budget (up to <code>max-latency-budget</code>) or set <code>floecat.stats.sync.enabled=false</code> to
+stop blocking queries on sync attempts.</p>
+<p><strong>FAILED outcomes with no connector</strong></p>
+<p>Tables without an upstream connector cannot be captured synchronously. The orchestrator returns
+<code>FAILED</code> immediately and enqueues an async follow-up. This is expected for system tables and
+non-connected tables.</p>
+<p><strong>Disabling sync globally</strong></p>
+<p>Set <code>floecat.stats.sync.enabled=false</code> (or <code>FLOECAT_STATS_SYNC_ENABLED=false</code>). All queries
+fall back to <code>SKIPPED</code> + async enqueue, which matches the pre-sync-policy behavior.</p>
+<p><strong>Verifying counters</strong></p>
+<p>Query <code>/q/metrics</code> after triggering a stats miss. Look for lines containing
+<code>floecat_service_stats_sync_outcomes_total</code>.</p>
 
 
 
