@@ -631,7 +631,12 @@ class SnapshotFinalizeReconcileExecutorTest {
     store.persistFileGroupResult(
         childJobId,
         group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
+            List.of(
+                ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    0L,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult.of(
+                        "s3://bucket/index/file-1.idx", "parquet-page-index", 1)))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(

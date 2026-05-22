@@ -78,6 +78,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
+  private static final long DEFAULT_QUEUE_STATS_CACHE_MS = 1_000L;
   private static final int FALLBACK_SCAN_MAX_PAGES = 200;
   private static final int CAS_MAX = 16;
   private static final String LIST_TOKEN_V1_PREFIX = "v1:";
@@ -94,10 +95,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private long leaseRenewGraceMs = DEFAULT_LEASE_RENEW_GRACE_MS;
   private int readyScanLimit = DEFAULT_READY_SCAN_LIMIT;
+  private long queueStatsCacheMs = DEFAULT_QUEUE_STATS_CACHE_MS;
 
   private final String leaseOwner = "reconcile-store-" + UUID.randomUUID();
   private volatile long lastReclaimAtMs;
   private final ReentrantLock reclaimLock = new ReentrantLock();
+  private final ReentrantLock queueStatsRefreshLock = new ReentrantLock();
+  private volatile QueueStats cachedQueueStats;
+  private volatile long cachedQueueStatsAtMs;
 
   // Scheduler state — shared with InMemoryReconcileJobStore via the extracted helpers
   private final SchedulerBandState bandState = new SchedulerBandState();
@@ -153,6 +158,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.ready-scan-limit", Integer.class)
                 .orElse(DEFAULT_READY_SCAN_LIMIT));
+    queueStatsCacheMs =
+        Math.max(
+            100L,
+            config
+                .getOptionalValue("floecat.reconciler.job-store.queue-stats-cache-ms", Long.class)
+                .orElse(DEFAULT_QUEUE_STATS_CACHE_MS));
   }
 
   private static ConcurrentHashMap<StatsPriorityClass, AtomicLong> buildAdmissionDeferredMap() {
@@ -354,6 +365,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       // Keep escalation responsive in the durable store as well (queueStats() refresh can lag by
       // metrics cadence). Depths are approximate here; queueStats() remains authoritative.
       maybeEscalateAfterEnqueue(enqueuePriorityClass, System.currentTimeMillis());
+      invalidateQueueStatsCache();
       return jobId;
     }
 
@@ -458,6 +470,27 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public QueueStats queueStats() {
     long now = System.currentTimeMillis();
+    QueueStats cached = cachedQueueStats;
+    if (cached != null && (now - cachedQueueStatsAtMs) < queueStatsCacheMs) {
+      return cached;
+    }
+    queueStatsRefreshLock.lock();
+    try {
+      long refreshNow = System.currentTimeMillis();
+      QueueStats refreshedCached = cachedQueueStats;
+      if (refreshedCached != null && (refreshNow - cachedQueueStatsAtMs) < queueStatsCacheMs) {
+        return refreshedCached;
+      }
+      QueueStats fresh = computeQueueStatsFullScan(refreshNow);
+      cachedQueueStats = fresh;
+      cachedQueueStatsAtMs = refreshNow;
+      return fresh;
+    } finally {
+      queueStatsRefreshLock.unlock();
+    }
+  }
+
+  private QueueStats computeQueueStatsFullScan(long now) {
     long queued = 0L;
     long running = 0L;
     long cancelling = 0L;
@@ -538,6 +571,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         agingTracker.totalPromotions(),
         admissionSnapshot,
         topLaneWaitMs);
+  }
+
+  private void invalidateQueueStatsCache() {
+    cachedQueueStats = null;
+    cachedQueueStatsAtMs = 0L;
   }
 
   /**
@@ -1226,6 +1264,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointerStore.compareAndSet(
           canonicalPointerKey, currentPointer.getVersion(), nextPointer)) {
         reconcileIndexPointers(baseline, nextRecord, currentPointer.getBlobUri(), nextBlobUri);
+        invalidateQueueStatsCache();
         return;
       }
 
@@ -1394,6 +1433,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointerStore.compareAndSet(
           canonicalPointerKey, currentPointer.getVersion(), nextPointer)) {
         reconcileIndexPointers(baseline, current, currentPointer.getBlobUri(), nextBlobUri);
+        invalidateQueueStatsCache();
         if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
           ReconcileSnapshotTask snapshotTask = current.snapshotTask();
           LOG.debugf(

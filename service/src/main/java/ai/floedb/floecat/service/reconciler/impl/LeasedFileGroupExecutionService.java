@@ -39,6 +39,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -168,6 +169,18 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .toList();
     List<ReconcilerBackend.StagedIndexArtifact> effectiveArtifacts =
         stagedIndexArtifacts == null ? List.of() : stagedIndexArtifacts;
+    ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
+    if (capturePolicy.requestsIndexes()) {
+      List<String> missingArtifactFiles =
+          FileGroupExecutionSupport.missingIndexArtifactFiles(plannedTask, effectiveArtifacts);
+      if (!missingArtifactFiles.isEmpty()) {
+        throw Status.FAILED_PRECONDITION
+            .withDescription(
+                "missing index artifacts for planned files: "
+                    + String.join(", ", missingArtifactFiles))
+            .asRuntimeException();
+      }
+    }
     byte[] requestBytes =
         successPayload(requiredResultId, effectiveFileStats, effectiveArtifacts).toByteArray();
     return runIdempotentCreate(
@@ -195,7 +208,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                           lease.jobId,
                           plannedTask.withFileResults(
                               FileGroupExecutionSupport.fileResultsForSuccess(
-                                  plannedTask, effectiveFileStats, effectiveArtifacts)));
+                                  plannedTask,
+                                  capturePolicy,
+                                  effectiveFileStats,
+                                  effectiveArtifacts)));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)

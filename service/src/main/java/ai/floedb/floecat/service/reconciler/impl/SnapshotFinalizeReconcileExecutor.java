@@ -127,6 +127,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("parent snapshot plan job is required"));
     }
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
+    boolean requestsIndexOutputs = requestsIndexOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
     if (coverage.state() == PlannedCoverageState.EXPLICIT_EMPTY) {
       List<String> unexpectedChildren =
@@ -168,7 +169,12 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
     }
     ChildState childState =
-        childState(lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups());
+        childState(
+            lease.accountId,
+            parentJobId,
+            lease.jobId,
+            coverage.expectedGroups(),
+            requestsIndexOutputs);
     if (!childState.duplicateGroups().isEmpty()) {
       return ExecutionResult.terminalFailure(
           0,
@@ -356,7 +362,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String accountId,
       String parentJobId,
       String finalizerJobId,
-      List<ReconcileFileGroupTask> expectedGroups) {
+      List<ReconcileFileGroupTask> expectedGroups,
+      boolean requiresIndexArtifacts) {
     if (parentJobId == null || parentJobId.isBlank()) {
       return new ChildState(0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
@@ -398,7 +405,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         continue;
       }
       if ("JS_SUCCEEDED".equals(child.state)) {
-        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
+        if (hasPersistedSuccessResults(
+            expectedGroup, child.fileGroupTask, requiresIndexArtifacts)) {
           completedGroups++;
         } else {
           invalidSucceededGroups.add(description);
@@ -568,23 +576,37 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return false;
   }
 
+  private static boolean requestsIndexOutputs(ReconcileJobStore.LeasedJob lease) {
+    ReconcileCapturePolicy policy =
+        lease == null || lease.scope == null
+            ? ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    return policy.outputs().contains(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+  }
+
   private static boolean hasPersistedSuccessResults(
-      ReconcileFileGroupTask expectedGroup, ReconcileFileGroupTask persistedGroup) {
+      ReconcileFileGroupTask expectedGroup,
+      ReconcileFileGroupTask persistedGroup,
+      boolean requiresIndexArtifacts) {
     if (expectedGroup == null || persistedGroup == null) {
       return false;
     }
     if (!groupKey(expectedGroup).equals(groupKey(persistedGroup))) {
       return false;
     }
-    LinkedHashMap<String, ReconcileFileResult.State> statesByFile = new LinkedHashMap<>();
+    LinkedHashMap<String, ReconcileFileResult> resultsByFile = new LinkedHashMap<>();
     for (ReconcileFileResult result : persistedGroup.fileResults()) {
       if (result == null || result.filePath().isBlank()) {
         continue;
       }
-      statesByFile.put(result.filePath(), result.state());
+      resultsByFile.put(result.filePath(), result);
     }
     for (String filePath : expectedGroup.filePaths()) {
-      if (statesByFile.get(filePath) != ReconcileFileResult.State.SUCCEEDED) {
+      ReconcileFileResult result = resultsByFile.get(filePath);
+      if (result == null || result.state() != ReconcileFileResult.State.SUCCEEDED) {
+        return false;
+      }
+      if (requiresIndexArtifacts && result.indexArtifact().isEmpty()) {
         return false;
       }
     }
