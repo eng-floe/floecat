@@ -172,6 +172,8 @@ class PropagationIT {
     engineMeta.put(ENGINE_VERSION, "it-engine");
     engineMeta.put(CORR, corr);
 
+    TestEngineVersionCaptureInterceptor.captureFor(corr);
+
     catalog
         .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(engineMeta))
         .listCatalogs(ListCatalogsRequest.getDefaultInstance());

@@ -74,7 +74,7 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
 
     // ServerInterceptor is a functional interface, so we pass the helper's interceptCall as a
     // method reference — no JDK Proxy or runtime classloader gymnastics required.
-    this.delegate = new CtxPropagatingBlockingWrap(vertx, inbound::interceptCall);
+    this.delegate = new CtxPropagatingBlockingWrap(vertx, inbound::interceptCall)::interceptCall;
   }
 
   @Override

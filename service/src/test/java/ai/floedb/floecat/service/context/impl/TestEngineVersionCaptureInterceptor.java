@@ -35,9 +35,20 @@ import java.util.concurrent.atomic.AtomicReference;
 @GlobalInterceptor
 @Priority(1000)
 public class TestEngineVersionCaptureInterceptor implements ServerInterceptor {
+  private static final Metadata.Key<String> ENGINE_VERSION =
+      Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> CORR =
+      Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final AtomicReference<String> TARGET_CORRELATION_ID = new AtomicReference<>();
   private static final AtomicReference<String> CAPTURED = new AtomicReference<>();
 
   public static void reset() {
+    TARGET_CORRELATION_ID.set(null);
+    CAPTURED.set(null);
+  }
+
+  public static void captureFor(String correlationId) {
+    TARGET_CORRELATION_ID.set(correlationId);
     CAPTURED.set(null);
   }
 
@@ -48,9 +59,10 @@ public class TestEngineVersionCaptureInterceptor implements ServerInterceptor {
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
-    Metadata.Key<String> ENGINE_VERSION =
-        Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
-    CAPTURED.set(headers.get(ENGINE_VERSION));
+    String targetCorrelationId = TARGET_CORRELATION_ID.get();
+    if (targetCorrelationId == null || targetCorrelationId.equals(headers.get(CORR))) {
+      CAPTURED.set(headers.get(ENGINE_VERSION));
+    }
     return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(
         next.startCall(
             new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
