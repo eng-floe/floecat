@@ -837,7 +837,9 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
-    return record != null && hasUnexpiredJobLease(record.accountId, record.jobId, now);
+    return record != null
+        && holdsExecutionLease(record)
+        && hasUnexpiredJobLease(record.accountId, record.jobId, now);
   }
 
   private boolean requiresLaneLease(StoredReconcileJob record) {
@@ -903,8 +905,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                       record.finishedAtMs = nowMs;
                       record.readyPointerKey = null;
                     } else {
-                      long nextAttemptAtMs =
-                          nowMs + Math.max(0L, backoffMs.applyAsLong(record.attempt));
+                      long nextAttemptAtMs = nowMs;
                       record.state = "JS_QUEUED";
                       record.message = "Lease expired; requeued";
                       record.nextAttemptAtMs = nextAttemptAtMs;
@@ -930,10 +931,16 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   private boolean hasActiveSnapshotLease(StoredReconcileJob record, long now) {
     return record != null
+        && holdsExecutionLease(record)
         && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && !blank(record.snapshotTaskTableId)
         && record.snapshotTaskSnapshotId >= 0L
         && hasUnexpiredJobLease(record.accountId, record.jobId, now);
+  }
+
+  private boolean holdsExecutionLease(StoredReconcileJob record) {
+    return record != null
+        && ("JS_RUNNING".equals(record.state) || "JS_CANCELLING".equals(record.state));
   }
 
   private String snapshotLeasePointerKey(StoredReconcileJob record) {
