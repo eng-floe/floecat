@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
@@ -30,9 +32,11 @@ import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import io.grpc.Context;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.subscription.MultiSubscriber;
+import jakarta.enterprise.inject.Instance;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow.Subscription;
@@ -51,6 +55,38 @@ import org.mockito.Mockito;
 class UserObjectsServiceImplTest {
 
   private static final String ACCOUNT_ID = "test-account-id";
+  private static final String TABLE_ID = "tbl-demand";
+
+  @SuppressWarnings("unchecked")
+  private static Instance<SchedulerSignalIndex> signalInstance(SchedulerSignalIndex index) {
+    Instance<SchedulerSignalIndex> signalInstance = Mockito.mock(Instance.class);
+    Mockito.when(signalInstance.isUnsatisfied()).thenReturn(false);
+    Mockito.when(signalInstance.get()).thenReturn(index);
+    return signalInstance;
+  }
+
+  private static QueryContext activeQueryContext(String queryId) {
+    return QueryContext.builder()
+        .queryId(queryId)
+        .principal(
+            PrincipalContext.newBuilder()
+                .setAccountId(ACCOUNT_ID)
+                .setSubject("tester")
+                .addPermissions("catalog.read")
+                .build())
+        .snapshotSet(new byte[0])
+        .createdAtMs(1)
+        .expiresAtMs(Long.MAX_VALUE)
+        .state(QueryContext.State.ACTIVE)
+        .version(1)
+        .queryDefaultCatalogId(
+            ResourceId.newBuilder()
+                .setAccountId(ACCOUNT_ID)
+                .setId("cat")
+                .setKind(ResourceKind.RK_CATALOG)
+                .build())
+        .build();
+  }
 
   @Test
   void principalContextIsAvailableDuringItemEmission() {
@@ -259,5 +295,195 @@ class UserObjectsServiceImplTest {
     } finally {
       grpcCtx.detach(previous);
     }
+  }
+
+  @Test
+  void getUserObjectsRecordsDemandFromNameCandidateWhenUnambiguous() {
+    PrincipalProvider principalProvider = new PrincipalProvider();
+    SchedulerSignalIndex signalIndex = new SchedulerSignalIndex(3_600_000L);
+    UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
+    Mockito.when(
+            mockBundles.stream(
+                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+        .thenReturn(Multi.createFrom().items(UserObjectsBundleChunk.getDefaultInstance()));
+
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    store.seed(activeQueryContext("q-demand-name"));
+
+    UserObjectsServiceImpl service = new UserObjectsServiceImpl();
+    service.principal = principalProvider;
+    service.authz = new Authorizer();
+    service.queryStore = store;
+    service.bundles = mockBundles;
+    service.signalIndexInstance = signalInstance(signalIndex);
+
+    ResourceId rid =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setId(TABLE_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    QueryInput nameInput =
+        QueryInput.newBuilder()
+            .setName(
+                NameRef.newBuilder()
+                    .setCatalog("cat")
+                    .addPath("db")
+                    .setName("events")
+                    .setResourceId(rid))
+            .build();
+    GetUserObjectsRequest request =
+        GetUserObjectsRequest.newBuilder()
+            .setQueryId("q-demand-name")
+            .addTables(TableReferenceCandidate.newBuilder().addCandidates(nameInput).build())
+            .build();
+
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setSubject("tester")
+            .addPermissions("catalog.read")
+            .build();
+    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context previous = grpcCtx.attach();
+    try {
+      service.getUserObjects(request).collect().asList().await().indefinitely();
+    } finally {
+      grpcCtx.detach(previous);
+    }
+
+    assertEquals(
+        1L, signalIndex.recentTableDemand(SchedulerSignalIndex.tableKey(ACCOUNT_ID, TABLE_ID)));
+  }
+
+  @Test
+  void getUserObjectsRecordsDemandWhenUnresolvedAlternativeDoesNotConflict() {
+    PrincipalProvider principalProvider = new PrincipalProvider();
+    SchedulerSignalIndex signalIndex = new SchedulerSignalIndex(3_600_000L);
+    UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
+    Mockito.when(
+            mockBundles.stream(
+                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+        .thenReturn(Multi.createFrom().items(UserObjectsBundleChunk.getDefaultInstance()));
+
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    store.seed(activeQueryContext("q-demand-mixed"));
+
+    UserObjectsServiceImpl service = new UserObjectsServiceImpl();
+    service.principal = principalProvider;
+    service.authz = new Authorizer();
+    service.queryStore = store;
+    service.bundles = mockBundles;
+    service.signalIndexInstance = signalInstance(signalIndex);
+
+    QueryInput resolved =
+        QueryInput.newBuilder()
+            .setTableId(
+                ResourceId.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setId(TABLE_ID)
+                    .setKind(ResourceKind.RK_TABLE))
+            .build();
+    QueryInput unresolved =
+        QueryInput.newBuilder()
+            .setName(NameRef.newBuilder().setCatalog("cat").addPath("db").setName("events"))
+            .build();
+
+    GetUserObjectsRequest request =
+        GetUserObjectsRequest.newBuilder()
+            .setQueryId("q-demand-mixed")
+            .addTables(
+                TableReferenceCandidate.newBuilder()
+                    .addCandidates(resolved)
+                    .addCandidates(unresolved)
+                    .build())
+            .build();
+
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setSubject("tester")
+            .addPermissions("catalog.read")
+            .build();
+    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context previous = grpcCtx.attach();
+    try {
+      service.getUserObjects(request).collect().asList().await().indefinitely();
+    } finally {
+      grpcCtx.detach(previous);
+    }
+
+    assertEquals(
+        1L, signalIndex.recentTableDemand(SchedulerSignalIndex.tableKey(ACCOUNT_ID, TABLE_ID)));
+  }
+
+  @Test
+  void getUserObjectsDoesNotRecordDemandForAmbiguousCandidates() {
+    PrincipalProvider principalProvider = new PrincipalProvider();
+    SchedulerSignalIndex signalIndex = new SchedulerSignalIndex(3_600_000L);
+    UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
+    Mockito.when(
+            mockBundles.stream(
+                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+        .thenReturn(Multi.createFrom().items(UserObjectsBundleChunk.getDefaultInstance()));
+
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    store.seed(activeQueryContext("q-demand-ambiguous"));
+
+    UserObjectsServiceImpl service = new UserObjectsServiceImpl();
+    service.principal = principalProvider;
+    service.authz = new Authorizer();
+    service.queryStore = store;
+    service.bundles = mockBundles;
+    service.signalIndexInstance = signalInstance(signalIndex);
+
+    QueryInput first =
+        QueryInput.newBuilder()
+            .setTableId(
+                ResourceId.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setId("tbl-a")
+                    .setKind(ResourceKind.RK_TABLE))
+            .build();
+    QueryInput second =
+        QueryInput.newBuilder()
+            .setTableId(
+                ResourceId.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setId("tbl-b")
+                    .setKind(ResourceKind.RK_TABLE))
+            .build();
+
+    GetUserObjectsRequest request =
+        GetUserObjectsRequest.newBuilder()
+            .setQueryId("q-demand-ambiguous")
+            .addTables(
+                TableReferenceCandidate.newBuilder()
+                    .addCandidates(first)
+                    .addCandidates(second)
+                    .build())
+            .build();
+
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setSubject("tester")
+            .addPermissions("catalog.read")
+            .build();
+    Context grpcCtx = Context.current().withValue(PrincipalProvider.KEY, principal);
+    Context previous = grpcCtx.attach();
+    try {
+      service.getUserObjects(request).collect().asList().await().indefinitely();
+    } finally {
+      grpcCtx.detach(previous);
+    }
+
+    assertEquals(
+        0L, signalIndex.recentTableDemand(SchedulerSignalIndex.tableKey(ACCOUNT_ID, "tbl-a")));
+    assertEquals(
+        0L, signalIndex.recentTableDemand(SchedulerSignalIndex.tableKey(ACCOUNT_ID, "tbl-b")));
   }
 }

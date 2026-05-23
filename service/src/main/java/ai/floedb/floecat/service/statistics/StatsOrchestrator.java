@@ -20,10 +20,17 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -41,6 +48,7 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -80,6 +88,19 @@ public class StatsOrchestrator {
   private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
 
+  /**
+   * Scheduler policy registry — may be null in lightweight unit-test construction paths that bypass
+   * CDI. When null, priority scoring falls back to score=0 for all async jobs, preserving existing
+   * FIFO behaviour.
+   */
+  private final SchedulerPolicyRegistry schedulerRegistry;
+
+  /**
+   * Signal index for in-process scoring signals. May be null in lightweight test paths that bypass
+   * CDI. When null, demand recording is skipped silently.
+   */
+  private final SchedulerSignalIndex signalIndex;
+
   @Inject
   public StatsOrchestrator(
       StatsStore statsStore,
@@ -88,7 +109,9 @@ public class StatsOrchestrator {
       StatsSyncCapture statsSyncCapture,
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
           boolean syncEnabled,
-      Instance<Observability> observability) {
+      Instance<Observability> observability,
+      Instance<SchedulerPolicyRegistry> schedulerRegistry,
+      Instance<SchedulerSignalIndex> signalIndex) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
@@ -96,6 +119,12 @@ public class StatsOrchestrator {
     this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
+    this.schedulerRegistry =
+        schedulerRegistry == null || schedulerRegistry.isUnsatisfied()
+            ? null
+            : schedulerRegistry.get();
+    this.signalIndex =
+        signalIndex == null || signalIndex.isUnsatisfied() ? null : signalIndex.get();
   }
 
   public StatsOrchestrator(
@@ -106,6 +135,8 @@ public class StatsOrchestrator {
         tableRepository,
         new StatsSyncCapture(reconcileJobStore),
         true,
+        null,
+        null,
         null);
   }
 
@@ -118,6 +149,7 @@ public class StatsOrchestrator {
    */
   public StatsResolutionResult resolve(StatsCaptureRequest request) {
     long startNanos = System.nanoTime();
+    recordDemandSignals(request);
     Optional<TargetStatsRecord> stored = readStore(request);
     if (stored.isPresent()) {
       observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
@@ -179,6 +211,7 @@ public class StatsOrchestrator {
     ArrayList<StatsCaptureRequest> unresolvedForAsync = new ArrayList<>();
 
     for (StatsCaptureRequest request : requests) {
+      recordDemandSignals(request);
       Optional<TargetStatsRecord> stored = readStore(request);
       if (stored.isPresent()) {
         resolved.add(StatsResolutionResult.hit(stored.get()));
@@ -224,13 +257,28 @@ public class StatsOrchestrator {
               request.snapshotId(),
               ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
               List.copyOf(request.columnSelectors()));
-      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request));
+      // Sync path: maxCost=MEDIUM — engines must not attempt expensive stat kinds (e.g. full column
+      // scans, NDV/histogram) that would violate the sync latency budget. PARQUET_PAGE_INDEX is
+      // never included in sync policies (see capturePolicyFor Javadoc).
+      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request), JobCostHint.MEDIUM);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
 
+      // P0_SYNC: query-time bounded capture. This is the only code path that assigns P0.
+      // The lane key (accountId:tableId) serializes concurrent sync requests for the same table.
+      String laneKey =
+          statsLaneKey(request.tableId().getAccountId(), table.get().getResourceId().getId());
+      ReconcileExecutionPolicy syncPolicy =
+          ReconcileExecutionPolicy.of(
+              StatsPriorityClass.P0_SYNC, laneKey, Map.of("enqueue_reason", "sync_capture"));
+
       return statsSyncCapture.capture(
-          request.tableId().getAccountId(), connectorId, scope, request.latencyBudget().get());
+          request.tableId().getAccountId(),
+          connectorId,
+          scope,
+          request.latencyBudget().get(),
+          syncPolicy);
     } catch (RuntimeException e) {
       LOG.warnf(e, "stats_sync_capture attempt threw for table=%s", request.tableId());
       return StatsSyncOutcome.FAILED;
@@ -246,7 +294,32 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    enqueueAsyncCaptureBatch(List.of(request));
+    // Record partial coverage so the scheduler can prefer incomplete snapshots over ones that
+    // have never been attempted. Done before enqueue so the signal is visible at assignment time.
+    if (signalIndex != null) {
+      signalIndex.recordPartialCoverage(
+          request.tableId().getAccountId(), request.tableId().getId(), request.snapshotId());
+    }
+    // P2_REPAIR: async follow-up after a sync outcome of PARTIAL, TIMEOUT, or FAILED.
+    // These jobs fill missing coverage without blocking the planner again.
+    enqueueAsyncCaptureBatch(List.of(request), StatsPriorityClass.P2_REPAIR, reason);
+  }
+
+  /**
+   * Records planner demand signals for a single stats resolution request. Called at the top of
+   * {@link #resolve} and inside the {@link #resolveBatch} loop so that every planner stats read
+   * contributes to the scoring window regardless of outcome (hit, sync, or async fallback).
+   *
+   * <p>No-ops when {@link #signalIndex} is null (lightweight test paths without CDI).
+   */
+  private void recordDemandSignals(StatsCaptureRequest request) {
+    if (signalIndex == null) return;
+    String accountId = request.tableId().getAccountId();
+    String tableId = request.tableId().getId();
+    signalIndex.recordTableDemand(accountId, tableId);
+    for (String selector : request.columnSelectors()) {
+      signalIndex.recordColumnDemand(accountId, tableId, selector);
+    }
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -262,8 +335,20 @@ public class StatsOrchestrator {
     return out;
   }
 
+  /**
+   * Enqueues a batch of async capture requests.
+   *
+   * <p>Callers that need P3_BACKGROUND (the default for background and batch-trigger paths) should
+   * use the single-argument overload. The {@link #enqueueAsyncFollowUp} path passes P2_REPAIR.
+   */
   private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
       List<StatsCaptureRequest> requests) {
+    // P3_BACKGROUND: routine background refresh and explicit trigger paths.
+    return enqueueAsyncCaptureBatch(requests, StatsPriorityClass.P3_BACKGROUND, "background_async");
+  }
+
+  private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
+      List<StatsCaptureRequest> requests, StatsPriorityClass priorityClass, String enqueueReason) {
     if (requests == null || requests.isEmpty()) {
       return List.of();
     }
@@ -291,7 +376,8 @@ public class StatsOrchestrator {
           .add(new IndexedRequest(i, toAsyncRequest(request)));
     }
     for (List<IndexedRequest> groupedRequests : groupedByTable.values()) {
-      for (IndexedResult result : enqueueAsyncGroup(groupedRequests)) {
+      for (IndexedResult result :
+          enqueueAsyncGroup(groupedRequests, priorityClass, enqueueReason)) {
         results.set(result.index(), result.result());
       }
     }
@@ -322,7 +408,10 @@ public class StatsOrchestrator {
     };
   }
 
-  private List<IndexedResult> enqueueAsyncGroup(List<IndexedRequest> groupedRequests) {
+  private List<IndexedResult> enqueueAsyncGroup(
+      List<IndexedRequest> groupedRequests,
+      StatsPriorityClass priorityClass,
+      String enqueueReason) {
     if (groupedRequests == null || groupedRequests.isEmpty()) {
       return List.of();
     }
@@ -361,24 +450,101 @@ public class StatsOrchestrator {
                 ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
                 List.copyOf(request.columnSelectors())));
       }
+      // Async path: maxCost=EXPENSIVE — no cost restriction; engines may perform full column scans,
+      // histogram computation, or other heavy operations.
       ReconcileCapturePolicy capturePolicy =
-          capturePolicyFor(groupedRequests.stream().map(IndexedRequest::request).toList());
+          capturePolicyFor(
+              groupedRequests.stream().map(IndexedRequest::request).toList(),
+              JobCostHint.EXPENSIVE);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(),
               table.get().getResourceId().getId(),
               List.copyOf(captureRequests),
               capturePolicy);
+
+      // Build the execution policy.  The scheduler policy provides score and laneKey; priorityClass
+      // is determined by the caller (P0 for sync, P2 for follow-up, P3 for background) and is
+      // intentionally not overridden by the policy here — the orchestrator has higher-level context
+      // about why the job is being enqueued.  The policy's laneKey is used when non-blank; the
+      // store-derived key is the fallback.
+      //
+      // Groups can span multiple snapshots of the same table (e.g. snapshot 100 has FULL coverage
+      // while snapshot 101 has NONE).  Scoring only the first request would underestimate urgency
+      // when a higher-urgency snapshot is not at the head of the list.  Score every request and
+      // keep the highest score so the job is prioritized according to its most urgent member.
+      String fallbackLaneKey =
+          statsLaneKey(first.tableId().getAccountId(), table.get().getResourceId().getId());
+      SchedulerPriorityPolicy.PriorityAssignment assignment =
+          groupedRequests.stream()
+              .map(ir -> computeAssignment(ir.request(), schedulerRegistry, fallbackLaneKey))
+              .max(Comparator.comparingLong(SchedulerPriorityPolicy.PriorityAssignment::score))
+              .orElseGet(() -> computeAssignment(first, schedulerRegistry, fallbackLaneKey));
+
+      // Admission control:
+      //   REJECT — skip enqueue entirely; return degraded result.
+      //   DEFER  — enqueue with policy_deferred=true in attributes; both stores honour this flag
+      //            to apply at least DEFER_DELAY_MS regardless of their band-based logic. This
+      //            ensures custom profile DEFER semantics take effect even for priority classes
+      //            (e.g. P1_FRESHNESS) that the store would otherwise admit without delay.
+      //   ADMIT  — enqueue with no deferral override; store band logic applies as normal.
+      SchedulerAdmissionPolicy.AdmissionDecision admissionDecision =
+          computeAdmissionDecision(assignment, priorityClass, schedulerRegistry);
+      if (admissionDecision == SchedulerAdmissionPolicy.AdmissionDecision.REJECT) {
+        LOG.warnf(
+            "stats_enqueue outcome=REJECTED table=%s reason=%s priority=%s",
+            first.tableId(), enqueueReason, priorityClass);
+        incrementCounter(
+            ServiceMetrics.Reconcile.ADMISSION_REJECTED,
+            1,
+            Tag.of("priority_class", priorityClass.name().toLowerCase()),
+            Tag.of(TagKey.REASON, enqueueReason));
+        return groupedRequests.stream()
+            .map(
+                ir ->
+                    new IndexedResult(
+                        ir.index(),
+                        StatsCaptureBatchItemResult.degraded(
+                            ir.request(), "admission rejected by scheduler policy")))
+            .toList();
+      }
+
+      boolean policyDeferred =
+          admissionDecision == SchedulerAdmissionPolicy.AdmissionDecision.DEFER;
+      if (policyDeferred) {
+        LOG.debugf(
+            "stats_enqueue outcome=DEFERRED_BY_POLICY table=%s reason=%s priority=%s",
+            first.tableId(), enqueueReason, priorityClass);
+        incrementCounter(
+            ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+            1,
+            Tag.of("priority_class", priorityClass.name().toLowerCase()),
+            Tag.of(TagKey.REASON, enqueueReason));
+      }
+      Map<String, String> attrs =
+          policyDeferred
+              ? Map.of(
+                  "enqueue_reason",
+                  enqueueReason,
+                  ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED,
+                  "true")
+              : Map.of("enqueue_reason", enqueueReason);
+      ReconcileExecutionPolicy executionPolicy =
+          ReconcileExecutionPolicy.of(
+              priorityClass, assignment.laneKey(), attrs, assignment.score());
+
       String jobId =
           reconcileJobStore.enqueue(
               first.tableId().getAccountId(),
               table.get().getUpstream().getConnectorId().getId(),
               false,
               ReconcilerService.CaptureMode.CAPTURE_ONLY,
-              scope);
+              scope,
+              executionPolicy,
+              "");
       lastEnqueuedJobByTable.put(tableKey(first), jobId);
       LOG.infof(
-          "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s group_size=%d job=%s",
+          "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s priority=%s group_size=%d job=%s",
           first.tableId(),
           (int)
               captureRequests.stream()
@@ -386,7 +552,8 @@ public class StatsOrchestrator {
                   .distinct()
                   .count(),
           captureRequests.size(),
-          "missing_or_degraded_sync_capture",
+          enqueueReason,
+          priorityClass,
           groupedRequests.size(),
           jobId);
       return groupedRequests.stream()
@@ -447,6 +614,86 @@ public class StatsOrchestrator {
 
   private static TableKey tableKey(StatsCaptureRequest request) {
     return new TableKey(request.tableId().getAccountId(), request.tableId().getId());
+  }
+
+  /**
+   * Returns the scheduling lane key for a stats-driven enqueue.
+   *
+   * <p>The lane key ({@code accountId:tableId}) serialises concurrent jobs that target the same
+   * table and enables WRR fairness across tables within the same priority class. It is stored in
+   * {@link ReconcileExecutionPolicy#lane()} and is visible in metrics.
+   */
+  private static String statsLaneKey(String accountId, String tableId) {
+    return accountId + ":" + tableId;
+  }
+
+  /**
+   * Returns the full {@link SchedulerPriorityPolicy.PriorityAssignment} for an async capture
+   * request using the active scheduler policy.
+   *
+   * <p>The caller uses {@link SchedulerPriorityPolicy.PriorityAssignment#score()} and {@link
+   * SchedulerPriorityPolicy.PriorityAssignment#laneKey()} from the assignment. The {@code
+   * priorityClass} field is intentionally not used here — the orchestrator determines it from
+   * enqueue context (P0/P2/P3). Custom profiles can express urgency through the score and can
+   * influence fairness bucketing through the laneKey.
+   *
+   * <p>Falls back to score=0 and the provided {@code fallbackLaneKey} when the registry is absent
+   * (unit-test construction paths). Errors from the policy are caught and logged so that a
+   * misconfigured scoring implementation never blocks enqueue.
+   */
+  private static SchedulerPriorityPolicy.PriorityAssignment computeAssignment(
+      StatsCaptureRequest request, SchedulerPolicyRegistry registry, String fallbackLaneKey) {
+    if (registry == null) {
+      return new SchedulerPriorityPolicy.PriorityAssignment(
+          StatsPriorityClass.P3_BACKGROUND, 0L, fallbackLaneKey);
+    }
+    try {
+      SchedulerPriorityPolicy.PriorityAssignment raw =
+          registry.activePriorityPolicy().assign(request, registry.activeContext());
+      // Use the policy's lane key only when non-blank; preserve the store-derived fallback.
+      String laneKey = raw.laneKey().isBlank() ? fallbackLaneKey : raw.laneKey();
+      return new SchedulerPriorityPolicy.PriorityAssignment(
+          raw.priorityClass(), raw.score(), laneKey);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e, "Failed to compute priority assignment for %s; using defaults", request.tableId());
+      return new SchedulerPriorityPolicy.PriorityAssignment(
+          StatsPriorityClass.P3_BACKGROUND, 0L, fallbackLaneKey);
+    }
+  }
+
+  /**
+   * Returns the admission decision for an async enqueue attempt.
+   *
+   * <p>P0_SYNC jobs are never routed through this path (they are dispatched synchronously and
+   * bypass the scheduler policy entirely), so the invariant that P0 must always be ADMIT is
+   * satisfied structurally. The {@code priorityClass} parameter reflects the caller-forced class
+   * (P2 for follow-up, P3 for background) used to build the execution policy.
+   *
+   * <p>Falls back to {@link SchedulerAdmissionPolicy.AdmissionDecision#ADMIT} when the registry is
+   * absent or if the policy throws, so that a misconfigured admission policy never silently drops
+   * jobs.
+   */
+  private static SchedulerAdmissionPolicy.AdmissionDecision computeAdmissionDecision(
+      SchedulerPriorityPolicy.PriorityAssignment assignment,
+      StatsPriorityClass priorityClass,
+      SchedulerPolicyRegistry registry) {
+    if (registry == null) {
+      return SchedulerAdmissionPolicy.AdmissionDecision.ADMIT;
+    }
+    // Use a synthetic assignment with the caller-forced priorityClass so the admission policy sees
+    // the actual class that will be used at enqueue (not the policy's default P3_BACKGROUND).
+    var effectiveAssignment =
+        new SchedulerPriorityPolicy.PriorityAssignment(
+            priorityClass, assignment.score(), assignment.laneKey());
+    try {
+      return registry
+          .activeAdmissionPolicy()
+          .decide(effectiveAssignment, registry.activeContext().currentBand());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Admission policy threw for %s; defaulting to ADMIT", priorityClass);
+      return SchedulerAdmissionPolicy.AdmissionDecision.ADMIT;
+    }
   }
 
   private StatsCaptureRequest toAsyncRequest(StatsCaptureRequest request) {
@@ -519,7 +766,20 @@ public class StatsOrchestrator {
     observability.counter(metric, amount, merged);
   }
 
-  private static ReconcileCapturePolicy capturePolicyFor(List<StatsCaptureRequest> requests) {
+  /**
+   * Builds the capture policy for a list of stats requests with an explicit cost ceiling.
+   *
+   * <p>{@link ReconcileCapturePolicy.Output#PARQUET_PAGE_INDEX} is intentionally never included
+   * here. Parquet page-index construction (Floescan) is always async (EXEC_FILE_GROUP scoped) and
+   * is enqueued separately. Including it in a sync-capture policy would violate the latency budget
+   * contract.
+   *
+   * @param requests the capture requests to build the policy from
+   * @param maxCost the cost ceiling; use {@link JobCostHint#MEDIUM} for sync paths and {@link
+   *     JobCostHint#EXPENSIVE} for async paths
+   */
+  private static ReconcileCapturePolicy capturePolicyFor(
+      List<StatsCaptureRequest> requests, JobCostHint maxCost) {
     LinkedHashSet<ReconcileCapturePolicy.Output> outputs = new LinkedHashSet<>();
     LinkedHashMap<String, ReconcileCapturePolicy.Column> columns = new LinkedHashMap<>();
     for (StatsCaptureRequest request : requests) {
@@ -545,7 +805,7 @@ public class StatsOrchestrator {
         columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, false));
       }
     }
-    return ReconcileCapturePolicy.of(List.copyOf(columns.values()), Set.copyOf(outputs));
+    return ReconcileCapturePolicy.of(List.copyOf(columns.values()), Set.copyOf(outputs), maxCost);
   }
 
   private record IndexedRequest(int index, StatsCaptureRequest request) {}

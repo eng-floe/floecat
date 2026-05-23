@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -28,19 +29,44 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class LeasedPlannerWorkerService {
+  private static final Logger LOG = Logger.getLogger(LeasedPlannerWorkerService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
+
+  /**
+   * Optional injection — absent in test environments without a full CDI container. When unsatisfied
+   * the planner falls back to safe priority defaults (P1_FRESHNESS for PLAN_SNAPSHOT, P3_BACKGROUND
+   * for EXEC_FILE_GROUP) instead of failing.
+   */
+  @Inject Instance<SchedulerPolicyRegistry> schedulerRegistryInstance;
+
+  /** Optional — absent in lightweight test paths. Used only for delta computation. */
+  @Inject Instance<SnapshotRepository> snapshotRepoInstance;
+
+  /** Optional — absent in lightweight test paths. Silently skipped when unsatisfied. */
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   record PlanConnectorPayload(
       String jobId,
@@ -192,14 +218,25 @@ public class LeasedPlannerWorkerService {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
       }
+      ReconcileSnapshotTask snapshotTask = snapshotJob.snapshotTask();
+      // tableId() is a plain String; combine with lease.accountId for the WRR lane key.
+      String laneKey = lease.accountId + ":" + snapshotTask.tableId();
+      // PLAN_SNAPSHOT jobs always originate from fresh snapshot discovery → isNewSnapshot=true
+      PriorityAssignment assignment =
+          assignForReconcileJobSafe(
+              ReconcileJobKind.PLAN_SNAPSHOT,
+              laneKey,
+              snapshotTask.snapshotId(),
+              /* isNewSnapshot= */ true);
+      ReconcileExecutionPolicy snapshotPolicy = policyFromAssignment(assignment, lease);
       jobs.enqueueSnapshotPlan(
           lease.accountId,
           lease.connectorId,
           lease.fullRescan,
           lease.captureMode,
           snapshotJob.scope(),
-          snapshotJob.snapshotTask(),
-          effectiveExecutionPolicy(lease),
+          snapshotTask,
+          snapshotPolicy,
           lease.jobId,
           lease.pinnedExecutorId);
     }
@@ -321,21 +358,52 @@ public class LeasedPlannerWorkerService {
             plannedGroups,
             true);
     jobs.persistSnapshotPlan(lease.jobId, finalizedSnapshotTask);
+    // Record the snapshot delta signal before enqueuing EXEC_FILE_GROUP jobs so the signal is
+    // visible to the scheduler at assignment time. Best-effort: never aborts the planner path.
+    recordSnapshotDeltaSafe(
+        lease.accountId, baseSnapshotTask.tableId(), baseSnapshotTask.snapshotId());
+    // Derive isNewSnapshot from the parent PLAN_SNAPSHOT's priority class.
+    // If the parent ran at P1_FRESHNESS it was new-snapshot work; children inherit that judgment.
+    boolean isNewSnapshot =
+        lease.executionPolicy != null
+            && lease.executionPolicy.priorityClass() == StatsPriorityClass.P1_FRESHNESS;
     for (PlannedFileGroupJob fileGroupJob : nullToEmpty(fileGroupJobs)) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
       }
+      ReconcileFileGroupTask fileGroupTask = fileGroupJob.fileGroupTask();
+      // tableId() is a plain String; combine with lease.accountId for the WRR lane key.
+      String laneKey =
+          fileGroupTask.tableId() != null && !fileGroupTask.tableId().isBlank()
+              ? lease.accountId + ":" + fileGroupTask.tableId()
+              : lease.accountId;
+      PriorityAssignment assignment =
+          assignForReconcileJobSafe(
+              ReconcileJobKind.EXEC_FILE_GROUP, laneKey, fileGroupTask.snapshotId(), isNewSnapshot);
+      ReconcileExecutionPolicy fileGroupPolicy = policyFromAssignment(assignment, lease);
       jobs.enqueueFileGroupExecution(
           lease.accountId,
           lease.connectorId,
           lease.fullRescan,
           lease.captureMode,
           fileGroupJob.scope(),
-          fileGroupJob.fileGroupTask().asReference(),
-          effectiveExecutionPolicy(lease),
+          fileGroupTask.asReference(),
+          fileGroupPolicy,
           lease.jobId,
           lease.pinnedExecutorId);
     }
+    // FINALIZE_SNAPSHOT_CAPTURE is a snapshot-level housekeeping job — it is not scoped to a
+    // per-table WRR lane. Strip the lane from the parent's execution policy so that this job is
+    // not charged to any table's WRR slot. SnapshotFinalizeReconcileExecutor accepts all lanes
+    // (supportsLane returns true regardless of input), so the executor match is unaffected by the
+    // blank lane; the executor is matched via supportedJobKinds() instead.
+    // Priority class is preserved so P1_FRESHNESS snapshot work finalizes promptly.
+    ReconcileExecutionPolicy finalizePolicy =
+        ReconcileExecutionPolicy.of(
+            effectiveExecutionPolicy(lease).priorityClass(),
+            /* lane= */ "",
+            effectiveExecutionPolicy(lease).attributes(),
+            effectiveExecutionPolicy(lease).priorityScore());
     jobs.enqueueSnapshotFinalization(
         lease.accountId,
         lease.connectorId,
@@ -343,7 +411,7 @@ public class LeasedPlannerWorkerService {
         lease.captureMode,
         effectiveScope(lease),
         finalizedSnapshotTask,
-        effectiveExecutionPolicy(lease),
+        finalizePolicy,
         lease.jobId,
         lease.pinnedExecutorId);
     return true;
@@ -450,9 +518,189 @@ public class LeasedPlannerWorkerService {
 
   private static ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy
       effectiveExecutionPolicy(ReconcileJobStore.LeasedJob lease) {
-    return lease == null || lease.executionPolicy == null
-        ? ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.defaults()
-        : lease.executionPolicy;
+    if (lease == null || lease.executionPolicy == null) {
+      return ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.defaults();
+    }
+    ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy policy = lease.executionPolicy;
+    if (policy.attributes() == null
+        || !policy.attributes().containsKey(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED)) {
+      return policy;
+    }
+    // Strip ATTR_POLICY_DEFERRED — it is scoped to the original enqueue decision for the parent
+    // job and must never propagate to executors or child jobs (PLAN_TABLE, PLAN_VIEW, FINALIZE).
+    Map<String, String> filtered =
+        Map.copyOf(
+            policy.attributes().entrySet().stream()
+                .filter(e -> !SchedulerStoreHelpers.ATTR_POLICY_DEFERRED.equals(e.getKey()))
+                .collect(
+                    java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)));
+    return new ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy(
+        policy.executionClass(),
+        policy.lane(),
+        filtered,
+        policy.priorityClass(),
+        policy.priorityScore());
+  }
+
+  /**
+   * Calls {@link SchedulerPolicyRegistry#activePriorityPolicy()}.assignForReconcileJob() wrapped in
+   * a try/catch so that a misconfigured or absent registry never prevents the planner from making
+   * progress.
+   *
+   * <p>Fallback priorities when the registry is unavailable or throws:
+   *
+   * <ul>
+   *   <li>{@link ReconcileJobKind#PLAN_SNAPSHOT}: {@link StatsPriorityClass#P1_FRESHNESS} — new
+   *       snapshot work must never silently degrade to background.
+   *   <li>all other kinds (e.g. {@link ReconcileJobKind#EXEC_FILE_GROUP}): {@link
+   *       StatsPriorityClass#P3_BACKGROUND}.
+   * </ul>
+   */
+
+  /**
+   * Attempts to compute and record the snapshot delta row count in the {@link
+   * SchedulerSignalIndex}. Fetches the current snapshot and its parent from {@link
+   * SnapshotRepository} and computes the absolute difference in {@code total-records}. Silently
+   * skips on any error so it never aborts the planner success path.
+   */
+  private void recordSnapshotDeltaSafe(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) return;
+    if (snapshotRepoInstance == null || snapshotRepoInstance.isUnsatisfied()) return;
+    try {
+      SnapshotRepository snapshotRepo = snapshotRepoInstance.get();
+      SchedulerSignalIndex signalIndex = signalIndexInstance.get();
+
+      ResourceId tableResourceId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build();
+      var currentOpt = snapshotRepo.getById(tableResourceId, snapshotId);
+      if (currentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      var current = currentOpt.get();
+      String currentTotalStr = current.getSummaryMap().get("total-records");
+      if (currentTotalStr == null || currentTotalStr.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long currentTotal;
+      try {
+        currentTotal = Long.parseLong(currentTotalStr.trim());
+      } catch (NumberFormatException e) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      if (!current.hasParentSnapshotId()) {
+        // First snapshot — delta = all rows
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      var parentOpt = snapshotRepo.getById(tableResourceId, current.getParentSnapshotId());
+      if (parentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      String parentTotalStr = parentOpt.get().getSummaryMap().get("total-records");
+      if (parentTotalStr == null || parentTotalStr.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long parentTotal;
+      try {
+        parentTotal = Long.parseLong(parentTotalStr.trim());
+      } catch (NumberFormatException e) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      signalIndex.recordSnapshotDelta(
+          accountId, tableId, snapshotId, OptionalLong.of(Math.abs(currentTotal - parentTotal)));
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "scheduler_signal_index error computing snapshot delta table=%s snap=%d",
+          tableId,
+          snapshotId);
+    }
+  }
+
+  private PriorityAssignment assignForReconcileJobSafe(
+      ReconcileJobKind kind, String laneKey, long snapshotId, boolean isNewSnapshot) {
+    SchedulerPolicyRegistry registry = resolveRegistry();
+    if (registry != null) {
+      try {
+        return registry
+            .activePriorityPolicy()
+            .assignForReconcileJob(
+                kind, laneKey, snapshotId, isNewSnapshot, registry.activeContext());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "scheduler policy threw for kind=%s laneKey=%s; falling back to safe default",
+            kind,
+            laneKey);
+      }
+    }
+    // Safe fallback: mirrors the interface default — P1_FRESHNESS when isNewSnapshot is true
+    // (PLAN_SNAPSHOT is always new work; EXEC_FILE_GROUP inherits from parent's judgment).
+    StatsPriorityClass fallbackClass =
+        isNewSnapshot ? StatsPriorityClass.P1_FRESHNESS : StatsPriorityClass.P3_BACKGROUND;
+    return new PriorityAssignment(fallbackClass, 0L, laneKey);
+  }
+
+  private SchedulerPolicyRegistry resolveRegistry() {
+    try {
+      if (schedulerRegistryInstance == null || schedulerRegistryInstance.isUnsatisfied()) {
+        return null;
+      }
+      return schedulerRegistryInstance.get();
+    } catch (RuntimeException e) {
+      LOG.debugf("scheduler registry not available: %s", e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Builds a {@link ReconcileExecutionPolicy} from a {@link PriorityAssignment}, merging attributes
+   * from the parent lease. Attributes from the lease are overridden by any attributes derived from
+   * the assignment (none at present, reserved for future use).
+   *
+   * <p>{@code ATTR_POLICY_DEFERRED} is explicitly stripped. That attribute is scoped to the parent
+   * job's enqueue-time admission decision; child jobs (PLAN_SNAPSHOT, EXEC_FILE_GROUP, FINALIZE)
+   * are enqueued independently and their admission is re-evaluated at their own enqueue time.
+   * Propagating it would defer P1_FRESHNESS children even though the admission-policy invariant
+   * requires P1 to always ADMIT.
+   */
+  private static ReconcileExecutionPolicy policyFromAssignment(
+      PriorityAssignment assignment, ReconcileJobStore.LeasedJob lease) {
+    Map<String, String> rawAttributes =
+        lease.executionPolicy != null && lease.executionPolicy.attributes() != null
+            ? lease.executionPolicy.attributes()
+            : Map.of();
+    // Strip ATTR_POLICY_DEFERRED so it is never inherited by child jobs.
+    Map<String, String> baseAttributes =
+        rawAttributes.containsKey(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED)
+            ? Map.copyOf(
+                rawAttributes.entrySet().stream()
+                    .filter(e -> !SchedulerStoreHelpers.ATTR_POLICY_DEFERRED.equals(e.getKey()))
+                    .collect(
+                        java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)))
+            : rawAttributes;
+    var parentExecutionClass =
+        lease.executionPolicy != null
+            ? lease.executionPolicy.executionClass()
+            : ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass.DEFAULT;
+    return new ReconcileExecutionPolicy(
+        parentExecutionClass,
+        assignment.laneKey(),
+        baseAttributes,
+        assignment.priorityClass(),
+        assignment.score());
   }
 
   private static String blankToEmpty(String value) {

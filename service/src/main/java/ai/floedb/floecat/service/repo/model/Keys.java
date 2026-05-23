@@ -839,15 +839,38 @@ public final class Keys {
     return "/accounts/by-id/reconcile/jobs/ready/";
   }
 
-  public static String reconcileReadyPointerByDue(
-      long dueAtMs, String accountId, String laneKey, String jobId) {
+  /**
+   * Priority-prefixed ready pointer key. The single-digit {@code priorityOrder} (0–3) sorts P0 keys
+   * before P1, P2, P3 within the {@link #reconcileReadyPointerPrefix()} namespace, ensuring P0_SYNC
+   * jobs are dispatched first.
+   *
+   * <p>Key format: {@code
+   * /accounts/by-id/reconcile/jobs/ready/{order}/{dueAtMs}/{accountId}/{laneKey}/{jobId}}
+   */
+  public static String reconcileReadyPointerByPriorityDue(
+      ai.floedb.floecat.reconciler.jobs.StatsPriorityClass priorityClass,
+      long dueAtMs,
+      String accountId,
+      String laneKey,
+      String jobId) {
+    int order = priorityClass == null ? 3 : priorityClass.order;
     long due = reqNonNegative("due_at_ms", dueAtMs);
     String tid = req("account_id", accountId);
     String lane = req("lane_key", laneKey);
     String jid = req("job_id", jobId);
     return String.format(
-        "/accounts/by-id/reconcile/jobs/ready/%019d/%s/%s/%s",
-        due, encode(tid), encode(lane), encode(jid));
+        "/accounts/by-id/reconcile/jobs/ready/%d/%019d/%s/%s/%s",
+        order, due, encode(tid), encode(lane), encode(jid));
+  }
+
+  /**
+   * Prefix for scanning all ready pointers within a specific priority class. Use with {@code
+   * PointerStore.listPointersByPrefix()} to do class-scoped scans.
+   */
+  public static String reconcileReadyPointerByPriorityPrefix(
+      ai.floedb.floecat.reconciler.jobs.StatsPriorityClass priorityClass) {
+    int order = priorityClass == null ? 3 : priorityClass.order;
+    return "/accounts/by-id/reconcile/jobs/ready/" + order + "/";
   }
 
   public static String reconcileDedupePointer(String accountId, String dedupeKeyHash) {

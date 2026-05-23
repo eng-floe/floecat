@@ -17,13 +17,19 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.EnumMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
@@ -33,16 +39,33 @@ public class ReconcileQueueMetrics {
 
   @Inject ReconcileJobStore jobs;
   @Inject Observability observability;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   private final AtomicLong queued = new AtomicLong();
   private final AtomicLong running = new AtomicLong();
   private final AtomicLong cancelling = new AtomicLong();
   private final AtomicLong oldestAgeMs = new AtomicLong();
+  private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
+      new EnumMap<>(StatsPriorityClass.class);
+
+  private final AtomicLong healthBand = new AtomicLong();
+  // lastAgingPromotionsTotal and lastAdmissionDeferred are plain (non-volatile) fields used only
+  // inside refresh(), which is @Scheduled and therefore called on a single thread by Quarkus.
+  // They must NOT be accessed outside of refresh() without adding synchronization.
+  private long lastAgingPromotionsTotal = 0L;
+  private final Map<StatsPriorityClass, Long> lastAdmissionDeferred =
+      new EnumMap<>(StatsPriorityClass.class);
+  // Lane wait gauges — keyed by lane_key; registered lazily on first observation.
+  private final ConcurrentHashMap<String, AtomicLong> laneWaitAtomics = new ConcurrentHashMap<>();
+  private static final int MAX_TRACKED_LANES = 200;
+
+  private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
+  private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
 
   @PostConstruct
   void init() {
-    Tag component = Tag.of(TagKey.COMPONENT, "service");
-    Tag operation = Tag.of(TagKey.OPERATION, "job_queue");
+    Tag component = COMPONENT;
+    Tag operation = OPERATION;
     observability.gauge(
         ServiceMetrics.Reconcile.JOBS_QUEUED,
         queued::get,
@@ -67,6 +90,30 @@ public class ReconcileQueueMetrics {
         "Age in milliseconds of the oldest queued reconcile job",
         component,
         operation);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      AtomicLong counter = new AtomicLong();
+      queuedByClass.put(cls, counter);
+      observability.gauge(
+          ServiceMetrics.Reconcile.QUEUE_DEPTH_BY_CLASS,
+          counter::get,
+          "Current number of queued reconcile jobs in priority class " + cls.name(),
+          component,
+          operation,
+          Tag.of("priority_class", cls.name().toLowerCase()));
+    }
+    // Value is SchedulerHealthBand.ordinal(): 0=GREEN 1=YELLOW 2=ORANGE 3=RED.
+    // This mapping is part of the metrics contract — dashboards and autoscaler rules depend on it.
+    // If SchedulerHealthBand enum order ever changes, this gauge and all dependent alerts must be
+    // updated together.  See SchedulerHealthBand for the authoritative ordering.
+    observability.gauge(
+        ServiceMetrics.Reconcile.HEALTH_BAND,
+        healthBand::get,
+        "Current scheduler health band (0=GREEN 1=YELLOW 2=ORANGE 3=RED)",
+        component,
+        operation);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      lastAdmissionDeferred.put(cls, 0L);
+    }
     refresh();
   }
 
@@ -81,8 +128,137 @@ public class ReconcileQueueMetrics {
       long oldestAge =
           oldestCreatedAt > 0L ? Math.max(0L, System.currentTimeMillis() - oldestCreatedAt) : 0L;
       oldestAgeMs.set(oldestAge);
+      for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+        AtomicLong counter = queuedByClass.get(cls);
+        if (counter != null) {
+          counter.set(stats.queuedByClass.getOrDefault(cls, 0L));
+        }
+      }
+
+      healthBand.set(stats.healthBand.ordinal());
+
+      long newPromotions = stats.agingPromotionsTotal;
+      long promotionsDelta = newPromotions - lastAgingPromotionsTotal;
+      if (promotionsDelta > 0) {
+        observability.counter(
+            ServiceMetrics.Reconcile.AGING_PROMOTIONS, promotionsDelta, COMPONENT, OPERATION);
+        lastAgingPromotionsTotal = newPromotions;
+      }
+
+      for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+        long newDeferred = stats.admissionDeferredByClass.getOrDefault(cls, 0L);
+        long deferredDelta = newDeferred - lastAdmissionDeferred.getOrDefault(cls, 0L);
+        if (deferredDelta > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+              deferredDelta,
+              COMPONENT,
+              OPERATION,
+              Tag.of("priority_class", cls.name().toLowerCase()));
+          lastAdmissionDeferred.put(cls, newDeferred);
+        }
+      }
+
+      // Update lane wait gauges: register new lanes lazily, zero-out lanes no longer in top-10.
+      for (Map.Entry<String, Long> e : stats.topLaneWaitMs.entrySet()) {
+        String laneKey = e.getKey();
+        long waitMs = e.getValue();
+        if (!laneWaitAtomics.containsKey(laneKey) && laneWaitAtomics.size() >= MAX_TRACKED_LANES) {
+          // Avoid unbounded gauge-registration growth for ephemeral lane keys.
+          continue;
+        }
+        laneWaitAtomics
+            .computeIfAbsent(
+                laneKey,
+                k -> {
+                  AtomicLong al = new AtomicLong();
+                  observability.gauge(
+                      ServiceMetrics.Reconcile.LANE_WAIT_MS,
+                      al::get,
+                      "Wait time (ms) for oldest queued job in lane " + k,
+                      COMPONENT,
+                      OPERATION,
+                      Tag.of("lane_key", k));
+                  return al;
+                })
+            .set(waitMs);
+      }
+      // Zero out lanes that are no longer in the top-10 (their gauges stay registered).
+      laneWaitAtomics.forEach(
+          (laneKey, al) -> {
+            if (!stats.topLaneWaitMs.containsKey(laneKey)) {
+              al.set(0L);
+            }
+          });
+
+      // Drain and emit signal unknown-rate counters so operators can detect when the scoring
+      // signals are not being populated. High unknown rates indicate that the write path (e.g.
+      // SnapshotFinalizeReconcileExecutor or LeasedPlannerWorkerService) is not running or is
+      // failing before the signal recording calls.
+      if (signalIndexInstance != null && !signalIndexInstance.isUnsatisfied()) {
+        SchedulerSignalIndex signalIndex = signalIndexInstance.get();
+        long lastCaptureKnown = signalIndex.drainLastCaptureKnown();
+        long lastCaptureUnknown = signalIndex.drainLastCaptureUnknown();
+        long coverageKnown = signalIndex.drainCoverageKnown();
+        long coverageUnknown = signalIndex.drainCoverageUnknown();
+        long deltaKnown = signalIndex.drainDeltaKnown();
+        long deltaUnknown = signalIndex.drainDeltaUnknown();
+        Tag signalTypeLastCapture = Tag.of("signal_type", "last_capture");
+        Tag signalTypeCoverage = Tag.of("signal_type", "coverage");
+        Tag signalTypeDelta = Tag.of("signal_type", "delta");
+        if (lastCaptureKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              lastCaptureKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeLastCapture);
+        }
+        if (lastCaptureUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              lastCaptureUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeLastCapture);
+        }
+        if (coverageKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              coverageKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeCoverage);
+        }
+        if (coverageUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              coverageUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeCoverage);
+        }
+        if (deltaKnown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+              deltaKnown,
+              COMPONENT,
+              OPERATION,
+              signalTypeDelta);
+        }
+        if (deltaUnknown > 0) {
+          observability.counter(
+              ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+              deltaUnknown,
+              COMPONENT,
+              OPERATION,
+              signalTypeDelta);
+        }
+      }
     } catch (RuntimeException e) {
-      LOG.debugf(e, "Failed to refresh reconcile queue metrics");
+      // Warn rather than debug: a silent metrics failure leaves all gauges stale and is invisible
+      // to on-call unless warn-level logging is enabled.
+      LOG.warnf(e, "Failed to refresh reconcile queue metrics");
     }
   }
 }

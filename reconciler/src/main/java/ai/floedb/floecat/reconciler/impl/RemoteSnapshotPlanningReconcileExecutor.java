@@ -500,7 +500,12 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             .ifPresent(column -> columns.putIfAbsent(selector, column));
       }
     }
-    return ReconcileCapturePolicy.of(new ArrayList<>(columns.values()), Set.copyOf(outputs));
+    return ReconcileCapturePolicy.of(
+        new ArrayList<>(columns.values()),
+        Set.copyOf(outputs),
+        basePolicy == null
+            ? ai.floedb.floecat.stats.spi.JobCostHint.EXPENSIVE
+            : basePolicy.maxCost());
   }
 
   private static Optional<ReconcileCapturePolicy.Column> selectorPolicy(

@@ -460,6 +460,36 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
+    "name": "floecat.service.reconcile.admission.deferred.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of jobs deferred at enqueue time due to the current health band.",
+    "requiredTags": ["component", "operation", "priority_class"],
+    "allowedTags": ["component", "operation", "priority_class", "reason"]
+  },
+  {
+    "name": "floecat.service.reconcile.admission.rejected.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of jobs rejected at enqueue time due to the current health band.",
+    "requiredTags": ["component", "operation", "priority_class"],
+    "allowedTags": ["component", "operation", "priority_class", "reason"]
+  },
+  {
+    "name": "floecat.service.reconcile.aging.promotions.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of times a queued job was temporarily promoted to a higher priority class due to starvation aging.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
@@ -508,6 +538,16 @@
     "description": "GetReconcilerSettings request outcomes.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.health_band",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current scheduler health band (0=GREEN, 1=YELLOW, 2=ORANGE, 3=RED). Autoscaler trigger.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.service.reconcile.job.latency",
@@ -560,6 +600,16 @@
     "allowedTags": ["component", "mode", "operation", "reason", "result"]
   },
   {
+    "name": "floecat.service.reconcile.lane.wait_ms",
+    "type": "GAUGE",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Age in milliseconds of the oldest queued job in the lane (top-10 most-starved lanes).",
+    "requiredTags": ["component", "lane_key", "operation"],
+    "allowedTags": ["component", "lane_key", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.list_jobs.total",
     "type": "COUNTER",
     "unit": "",
@@ -600,6 +650,26 @@
     "allowedTags": ["component", "operation", "reason", "result"]
   },
   {
+    "name": "floecat.service.reconcile.policy.profile",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Info gauge identifying the active scheduler profile (value=1; profile_name tag carries the name). Emitted once at startup.",
+    "requiredTags": ["component", "operation", "profile_name"],
+    "allowedTags": ["component", "operation", "profile_name"]
+  },
+  {
+    "name": "floecat.service.reconcile.queue.depth_by_class",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of queued reconcile jobs broken down by priority class.",
+    "requiredTags": ["component", "operation", "priority_class"],
+    "allowedTags": ["component", "operation", "priority_class"]
+  },
+  {
     "name": "floecat.service.reconcile.queue.oldest_age",
     "type": "GAUGE",
     "unit": "ms",
@@ -608,6 +678,36 @@
     "description": "Age in milliseconds of the oldest queued reconcile job.",
     "requiredTags": ["component", "operation"],
     "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.scoring.score_dist",
+    "type": "SUMMARY",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Distribution of priority scores assigned at enqueue time by the active scheduler profile.",
+    "requiredTags": ["component", "operation", "priority_class"],
+    "allowedTags": ["component", "operation", "priority_class"]
+  },
+  {
+    "name": "floecat.service.reconcile.signal.known.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of scheduler signal reads that found a value, tagged by signal_type.",
+    "requiredTags": ["component", "operation", "signal_type"],
+    "allowedTags": ["component", "operation", "signal_type"]
+  },
+  {
+    "name": "floecat.service.reconcile.signal.unknown.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total number of scheduler signal reads that found no value, tagged by signal_type.",
+    "requiredTags": ["component", "operation", "signal_type"],
+    "allowedTags": ["component", "operation", "signal_type"]
   },
   {
     "name": "floecat.service.reconcile.snapshots_processed.total",

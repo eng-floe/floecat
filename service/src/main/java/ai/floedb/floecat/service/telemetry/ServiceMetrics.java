@@ -166,6 +166,13 @@ public final class ServiceMetrics {
             "ms",
             CONTRACT,
             "service");
+    public static final MetricId QUEUE_DEPTH_BY_CLASS =
+        new MetricId(
+            "floecat.service.reconcile.queue.depth_by_class",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",
@@ -183,6 +190,88 @@ public final class ServiceMetrics {
     public static final MetricId PLANNER_ENQUEUE =
         new MetricId(
             "floecat.service.reconcile.planner.enqueue.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    public static final MetricId HEALTH_BAND =
+        new MetricId(
+            "floecat.service.reconcile.health_band", MetricType.GAUGE, "", CONTRACT, "service");
+    public static final MetricId AGING_PROMOTIONS =
+        new MetricId(
+            "floecat.service.reconcile.aging.promotions.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ADMISSION_DEFERRED =
+        new MetricId(
+            "floecat.service.reconcile.admission.deferred.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ADMISSION_REJECTED =
+        new MetricId(
+            "floecat.service.reconcile.admission.rejected.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Current wait time in milliseconds for the oldest queued job in a lane. Tag {@code lane_key}
+     * identifies the lane. Emitted for the top-10 most-starved lanes only.
+     */
+    public static final MetricId LANE_WAIT_MS =
+        new MetricId(
+            "floecat.service.reconcile.lane.wait_ms", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    /**
+     * Distribution of priority scores assigned to async reconcile jobs. Tag {@code priority_class}
+     * identifies the class the job was assigned to. Emitted at enqueue time by {@code
+     * DefaultSchedulerProfile.assign()}.
+     */
+    public static final MetricId SCORING_SCORE_DIST =
+        new MetricId(
+            "floecat.service.reconcile.scoring.score_dist",
+            MetricType.SUMMARY,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Info gauge emitted once at startup to identify the active scheduler profile. Value is always
+     * 1; the {@code profile_name} tag carries the profile name. Dashboards use this to annotate
+     * other metrics with the profile in effect.
+     */
+    public static final MetricId POLICY_PROFILE =
+        new MetricId(
+            "floecat.service.reconcile.policy.profile", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Count of scheduler signal reads that returned a real value (cache hit). Tag {@code
+     * signal_type} identifies the signal: {@code last_capture}, {@code coverage}, or {@code delta}.
+     * Drained and reset on each metrics refresh cycle.
+     */
+    public static final MetricId SIGNAL_KNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.known.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Count of scheduler signal reads that found no record (cache miss). Tag {@code signal_type}
+     * identifies the signal: {@code last_capture}, {@code coverage}, or {@code delta}. A
+     * persistently high unknown rate means the signal feed is not writing before the scheduler
+     * reads.
+     */
+    public static final MetricId SIGNAL_UNKNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.unknown.total",
             MetricType.COUNTER,
             "",
             CONTRACT,

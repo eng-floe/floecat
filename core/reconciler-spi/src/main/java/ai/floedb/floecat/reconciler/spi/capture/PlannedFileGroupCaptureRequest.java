@@ -18,11 +18,19 @@ package ai.floedb.floecat.reconciler.spi.capture;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Backend-facing request aligned to one planned reconcile file-group execution. */
+/**
+ * Backend-facing request aligned to one planned reconcile file-group execution.
+ *
+ * <p>The {@link #maxCost()} field propagates the originating {@code
+ * ReconcileCapturePolicy.maxCost()} budget to the remote executor so the {@link
+ * CaptureEngineRegistry} can skip engines that exceed the cost ceiling. Default: {@link
+ * JobCostHint#EXPENSIVE} (no restriction), matching the async execution default.
+ */
 public record PlannedFileGroupCaptureRequest(
     String planId,
     String groupId,
@@ -32,7 +40,8 @@ public record PlannedFileGroupCaptureRequest(
     Set<String> statsColumns,
     Set<String> indexColumns,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
-    boolean capturePageIndex) {
+    boolean capturePageIndex,
+    JobCostHint maxCost) {
   public PlannedFileGroupCaptureRequest {
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
@@ -49,6 +58,7 @@ public record PlannedFileGroupCaptureRequest(
         requestedStatsTargetKinds == null
             ? Set.of()
             : Set.copyOf(new LinkedHashSet<>(requestedStatsTargetKinds));
+    maxCost = maxCost == null ? JobCostHint.EXPENSIVE : maxCost;
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {
@@ -62,6 +72,11 @@ public record PlannedFileGroupCaptureRequest(
             .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)));
   }
 
+  /**
+   * Factory that sets {@code maxCost = EXPENSIVE} (no restriction).
+   *
+   * <p>Use the canonical record constructor when an explicit cost ceiling is needed.
+   */
   public static PlannedFileGroupCaptureRequest of(
       String planId,
       String groupId,
@@ -81,7 +96,8 @@ public record PlannedFileGroupCaptureRequest(
         statsColumns,
         indexColumns,
         requestedStatsTargetKinds,
-        capturePageIndex);
+        capturePageIndex,
+        JobCostHint.EXPENSIVE);
   }
 
   public boolean requestsStats() {

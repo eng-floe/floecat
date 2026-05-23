@@ -76,6 +76,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -782,6 +783,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   payload.capturePolicy().outputs().stream()
                                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                                       .toList())
+                              .setMaxCost(toProtoCostHint(payload.capturePolicy().maxCost()))
                               .build());
               if (payload.sourceConnector() != null) {
                 executionBuilder.setSourceConnector(payload.sourceConnector());
@@ -1048,6 +1050,14 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             })
         .setLane(effective.lane())
         .putAllAttributes(effective.attributes())
+        .setPriorityClass(
+            switch (effective.priorityClass()) {
+              case P0_SYNC -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P0_SYNC;
+              case P1_FRESHNESS -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P1_FRESHNESS;
+              case P2_REPAIR -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P2_REPAIR;
+              case P3_BACKGROUND -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P3_BACKGROUND;
+            })
+        .setPriorityScore(effective.priorityScore())
         .build();
   }
 
@@ -1108,6 +1118,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   effectiveScope.capturePolicy().outputs().stream()
                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                       .toList())
+              .setMaxCost(toProtoCostHint(effectiveScope.capturePolicy().maxCost()))
               .build());
     }
     return builder.build();
@@ -1121,6 +1132,28 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
       case PARQUET_PAGE_INDEX ->
           ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.CostHint toProtoCostHint(JobCostHint hint) {
+    if (hint == null) {
+      return ai.floedb.floecat.reconciler.rpc.CostHint.CH_UNSPECIFIED;
+    }
+    return switch (hint) {
+      case CHEAP -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_CHEAP;
+      case MEDIUM -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_MEDIUM;
+      case EXPENSIVE -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_EXPENSIVE;
+    };
+  }
+
+  private static JobCostHint fromProtoCostHint(ai.floedb.floecat.reconciler.rpc.CostHint hint) {
+    if (hint == null) {
+      return JobCostHint.EXPENSIVE;
+    }
+    return switch (hint) {
+      case CH_CHEAP -> JobCostHint.CHEAP;
+      case CH_MEDIUM -> JobCostHint.MEDIUM;
+      case CH_UNSPECIFIED, CH_EXPENSIVE, UNRECOGNIZED -> JobCostHint.EXPENSIVE;
     };
   }
 
@@ -1158,7 +1191,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
+                    .collect(java.util.stream.Collectors.toSet()),
+                fromProtoCostHint(scope.getCapturePolicy().getMaxCost()))
             : ReconcileCapturePolicy.empty());
   }
 
