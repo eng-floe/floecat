@@ -665,7 +665,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
         || !record.accountId.equals(owner.get().accountId)) {
       return;
     }
-    if (hasActiveLaneLease(owner.get(), System.currentTimeMillis())) {
+    if (holdsExecutionLease(owner.get())
+        && hasActiveLaneLease(owner.get(), System.currentTimeMillis())) {
       return;
     }
     leaseBackend.compareAndSetBatch(
@@ -746,7 +747,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
         || !record.accountId.equals(owner.get().accountId)) {
       return;
     }
-    if (hasActiveSnapshotLease(owner.get(), System.currentTimeMillis())) {
+    if (holdsExecutionLease(owner.get())
+        && hasActiveSnapshotLease(owner.get(), System.currentTimeMillis())) {
       return;
     }
     leaseBackend.compareAndSetBatch(
@@ -837,9 +839,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
-    return record != null
-        && holdsExecutionLease(record)
-        && hasUnexpiredJobLease(record.accountId, record.jobId, now);
+    return record != null && hasUnexpiredJobLease(record.accountId, record.jobId, now);
   }
 
   private boolean requiresLaneLease(StoredReconcileJob record) {
@@ -931,7 +931,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   private boolean hasActiveSnapshotLease(StoredReconcileJob record, long now) {
     return record != null
-        && holdsExecutionLease(record)
         && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && !blank(record.snapshotTaskTableId)
         && record.snapshotTaskSnapshotId >= 0L

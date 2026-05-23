@@ -472,7 +472,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
         || !record.accountId.equals(owner.accountId)) {
       return;
     }
-    if (hasActiveLaneLease(owner, System.currentTimeMillis())) {
+    if (holdsExecutionLease(owner) && hasActiveLaneLease(owner, System.currentTimeMillis())) {
       return;
     }
     if (leaseBackend.compareAndSetBatch(
@@ -581,7 +581,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
         || !record.accountId.equals(owner.accountId)) {
       return;
     }
-    if (hasActiveSnapshotLease(owner, System.currentTimeMillis())) {
+    if (holdsExecutionLease(owner) && hasActiveSnapshotLease(owner, System.currentTimeMillis())) {
       return;
     }
     if (leaseBackend.compareAndSetBatch(
@@ -845,7 +845,6 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
 
   private boolean hasActiveSnapshotLease(StoredReconcileJob record, long nowMs) {
     return record != null
-        && holdsExecutionLease(record)
         && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && !blank(record.snapshotTaskTableId)
         && record.snapshotTaskSnapshotId >= 0L
@@ -918,15 +917,13 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     return new ReconcileLeaseBackend.LeaseWriteBatch(List.copyOf(ops));
   }
 
-  private boolean hasActiveLaneLease(StoredReconcileJob owner, long nowMs) {
-    return owner != null
-        && holdsExecutionLease(owner)
-        && hasUnexpiredJobLease(owner.accountId, owner.jobId, nowMs);
-  }
-
   private boolean holdsExecutionLease(StoredReconcileJob record) {
     return record != null
         && ("JS_RUNNING".equals(record.state) || "JS_CANCELLING".equals(record.state));
+  }
+
+  private boolean hasActiveLaneLease(StoredReconcileJob owner, long nowMs) {
+    return owner != null && hasUnexpiredJobLease(owner.accountId, owner.jobId, nowMs);
   }
 
   private StoredJobLease cloneLease(StoredJobLease source) {
