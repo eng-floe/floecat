@@ -21,14 +21,26 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 @ApplicationScoped
 public class TestDataResetter {
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
+  @Inject Instance<DynamoDbClient> dynamoDb;
+
+  @ConfigProperty(name = "floecat.kv", defaultValue = "memory")
+  String kvMode;
+
+  @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
+  String kvTable;
 
   private static final String GLOBAL_ACCOUNTS_BY_ID_PREFIX = "/accounts/by-id/";
   private static final String GLOBAL_ACCOUNTS_BY_NAME_PREFIX = "/accounts/by-name/";
@@ -52,6 +64,7 @@ public class TestDataResetter {
       ptr.deleteByPrefix(Keys.reconcileJobLookupPointerByIdPrefix());
       ptr.deleteByPrefix(Keys.reconcileReadyPointerPrefix());
       ptr.deleteByPrefix("/accounts/");
+      wipeDynamoKvTableIfPresent();
 
       for (var tid : accountIds) {
         blobs.deletePrefix("/accounts/" + tid + "/");
@@ -104,5 +117,35 @@ public class TestDataResetter {
       token = next.toString();
     } while (!token.isBlank());
     return names;
+  }
+
+  private void wipeDynamoKvTableIfPresent() {
+    if (!"dynamodb".equalsIgnoreCase(kvMode)) {
+      return;
+    }
+    if (dynamoDb == null || dynamoDb.isUnsatisfied()) {
+      return;
+    }
+    var client = dynamoDb.get();
+    java.util.Map<String, software.amazon.awssdk.services.dynamodb.model.AttributeValue> startKey =
+        null;
+    do {
+      var request = ScanRequest.builder().tableName(kvTable);
+      if (startKey != null && !startKey.isEmpty()) {
+        request.exclusiveStartKey(startKey);
+      }
+      var response = client.scan(request.build());
+      for (var item : response.items()) {
+        if (item == null || item.isEmpty()) {
+          continue;
+        }
+        client.deleteItem(
+            DeleteItemRequest.builder()
+                .tableName(kvTable)
+                .key(java.util.Map.of("pk", item.get("pk"), "sk", item.get("sk")))
+                .build());
+      }
+      startKey = response.lastEvaluatedKey();
+    } while (startKey != null && !startKey.isEmpty());
   }
 }

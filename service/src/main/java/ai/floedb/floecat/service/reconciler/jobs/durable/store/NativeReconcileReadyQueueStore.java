@@ -209,9 +209,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         if (!matchesLeaseRequest(record, request)) {
           continue;
         }
-        if (!leaseStore.tryAcquireLaneLease(record, candidate.canonicalPointerKey(), nowMs)) {
-          continue;
-        }
         var leased =
             leaseStore.leaseCanonical(
                 candidate.canonicalPointerKey(),
@@ -222,7 +219,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         if (leased.isPresent()) {
           return leased;
         }
-        leaseStore.clearLaneLeaseIfOwned(record, candidate.canonicalPointerKey());
       }
 
       String nextToken = page.nextPageToken();

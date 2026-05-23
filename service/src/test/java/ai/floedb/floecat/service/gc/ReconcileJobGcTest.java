@@ -179,18 +179,15 @@ class ReconcileJobGcTest {
 
     assertTrue(result.expired() >= 1);
     assertTrue(
-        jobIndexBackend
-            .loadStoredPointer(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
-            .isEmpty());
-    assertTrue(
-        jobIndexBackend.loadStoredPointer(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
+        jobIndexBackend.loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).isEmpty());
+    assertTrue(jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
+            .loadIndexEntry(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(
+            .loadIndexEntry(
                 Keys.reconcileJobByConnectorPointer(
                     ACCOUNT_ID,
                     CONNECTOR_ID,
@@ -198,26 +195,88 @@ class ReconcileJobGcTest {
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
+            .loadIndexEntry(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(
-                Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(
+            .loadIndexEntry(
                 Keys.reconcileJobByAccountStatePointer(ACCOUNT_ID, "JS_SUCCEEDED", now, jobId))
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadStoredPointer(
+            .loadIndexEntry(
                 Keys.reconcileJobByConnectorStatePointer(
                     ACCOUNT_ID, CONNECTOR_ID, "JS_SUCCEEDED", now, jobId))
             .isEmpty());
     assertTrue(projectionBackend.loadResultReference(ACCOUNT_ID, jobId).isEmpty());
     assertTrue(projectionBackend.loadContribution(ACCOUNT_ID, parentJobId, jobId).isEmpty());
+  }
+
+  @Test
+  void accountSlicePurgesNativeSecondaryRowsWhenCanonicalPayloadIsUnreadable() {
+    String jobId = "job-native-corrupt";
+    String parentJobId = "parent-corrupt";
+    long now = System.currentTimeMillis() - 10_000L;
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|full|*|*|");
+    String readyPointer =
+        Keys.reconcileReadyPointerByDue(now - 1_000L, ACCOUNT_ID, "lane-native", jobId);
+    StoredReconcileJob record =
+        storedJob(jobId, "JS_SUCCEEDED", now, parentJobId, dedupeHash, readyPointer);
+    putNativeJobIndexRows(record);
+
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonical = pointers.get(canonicalKey).orElseThrow();
+    assertTrue(
+        pointers.compareAndSet(
+            canonicalKey,
+            canonical.getVersion(),
+            Pointer.newBuilder()
+                .setKey(canonicalKey)
+                .setBlobUri("inline:reconcile-job:not-valid")
+                .setVersion(canonical.getVersion() + 1L)
+                .build()));
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(result.ptrDeleted() >= 1);
+    assertTrue(
+        jobIndexBackend.loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).isEmpty());
+    assertTrue(jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByConnectorPointer(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByAccountStatePointer(ACCOUNT_ID, "JS_SUCCEEDED", now, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByConnectorStatePointer(
+                    ACCOUNT_ID, CONNECTOR_ID, "JS_SUCCEEDED", now, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
+            .isEmpty());
   }
 
   @Test

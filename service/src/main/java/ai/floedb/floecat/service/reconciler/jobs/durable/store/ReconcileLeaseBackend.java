@@ -22,6 +22,7 @@ import java.util.Optional;
 public interface ReconcileLeaseBackend {
   sealed interface LeaseWriteOp
       permits LeaseRecordUpsert,
+          LeaseRecordCondition,
           LeaseRecordDelete,
           LeaseExpiryUpsert,
           LeaseExpiryDelete,
@@ -30,6 +31,9 @@ public interface ReconcileLeaseBackend {
 
   record LeaseRecordUpsert(
       String accountId, String jobId, long expectedVersion, String encodedLease)
+      implements LeaseWriteOp {}
+
+  record LeaseRecordCondition(String accountId, String jobId, long expectedVersion)
       implements LeaseWriteOp {}
 
   record LeaseRecordDelete(String accountId, String jobId, long expectedVersion)

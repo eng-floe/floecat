@@ -13,7 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.service.it.profiles;
 
-package ai.floedb.floecat.service.reconciler.jobs.durable.store;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import java.util.Map;
 
-public record StoredPointerSnapshot(String pointerKey, String blobUri, long version) {}
+public class ReconcilerWorkerLocalProfile implements QuarkusTestProfile {
+  @Override
+  public Map<String, String> getConfigOverrides() {
+    return Map.of("floecat.reconciler.worker.mode", "local");
+  }
+}

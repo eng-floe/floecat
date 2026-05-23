@@ -17,8 +17,10 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
+import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
+import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -45,7 +47,7 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   @Override
   public Optional<LeaseRecordSnapshot> loadLease(String accountId, String jobId) {
     return pointerStore
-        .get(Keys.reconcileJobLeasePointerById(accountId, jobId))
+        .get(LeaseBackendSupport.leasePointerKey(accountId, jobId))
         .map(pointer -> new LeaseRecordSnapshot(pointer.getBlobUri(), pointer.getVersion()));
   }
 
@@ -86,7 +88,7 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   @Override
   public boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
-    List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops =
+    List<CasOp> ops =
         new ArrayList<>(
             JobIndexWriteBatchSupport.toCasOps(
                 jobIndexBatch,
@@ -95,11 +97,67 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
                         .get(key)
                         .map(
                             pointer ->
-                                new StoredPointerSnapshot(
+                                new JobIndexEntrySnapshot(
                                     pointer.getKey(),
                                     pointer.getBlobUri(),
                                     pointer.getVersion()))));
-    ops.addAll(LeaseWriteBatchSupport.toCasOps(leaseBatch));
+    if (leaseBatch != null) {
+      for (LeaseWriteOp write : leaseBatch.writes()) {
+        if (write instanceof LeaseRecordCondition condition) {
+          var current =
+              pointerStore.get(
+                  LeaseBackendSupport.leasePointerKey(condition.accountId(), condition.jobId()));
+          if (condition.expectedVersion() == 0L) {
+            if (current.isPresent()) {
+              return false;
+            }
+          } else if (current.isEmpty()
+              || current.get().getVersion() != condition.expectedVersion()) {
+            return false;
+          }
+        } else if (write instanceof LeaseRecordUpsert upsert) {
+          String key = LeaseBackendSupport.leasePointerKey(upsert.accountId(), upsert.jobId());
+          ops.add(
+              new CasUpsert(
+                  key,
+                  upsert.expectedVersion(),
+                  Pointer.newBuilder()
+                      .setKey(key)
+                      .setBlobUri(upsert.encodedLease())
+                      .setVersion(upsert.expectedVersion() + 1L)
+                      .build()));
+        } else if (write instanceof LeaseRecordDelete delete) {
+          ops.add(
+              new CasDelete(
+                  LeaseBackendSupport.leasePointerKey(delete.accountId(), delete.jobId()),
+                  delete.expectedVersion()));
+        } else if (write instanceof LeaseExpiryUpsert upsert) {
+          ops.add(
+              new CasUpsert(
+                  upsert.leaseExpiryKey(),
+                  upsert.expectedVersion(),
+                  Pointer.newBuilder()
+                      .setKey(upsert.leaseExpiryKey())
+                      .setBlobUri(upsert.canonicalPointerKey())
+                      .setVersion(upsert.expectedVersion() + 1L)
+                      .build()));
+        } else if (write instanceof LeaseExpiryDelete delete) {
+          ops.add(new CasDelete(delete.leaseExpiryKey(), delete.expectedVersion()));
+        } else if (write instanceof LeaseOwnerUpsert upsert) {
+          ops.add(
+              new CasUpsert(
+                  upsert.ownerKey(),
+                  upsert.expectedVersion(),
+                  Pointer.newBuilder()
+                      .setKey(upsert.ownerKey())
+                      .setBlobUri(upsert.canonicalPointerKey())
+                      .setVersion(upsert.expectedVersion() + 1L)
+                      .build()));
+        } else if (write instanceof LeaseOwnerDelete delete) {
+          ops.add(new CasDelete(delete.ownerKey(), delete.expectedVersion()));
+        }
+      }
+    }
     return pointerStore.compareAndSetBatch(ops);
   }
 }

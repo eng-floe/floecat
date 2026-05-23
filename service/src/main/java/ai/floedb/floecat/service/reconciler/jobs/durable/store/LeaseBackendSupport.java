@@ -36,7 +36,7 @@ final class LeaseBackendSupport {
   private LeaseBackendSupport() {}
 
   static LeasePointerKey parseLeasePointerKey(String pointerKey) {
-    String normalized = DynamoPointerBackendSupport.stripLeadingSlash(pointerKey);
+    String normalized = stripLeadingSlash(pointerKey);
     if (!normalized.startsWith("accounts/")) {
       return null;
     }
@@ -53,9 +53,8 @@ final class LeaseBackendSupport {
   }
 
   static LeaseExpiryPointerKey parseLeaseExpiryPointerKey(String pointerKey) {
-    String normalized = DynamoPointerBackendSupport.stripLeadingSlash(pointerKey);
-    String normalizedPrefix =
-        DynamoPointerBackendSupport.stripLeadingSlash(LEASE_EXPIRY_POINTER_PREFIX);
+    String normalized = stripLeadingSlash(pointerKey);
+    String normalizedPrefix = stripLeadingSlash(LEASE_EXPIRY_POINTER_PREFIX);
     if (!normalized.startsWith(normalizedPrefix)) {
       return null;
     }
@@ -87,12 +86,19 @@ final class LeaseBackendSupport {
     return LEASE_SORT_PREFIX + key.jobSegment();
   }
 
+  static String leasePointerKey(String accountId, String jobId) {
+    return LEASE_POINTER_PREFIX
+        + (accountId == null ? "" : accountId)
+        + LEASE_POINTER_MARKER
+        + (jobId == null ? "" : jobId);
+  }
+
   static String leaseExpirySortKey(LeaseExpiryPointerKey key) {
     return key.expiryToken() + "/accounts/" + key.accountSegment() + "/jobs/" + key.jobSegment();
   }
 
   static String ownerPartitionKey(String ownerKey) {
-    return LEASE_OWNER_PARTITION_PREFIX + DynamoPointerBackendSupport.stripLeadingSlash(ownerKey);
+    return LEASE_OWNER_PARTITION_PREFIX + stripLeadingSlash(ownerKey);
   }
 
   static String encodeLeaseExpiryPageToken(String sortKey) {
@@ -127,4 +133,11 @@ final class LeaseBackendSupport {
 
   record LeaseExpiryPointerKey(
       String pointerKey, String expiryToken, String accountSegment, String jobSegment) {}
+
+  private static String stripLeadingSlash(String value) {
+    if (value == null || value.isBlank()) {
+      return "";
+    }
+    return value.startsWith("/") ? value.substring(1) : value;
+  }
 }

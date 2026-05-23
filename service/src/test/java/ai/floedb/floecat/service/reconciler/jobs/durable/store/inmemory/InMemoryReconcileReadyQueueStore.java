@@ -32,10 +32,7 @@ import java.util.Optional;
 import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
-/**
- * Test-scope ready queue implementation that leases against mirrored ready-pointer rows without
- * delegating to the production pointer-backed store.
- */
+/** Test-scope ready queue implementation for the in-memory durable store path. */
 public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQueueStore {
   private static final Logger LOG = Logger.getLogger(InMemoryReconcileReadyQueueStore.class);
 
@@ -226,9 +223,6 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
         if (!matchesLeaseRequest(record, request)) {
           continue;
         }
-        if (!leaseStore.tryAcquireLaneLease(record, candidate.canonicalPointerKey(), nowMs)) {
-          continue;
-        }
         var leased =
             leaseStore.leaseCanonical(
                 candidate.canonicalPointerKey(),
@@ -239,7 +233,6 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
         if (leased.isPresent()) {
           return leased;
         }
-        leaseStore.clearLaneLeaseIfOwned(record, candidate.canonicalPointerKey());
       }
 
       String nextToken = page.nextPageToken();

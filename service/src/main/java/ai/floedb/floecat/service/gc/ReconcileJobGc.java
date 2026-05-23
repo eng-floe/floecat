@@ -19,11 +19,11 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.StoredPointerSnapshot;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -96,10 +96,9 @@ public class ReconcileJobGc {
 
     String jobPrefix = Keys.reconcileJobPointerByIdPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      StringBuilder next = new StringBuilder();
-      var pointers =
-          jobIndexBackend.listStoredPointersByPrefix(jobPrefix, pageSize, jobToken, next);
-      jobToken = next.toString();
+      var page = jobIndexBackend.listCanonicalEntries(accountId, pageSize, jobToken);
+      var pointers = page.entries();
+      jobToken = page.nextPageToken();
       if (pointers.isEmpty()) {
         break;
       }
@@ -113,7 +112,7 @@ public class ReconcileJobGc {
         JsonNode record = readRecordByReference(canonical.blobUri());
         String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
         if (record == null) {
-          if (deleteCanonicalFootprint(accountId, jobId, canonical, null)) {
+          if (jobIndexBackend.purgeEntriesByCanonicalReference(canonical.pointerKey())) {
             ptrDeleted++;
             if (jobId != null) {
               blobDeleted += deleteJobBlobs(accountId, jobId);
@@ -163,10 +162,9 @@ public class ReconcileJobGc {
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      StringBuilder next = new StringBuilder();
-      var dedupePointers =
-          jobIndexBackend.listStoredPointersByPrefix(dedupePrefix, pageSize, dedupeToken, next);
-      dedupeToken = next.toString();
+      var dedupePage = jobIndexBackend.listDedupeEntries(accountId, pageSize, dedupeToken);
+      var dedupePointers = dedupePage.entries();
+      dedupeToken = dedupePage.nextPageToken();
       if (dedupePointers.isEmpty()) {
         break;
       }
@@ -267,7 +265,7 @@ public class ReconcileJobGc {
     if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
       return null;
     }
-    var canonical = jobIndexBackend.loadStoredPointer(canonicalPointerKey).orElse(null);
+    var canonical = jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
     return canonical == null ? null : readRecordByReference(canonical.blobUri());
   }
 
@@ -334,7 +332,7 @@ public class ReconcileJobGc {
   }
 
   private boolean deleteCanonicalFootprint(
-      String accountId, String jobId, StoredPointerSnapshot canonical, JsonNode record) {
+      String accountId, String jobId, JobIndexEntrySnapshot canonical, JsonNode record) {
     if (canonical == null || jobId == null || jobId.isBlank()) {
       return false;
     }
@@ -388,7 +386,7 @@ public class ReconcileJobGc {
     if (pointerKey == null || pointerKey.isBlank()) {
       return;
     }
-    var existing = jobIndexBackend.loadStoredPointer(pointerKey).orElse(null);
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
     if (existing != null) {
       deletes.add(
           new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
@@ -399,7 +397,7 @@ public class ReconcileJobGc {
     if (pointerKey == null || pointerKey.isBlank()) {
       return false;
     }
-    var existing = jobIndexBackend.loadStoredPointer(pointerKey).orElse(null);
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
     if (existing == null) {
       return false;
     }

@@ -125,12 +125,7 @@ public class RemoteReconcileExecutorPoller {
         repollRequested.set(false);
         while (reserveWorkerSlot()) {
           try {
-            Optional<LeaseAssignment> assignment = leaseNextAssignment();
-            if (assignment.isEmpty()) {
-              inFlight.decrementAndGet();
-              return;
-            }
-            submitAssignment(assignment.get());
+            submitAssignment();
           } catch (RuntimeException e) {
             inFlight.decrementAndGet();
             throw e;
@@ -204,31 +199,37 @@ public class RemoteReconcileExecutorPoller {
     return statusError.getStatus().getCode() == Status.Code.UNAVAILABLE;
   }
 
-  private void submitAssignment(LeaseAssignment assignment) {
+  private void submitAssignment() {
     ExecutorService executor = workers;
     if (executor == null) {
-      inFlight.decrementAndGet();
+      releaseWorkerSlot(false);
       return;
     }
     try {
       executor.submit(
           () -> {
+            boolean ranLease = false;
             try {
-              runLease(assignment);
+              Optional<LeaseAssignment> assignment = leaseNextAssignment();
+              if (assignment.isEmpty()) {
+                return;
+              }
+              ranLease = true;
+              runLease(assignment.get());
             } finally {
-              releaseWorkerSlot();
+              releaseWorkerSlot(ranLease);
             }
           });
     } catch (RuntimeException e) {
-      releaseWorkerSlot();
+      releaseWorkerSlot(false);
       throw e;
     }
   }
 
-  private void releaseWorkerSlot() {
+  private void releaseWorkerSlot(boolean requestDrain) {
     inFlight.decrementAndGet();
     ExecutorService executor = workers;
-    if (workerMode.runsWorkers() && executor != null && !executor.isShutdown()) {
+    if (requestDrain && workerMode.runsWorkers() && executor != null && !executor.isShutdown()) {
       requestDrain();
     }
   }

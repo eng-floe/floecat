@@ -20,10 +20,29 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileJobIndexBackend {
-  Optional<StoredPointerSnapshot> loadStoredPointer(String pointerKey);
+  record JobIndexQueryPage(List<JobIndexEntrySnapshot> entries, String nextPageToken) {}
+
+  Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
 
   boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch);
 
-  List<StoredPointerSnapshot> listStoredPointersByPrefix(
-      String prefix, int limit, String pageToken, StringBuilder nextPageToken);
+  JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken);
+
+  JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken);
+
+  JobIndexQueryPage listParentEntries(
+      String accountId, String parentJobId, int limit, String pageToken);
+
+  JobIndexQueryPage listConnectorEntries(
+      String accountId, String connectorId, int limit, String pageToken);
+
+  JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken);
+
+  JobIndexQueryPage listAccountStateEntries(
+      String accountId, String state, int limit, String pageToken);
+
+  JobIndexQueryPage listConnectorStateEntries(
+      String accountId, String connectorId, String state, int limit, String pageToken);
+
+  boolean purgeEntriesByCanonicalReference(String canonicalPointerKey);
 }

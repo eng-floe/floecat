@@ -71,13 +71,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return Optional.empty();
     }
     String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
-    StoredPointerSnapshot lookup = jobIndexBackend.loadStoredPointer(lookupKey).orElse(null);
+    JobIndexEntrySnapshot lookup = jobIndexBackend.loadIndexEntry(lookupKey).orElse(null);
     if (lookup == null || blank(lookup.blobUri())) {
       return Optional.empty();
     }
     String canonicalPointerKey = lookup.blobUri();
-    StoredPointerSnapshot canonicalPointer =
-        jobIndexBackend.loadStoredPointer(canonicalPointerKey).orElse(null);
+    JobIndexEntrySnapshot canonicalPointer =
+        jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
     if (canonicalPointer == null) {
       return Optional.empty();
     }
@@ -112,8 +112,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   public Optional<CanonicalEnvelope> mutateByCanonicalPointerReturningRecord(
       String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator) {
     for (int i = 0; i < casMax; i++) {
-      StoredPointerSnapshot currentPointer =
-          jobIndexBackend.loadStoredPointer(canonicalPointerKey).orElse(null);
+      JobIndexEntrySnapshot currentPointer =
+          jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
       if (currentPointer == null) {
         return Optional.empty();
       }
@@ -155,21 +155,14 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (blank(canonicalPointerKey)) {
       return Optional.empty();
     }
-    StoredPointerSnapshot canonicalPointer =
-        jobIndexBackend.loadStoredPointer(canonicalPointerKey).orElse(null);
+    JobIndexEntrySnapshot canonicalPointer =
+        jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
     if (canonicalPointer == null) {
       return Optional.empty();
     }
     return Optional.of(
         new CanonicalPointerSnapshot(
             canonicalPointer.pointerKey(), canonicalPointer.blobUri(), canonicalPointer.version()));
-  }
-
-  public Optional<StoredPointerSnapshot> loadStoredPointer(String pointerKey) {
-    if (blank(pointerKey)) {
-      return Optional.empty();
-    }
-    return jobIndexBackend.loadStoredPointer(pointerKey);
   }
 
   public Optional<StoredReconcileJob> readCanonicalRecordByKey(String canonicalPointerKey) {
@@ -189,13 +182,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   public Optional<StoredReconcileJob> loadActiveFromDedupe(String dedupePointerKey) {
-    StoredPointerSnapshot dedupePointer =
-        jobIndexBackend.loadStoredPointer(dedupePointerKey).orElse(null);
+    JobIndexEntrySnapshot dedupePointer =
+        jobIndexBackend.loadIndexEntry(dedupePointerKey).orElse(null);
     if (dedupePointer == null || blank(dedupePointer.blobUri())) {
       return Optional.empty();
     }
-    StoredPointerSnapshot canonicalPointer =
-        jobIndexBackend.loadStoredPointer(dedupePointer.blobUri()).orElse(null);
+    JobIndexEntrySnapshot canonicalPointer =
+        jobIndexBackend.loadIndexEntry(dedupePointer.blobUri()).orElse(null);
     if (canonicalPointer == null) {
       return Optional.empty();
     }
@@ -206,8 +199,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   public BulkEnqueueItemResult commitQueuedJobInsert(QueuedJobInsert insert) {
     for (int attempt = 0; attempt < casMax; attempt++) {
-      StoredPointerSnapshot existingDedupePointer =
-          jobIndexBackend.loadStoredPointer(insert.dedupePointerKey()).orElse(null);
+      JobIndexEntrySnapshot existingDedupePointer =
+          jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
       var existing = loadActiveFromDedupe(insert.dedupePointerKey());
       if (existing.isPresent()) {
         return new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, "");
@@ -245,38 +238,35 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     int limit = Math.max(1, pageSize);
     List<StoredReconcileJob> out = new ArrayList<>();
     String token = pageToken == null ? "" : pageToken;
-    String prefix = Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId);
-    StringBuilder next = new StringBuilder();
-    List<StoredPointerSnapshot> pointers =
-        jobIndexBackend.listStoredPointersByPrefix(prefix, limit, token, next);
-    for (StoredPointerSnapshot ptr : pointers) {
+    var page = jobIndexBackend.listParentEntries(accountId, parentJobId, limit, token);
+    List<JobIndexEntrySnapshot> pointers = page.entries();
+    for (JobIndexEntrySnapshot ptr : pointers) {
       readCurrentRecordFromIndexPointer(ptr).ifPresent(out::add);
     }
-    return new StoredJobPage(out, next.toString());
+    return new StoredJobPage(out, page.nextPageToken());
   }
 
   public long countStoredChildJobs(String accountId, String parentJobId) {
     if (blank(accountId) || blank(parentJobId)) {
       return 0L;
     }
-    return countPointers(Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId));
+    return countPages(
+        token -> jobIndexBackend.listParentEntries(accountId, parentJobId, 256, token));
   }
 
   public long countStoredJobsInState(String state) {
     if (blank(state)) {
       return 0L;
     }
-    return countPointers(Keys.reconcileJobByStatePointerPrefix(state));
+    return countPages(token -> jobIndexBackend.listGlobalStateEntries(state, 256, token));
   }
 
   public long oldestStoredJobTimestampInState(String state) {
     if (blank(state)) {
       return 0L;
     }
-    String prefix = Keys.reconcileJobByStatePointerPrefix(state);
-    StringBuilder next = new StringBuilder();
-    List<StoredPointerSnapshot> pointers =
-        jobIndexBackend.listStoredPointersByPrefix(prefix, 1, "", next);
+    List<JobIndexEntrySnapshot> pointers =
+        jobIndexBackend.listGlobalStateEntries(state, 1, "").entries();
     if (pointers.isEmpty()) {
       return 0L;
     }
@@ -438,7 +428,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (blank(pointerKey) || blank(reference)) {
       return;
     }
-    StoredPointerSnapshot existing = jobIndexBackend.loadStoredPointer(pointerKey).orElse(null);
+    JobIndexEntrySnapshot existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
     if (existing != null && reference.equals(existing.blobUri())) {
       return;
     }
@@ -451,7 +441,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (blank(pointerKey) || blank(canonicalPointerKey)) {
       return;
     }
-    StoredPointerSnapshot existing = jobIndexBackend.loadStoredPointer(pointerKey).orElse(null);
+    JobIndexEntrySnapshot existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
     if (existing == null) {
       return;
     }
@@ -584,7 +574,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private JobIndexWriteBatch queuedJobInsertOps(
-      QueuedJobInsert insert, StoredPointerSnapshot existingDedupePointer) {
+      QueuedJobInsert insert, JobIndexEntrySnapshot existingDedupePointer) {
     List<JobIndexWriteOp> ops = new ArrayList<>();
     long dedupeExpectedVersion =
         existingDedupePointer == null ? 0L : existingDedupePointer.version();
@@ -632,17 +622,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     String nextToken = "";
     int pages = 0;
     while (out.size() < limit) {
-      StringBuilder next = new StringBuilder();
-      List<StoredPointerSnapshot> pointers =
-          jobIndexBackend.listStoredPointersByPrefix(
-              Keys.reconcileJobPointerByIdPrefix(accountId), Math.max(limit * 2, 64), token, next);
+      ReconcileJobIndexBackend.JobIndexQueryPage page =
+          jobIndexBackend.listCanonicalEntries(accountId, Math.max(limit * 2, 64), token);
+      List<JobIndexEntrySnapshot> pointers = page.entries();
       if (pointers.isEmpty()) {
         break;
       }
       int startIndex = Math.min(skip, pointers.size());
       skip = 0;
       for (int i = startIndex; i < pointers.size(); i++) {
-        StoredPointerSnapshot ptr = pointers.get(i);
+        JobIndexEntrySnapshot ptr = pointers.get(i);
         if (!isCanonicalJobPointerKey(accountId, ptr.pointerKey())) {
           continue;
         }
@@ -658,18 +647,20 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         }
         out.add(stored);
         if (out.size() >= limit) {
-          boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
+          boolean hasMore = i + 1 < pointers.size() || !page.nextPageToken().isBlank();
           nextToken =
               !hasMore
                   ? ""
-                  : (i + 1 < pointers.size() ? encodeListCursor(token, i + 1) : next.toString());
+                  : (i + 1 < pointers.size()
+                      ? encodeListCursor(token, i + 1)
+                      : page.nextPageToken());
           break;
         }
       }
       if (out.size() >= limit) {
         break;
       }
-      nextToken = next.toString();
+      nextToken = page.nextPageToken();
       if (nextToken.isBlank()) {
         break;
       }
@@ -691,21 +682,21 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     ListCursor cursor = decodeListCursor(pageToken);
     String token = cursor.storeToken();
     int skip = cursor.skip();
-    String prefix = Keys.reconcileJobByConnectorPointerPrefix(accountId, connectorId);
     List<StoredReconcileJob> out = new ArrayList<>(limit);
     String nextToken = "";
     int pages = 0;
     while (out.size() < limit) {
-      StringBuilder next = new StringBuilder();
-      List<StoredPointerSnapshot> pointers =
-          jobIndexBackend.listStoredPointersByPrefix(prefix, Math.max(limit * 2, 64), token, next);
+      var page =
+          jobIndexBackend.listConnectorEntries(
+              accountId, connectorId, Math.max(limit * 2, 64), token);
+      List<JobIndexEntrySnapshot> pointers = page.entries();
       if (pointers.isEmpty()) {
         break;
       }
       int startIndex = Math.min(skip, pointers.size());
       skip = 0;
       for (int i = startIndex; i < pointers.size(); i++) {
-        StoredPointerSnapshot ptr = pointers.get(i);
+        JobIndexEntrySnapshot ptr = pointers.get(i);
         var rec = readCurrentRecordFromIndexPointer(ptr);
         if (rec.isEmpty()) {
           continue;
@@ -719,18 +710,20 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         }
         out.add(stored);
         if (out.size() >= limit) {
-          boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
+          boolean hasMore = i + 1 < pointers.size() || !page.nextPageToken().isBlank();
           nextToken =
               !hasMore
                   ? ""
-                  : (i + 1 < pointers.size() ? encodeListCursor(token, i + 1) : next.toString());
+                  : (i + 1 < pointers.size()
+                      ? encodeListCursor(token, i + 1)
+                      : page.nextPageToken());
           break;
         }
       }
       if (out.size() >= limit) {
         break;
       }
-      nextToken = next.toString();
+      nextToken = page.nextPageToken();
       if (nextToken.isBlank()) {
         break;
       }
@@ -756,10 +749,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         pageToken,
         states,
         request ->
-            listByStatePrefix(
-                Keys.reconcileJobByAccountStatePointerPrefix(accountId, request.state()),
-                request.pageSize(),
-                request.pageToken(),
+            listByStatePage(
+                jobIndexBackend.listAccountStateEntries(
+                    accountId, request.state(), request.pageSize(), request.pageToken()),
                 stored ->
                     accountId.equals(stored.accountId) && request.state().equals(stored.state)));
   }
@@ -774,11 +766,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         pageToken,
         states,
         request ->
-            listByStatePrefix(
-                Keys.reconcileJobByConnectorStatePointerPrefix(
-                    accountId, connectorId, request.state()),
-                request.pageSize(),
-                request.pageToken(),
+            listByStatePage(
+                jobIndexBackend.listConnectorStateEntries(
+                    accountId,
+                    connectorId,
+                    request.state(),
+                    request.pageSize(),
+                    request.pageToken()),
                 stored ->
                     accountId.equals(stored.accountId)
                         && connectorId.equals(stored.connectorId)
@@ -831,56 +825,15 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return new StoredJobPage(out, "");
   }
 
-  private StoredJobPage listByStatePrefix(
-      String prefix, int pageSize, String pageToken, Predicate<StoredReconcileJob> filter) {
-    int limit = Math.max(1, pageSize);
-    ListCursor cursor = decodeListCursor(pageToken);
-    String token = cursor.storeToken();
-    int skip = cursor.skip();
-    List<StoredReconcileJob> out = new ArrayList<>(limit);
-    String nextToken = "";
-    int pages = 0;
-    while (out.size() < limit) {
-      StringBuilder next = new StringBuilder();
-      List<StoredPointerSnapshot> pointers =
-          jobIndexBackend.listStoredPointersByPrefix(prefix, Math.max(limit * 2, 64), token, next);
-      if (pointers.isEmpty()) {
-        break;
-      }
-      int startIndex = Math.min(skip, pointers.size());
-      skip = 0;
-      for (int i = startIndex; i < pointers.size(); i++) {
-        StoredPointerSnapshot ptr = pointers.get(i);
-        var rec = readCurrentRecordFromStateIndexPointer(ptr, filter);
-        if (rec.isEmpty()) {
-          continue;
-        }
-        out.add(rec.get());
-        if (out.size() >= limit) {
-          boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
-          nextToken =
-              !hasMore
-                  ? ""
-                  : (i + 1 < pointers.size() ? encodeListCursor(token, i + 1) : next.toString());
-          break;
-        }
-      }
-      if (out.size() >= limit) {
-        break;
-      }
-      nextToken = next.toString();
-      if (nextToken.isBlank()) {
-        break;
-      }
-      pages++;
-      if (pages >= LIST_SCAN_MAX_PAGES) {
-        LOG.warnf(
-            "State-index reconcile job list hit page cap prefix=%s out=%d", prefix, out.size());
-        break;
-      }
-      token = nextToken;
+  private StoredJobPage listByStatePage(
+      ReconcileJobIndexBackend.JobIndexQueryPage initialPage,
+      Predicate<StoredReconcileJob> filter) {
+    List<StoredReconcileJob> out = new ArrayList<>(initialPage.entries().size());
+    for (JobIndexEntrySnapshot ptr : initialPage.entries()) {
+      var rec = readCurrentRecordFromStateIndexPointer(ptr, filter);
+      rec.ifPresent(out::add);
     }
-    return new StoredJobPage(out, nextToken);
+    return new StoredJobPage(out, initialPage.nextPageToken());
   }
 
   private boolean isCanonicalJobPointerKey(String accountId, String key) {
@@ -888,25 +841,25 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         && key.equals(Keys.reconcileJobPointerById(accountId, jobIdFromCanonicalKey(key)));
   }
 
-  private long countPointers(String prefix) {
+  private long countPages(
+      java.util.function.Function<String, ReconcileJobIndexBackend.JobIndexQueryPage> fetchPage) {
     long count = 0L;
     String token = "";
     int pages = 0;
     while (true) {
-      StringBuilder next = new StringBuilder();
-      List<StoredPointerSnapshot> pointers =
-          jobIndexBackend.listStoredPointersByPrefix(prefix, 256, token, next);
+      ReconcileJobIndexBackend.JobIndexQueryPage page = fetchPage.apply(token);
+      List<JobIndexEntrySnapshot> pointers = page.entries();
       if (pointers.isEmpty()) {
         return count;
       }
       count += pointers.size();
-      token = next.toString();
+      token = page.nextPageToken();
       if (token.isBlank()) {
         return count;
       }
       pages++;
       if (pages >= LIST_SCAN_MAX_PAGES) {
-        LOG.warnf("Reconcile job index count hit page cap prefix=%s count=%d", prefix, count);
+        LOG.warnf("Reconcile job index count hit page cap count=%d", count);
         return count;
       }
     }
@@ -983,12 +936,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private Optional<StoredReconcileJob> readCurrentRecordFromIndexPointer(
-      StoredPointerSnapshot indexPointer) {
+      JobIndexEntrySnapshot indexPointer) {
     if (indexPointer == null || blank(indexPointer.blobUri())) {
       return Optional.empty();
     }
-    StoredPointerSnapshot canonicalPointer =
-        jobIndexBackend.loadStoredPointer(indexPointer.blobUri()).orElse(null);
+    JobIndexEntrySnapshot canonicalPointer =
+        jobIndexBackend.loadIndexEntry(indexPointer.blobUri()).orElse(null);
     if (canonicalPointer == null) {
       return Optional.empty();
     }
@@ -998,7 +951,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private Optional<StoredReconcileJob> readCurrentRecordFromStateIndexPointer(
-      StoredPointerSnapshot indexPointer, Predicate<StoredReconcileJob> filter) {
+      JobIndexEntrySnapshot indexPointer, Predicate<StoredReconcileJob> filter) {
     var current = readCurrentRecordFromIndexPointer(indexPointer);
     if (current.isEmpty()) {
       return Optional.empty();

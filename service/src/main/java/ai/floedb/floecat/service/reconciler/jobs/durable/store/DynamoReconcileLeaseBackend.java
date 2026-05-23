@@ -35,6 +35,7 @@ import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionCheck;
 import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.Put;
@@ -46,6 +47,8 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
+  private static final String ATTR_BLOB_URI = "blob_uri";
+
   @Inject DynamoDbClient dynamoDb;
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
@@ -190,7 +193,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     }
     if (leaseBatch != null) {
       for (LeaseWriteOp write : leaseBatch.writes()) {
-        if (write instanceof LeaseRecordUpsert upsert) {
+        if (write instanceof LeaseRecordCondition condition) {
+          tx.add(buildLeaseCondition(condition));
+        } else if (write instanceof LeaseRecordUpsert upsert) {
           tx.add(buildLeaseUpsert(upsert));
         } else if (write instanceof LeaseRecordDelete delete) {
           tx.add(buildLeaseDelete(delete));
@@ -232,8 +237,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     }
     return Optional.of(
         new LeaseRecordSnapshot(
-            stringAttr(response.item(), DynamoPointerBackendSupport.ATTR_BLOB_URI),
-            longAttr(response.item(), ATTR_VERSION)));
+            stringAttr(response.item(), ATTR_BLOB_URI), longAttr(response.item(), ATTR_VERSION)));
   }
 
   private Optional<LeaseExpirySnapshot> loadLeaseExpirySnapshot(
@@ -270,8 +274,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     item.put(ATTR_KIND, AttributeValue.fromS(LeaseBackendSupport.KIND_LEASE_ENTRY));
     item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
     item.put(LeaseBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(leaseKey.pointerKey()));
-    item.put(
-        DynamoPointerBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.encodedLease()));
+    item.put(ATTR_BLOB_URI, AttributeValue.fromS(upsert.encodedLease()));
     Put.Builder put = Put.builder().tableName(table).item(item);
     if (upsert.expectedVersion() == 0L) {
       put.conditionExpression("attribute_not_exists(#pk)")
@@ -283,6 +286,33 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               Map.of(":expected", AttributeValue.fromN(Long.toString(upsert.expectedVersion()))));
     }
     return TransactWriteItem.builder().put(put.build()).build();
+  }
+
+  private TransactWriteItem buildLeaseCondition(LeaseRecordCondition condition) {
+    LeaseBackendSupport.LeasePointerKey leaseKey =
+        new LeaseBackendSupport.LeasePointerKey("", condition.accountId(), condition.jobId());
+    ConditionCheck.Builder check =
+        ConditionCheck.builder()
+            .tableName(table)
+            .key(
+                Map.of(
+                    ATTR_PARTITION_KEY,
+                    AttributeValue.fromS(LeaseBackendSupport.leasePartitionKey(leaseKey)),
+                    ATTR_SORT_KEY,
+                    AttributeValue.fromS(LeaseBackendSupport.leaseSortKey(leaseKey))));
+    if (condition.expectedVersion() == 0L) {
+      check
+          .conditionExpression("attribute_not_exists(#pk)")
+          .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY));
+    } else {
+      check
+          .conditionExpression("#v = :expected")
+          .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
+          .expressionAttributeValues(
+              Map.of(
+                  ":expected", AttributeValue.fromN(Long.toString(condition.expectedVersion()))));
+    }
+    return TransactWriteItem.builder().conditionCheck(check.build()).build();
   }
 
   private TransactWriteItem buildLeaseDelete(LeaseRecordDelete delete) {

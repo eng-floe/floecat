@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.it.profiles.ReconcilerWorkerLocalProfile;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -34,6 +35,7 @@ import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.List;
@@ -52,6 +54,7 @@ import org.junit.jupiter.api.Test;
  * FAILED, TIMEOUT — and that async follow-up jobs are enqueued when required.
  */
 @QuarkusTest
+@TestProfile(ReconcilerWorkerLocalProfile.class)
 class StatsOrchestratorIT {
 
   @GrpcClient("floecat")

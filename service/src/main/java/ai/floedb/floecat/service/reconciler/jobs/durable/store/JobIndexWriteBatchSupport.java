@@ -34,7 +34,7 @@ public final class JobIndexWriteBatchSupport {
 
   public static List<CasOp> toCasOps(
       ReconcileJobIndexStore.JobIndexWriteBatch batch,
-      Function<String, Optional<StoredPointerSnapshot>> loadStoredPointer) {
+      Function<String, Optional<JobIndexEntrySnapshot>> loadStoredPointer) {
     List<CasOp> ops = new ArrayList<>(batch.writes().size());
     for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
       if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
@@ -52,7 +52,7 @@ public final class JobIndexWriteBatchSupport {
       }
     }
     for (ReconcileJobIndexStore.ReadyQueueWrite readyUpsert : batch.readyMutation().upserts()) {
-      StoredPointerSnapshot existing =
+      JobIndexEntrySnapshot existing =
           loadStoredPointer.apply(readyUpsert.readyPointerKey()).orElse(null);
       long expectedVersion = existing == null ? 0L : existing.version();
       ops.add(
@@ -66,7 +66,7 @@ public final class JobIndexWriteBatchSupport {
                   .build()));
     }
     for (String readyDeleteKey : batch.readyMutation().deletes()) {
-      StoredPointerSnapshot existing = loadStoredPointer.apply(readyDeleteKey).orElse(null);
+      JobIndexEntrySnapshot existing = loadStoredPointer.apply(readyDeleteKey).orElse(null);
       if (existing != null) {
         ops.add(new CasDelete(readyDeleteKey, existing.version()));
       }

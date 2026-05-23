@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.service.repo.model.Keys;
+
 final class JobIndexBackendSupport {
   static final String KIND_CANONICAL_JOB = "ReconcileJobCanonical";
   static final String KIND_LOOKUP = "ReconcileJobLookup";
@@ -201,6 +203,62 @@ final class JobIndexBackendSupport {
       return null;
     }
     return new DedupeKey(pointerKey, accountSegment, hashSegment);
+  }
+
+  static DedupeKey parseDedupePrefix(String prefix) {
+    String normalized = stripLeadingSlash(prefix);
+    if (!normalized.startsWith("accounts/") || !normalized.endsWith("/")) {
+      return null;
+    }
+    String marker = "/reconcile/dedupe/";
+    int markerIndex = normalized.indexOf(marker);
+    if (markerIndex < 0) {
+      return null;
+    }
+    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
+    if (accountSegment.isBlank()) {
+      return null;
+    }
+    return new DedupeKey(prefix + "__hash__", accountSegment, "__hash__");
+  }
+
+  static String canonicalPartitionKey(String accountId) {
+    var key = parseCanonicalPrefix(Keys.reconcileJobPointerByIdPrefix(accountId));
+    return key == null ? "" : canonicalPartitionKey(key);
+  }
+
+  static String parentPartitionKey(String accountId, String parentJobId) {
+    var key = parseParentPrefix(Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId));
+    return key == null ? "" : parentPartitionKey(key);
+  }
+
+  static String connectorPartitionKey(String accountId, String connectorId) {
+    var key =
+        parseConnectorPrefix(Keys.reconcileJobByConnectorPointerPrefix(accountId, connectorId));
+    return key == null ? "" : connectorPartitionKey(key);
+  }
+
+  static String globalStatePartitionKey(String state) {
+    var key = parseGlobalStatePrefix(Keys.reconcileJobByStatePointerPrefix(state));
+    return key == null ? "" : globalStatePartitionKey(key);
+  }
+
+  static String accountStatePartitionKey(String accountId, String state) {
+    var key =
+        parseAccountStatePrefix(Keys.reconcileJobByAccountStatePointerPrefix(accountId, state));
+    return key == null ? "" : accountStatePartitionKey(key);
+  }
+
+  static String connectorStatePartitionKey(String accountId, String connectorId, String state) {
+    var key =
+        parseConnectorStatePrefix(
+            Keys.reconcileJobByConnectorStatePointerPrefix(accountId, connectorId, state));
+    return key == null ? "" : connectorStatePartitionKey(key);
+  }
+
+  static String dedupePartitionKey(String accountId) {
+    var key = parseDedupePrefix(Keys.reconcileDedupePointerPrefix(accountId));
+    return key == null ? "" : dedupePartitionKey(key);
   }
 
   static String canonicalPartitionKey(CanonicalJobKey key) {

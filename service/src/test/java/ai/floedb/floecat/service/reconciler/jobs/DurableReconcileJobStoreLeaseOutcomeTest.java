@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -29,21 +28,28 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemory
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import java.util.Map;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 class DurableReconcileJobStoreLeaseOutcomeTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
-  private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
-
   private DurableReconcileJobStore store;
+  private DynamoDbClient dynamoDbClient;
 
   @BeforeEach
   void setUp() {
@@ -52,16 +58,53 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     store.blobStore = new InMemoryBlobStore();
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
-    store.jobIndexStore = new InMemoryReconcileJobIndexStore();
-    store.leaseStore = new InMemoryReconcileLeaseStore();
-    store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
-    store.projectionStore = new InMemoryReconcileProjectionStore();
+    if (isDynamoMode()) {
+      dynamoDbClient = createDynamoDbClient();
+      clearDynamoTable();
+      store.kvTable =
+          store
+              .config
+              .getOptionalValue("floecat.kv.table", String.class)
+              .orElse("floecat_pointers");
+      store.jobIndexBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileJobIndexBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
+              store.jobIndexBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.leaseBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
+              store.leaseBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.readyQueueBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileReadyQueueBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
+              store.readyQueueBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.projectionBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileProjectionBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend)
+              store.projectionBackend)
+          .bind(dynamoDbClient, store.kvTable);
+    } else {
+      store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+      store.leaseStore = new InMemoryReconcileLeaseStore();
+      store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
+      store.projectionStore = new InMemoryReconcileProjectionStore();
+    }
     store.init();
   }
 
   @AfterEach
   void tearDown() {
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
+    if (dynamoDbClient != null) {
+      dynamoDbClient.close();
+      dynamoDbClient = null;
+    }
   }
 
   @Test
@@ -136,8 +179,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(0L, job.errors);
     assertEquals(5L, job.snapshotsProcessed);
     assertEquals(7L, job.statsProcessed);
-    assertFalse(
-        store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isPresent());
+    assertTrue(store.leaseStore.loadLease(ACCOUNT_ID, jobId).isEmpty());
   }
 
   @Test
@@ -170,8 +212,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(2L, job.viewsScanned);
     assertEquals(1L, job.viewsChanged);
     assertEquals(6L, job.errors);
-    assertFalse(
-        store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isPresent());
+    assertTrue(store.leaseStore.loadLease(ACCOUNT_ID, jobId).isEmpty());
   }
 
   @Test
@@ -284,32 +325,81 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   private void expireLease(String jobId) {
-    String pointerKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    Pointer pointer = store.pointerStore.get(pointerKey).orElseThrow();
-    StoredJobLease lease = readStoredLease(pointer.getBlobUri());
-    lease.expiresAtMs = System.currentTimeMillis() - 1L;
-    Pointer expiredPointer =
-        Pointer.newBuilder()
-            .setKey(pointerKey)
-            .setBlobUri(
-                INLINE_JOB_LEASE_PREFIX
-                    + java.util.Base64.getUrlEncoder()
-                        .withoutPadding()
-                        .encodeToString(
-                            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
-                                () -> store.mapper.writeValueAsBytes(lease))))
-            .setVersion(pointer.getVersion() + 1L)
-            .build();
-    assertTrue(store.pointerStore.compareAndSet(pointerKey, pointer.getVersion(), expiredPointer));
+    assertTrue(
+        store
+            .leaseStore
+            .mutateLease(
+                ACCOUNT_ID,
+                jobId,
+                lease -> {
+                  lease.expiresAtMs = System.currentTimeMillis() - 1L;
+                  return lease;
+                })
+            .isPresent());
   }
 
-  private StoredJobLease readStoredLease(String reference) {
-    assertTrue(reference.startsWith(INLINE_JOB_LEASE_PREFIX));
+  private StoredJobLease readStoredLease(String accountId, String jobId) {
     return org.junit.jupiter.api.Assertions.assertDoesNotThrow(
-        () ->
-            store.mapper.readValue(
-                java.util.Base64.getUrlDecoder()
-                    .decode(reference.substring(INLINE_JOB_LEASE_PREFIX.length())),
-                StoredJobLease.class));
+            () -> store.leaseStore.loadLease(accountId, jobId))
+        .orElseThrow();
+  }
+
+  private boolean isDynamoMode() {
+    return "dynamodb"
+        .equalsIgnoreCase(
+            store.config.getOptionalValue("floecat.kv", String.class).orElse("memory"));
+  }
+
+  private DynamoDbClient createDynamoDbClient() {
+    String endpoint =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
+            .orElse("http://localhost:4566");
+    String region =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.region", String.class)
+            .orElse("us-east-1");
+    String accessKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
+            .orElse("test");
+    String secretKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
+            .orElse("test");
+    return DynamoDbClient.builder()
+        .endpointOverride(URI.create(endpoint))
+        .region(Region.of(region))
+        .credentialsProvider(
+            StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+        .build();
+  }
+
+  private void clearDynamoTable() {
+    String table =
+        store.config.getOptionalValue("floecat.kv.table", String.class).orElse("floecat_pointers");
+    Map<String, AttributeValue> startKey = null;
+    do {
+      var request = ScanRequest.builder().tableName(table);
+      if (startKey != null && !startKey.isEmpty()) {
+        request.exclusiveStartKey(startKey);
+      }
+      var response = dynamoDbClient.scan(request.build());
+      for (var item : response.items()) {
+        dynamoDbClient.deleteItem(
+            DeleteItemRequest.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        "pk", item.get("pk"),
+                        "sk", item.get("sk")))
+                .build());
+      }
+      startKey = response.lastEvaluatedKey();
+    } while (startKey != null && !startKey.isEmpty());
   }
 }

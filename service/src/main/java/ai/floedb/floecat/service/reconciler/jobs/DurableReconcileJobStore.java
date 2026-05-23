@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileProjectionBackend;
@@ -319,6 +320,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         MemoryReconcileReadyQueueBackend memoryBackend = new MemoryReconcileReadyQueueBackend();
         memoryBackend.bind(pointerStore);
         readyQueueBackend = memoryBackend;
+      } else if ("dynamodb".equalsIgnoreCase(kvMode)) {
+        readyQueueBackend = new DynamoReconcileReadyQueueBackend();
       } else {
         throw new IllegalStateException(
             "No reconcile ready queue backend available for floecat.kv=" + kvMode);
@@ -326,6 +329,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     if (readyQueueBackend instanceof MemoryReconcileReadyQueueBackend memoryBackend) {
       memoryBackend.bind(pointerStore);
+    } else if (readyQueueBackend instanceof DynamoReconcileReadyQueueBackend dynamoBackend
+        && dynamoDb != null
+        && dynamoDb.isResolvable()) {
+      dynamoBackend.bind(dynamoDb.get(), kvTable);
     }
     readyQueueStore.bind(
         readyQueueBackend,
@@ -563,6 +570,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     long startedAtMs = System.currentTimeMillis();
+    maintenance().runMaintenanceOnce(0L);
     LeaseScanStats scanStats = new LeaseScanStats();
     var leased = leaseReadyDue(startedAtMs, effective, scanStats);
     LOG.debugf(

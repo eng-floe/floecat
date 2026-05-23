@@ -97,8 +97,6 @@ public interface ReconcileJobIndexStore {
 
   Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey);
 
-  Optional<StoredPointerSnapshot> loadStoredPointer(String pointerKey);
-
   Optional<StoredReconcileJob> readCanonicalRecordByKey(String canonicalPointerKey);
 
   Optional<StoredReconcileJob> readRecord(CanonicalPointerSnapshot canonicalPointer);

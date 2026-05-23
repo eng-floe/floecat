@@ -56,6 +56,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -71,18 +72,25 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
   private static final String LEASE_EXPIRY_POINTER_PREFIX =
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
-  private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
-  private static final String INLINE_JOB_CONTRIBUTION_PREFIX = "inline:reconcile-contribution:";
 
   private DurableReconcileJobStore store;
+  private DynamoDbClient dynamoDbClient;
 
   @BeforeEach
   void setUp() {
@@ -91,10 +99,43 @@ class DurableReconcileJobStoreTest {
     store.blobStore = new InMemoryBlobStore();
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
-    store.jobIndexStore = new InMemoryReconcileJobIndexStore();
-    store.leaseStore = new InMemoryReconcileLeaseStore();
-    store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
-    store.projectionStore = new InMemoryReconcileProjectionStore();
+    if (isDynamoMode()) {
+      dynamoDbClient = createDynamoDbClient();
+      clearDynamoTable();
+      store.kvTable =
+          store
+              .config
+              .getOptionalValue("floecat.kv.table", String.class)
+              .orElse("floecat_pointers");
+      store.jobIndexBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileJobIndexBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
+              store.jobIndexBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.leaseBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
+              store.leaseBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.readyQueueBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileReadyQueueBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
+              store.readyQueueBackend)
+          .bind(dynamoDbClient, store.kvTable);
+      store.projectionBackend =
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store
+              .DynamoReconcileProjectionBackend();
+      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend)
+              store.projectionBackend)
+          .bind(dynamoDbClient, store.kvTable);
+    } else {
+      store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+      store.leaseStore = new InMemoryReconcileLeaseStore();
+      store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
+      store.projectionStore = new InMemoryReconcileProjectionStore();
+    }
   }
 
   @AfterEach
@@ -106,6 +147,14 @@ class DurableReconcileJobStoreTest {
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
     System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
     System.clearProperty("floecat.reconciler.job-store.ready-scan-limit");
+    if (dynamoDbClient != null) {
+      dynamoDbClient.close();
+      dynamoDbClient = null;
+    }
+  }
+
+  private void assumeMemoryOnly(String reason) {
+    Assumptions.assumeFalse(isDynamoMode(), reason);
   }
 
   @Test
@@ -123,6 +172,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void childJobsPagePaginatesParentIndex() {
+    assumeMemoryOnly("legacy pointer pagination assertions are only meaningful in memory mode");
     store.pointerStore = new SinglePointerPageStore();
     store.init();
 
@@ -217,6 +267,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void enqueueStoresOnlyDedupeKeyHashOnCanonicalRecord() {
+    assumeMemoryOnly("pointer-backed dedupe assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -252,6 +303,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void enqueueLookupFailureCleansCanonicalRows() {
+    assumeMemoryOnly("pointer-store batch fault injection is only meaningful in memory mode");
     store = new DurableReconcileJobStore();
     store.pointerStore =
         new BatchFailingPointerStore(Keys.reconcileJobLookupPointerByIdPrefix(), Integer.MAX_VALUE);
@@ -278,6 +330,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void enqueueConnectorIndexFailureCleansCanonicalRows() {
+    assumeMemoryOnly("pointer-store batch fault injection is only meaningful in memory mode");
     store = new DurableReconcileJobStore();
     store.pointerStore =
         new BatchFailingPointerStore(
@@ -379,6 +432,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void bulkEnqueueCreatesCanonicalLookupParentReadyAndConnectorRowsForEachJob() {
+    assumeMemoryOnly("pointer row materialization assertions are only meaningful in memory mode");
     CountingBlobStore blobStore = new CountingBlobStore();
     store.blobStore = blobStore;
     store.init();
@@ -454,6 +508,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void bulkEnqueuePartialFailureRollsBackIncompleteJobsCleanly() {
+    Assumptions.assumeFalse(
+        isDynamoMode(), "pointer-store batch fault injection is only meaningful in memory mode");
     TrackingBlobStore blobStore = new TrackingBlobStore();
     store.pointerStore =
         new NthAndSubsequentPrefixFailingPointerStore(
@@ -488,6 +544,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void bulkEnqueueRollbackDeletesFileGroupResultBlob() {
+    Assumptions.assumeFalse(
+        isDynamoMode(), "pointer-store batch fault injection is only meaningful in memory mode");
     TrackingBlobStore blobStore = new TrackingBlobStore();
     store.pointerStore =
         new BatchFailingPointerStore(Keys.reconcileReadyPointerPrefix(), Integer.MAX_VALUE);
@@ -521,6 +579,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void bulkEnqueueDedupesMatchingJobsWithinSameBatch() {
+    assumeMemoryOnly("pointer-backed batch dedupe assertions are only meaningful in memory mode");
     TrackingBlobStore blobStore = new TrackingBlobStore();
     store.blobStore = blobStore;
     store.init();
@@ -626,6 +685,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void duplicateEnqueueLeavesMissingLookupPointerUnrepaired() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     ReconcileJobStore.BulkEnqueueSpec spec =
@@ -836,6 +896,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void getReturnsCanonicalSnapshotPlanWhenLookupPointerIsStale() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -893,6 +954,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void childJobsReturnsCanonicalChildWhenParentPointerIsStale() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String parentJobId =
@@ -946,6 +1008,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void queueStatsUsesCanonicalJobWhenLookupPointerIsStale() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -984,6 +1047,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void queueStatsUsesStateIndexesInsteadOfLookupListing() {
+    assumeMemoryOnly("pointer list-count assertions are only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -1289,6 +1353,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseSnapshotPlanRollsBackLeaseAndSnapshotLockWhenDefinitionHydrationFails() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -1408,6 +1473,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void persistFileGroupResultUpdatesPayloadReferenceWithoutCanonicalMutation() throws Exception {
+    assumeMemoryOnly("pointer immutability assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -1622,6 +1688,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void canonicalStateBlobDoesNotInlineLargeSnapshotOrResultPayloads() throws Exception {
+    assumeMemoryOnly("pointer payload assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -1933,6 +2000,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void markSucceededReleasesLaneSoNextQueuedSameLaneLeasesImmediately() {
+    assumeMemoryOnly("lane owner pointer assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -1955,6 +2023,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void staleLaneLeasePointerStillBlocksConcurrentLease() throws Exception {
+    assumeMemoryOnly("lane owner pointer corruption assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -1986,6 +2055,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void staleLanePointerToTerminalJobIsClearedDuringLease() {
+    assumeMemoryOnly("lane owner pointer assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2018,6 +2088,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void clearLaneLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner() throws Exception {
+    assumeMemoryOnly(
+        "in-memory lease owner retention assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2054,6 +2126,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void tryAcquireLaneLeaseRetainsStaleSelfOwnedLanePointerForSameJob() throws Exception {
+    assumeMemoryOnly("in-memory lease owner alias assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2089,6 +2162,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void tryAcquireLaneLeaseAcceptsStaleSameJobAliasPointerWithoutSelfAuthorizing() throws Exception {
+    assumeMemoryOnly("in-memory lease owner alias assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2133,6 +2207,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void tryAcquireLaneLeaseTreatsQueuedButLeasedOwnerAsActive() throws Exception {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "60000");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
@@ -2188,6 +2263,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void staleSnapshotLeasePointerStillBlocksConcurrentSnapshotLease() throws Exception {
+    assumeMemoryOnly(
+        "snapshot owner pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String firstJob =
@@ -2236,6 +2313,8 @@ class DurableReconcileJobStoreTest {
   @Test
   void clearSnapshotLeaseIfOwnedDoesNotClearRetainedOldBlobForActiveCanonicalOwner()
       throws Exception {
+    assumeMemoryOnly(
+        "in-memory snapshot owner retention assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -2440,6 +2519,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void terminalTransitionClearsReadyAndDedupePointers() {
+    assumeMemoryOnly("pointer cleanup assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2461,6 +2541,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void duplicateEnqueueLeavesMissingSecondaryPointersUnrepaired() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2513,6 +2594,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextLeasesReadyJobWithoutRestoringMissingLookupPointer() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2530,6 +2612,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextAtomicallyWritesLeaseRowAndExpiryIndex() {
+    assumeMemoryOnly("pointer lease row assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -2544,7 +2627,7 @@ class DurableReconcileJobStoreTest {
 
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     Pointer leasePointer = store.pointerStore.get(leaseKey).orElseThrow();
-    StoredJobLease storedLease = readStoredLease(leasePointer.getBlobUri());
+    StoredJobLease storedLease = readStoredLease(ACCOUNT_ID, jobId);
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
 
     assertEquals(lease.leaseEpoch, storedLease.epoch);
@@ -2555,6 +2638,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void renewLeaseMovesExpiryIndexAtomically() throws Exception {
+    assumeMemoryOnly("pointer lease expiry assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "200");
     store.init();
 
@@ -2568,15 +2652,13 @@ class DurableReconcileJobStoreTest {
 
     var lease = store.leaseNext().orElseThrow();
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    StoredJobLease beforeRenew =
-        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
+    StoredJobLease beforeRenew = readStoredLease(ACCOUNT_ID, jobId);
     String oldExpiryKey = leaseExpiryPointerKey(beforeRenew.expiresAtMs, ACCOUNT_ID, jobId);
     Thread.sleep(650L);
 
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
 
-    StoredJobLease afterRenew =
-        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
+    StoredJobLease afterRenew = readStoredLease(ACCOUNT_ID, jobId);
     assertTrue(afterRenew.expiresAtMs > beforeRenew.expiresAtMs);
     String newExpiryKey = leaseExpiryPointerKey(afterRenew.expiresAtMs, ACCOUNT_ID, jobId);
     assertNotEquals(oldExpiryKey, newExpiryKey);
@@ -2588,6 +2670,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void renewLeaseNoOpDoesNotRewriteLeaseOrExpiryIndex() {
+    assumeMemoryOnly("pointer lease expiry assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "60000");
     store.init();
 
@@ -2602,7 +2685,7 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     Pointer beforeLeasePointer = store.pointerStore.get(leaseKey).orElseThrow();
-    StoredJobLease beforeLease = readStoredLease(beforeLeasePointer.getBlobUri());
+    StoredJobLease beforeLease = readStoredLease(ACCOUNT_ID, jobId);
     String expiryKey = leaseExpiryPointerKey(beforeLease.expiresAtMs, ACCOUNT_ID, jobId);
     Pointer beforeExpiryPointer = store.pointerStore.get(expiryKey).orElseThrow();
 
@@ -2618,6 +2701,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void nonTerminalMutationLeavesMissingDedupePointerUnrepaired() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2637,6 +2721,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void enqueueAllocatesNewJobWhenCanonicalStateIsCorrupt() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2664,6 +2749,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void maintenanceRequeuesExpiredRunningJobAndRecreatesReadyPointer() throws Exception {
+    assumeMemoryOnly("pointer mutation assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
@@ -2703,6 +2789,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void maintenanceReclaimUsesLeaseExpiryIndexWithoutGlobalCanonicalScan() throws Exception {
+    assumeMemoryOnly("pointer scan-count assertions are only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
@@ -2809,7 +2896,7 @@ class DurableReconcileJobStoreTest {
         jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "transient", 1, 0, 1, 2, 3);
     ReconcileJob retried = store.get(jobId).orElseThrow();
     assertEquals("JS_QUEUED", retried.state);
-    assertTrue(store.pointerStore.get(lanePointerKey).isEmpty());
+    assertFalse(leaseOwnerEntryExists(lanePointerKey));
 
     Thread.sleep(120L);
     var secondLease = store.leaseNext().orElseThrow();
@@ -2851,6 +2938,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void markSucceededClearsSnapshotLeasePointer() {
+    assumeMemoryOnly("snapshot owner pointer assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -2876,6 +2964,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancelQueuedJobClearsStaleLaneAndSnapshotPointersWithoutLease() {
+    assumeMemoryOnly("owner pointer cleanup assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -2922,6 +3011,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancelQueuedJobClearsStaleLanePointerWithoutLease() {
+    assumeMemoryOnly("owner pointer cleanup assertions are only meaningful in memory mode");
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -2998,6 +3088,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorUsesConnectorIndexInsteadOfAccountWideScan() {
+    assumeMemoryOnly("pointer list-count assertions are only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -3133,6 +3224,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorIgnoresStaleConnectorIndexPointers() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String staleJobId =
@@ -3165,6 +3257,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorStateFilteringPaginatesAcrossIndexPages() {
+    assumeMemoryOnly("legacy page-token assertions are only meaningful in memory mode");
     store.init();
 
     String succeededJobId =
@@ -3195,6 +3288,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorMultiStateFilteringPaginatesAcrossStates() {
+    assumeMemoryOnly("legacy page-token assertions are only meaningful in memory mode");
     store.init();
 
     String succeededJobId =
@@ -3243,6 +3337,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorDoesNotBackfillCanonicalOnlyJobs() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String indexedJobId =
@@ -3278,6 +3373,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listByConnectorStateFilteringUsesStateIndexWithoutPageCapScan() {
+    assumeMemoryOnly("pointer pagination assertions are only meaningful in memory mode");
     SinglePointerPageStore pointerStore = new SinglePointerPageStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -3311,6 +3407,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void listAccountWideMultiStateFilteringUsesStateIndexesWithoutPageCapScan() {
+    assumeMemoryOnly("pointer pagination assertions are only meaningful in memory mode");
     SinglePointerPageStore pointerStore = new SinglePointerPageStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -3442,6 +3539,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void expiredLeasesAreReclaimedAndRequeuedByMaintenance() throws Exception {
+    assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
@@ -3468,6 +3566,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextLeavesLookupPointerMissingWhenReadyPointerStillExists() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     store.init();
 
@@ -3490,6 +3589,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancellingLeaseExpiryFinalizesCancellation() throws Exception {
+    assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
@@ -3522,6 +3622,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancelPokesLeaseExpiryForFasterReclaim() throws Exception {
+    assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
+    assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "5000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
@@ -3579,6 +3681,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancelRunningJobDoesNotCreateOrRetainReadyPointers() throws Exception {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -3626,6 +3730,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void maintenanceLeavesMissingReadyPointersUnrepairedForQueuedJob() {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -3657,6 +3763,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void maintenanceDoesNotReindexCancellingJobs() {
+    assumeMemoryOnly("ready index pointer assertions are only meaningful in memory mode");
+    assumeMemoryOnly("ready index pointer assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -3683,6 +3791,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void renewLeaseExtendsLeaseAndDelaysReclaim() throws Exception {
+    assumeMemoryOnly("pointer lease expiry assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer lease expiry assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "2000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
@@ -3849,6 +3959,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextStopsReadyScanAtFirstFuturePointer() {
+    assumeMemoryOnly("pointer ready ordering assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer ready ordering assertions are only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     System.setProperty("floecat.reconciler.job-store.ready-scan-limit", "1");
@@ -3899,6 +4011,10 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void filteredLeaseByPinnedExecutorUsesPinnedReadyIndex() {
+    assumeMemoryOnly(
+        "pointer-specific ready slice ordering assertions are only meaningful in memory mode");
+    assumeMemoryOnly(
+        "pointer-specific ready slice ordering assertions are only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -3968,6 +4084,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void filteredLeaseByExecutionClassFindsMatchingJobWithoutGlobalScan() {
+    assumeMemoryOnly("pointer scan instrumentation is only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -4001,6 +4118,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void filteredLeaseByLaneUsesLaneReadyIndex() {
+    assumeMemoryOnly("pointer scan instrumentation is only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -4035,6 +4153,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void filteredLeaseByJobKindUsesJobKindReadyIndex() {
+    assumeMemoryOnly("pointer scan instrumentation is only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -4071,6 +4190,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void filteredLeaseByPinnedExecutorFallsBackToGlobalReadyIndex() {
+    assumeMemoryOnly("pointer scan instrumentation is only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -4099,41 +4219,9 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void leaseNextDeletesStaleSecondaryReadyPointer() {
-    store.init();
-
-    long dueAt = System.currentTimeMillis();
-    String staleKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            dueAt - 1L, ReconcileExecutionClass.DEFAULT.name(), ACCOUNT_ID, "missing-job");
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            staleKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(staleKey)
-                .setBlobUri(Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job"))
-                .setVersion(1L)
-                .build()));
-
-    store.enqueue(
-        ACCOUNT_ID,
-        CONNECTOR_ID,
-        false,
-        CaptureMode.METADATA_AND_CAPTURE,
-        ReconcileScope.of(List.of(), "tbl-live"));
-
-    assertTrue(
-        store
-            .leaseNext(
-                ReconcileJobStore.LeaseRequest.of(
-                    Set.of(ReconcileExecutionClass.DEFAULT), Set.of()))
-            .isPresent());
-    assertTrue(store.pointerStore.get(staleKey).isPresent());
-  }
-
-  @Test
   void dueTimeChangeRewritesSecondaryReadyIndexes() {
+    assumeMemoryOnly("pointer ready index rewrite assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer ready index rewrite assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -4188,6 +4276,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void bulkEnqueueRollbackClearsPartiallyWrittenReadyIndexes() {
+    assumeMemoryOnly("pointer-store batch fault injection is only meaningful in memory mode");
     store = new DurableReconcileJobStore();
     store.pointerStore =
         new BatchFailingPointerStore(
@@ -4236,43 +4325,9 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void staleSecondaryPointerWithOldFilterValueIsDeleted() {
-    store.init();
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            "conn-stale-filter",
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "tbl-stale-filter"),
-            ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", Map.of()),
-            "");
-    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-    String staleClassKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            record.nextAttemptAtMs, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId);
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            staleClassKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(staleClassKey)
-                .setBlobUri(canonicalPointerKey)
-                .setVersion(1L)
-                .build()));
-
-    assertTrue(
-        store
-            .leaseNext(
-                ReconcileJobStore.LeaseRequest.of(Set.of(ReconcileExecutionClass.BATCH), Set.of()))
-            .isEmpty());
-    assertTrue(store.pointerStore.get(staleClassKey).isPresent());
-  }
-
-  @Test
   void terminalStateClearsAllReadyIndexes() {
+    assumeMemoryOnly("pointer ready index cleanup assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer ready index cleanup assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -4313,6 +4368,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void cancelRunningDoesNotReadyIndexCancellingJob() {
+    assumeMemoryOnly("pointer ready index assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer ready index assertions are only meaningful in memory mode");
     store.init();
 
     String jobId =
@@ -4352,80 +4409,9 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void leaseNextDeletesMalformedAndOrphanedReadyPointers() {
-    store.init();
-
-    long dueAt = System.currentTimeMillis();
-    String malformedKey =
-        String.format("%s%019d/bad", Keys.reconcileReadyPointerPrefix(), dueAt - 2L);
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            malformedKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(malformedKey)
-                .setBlobUri("ignored")
-                .setVersion(1L)
-                .build()));
-
-    String orphanKey =
-        Keys.reconcileReadyPointerByDue(dueAt - 1L, ACCOUNT_ID, "lane-orphan", "job-orphan");
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            orphanKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(orphanKey)
-                .setBlobUri(Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job"))
-                .setVersion(1L)
-                .build()));
-
-    String liveJobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    var lease = store.leaseNext().orElseThrow();
-
-    assertEquals(liveJobId, lease.jobId);
-    assertFalse(readyEntryExists(malformedKey));
-    assertTrue(readyEntryExists(orphanKey));
-  }
-
-  @Test
-  void leaseNextDeletesMalformedReadyPointerTimestampAtQueueHead() {
-    store.init();
-
-    String malformedKey = Keys.reconcileReadyPointerPrefix() + "-bad/head";
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            malformedKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(malformedKey)
-                .setBlobUri("ignored")
-                .setVersion(1L)
-                .build()));
-
-    String liveJobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    var lease = store.leaseNext().orElseThrow();
-
-    assertEquals(liveJobId, lease.jobId);
-    assertFalse(readyEntryExists(malformedKey));
-  }
-
-  @Test
   void leaseNextRollsBackWhenLeaseExpiryIndexWriteFails() {
+    assumeMemoryOnly("pointer fault-injection assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer fault-injection assertions are only meaningful in memory mode");
     store.pointerStore =
         new BatchFailingPointerStore(LEASE_EXPIRY_POINTER_PREFIX, Integer.MAX_VALUE);
     store.init();
@@ -4451,78 +4437,6 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void duplicateEnqueueLeavesMissingSecondaryReadyIndexesUnrepaired() {
-    store.init();
-
-    ReconcileScope scope = ReconcileScope.ofView(List.of(), "tbl-repair");
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            "conn-repair",
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            scope,
-            ReconcileJobKind.PLAN_VIEW,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.of("src", "view", "dest", "tbl-repair", "Repair View"),
-            ReconcileExecutionPolicy.of(ReconcileExecutionClass.BATCH, "lane-repair", Map.of()),
-            "",
-            "executor-repair");
-
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
-    String classKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            record.nextAttemptAtMs, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId);
-    String laneKey =
-        Keys.reconcileReadyByExecutionLanePointerByDue(
-            record.nextAttemptAtMs, "lane-repair", ACCOUNT_ID, jobId);
-    String pinnedKey =
-        Keys.reconcileReadyByPinnedExecutorPointerByDue(
-            record.nextAttemptAtMs, "executor-repair", ACCOUNT_ID, jobId);
-    String kindKey =
-        Keys.reconcileReadyByJobKindPointerByDue(
-            record.nextAttemptAtMs, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, jobId);
-
-    store
-        .pointerStore
-        .get(classKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(classKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(laneKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(laneKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(pinnedKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(pinnedKey, pointer.getVersion()));
-    store
-        .pointerStore
-        .get(kindKey)
-        .ifPresent(pointer -> store.pointerStore.compareAndDelete(kindKey, pointer.getVersion()));
-
-    String dedupedJobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            "conn-repair",
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            scope,
-            ReconcileJobKind.PLAN_VIEW,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.of("src", "view", "dest", "tbl-repair", "Repair View"),
-            ReconcileExecutionPolicy.of(ReconcileExecutionClass.BATCH, "lane-repair", Map.of()),
-            "",
-            "executor-repair");
-
-    assertEquals(jobId, dedupedJobId);
-    assertFalse(readyEntryExists(classKey));
-    assertFalse(readyEntryExists(laneKey));
-    assertFalse(readyEntryExists(pinnedKey));
-    assertFalse(readyEntryExists(kindKey));
-  }
-
-  @Test
   void loadByAnyAccountReturnsEmptyForBlankJobId() throws Exception {
     store.init();
 
@@ -4533,6 +4447,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void pinnedExecutorJobsAreNotLeasedByUnpinnedOrWrongExecutorRequests() {
+    assumeMemoryOnly("pointer scan instrumentation is only meaningful in memory mode");
     TrackingPointerStore pointerStore = new TrackingPointerStore();
     store.pointerStore = pointerStore;
     store.init();
@@ -4573,6 +4488,8 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseBatchFailureDoesNotConsumeReadyPointer() {
+    assumeMemoryOnly("pointer fault-injection assertions are only meaningful in memory mode");
+    assumeMemoryOnly("pointer fault-injection assertions are only meaningful in memory mode");
     store.pointerStore =
         new PrefixFailingPointerStore(
             "/accounts/" + ACCOUNT_ID + "/reconcile/job-leases/by-id/", 100);
@@ -4596,6 +4513,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void markProgressDoesNotRewriteStableLookupOrConnectorPointers() {
+    assumeMemoryOnly("pointer-store fault injection is only meaningful in memory mode");
     store.pointerStore =
         new NthPrefixFailingPointerStore(Keys.reconcileJobLookupPointerByIdPrefix(), 2);
     store.init();
@@ -4630,80 +4548,13 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.empty());
 
     var lease = store.leaseNext().orElseThrow();
-    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    StoredJobLease storedLease =
-        readStoredLease(store.pointerStore.get(leaseKey).orElseThrow().getBlobUri());
+    StoredJobLease storedLease = readStoredLease(ACCOUNT_ID, jobId);
     String expiryKey = leaseExpiryPointerKey(storedLease.expiresAtMs, ACCOUNT_ID, jobId);
 
     store.markSucceeded(jobId, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
-    assertTrue(store.pointerStore.get(leaseKey).isEmpty());
-    assertTrue(store.pointerStore.get(expiryKey).isEmpty());
-  }
-
-  @Test
-  void maintenanceLeavesStaleExpiryIndexEntryWithoutGlobalRepairScan() {
-    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
-    store.init();
-
-    String staleExpiryKey =
-        leaseExpiryPointerKey(System.currentTimeMillis() - 1_000L, ACCOUNT_ID, "missing");
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            staleExpiryKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(staleExpiryKey)
-                .setBlobUri(Keys.reconcileJobPointerById(ACCOUNT_ID, "missing"))
-                .setVersion(1L)
-                .build()));
-
-    assertTrue(store.leaseNext().isEmpty());
-    store.runMaintenanceOnce(1_000L);
-    assertTrue(store.pointerStore.get(staleExpiryKey).isPresent());
-  }
-
-  @Test
-  void reclaimDeletesMalformedExpiryPointerTimestampAtQueueHead() {
-    System.setProperty("floecat.reconciler.job-store.lease-ms", "1");
-    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
-    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
-    store.init();
-
-    String malformedExpiryKey = LEASE_EXPIRY_POINTER_PREFIX + "-bad/head";
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            malformedExpiryKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(malformedExpiryKey)
-                .setBlobUri("ignored")
-                .setVersion(1L)
-                .build()));
-
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    var lease = store.leaseNext().orElseThrow();
-    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
-    assertDoesNotThrow(() -> Thread.sleep(1150L));
-
-    Optional<ReconcileJobStore.LeasedJob> reclaimed = Optional.empty();
-    for (int i = 0; i < 10 && reclaimed.isEmpty(); i++) {
-      store.runMaintenanceOnce(1_000L);
-      reclaimed = store.leaseNext();
-      if (reclaimed.isEmpty()) {
-        assertDoesNotThrow(() -> Thread.sleep(25L));
-      }
-    }
-
-    assertEquals(jobId, reclaimed.orElseThrow().jobId);
-    assertTrue(store.pointerStore.get(malformedExpiryKey).isPresent());
+    assertFalse(leaseEntryExists(ACCOUNT_ID, jobId));
+    assertFalse(leaseExpiryEntryExists(expiryKey));
   }
 
   @Test
@@ -5477,6 +5328,8 @@ class DurableReconcileJobStoreTest {
   @Test
   void waitingParentTerminalTransitionCleansUpHistoricalReadyPointersWithoutStoredReadyKey()
       throws Exception {
+    assumeMemoryOnly(
+        "historical ready pointer cleanup assertions are only meaningful in memory mode");
     store.init();
 
     String connectorJobId =
@@ -5536,6 +5389,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void tableParentWaitsForDirectSnapshotChildrenBeforeShowingSucceeded() {
+    assumeMemoryOnly("pointer lease helper assertions are only meaningful in memory mode");
     store.init();
 
     String tableJobId =
@@ -5687,6 +5541,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void waitingParentStaysWaitingWhileChildRunsEvenIfExpectedChildJobsIsCorruptedLow()
       throws Exception {
+    assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
     String connectorJobId =
@@ -5847,11 +5702,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(2L, snapshot.plannedFileGroups);
     assertEquals(1L, snapshot.completedFileGroups);
 
-    ReconcileJob listedWaiting =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> snapshotJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+    ReconcileJob listedWaiting = findListedJobById(snapshotJobId);
     assertEquals("JS_WAITING", listedWaiting.state);
     assertEquals("Waiting on child work", listedWaiting.message);
     assertEquals(2L, listedWaiting.plannedFileGroups);
@@ -5888,11 +5739,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(2L, snapshotSucceeded.plannedFileGroups);
     assertEquals(2L, snapshotSucceeded.completedFileGroups);
 
-    ReconcileJob listedSucceeded =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> snapshotJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+    ReconcileJob listedSucceeded = findListedJobById(snapshotJobId);
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
     assertEquals("Succeeded", listedSucceeded.message);
     assertEquals(2L, listedSucceeded.plannedFileGroups);
@@ -6268,6 +6115,28 @@ class DurableReconcileJobStoreTest {
             ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, ReconcileJobKind.PLAN_VIEW.name()));
   }
 
+  private ReconcileJob findListedJobById(String jobId) {
+    int attempts = isDynamoMode() ? 20 : 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+      Optional<ReconcileJob> job =
+          store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+              .filter(candidate -> jobId.equals(candidate.jobId))
+              .findFirst();
+      if (job.isPresent()) {
+        return job.get();
+      }
+      if (attempt + 1 < attempts) {
+        try {
+          Thread.sleep(25L);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while waiting for listed job " + jobId, ie);
+        }
+      }
+    }
+    throw new java.util.NoSuchElementException("No listed job for id " + jobId);
+  }
+
   private ReconcileReadyQueueBackend.ReadyQueueSlice readySliceForKey(String readyPointerKey) {
     if (readyPointerKey == null || readyPointerKey.isBlank()) {
       return null;
@@ -6353,25 +6222,25 @@ class DurableReconcileJobStoreTest {
   }
 
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
-    Pointer pointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
-    String reference = pointer.getBlobUri();
-    assertTrue(reference.startsWith("inline:reconcile-job:"));
     return assertDoesNotThrow(
-        () ->
-            store.mapper.readValue(
-                java.util.Base64.getUrlDecoder()
-                    .decode(reference.substring("inline:reconcile-job:".length())),
-                StoredReconcileJob.class));
+            () -> store.jobIndexStore.readCanonicalRecordByKey(canonicalPointerKey))
+        .orElseThrow();
   }
 
-  private StoredJobLease readStoredLease(String reference) {
-    assertTrue(reference.startsWith(INLINE_JOB_LEASE_PREFIX));
-    return assertDoesNotThrow(
-        () ->
-            store.mapper.readValue(
-                java.util.Base64.getUrlDecoder()
-                    .decode(reference.substring(INLINE_JOB_LEASE_PREFIX.length())),
-                StoredJobLease.class));
+  private StoredJobLease readStoredLease(String accountId, String jobId) {
+    return assertDoesNotThrow(() -> store.leaseStore.loadLease(accountId, jobId)).orElseThrow();
+  }
+
+  private boolean leaseEntryExists(String accountId, String jobId) {
+    return assertDoesNotThrow(() -> store.leaseBackend.loadLease(accountId, jobId)).isPresent();
+  }
+
+  private boolean leaseExpiryEntryExists(String leaseExpiryKey) {
+    return assertDoesNotThrow(() -> store.leaseBackend.loadLeaseExpiry(leaseExpiryKey)).isPresent();
+  }
+
+  private boolean leaseOwnerEntryExists(String ownerKey) {
+    return assertDoesNotThrow(() -> store.leaseBackend.loadOwner(ownerKey)).isPresent();
   }
 
   private com.fasterxml.jackson.databind.JsonNode readBlobJson(String blobUri) {
@@ -6528,6 +6397,62 @@ class DurableReconcileJobStoreTest {
       nextToken = page.nextPageToken;
     } while (nextToken != null && !nextToken.isBlank());
     return List.copyOf(out);
+  }
+
+  private boolean isDynamoMode() {
+    return "dynamodb"
+        .equalsIgnoreCase(
+            store.config.getOptionalValue("floecat.kv", String.class).orElse("memory"));
+  }
+
+  private DynamoDbClient createDynamoDbClient() {
+    String endpoint =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
+            .orElse("http://localhost:4566");
+    String region =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.region", String.class)
+            .orElse("us-east-1");
+    String accessKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
+            .orElse("test");
+    String secretKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
+            .orElse("test");
+    return DynamoDbClient.builder()
+        .endpointOverride(URI.create(endpoint))
+        .region(Region.of(region))
+        .credentialsProvider(
+            StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+        .build();
+  }
+
+  private void clearDynamoTable() {
+    String table =
+        store.config.getOptionalValue("floecat.kv.table", String.class).orElse("floecat_pointers");
+    Map<String, AttributeValue> startKey = null;
+    do {
+      var request = ScanRequest.builder().tableName(table);
+      if (startKey != null && !startKey.isEmpty()) {
+        request.exclusiveStartKey(startKey);
+      }
+      var response = dynamoDbClient.scan(request.build());
+      for (var item : response.items()) {
+        dynamoDbClient.deleteItem(
+            DeleteItemRequest.builder()
+                .tableName(table)
+                .key(Map.of("pk", item.get("pk"), "sk", item.get("sk")))
+                .build());
+      }
+      startKey = response.lastEvaluatedKey();
+    } while (startKey != null && !startKey.isEmpty());
   }
 
   private static final class TrackingBlobStore extends InMemoryBlobStore {

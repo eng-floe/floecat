@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -159,10 +158,11 @@ class RemoteReconcileExecutorPollerTest {
         .thenThrow(new RuntimeException("lease failed"))
         .thenReturn(java.util.Optional.empty());
 
-    assertThrows(RuntimeException.class, () -> poller.pollOnce());
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("local-poller"));
     poller.pollOnce();
 
-    verify(client, times(2)).lease(any(), eq("local-poller"));
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(2)).lease(any(), eq("local-poller"));
   }
 
   @Test
@@ -490,7 +490,7 @@ class RemoteReconcileExecutorPollerTest {
 
     poller.pollOnce();
 
-    verify(client).lease(any(), eq("remote-poller"));
+    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("remote-poller"));
   }
 
   @Test
@@ -607,7 +607,7 @@ class RemoteReconcileExecutorPollerTest {
 
     poller.pollOnce();
 
-    verify(client).lease(any(), eq("local-poller"));
+    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("local-poller"));
   }
 
   @Test

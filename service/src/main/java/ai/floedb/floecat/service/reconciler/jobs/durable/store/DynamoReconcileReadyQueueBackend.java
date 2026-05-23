@@ -49,12 +49,19 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   private static final String GLOBAL_POINTER_PARTITION_KEY = "_ACCOUNT_DIR";
   private static final String ATTR_BLOB_URI = "blob_uri";
 
-  private final DynamoDbClient dynamoDb;
-  private final String table;
+  private DynamoDbClient dynamoDb;
+  private String table;
 
   @Inject
   public DynamoReconcileReadyQueueBackend(
       DynamoDbClient dynamoDb, @ConfigProperty(name = "floecat.kv.table") String table) {
+    this.dynamoDb = dynamoDb;
+    this.table = table;
+  }
+
+  public DynamoReconcileReadyQueueBackend() {}
+
+  public void bind(DynamoDbClient dynamoDb, String table) {
     this.dynamoDb = dynamoDb;
     this.table = table;
   }
