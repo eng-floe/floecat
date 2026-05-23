@@ -58,6 +58,29 @@ public interface StatsCaptureEngine {
     return capabilities().supports(request);
   }
 
+  /**
+   * Cost estimate for this capture request.
+   *
+   * <p>Called at enqueue time to help the scheduler score jobs by value-per-cost and to let the
+   * sync capture path skip engines that exceed the {@link ReconcileCapturePolicy#maxCost()} budget.
+   *
+   * <p>Implementations must <em>not</em> perform I/O to compute the hint; it must be cheap to call.
+   *
+   * <p>Default: {@link JobCostHint#MEDIUM}. Engines that do only Parquet footer reads should return
+   * {@link JobCostHint#CHEAP}. Engines performing full column scans, NDV/histogram computation, or
+   * full Parquet file reads for index construction should return {@link JobCostHint#EXPENSIVE}.
+   *
+   * <p>The executor enforces the budget via {@code estimatedCost().fitsIn(policy.maxCost())};
+   * engines whose cost exceeds the budget are skipped and return partial results rather than
+   * blocking.
+   *
+   * @param request the capture request being evaluated
+   * @return the cost hint for this request; never {@code null}
+   */
+  default JobCostHint estimatedCost(StatsCaptureRequest request) {
+    return JobCostHint.MEDIUM;
+  }
+
   /** Attempts to capture stats for the request. */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
 

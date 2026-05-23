@@ -83,6 +83,9 @@ message CapturePolicy {
   repeated CaptureOutput outputs = 2;
   DefaultColumnScope default_column_scope = 3;
   uint32 max_default_columns = 4;
+  // Maximum cost hint for capture execution. Executors skip engines whose estimated cost exceeds
+  // this value. UNSPECIFIED is treated as EXPENSIVE (no restriction).
+  CostHint max_cost = 5;
 }
 
 enum SnapshotSelectionKind {
@@ -108,6 +111,33 @@ enum CaptureMode {
   CM_METADATA_AND_CAPTURE = 2;
   // Run capture outputs only for already-known destination tables/snapshots.
   CM_CAPTURE_ONLY = 3;
+}
+
+// Scheduler priority class used for job ordering and admission control.
+// Wire-safe default: UNSPECIFIED maps to P3_BACKGROUND in all mappers.
+enum PriorityClass {
+  PC_UNSPECIFIED = 0;
+  // Synchronous query-time capture; always admitted, never deferred.
+  PC_P0_SYNC = 1;
+  // New snapshot work; directly feeds lookup supervisor epoch-poll latency.
+  PC_P1_FRESHNESS = 2;
+  // Async follow-up after PARTIAL/TIMEOUT/FAILED sync outcome.
+  PC_P2_REPAIR = 3;
+  // Routine background refresh and maintenance.
+  PC_P3_BACKGROUND = 4;
+}
+
+// Cost hint for capture execution. Used by the scheduler to score jobs and by executors to
+// decide whether to skip expensive stat kinds when operating under a cost budget.
+// Wire-safe default: UNSPECIFIED maps to EXPENSIVE in all mappers.
+enum CostHint {
+  CH_UNSPECIFIED = 0;
+  // Footer-only reads; minimal I/O.
+  CH_CHEAP = 1;
+  // Partial column scans; moderate I/O.
+  CH_MEDIUM = 2;
+  // Full column scans, NDV/histogram computation, or full Parquet file reads for page indexes.
+  CH_EXPENSIVE = 3;
 }
 
 // High-level execution class used by schedulers and executors for placement decisions.
@@ -253,6 +283,11 @@ message ExecutionPolicy {
   string lane = 2;
   // Free-form scheduler hints such as region, tenant, or implementation-specific labels.
   map<string, string> attributes = 3;
+  // Priority class for job ordering and admission control.
+  // UNSPECIFIED is treated as P3_BACKGROUND by all mappers.
+  PriorityClass priority_class = 4;
+  // Scheduler score baked at enqueue time. Higher scores are dispatched first within a class.
+  uint64 priority_score = 5;
 }
 
 // Synchronous reconcile request intended for immediate execution in the caller's RPC.

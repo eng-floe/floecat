@@ -674,7 +674,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             : basePolicy.defaultColumnScope(),
         basePolicy == null
             ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
-            : basePolicy.maxDefaultColumns());
+            : basePolicy.maxDefaultColumns(),
+        basePolicy == null
+            ? ai.floedb.floecat.stats.spi.JobCostHint.EXPENSIVE
+            : basePolicy.maxCost());
   }
 
   private static Optional<ReconcileCapturePolicy.Column> selectorPolicy(

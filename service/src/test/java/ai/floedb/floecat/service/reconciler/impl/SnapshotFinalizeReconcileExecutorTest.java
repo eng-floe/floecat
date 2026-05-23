@@ -145,6 +145,15 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void supportsAllLanesForFinalizationJobs() {
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    assertTrue(executor.supportedLanes().isEmpty());
+    assertTrue(executor.supportsLane(""));
+    assertTrue(executor.supportsLane("acct:table-1"));
+    assertTrue(executor.supportsLane("snapshot-finalize|table-1|55"));
+  }
+
+  @Test
   void executeReturnsDependencyNotReadyWhenSiblingFileGroupIsStillQueued() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1013,7 +1022,12 @@ class SnapshotFinalizeReconcileExecutorTest {
     store.persistFileGroupResult(
         childJobId,
         group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
+            List.of(
+                ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    0L,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult.of(
+                        "s3://bucket/index/file-1.idx", "parquet-page-index", 1)))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(

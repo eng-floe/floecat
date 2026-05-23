@@ -97,16 +97,19 @@ public final class FileGroupExecutionSupport {
 
   public static List<ReconcileFileResult> fileResultsForSuccess(
       ReconcileFileGroupTask plannedTask,
+      ReconcileCapturePolicy capturePolicy,
       List<TargetStatsRecord> stats,
       List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
-    return fileResultsForSuccess(plannedTask, stats, artifacts, List.of());
+    return fileResultsForSuccess(plannedTask, capturePolicy, stats, artifacts, List.of());
   }
 
   public static List<ReconcileFileResult> fileResultsForSuccess(
       ReconcileFileGroupTask plannedTask,
+      ReconcileCapturePolicy capturePolicy,
       List<TargetStatsRecord> stats,
       List<ReconcilerBackend.StagedIndexArtifact> artifacts,
       List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedArtifacts) {
+    boolean requiresIndexArtifacts = capturePolicy != null && capturePolicy.requestsIndexes();
     LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
     HashMap<String, ReconcileIndexArtifactResult> artifactsByFile = new HashMap<>();
     for (String filePath : plannedTask.filePaths()) {
@@ -161,14 +164,27 @@ public final class FileGroupExecutionSupport {
       }
       statsByFile.computeIfPresent(filePath, (ignored, count) -> count + 1L);
     }
+    if (requiresIndexArtifacts) {
+      List<String> missingArtifactFiles =
+          missingIndexArtifactFiles(plannedTask, artifacts, preUploadedArtifacts);
+      if (!missingArtifactFiles.isEmpty()) {
+        throw new IllegalStateException(
+            "Missing index artifacts for planned files: "
+                + String.join(", ", missingArtifactFiles));
+      }
+    }
     return statsByFile.entrySet().stream()
         .map(
-            entry ->
-                ReconcileFileResult.succeeded(
-                    entry.getKey(),
-                    entry.getValue(),
-                    artifactsByFile.getOrDefault(
-                        entry.getKey(), ReconcileIndexArtifactResult.empty())))
+            entry -> {
+              ReconcileIndexArtifactResult artifact =
+                  artifactsByFile.getOrDefault(
+                      entry.getKey(), ReconcileIndexArtifactResult.empty());
+              if (requiresIndexArtifacts && artifact.isEmpty()) {
+                throw new IllegalStateException(
+                    "Missing index artifact for planned file " + entry.getKey());
+              }
+              return ReconcileFileResult.succeeded(entry.getKey(), entry.getValue(), artifact);
+            })
         .toList();
   }
 
@@ -182,9 +198,30 @@ public final class FileGroupExecutionSupport {
 
   public static List<String> missingIndexArtifactFiles(
       ReconcileFileGroupTask plannedTask, List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
+    return missingIndexArtifactFiles(plannedTask, artifacts, List.of());
+  }
+
+  public static List<String> missingIndexArtifactFiles(
+      ReconcileFileGroupTask plannedTask,
+      List<ReconcilerBackend.StagedIndexArtifact> artifacts,
+      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedArtifacts) {
     LinkedHashSet<String> plannedFiles = new LinkedHashSet<>(plannedTask.filePaths());
     LinkedHashSet<String> artifactFiles = new LinkedHashSet<>();
     for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
+      if (artifact == null || artifact.record() == null) {
+        continue;
+      }
+      var record = artifact.record();
+      if (!record.hasTarget() || !record.getTarget().hasFile()) {
+        continue;
+      }
+      String filePath = record.getTarget().getFile().getFilePath();
+      if (filePath != null && !filePath.isBlank()) {
+        artifactFiles.add(filePath);
+      }
+    }
+    for (StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact artifact :
+        preUploadedArtifacts) {
       if (artifact == null || artifact.record() == null) {
         continue;
       }

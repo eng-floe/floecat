@@ -17,8 +17,10 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -656,7 +658,7 @@ public interface ReconcileJobStore {
         statsProcessed);
   }
 
-  boolean applyLeaseOutcome(
+  default boolean applyLeaseOutcome(
       String jobId,
       String leaseEpoch,
       CompletionKind completionKind,
@@ -668,7 +670,103 @@ public interface ReconcileJobStore {
       long viewsChanged,
       long errors,
       long snapshotsProcessed,
-      long statsProcessed);
+      long statsProcessed) {
+    if (!renewLease(jobId, leaseEpoch)) {
+      return false;
+    }
+    ReconcileJob current = getLeaseView(jobId).orElse(null);
+    if (current == null) {
+      return false;
+    }
+    if ("JS_SUCCEEDED".equals(current.state)
+        || "JS_FAILED".equals(current.state)
+        || "JS_CANCELLED".equals(current.state)) {
+      return false;
+    }
+    if ("JS_CANCELLING".equals(current.state)) {
+      String cancelMessage =
+          current.message == null || current.message.isBlank() ? message : current.message;
+      markCancelled(
+          jobId,
+          leaseEpoch,
+          finishedAtMs,
+          cancelMessage,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          snapshotsProcessed,
+          statsProcessed);
+      return true;
+    }
+    switch (completionKind == null ? CompletionKind.FAILED_RETRYABLE : completionKind) {
+      case SUCCEEDED ->
+          markSucceeded(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_WAITING ->
+          markWaiting(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_TERMINAL ->
+          markFailedTerminal(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case CANCELLED ->
+          markCancelled(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_RETRYABLE ->
+          markFailed(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+    }
+    return true;
+  }
 
   default boolean completeLease(
       String jobId,
@@ -1728,11 +1826,126 @@ public interface ReconcileJobStore {
     public final long cancelling;
     public final long oldestQueuedCreatedAtMs;
 
+    /**
+     * Depth of the ready queue broken down by priority class. Never null; missing keys map to 0.
+     */
+    public final Map<StatsPriorityClass, Long> queuedByClass;
+
+    /** Current scheduler health band derived from queue-depth thresholds. Never null. */
+    public final SchedulerHealthBand healthBand;
+
+    /** Cumulative count of starvation-aging promotions since store creation. */
+    public final long agingPromotionsTotal;
+
+    /**
+     * Cumulative count of admission deferrals broken down by priority class. Never null; missing
+     * keys map to 0.
+     */
+    public final Map<StatsPriorityClass, Long> admissionDeferredByClass;
+
+    /**
+     * Top-10 lanes (by oldest queued job wait time) and their current wait time in milliseconds.
+     * Only includes lanes with at least one JS_QUEUED job. Empty map when no lanes are waiting.
+     * Never null.
+     */
+    public final Map<String, Long> topLaneWaitMs;
+
     public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
+      this(queued, running, cancelling, oldestQueuedCreatedAtMs, Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          SchedulerHealthBand.GREEN);
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand) {
+      this(queued, running, cancelling, oldestQueuedCreatedAtMs, queuedByClass, healthBand, 0L);
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          healthBand,
+          agingPromotionsTotal,
+          Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal,
+        Map<StatsPriorityClass, Long> admissionDeferredByClass) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          queuedByClass,
+          healthBand,
+          agingPromotionsTotal,
+          admissionDeferredByClass,
+          Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal,
+        Map<StatsPriorityClass, Long> admissionDeferredByClass,
+        Map<String, Long> topLaneWaitMs) {
       this.queued = Math.max(0L, queued);
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
       this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
+      Map<StatsPriorityClass, Long> byClass = new EnumMap<>(StatsPriorityClass.class);
+      if (queuedByClass != null) {
+        queuedByClass.forEach((k, v) -> byClass.put(k, Math.max(0L, v)));
+      }
+      this.queuedByClass = byClass;
+      this.healthBand = healthBand == null ? SchedulerHealthBand.GREEN : healthBand;
+      this.agingPromotionsTotal = Math.max(0L, agingPromotionsTotal);
+      Map<StatsPriorityClass, Long> deferredByClass = new EnumMap<>(StatsPriorityClass.class);
+      if (admissionDeferredByClass != null) {
+        admissionDeferredByClass.forEach((k, v) -> deferredByClass.put(k, Math.max(0L, v)));
+      }
+      this.admissionDeferredByClass = deferredByClass;
+      this.topLaneWaitMs = topLaneWaitMs == null ? Map.of() : Map.copyOf(topLaneWaitMs);
     }
   }
 

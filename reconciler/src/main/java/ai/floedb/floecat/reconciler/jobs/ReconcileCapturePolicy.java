@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -24,7 +25,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/** Output and column policy for reconcile-time capture execution. */
+/**
+ * Output, column, selector-scope, and cost policy for reconcile-time capture execution.
+ *
+ * <p>The selector scope fields ({@link #defaultColumnScope()} and {@link #maxDefaultColumns()})
+ * control how connector engines expand implicit column sets when explicit selectors are absent. The
+ * {@link #maxCost()} field constrains expensive stat kinds on latency-sensitive paths.
+ */
 public final class ReconcileCapturePolicy {
   public enum DefaultColumnScope {
     FIRST_N,
@@ -53,19 +60,25 @@ public final class ReconcileCapturePolicy {
 
   private static final ReconcileCapturePolicy EMPTY =
       new ReconcileCapturePolicy(
-          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
+          List.of(),
+          Set.of(),
+          DefaultColumnScope.FIRST_N,
+          DEFAULT_MAX_COLUMNS,
+          JobCostHint.EXPENSIVE);
 
   private final List<Column> columns;
   private final Set<Output> outputs;
   private final DefaultColumnScope defaultColumnScope;
   private final int maxDefaultColumns;
+  private final JobCostHint maxCost;
 
   @JsonCreator
   private ReconcileCapturePolicy(
       @JsonProperty("columns") List<Column> columns,
       @JsonProperty("outputs") Set<Output> outputs,
       @JsonProperty("defaultColumnScope") DefaultColumnScope defaultColumnScope,
-      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns) {
+      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns,
+      @JsonProperty("maxCost") JobCostHint maxCost) {
     this.columns =
         columns == null
             ? List.of()
@@ -84,6 +97,7 @@ public final class ReconcileCapturePolicy {
         maxDefaultColumns == null || maxDefaultColumns <= 0
             ? DEFAULT_MAX_COLUMNS
             : maxDefaultColumns;
+    this.maxCost = maxCost == null ? JobCostHint.EXPENSIVE : maxCost;
   }
 
   public static ReconcileCapturePolicy empty() {
@@ -91,7 +105,13 @@ public final class ReconcileCapturePolicy {
   }
 
   public static ReconcileCapturePolicy of(List<Column> columns, Set<Output> outputs) {
-    return of(columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
+    return of(
+        columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS, JobCostHint.EXPENSIVE);
+  }
+
+  public static ReconcileCapturePolicy of(
+      List<Column> columns, Set<Output> outputs, JobCostHint maxCost) {
+    return of(columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS, maxCost);
   }
 
   public static ReconcileCapturePolicy of(
@@ -99,10 +119,24 @@ public final class ReconcileCapturePolicy {
       Set<Output> outputs,
       DefaultColumnScope defaultColumnScope,
       int maxDefaultColumns) {
-    if ((columns == null || columns.isEmpty()) && (outputs == null || outputs.isEmpty())) {
+    return of(columns, outputs, defaultColumnScope, maxDefaultColumns, JobCostHint.EXPENSIVE);
+  }
+
+  public static ReconcileCapturePolicy of(
+      List<Column> columns,
+      Set<Output> outputs,
+      DefaultColumnScope defaultColumnScope,
+      int maxDefaultColumns,
+      JobCostHint maxCost) {
+    if ((columns == null || columns.isEmpty())
+        && (outputs == null || outputs.isEmpty())
+        && (defaultColumnScope == null || defaultColumnScope == DefaultColumnScope.FIRST_N)
+        && (maxDefaultColumns <= 0 || maxDefaultColumns == DEFAULT_MAX_COLUMNS)
+        && (maxCost == null || maxCost == JobCostHint.EXPENSIVE)) {
       return EMPTY;
     }
-    return new ReconcileCapturePolicy(columns, outputs, defaultColumnScope, maxDefaultColumns);
+    return new ReconcileCapturePolicy(
+        columns, outputs, defaultColumnScope, maxDefaultColumns, maxCost);
   }
 
   @JsonProperty("columns")
@@ -125,6 +159,17 @@ public final class ReconcileCapturePolicy {
     return maxDefaultColumns;
   }
 
+  @JsonProperty("maxCost")
+  public JobCostHint maxCost() {
+    return maxCost;
+  }
+
+  /**
+   * Returns true when there is no capture work to do (no columns and no outputs).
+   *
+   * <p>This method intentionally ignores selector-scope and cost settings because they only
+   * constrain operations that already exist.
+   */
   @JsonIgnore
   public boolean isEmpty() {
     return columns.isEmpty() && outputs.isEmpty();

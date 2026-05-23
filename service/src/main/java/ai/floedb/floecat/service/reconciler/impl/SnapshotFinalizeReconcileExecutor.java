@@ -30,11 +30,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -53,6 +55,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   @Override
   public String id() {
@@ -67,6 +70,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Override
   public Set<ReconcileJobKind> supportedJobKinds() {
     return EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE);
+  }
+
+  @Override
+  public Set<String> supportedLanes() {
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
   }
 
   @Override
@@ -117,6 +130,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("parent snapshot plan job is required"));
     }
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
+    boolean requestsIndexOutputs = requestsIndexOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
     if (coverage.state() == PlannedCoverageState.DIRECT_STATS) {
       try {
@@ -191,7 +205,12 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
     }
     ChildState childState =
-        childState(lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups());
+        childState(
+            lease.accountId,
+            parentJobId,
+            lease.jobId,
+            coverage.expectedGroups(),
+            requestsIndexOutputs);
     if (!childState.duplicateGroups().isEmpty()) {
       return ExecutionResult.terminalFailure(
           0,
@@ -345,6 +364,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     for (TargetStatsRecord aggregateStat : aggregateStats) {
       statsStore.putTargetStats(aggregateStat);
     }
+    // Signal the scheduler: this snapshot is now fully captured with stats outputs.
+    // Must be called only after the stats records are persisted — not on early-return paths.
+    recordFinalizedSnapshotSignal(
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
     return ExecutionResult.success(
         0,
         0,
@@ -388,6 +411,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 .build(),
             null);
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
+      recordFinalizedSnapshotSignal(
+          lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
       return 1L;
     }
     if (statsStore
@@ -406,7 +431,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String accountId,
       String parentJobId,
       String finalizerJobId,
-      List<ReconcileFileGroupTask> expectedGroups) {
+      List<ReconcileFileGroupTask> expectedGroups,
+      boolean requiresIndexArtifacts) {
     if (parentJobId == null || parentJobId.isBlank()) {
       return new ChildState(
           0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
@@ -459,7 +485,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         continue;
       }
       if ("JS_SUCCEEDED".equals(child.state)) {
-        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
+        if (hasPersistedSuccessResults(
+            expectedGroup, child.fileGroupTask, requiresIndexArtifacts)) {
           completedGroups++;
           completedGroupTasks.add(child.fileGroupTask);
         } else {
@@ -697,23 +724,37 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return false;
   }
 
+  private static boolean requestsIndexOutputs(ReconcileJobStore.LeasedJob lease) {
+    ReconcileCapturePolicy policy =
+        lease == null || lease.scope == null
+            ? ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    return policy.outputs().contains(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+  }
+
   private static boolean hasPersistedSuccessResults(
-      ReconcileFileGroupTask expectedGroup, ReconcileFileGroupTask persistedGroup) {
+      ReconcileFileGroupTask expectedGroup,
+      ReconcileFileGroupTask persistedGroup,
+      boolean requiresIndexArtifacts) {
     if (expectedGroup == null || persistedGroup == null) {
       return false;
     }
     if (!groupKey(expectedGroup).equals(groupKey(persistedGroup))) {
       return false;
     }
-    LinkedHashMap<String, ReconcileFileResult.State> statesByFile = new LinkedHashMap<>();
+    LinkedHashMap<String, ReconcileFileResult> resultsByFile = new LinkedHashMap<>();
     for (ReconcileFileResult result : persistedGroup.fileResults()) {
       if (result == null || result.filePath().isBlank()) {
         continue;
       }
-      statesByFile.put(result.filePath(), result.state());
+      resultsByFile.put(result.filePath(), result);
     }
     for (String filePath : expectedGroup.filePaths()) {
-      if (statesByFile.get(filePath) != ReconcileFileResult.State.SUCCEEDED) {
+      ReconcileFileResult result = resultsByFile.get(filePath);
+      if (result == null || result.state() != ReconcileFileResult.State.SUCCEEDED) {
+        return false;
+      }
+      if (requiresIndexArtifacts && result.indexArtifact().isEmpty()) {
         return false;
       }
     }
@@ -750,6 +791,28 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return message.isBlank()
         ? describeGroup(expectedGroup)
         : describeGroup(expectedGroup) + ": " + message;
+  }
+
+  /**
+   * Records a finalized snapshot signal in the {@link SchedulerSignalIndex}. Called only from the
+   * two paths that successfully write stats outputs: the normal aggregate-stats write loop and the
+   * empty-snapshot completion marker. Must NOT be called on early-return paths that skip stats
+   * output (e.g. {@code !requestsStatsOutputs} or {@code aggregateKinds.isEmpty()}).
+   */
+  private void recordFinalizedSnapshotSignal(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) return;
+    try {
+      signalIndexInstance
+          .get()
+          .recordFinalizedSnapshot(accountId, tableId, snapshotId, System.currentTimeMillis());
+    } catch (RuntimeException e) {
+      // Signal recording is best-effort — never fail the finalization path.
+      LOG.debugf(
+          e,
+          "scheduler_signal_index error recording finalized snapshot table=%s snap=%d",
+          tableId,
+          snapshotId);
+    }
   }
 
   private static String blankToUnknown(String value) {

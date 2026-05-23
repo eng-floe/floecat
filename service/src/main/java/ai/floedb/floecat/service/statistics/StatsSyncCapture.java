@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.statistics;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
@@ -55,13 +56,35 @@ class StatsSyncCapture {
    */
   StatsSyncOutcome capture(
       String accountId, String connectorId, ReconcileScope scope, Duration budget) {
+    return capture(accountId, connectorId, scope, budget, ReconcileExecutionPolicy.defaults());
+  }
+
+  /**
+   * Enqueues a scoped capture job with an explicit execution policy and waits for a terminal state.
+   *
+   * <p>Use this overload when the caller needs to assign a specific {@link
+   * ai.floedb.floecat.reconciler.jobs.StatsPriorityClass} (e.g. {@code P0_SYNC} for query-time
+   * bounded capture).
+   */
+  StatsSyncOutcome capture(
+      String accountId,
+      String connectorId,
+      ReconcileScope scope,
+      Duration budget,
+      ReconcileExecutionPolicy executionPolicy) {
     try {
       String jobId =
           reconcileJobStore.enqueue(
-              accountId, connectorId, false, ReconcilerService.CaptureMode.CAPTURE_ONLY, scope);
+              accountId,
+              connectorId,
+              false,
+              ReconcilerService.CaptureMode.CAPTURE_ONLY,
+              scope,
+              executionPolicy,
+              "");
       LOG.debugf(
-          "stats_sync_capture enqueued account=%s connector=%s job=%s budget=%s",
-          accountId, connectorId, jobId, budget);
+          "stats_sync_capture enqueued account=%s connector=%s job=%s budget=%s priority=%s",
+          accountId, connectorId, jobId, budget, executionPolicy.priorityClass());
       return pollUntilTerminal(accountId, jobId, budget);
     } catch (RuntimeException e) {
       LOG.warnf(

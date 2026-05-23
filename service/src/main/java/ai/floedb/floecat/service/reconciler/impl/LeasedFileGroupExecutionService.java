@@ -40,6 +40,7 @@ import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -159,6 +160,19 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>
         effectivePreUploadedArtifacts =
             preUploadedIndexArtifacts == null ? List.of() : preUploadedIndexArtifacts;
+    ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
+    if (capturePolicy.requestsIndexes()) {
+      List<String> missingArtifactFiles =
+          FileGroupExecutionSupport.missingIndexArtifactFiles(
+              plannedTask, effectiveArtifacts, effectivePreUploadedArtifacts);
+      if (!missingArtifactFiles.isEmpty()) {
+        throw Status.FAILED_PRECONDITION
+            .withDescription(
+                "missing index artifacts for planned files: "
+                    + String.join(", ", missingArtifactFiles))
+            .asRuntimeException();
+      }
+    }
     byte[] requestBytes =
         successPayload(
                 requiredResultId,
@@ -205,6 +219,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                               .withFileResults(
                                   FileGroupExecutionSupport.fileResultsForSuccess(
                                       plannedTask,
+                                      capturePolicy,
                                       effectiveFileStats,
                                       effectiveArtifacts,
                                       effectivePreUploadedArtifacts)));
