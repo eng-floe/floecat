@@ -240,12 +240,15 @@ public class ReconcileJobGc {
         }
 
         String state = text(record, "state");
-        String preferredReadyKey = text(record, "readyPointerKey");
         boolean stale = !"JS_QUEUED".equals(state);
-        if (!stale
-            && !preferredReadyKey.isBlank()
-            && !ready.readyPointerKey().equals(preferredReadyKey)) {
-          stale = true;
+        if (!stale) {
+          java.util.LinkedHashSet<String> validReadyKeys = new java.util.LinkedHashSet<>();
+          String preferredReadyKey = text(record, "readyPointerKey");
+          if (!preferredReadyKey.isBlank()) {
+            validReadyKeys.add(preferredReadyKey);
+          }
+          validReadyKeys.addAll(readyPointerKeys(record));
+          stale = !validReadyKeys.contains(ready.readyPointerKey());
         }
 
         if (stale && readyQueueBackend.deleteReadyEntry(ready.readyPointerKey())) {
@@ -459,6 +462,14 @@ public class ReconcileJobGc {
     }
     StoredReconcileJob stored = storedJob(record);
     if (stored == null || !"JS_QUEUED".equals(stored.state)) {
+      return List.of();
+    }
+    if (stored.accountId == null
+        || stored.accountId.isBlank()
+        || stored.jobId == null
+        || stored.jobId.isBlank()
+        || stored.laneKey == null
+        || stored.laneKey.isBlank()) {
       return List.of();
     }
     long dueAt = stored.nextAttemptAtMs > 0L ? stored.nextAttemptAtMs : System.currentTimeMillis();

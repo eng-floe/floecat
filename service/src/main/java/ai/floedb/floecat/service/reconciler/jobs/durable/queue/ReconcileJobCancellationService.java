@@ -24,9 +24,12 @@ import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileJobCancellationService {
+  private static final Logger LOG = Logger.getLogger(ReconcileJobCancellationService.class);
+
   @FunctionalInterface
   public interface CanonicalMutator {
     Optional<CanonicalEnvelope> apply(
@@ -109,18 +112,29 @@ public class ReconcileJobCancellationService {
               return existing;
             });
     if (updated.isPresent() && priorLeaseEpoch != null && !priorLeaseEpoch.isBlank()) {
-      leaseManager.mutateLease(
-          loaded.get().record().accountId,
-          jobId,
-          current -> {
-            if (!priorLeaseEpoch.equals(current.epoch)) {
-              return null;
-            }
-            long now = System.currentTimeMillis();
-            current.expiresAtMs =
-                Math.min(Math.max(now, current.expiresAtMs), now + cancelPokeMaxDelayMs);
-            return current;
-          });
+      boolean shortened = false;
+      for (int i = 0; i < 3 && !shortened; i++) {
+        shortened =
+            leaseManager
+                .mutateLease(
+                    loaded.get().record().accountId,
+                    jobId,
+                    current -> {
+                      if (!priorLeaseEpoch.equals(current.epoch)) {
+                        return null;
+                      }
+                      long now = System.currentTimeMillis();
+                      current.expiresAtMs =
+                          Math.min(Math.max(now, current.expiresAtMs), now + cancelPokeMaxDelayMs);
+                      return current;
+                    })
+                .isPresent();
+      }
+      if (!shortened) {
+        LOG.warnf(
+            "Unable to shorten reconcile lease after cancellation accountId=%s jobId=%s epoch=%s",
+            loaded.get().record().accountId, jobId, priorLeaseEpoch);
+      }
     }
     updated.ifPresent(env -> refreshAncestorContributionRollups.accept(env.record(), false));
     var post = getJob.get(accountId, jobId);

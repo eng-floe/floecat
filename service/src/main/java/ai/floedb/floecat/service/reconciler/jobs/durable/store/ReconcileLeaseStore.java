@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.function.IntToLongFunction;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 
@@ -41,7 +42,9 @@ public interface ReconcileLeaseStore {
       ReconcileJobIndexStore jobIndexStore,
       ReconcileProjectionUpdater projectionUpdater,
       Predicate<String> isTerminalState,
-      BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved);
+      BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
+      int maxAttempts,
+      IntToLongFunction backoffMs);
 
   Optional<LeasedJob> leaseCanonical(
       String canonicalPointerKey,
@@ -74,6 +77,8 @@ public interface ReconcileLeaseStore {
   LeaseExpiryScanPage scanExpiredLeasePointersPage(long nowMs, int pageSize, String pageToken);
 
   void reclaimExpiredLease(ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs);
+
+  void reclaimPossiblyExpiredLeaseByCanonicalPointer(String canonicalPointerKey, long nowMs);
 
   boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch);
 

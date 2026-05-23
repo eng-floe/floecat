@@ -192,9 +192,24 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (canonicalPointer == null) {
       return Optional.empty();
     }
-    return readRecord(
-        new CanonicalPointerSnapshot(
-            canonicalPointer.pointerKey(), canonicalPointer.blobUri(), canonicalPointer.version()));
+    Optional<StoredReconcileJob> record =
+        readRecord(
+            new CanonicalPointerSnapshot(
+                canonicalPointer.pointerKey(),
+                canonicalPointer.blobUri(),
+                canonicalPointer.version()));
+    if (record.isEmpty()) {
+      return Optional.empty();
+    }
+    if (isTerminalState(record.get().state)) {
+      jobIndexBackend.compareAndSetBatch(
+          new JobIndexWriteBatch(
+              List.of(new JobIndexDelete(dedupePointer.pointerKey(), dedupePointer.version())),
+              ReadyQueueMutation.empty(),
+              new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())));
+      return Optional.empty();
+    }
+    return record;
   }
 
   public BulkEnqueueItemResult commitQueuedJobInsert(QueuedJobInsert insert) {

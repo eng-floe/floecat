@@ -408,7 +408,8 @@ public class ReconcileContributionRollupService implements ReconcileProjectionUp
     } else if (queuedChild != null
         && ("JS_RUNNING".equals(stored.state)
             || "JS_WAITING".equals(stored.state)
-            || "JS_SUCCEEDED".equals(stored.state))) {
+            || "JS_SUCCEEDED".equals(stored.state)
+            || isDependencyWaitingQueuedChild(queuedChild))) {
       state = "JS_WAITING";
       message = firstNonBlank(queuedChild.message, "Waiting on child work");
       executorId = "";
@@ -531,6 +532,14 @@ public class ReconcileContributionRollupService implements ReconcileProjectionUp
       return "";
     }
     return firstNonBlank(projected.executorId(), existing.executorId);
+  }
+
+  private static boolean isDependencyWaitingQueuedChild(StoredJobContribution contribution) {
+    if (contribution == null || !"JS_QUEUED".equals(blankToEmpty(contribution.state))) {
+      return false;
+    }
+    String message = blankToEmpty(contribution.message);
+    return "Waiting on dependency".equals(message) || "Waiting on child work".equals(message);
   }
 
   private static String formatDirectChildCounts(DirectChildCounts counts) {

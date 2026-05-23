@@ -306,7 +306,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore(),
         projectionUpdater(),
         DurableReconcileJobStore::isTerminalState,
-        DurableReconcileJobStore::assertImmutableJobIdentityPreserved);
+        DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
+        maxAttempts,
+        this::backoffMs);
     return leaseStore;
   }
 
@@ -424,7 +426,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       maintenanceService = new ReconcileJobMaintenanceService();
     }
     maintenanceService.bind(
-        leaseManager(), this::reclaimExpiredLease, readyScanLimit, reclaimIntervalMs);
+        leaseManager(),
+        this::reclaimExpiredLease,
+        this::repairPotentiallyExpiredActiveJobs,
+        readyScanLimit,
+        reclaimIntervalMs);
     return maintenanceService;
   }
 
@@ -570,7 +576,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     long startedAtMs = System.currentTimeMillis();
-    maintenance().runMaintenanceOnce(0L);
+    maintenance().runMaintenanceOnce(10L);
     LeaseScanStats scanStats = new LeaseScanStats();
     var leased = leaseReadyDue(startedAtMs, effective, scanStats);
     LOG.debugf(
@@ -1204,6 +1210,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           current.epoch);
       return false;
     }
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return false;
+    }
+    if ("JS_CANCELLING".equals(loaded.get().record.state)) {
+      logLeaseSkip(
+          "renewLease",
+          "Skipping renewLease for reconcile job %s because cancellation is already requested",
+          jobId);
+      return false;
+    }
     long now = System.currentTimeMillis();
     if (current.expiresAtMs > 0L && now - current.expiresAtMs > leaseRenewGraceMs) {
       LOG.warnf(
@@ -1220,6 +1237,39 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private void reclaimExpiredLease(
       ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs) {
     leaseManager().reclaimExpiredLease(leaseExpiryEntry, nowMs);
+  }
+
+  private void repairPotentiallyExpiredActiveJobs(long nowMs, long deadlineMs, int pageSize) {
+    repairPotentiallyExpiredActiveJobsForState("JS_RUNNING", nowMs, deadlineMs, pageSize);
+    if (System.currentTimeMillis() <= deadlineMs) {
+      repairPotentiallyExpiredActiveJobsForState("JS_CANCELLING", nowMs, deadlineMs, pageSize);
+    }
+  }
+
+  private void repairPotentiallyExpiredActiveJobsForState(
+      String state, long nowMs, long deadlineMs, int pageSize) {
+    String token = "";
+    int limit = Math.max(1, pageSize);
+    while (System.currentTimeMillis() <= deadlineMs) {
+      var page = jobIndexBackend.listGlobalStateEntries(state, limit, token);
+      if (page.entries().isEmpty()) {
+        return;
+      }
+      for (var entry : page.entries()) {
+        if (System.currentTimeMillis() > deadlineMs) {
+          return;
+        }
+        if (entry == null || entry.blobUri() == null || entry.blobUri().isBlank()) {
+          continue;
+        }
+        leaseManager().reclaimPossiblyExpiredLeaseByCanonicalPointer(entry.blobUri(), nowMs);
+      }
+      String nextToken = page.nextPageToken();
+      if (nextToken == null || nextToken.isBlank() || nextToken.equals(token)) {
+        return;
+      }
+      token = nextToken;
+    }
   }
 
   private Optional<LeasedJob> leaseReadyDue(

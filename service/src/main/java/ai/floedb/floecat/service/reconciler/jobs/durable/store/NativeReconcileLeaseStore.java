@@ -34,6 +34,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.IntToLongFunction;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
@@ -54,6 +55,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   private ReconcileProjectionUpdater projectionUpdater;
   private Predicate<String> isTerminalState;
   private BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved;
+  private int maxAttempts;
+  private IntToLongFunction backoffMs;
 
   public void bind(
       ReconcileLeaseBackend leaseBackend,
@@ -64,7 +67,9 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       ReconcileJobIndexStore jobIndexStore,
       ReconcileProjectionUpdater projectionUpdater,
       Predicate<String> isTerminalState,
-      BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved) {
+      BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
+      int maxAttempts,
+      IntToLongFunction backoffMs) {
     this.leaseBackend = leaseBackend;
     this.payloadStore = payloadStore;
     this.casMax = casMax;
@@ -74,6 +79,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     this.projectionUpdater = projectionUpdater;
     this.isTerminalState = isTerminalState;
     this.assertImmutableJobIdentityPreserved = assertImmutableJobIdentityPreserved;
+    this.maxAttempts = Math.max(1, maxAttempts);
+    this.backoffMs = backoffMs == null ? ignored -> 0L : backoffMs;
   }
 
   public Optional<LeasedJob> leaseCanonical(
@@ -801,6 +808,34 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
   }
 
+  public void reclaimPossiblyExpiredLeaseByCanonicalPointer(String canonicalKey, long nowMs) {
+    if (blank(canonicalKey)) {
+      return;
+    }
+    StoredReconcileJob canonicalRecord =
+        jobIndexStore.readCanonicalRecordByKey(canonicalKey).orElse(null);
+    if (canonicalRecord == null) {
+      return;
+    }
+    if (!"JS_RUNNING".equals(canonicalRecord.state)
+        && !"JS_CANCELLING".equals(canonicalRecord.state)) {
+      return;
+    }
+    StoredJobLease lease = loadLease(canonicalRecord).orElse(null);
+    if (lease == null || blank(lease.epoch) || lease.expiresAtMs <= 0L) {
+      reclaimRunningOrCancellingJob(
+          canonicalKey,
+          canonicalRecord,
+          StoredJobLease.empty(canonicalRecord.accountId, canonicalRecord.jobId),
+          nowMs);
+      return;
+    }
+    if (lease.expiresAtMs > nowMs || nowMs - lease.expiresAtMs <= leaseRenewGraceMs) {
+      return;
+    }
+    reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
+  }
+
   private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
     return record != null && hasUnexpiredJobLease(record.accountId, record.jobId, now);
   }
@@ -856,13 +891,28 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                     record.finishedAtMs = nowMs;
                     record.readyPointerKey = null;
                   } else {
-                    record.state = "JS_QUEUED";
-                    record.message = "Lease expired; requeued";
+                    record.attempt = Math.max(0, record.attempt) + 1;
+                    record.lastError = "Lease expired";
                     record.executorId = "";
-                    record.nextAttemptAtMs = nowMs;
-                    record.readyPointerKey =
-                        Keys.reconcileReadyPointerByDue(
-                            nowMs, record.accountId, record.laneKey, record.jobId);
+                    if (record.attempt >= maxAttempts) {
+                      record.state = "JS_FAILED";
+                      record.message = "Lease expired repeatedly; failed";
+                      if (record.startedAtMs <= 0L) {
+                        record.startedAtMs = nowMs;
+                      }
+                      record.finishedAtMs = nowMs;
+                      record.readyPointerKey = null;
+                    } else {
+                      long nextAttemptAtMs =
+                          nowMs + Math.max(0L, backoffMs.applyAsLong(record.attempt));
+                      record.state = "JS_QUEUED";
+                      record.message = "Lease expired; requeued";
+                      record.nextAttemptAtMs = nextAttemptAtMs;
+                      record.finishedAtMs = 0L;
+                      record.readyPointerKey =
+                          Keys.reconcileReadyPointerByDue(
+                              nextAttemptAtMs, record.accountId, record.laneKey, record.jobId);
+                    }
                   }
                   return record;
                 })
