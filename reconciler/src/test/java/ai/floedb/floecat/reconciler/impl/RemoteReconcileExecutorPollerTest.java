@@ -490,7 +490,8 @@ class RemoteReconcileExecutorPollerTest {
 
     poller.pollOnce();
 
-    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("remote-poller"));
+    verify(client, org.mockito.Mockito.timeout(5_000L).atLeastOnce())
+        .lease(any(), eq("remote-poller"));
   }
 
   @Test

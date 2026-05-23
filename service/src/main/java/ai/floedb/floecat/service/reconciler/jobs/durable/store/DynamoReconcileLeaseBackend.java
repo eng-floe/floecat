@@ -29,9 +29,11 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -192,8 +194,29 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       }
     }
     if (leaseBatch != null) {
+      Set<String> mutatedLeaseRecords = new HashSet<>();
+      Map<String, Long> conditionedLeaseRecords = new HashMap<>();
+      for (LeaseWriteOp write : leaseBatch.writes()) {
+        if (write instanceof LeaseRecordUpsert upsert) {
+          mutatedLeaseRecords.add(leaseRecordKey(upsert.accountId(), upsert.jobId()));
+        } else if (write instanceof LeaseRecordDelete delete) {
+          mutatedLeaseRecords.add(leaseRecordKey(delete.accountId(), delete.jobId()));
+        }
+      }
       for (LeaseWriteOp write : leaseBatch.writes()) {
         if (write instanceof LeaseRecordCondition condition) {
+          String leaseRecordKey = leaseRecordKey(condition.accountId(), condition.jobId());
+          if (mutatedLeaseRecords.contains(leaseRecordKey)) {
+            continue;
+          }
+          Long priorExpectedVersion =
+              conditionedLeaseRecords.putIfAbsent(leaseRecordKey, condition.expectedVersion());
+          if (priorExpectedVersion != null) {
+            if (priorExpectedVersion.longValue() != condition.expectedVersion()) {
+              return false;
+            }
+            continue;
+          }
           tx.add(buildLeaseCondition(condition));
         } else if (write instanceof LeaseRecordUpsert upsert) {
           tx.add(buildLeaseUpsert(upsert));
@@ -216,6 +239,10 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     } catch (TransactionCanceledException e) {
       return false;
     }
+  }
+
+  private String leaseRecordKey(String accountId, String jobId) {
+    return LeaseBackendSupport.leasePointerKey(accountId, jobId);
   }
 
   private Optional<LeaseRecordSnapshot> loadLeaseSnapshot(
