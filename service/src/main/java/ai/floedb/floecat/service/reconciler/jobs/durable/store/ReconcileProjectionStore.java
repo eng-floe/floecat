@@ -31,5 +31,7 @@ public interface ReconcileProjectionStore {
 
   boolean upsertContribution(StoredJobContribution contribution);
 
+  java.util.Optional<String> loadFileGroupResultReference(String accountId, String jobId);
+
   boolean upsertFileGroupResultReference(String accountId, String jobId, String blobUri);
 }

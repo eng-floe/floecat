@@ -37,8 +37,8 @@ import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class PointerBackedReconcileJobIndexStore implements ReconcileJobIndexStore {
-  private static final Logger LOG = Logger.getLogger(PointerBackedReconcileJobIndexStore.class);
+public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
+  private static final Logger LOG = Logger.getLogger(NativeReconcileJobIndexStore.class);
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
   private static final int LIST_SCAN_MAX_PAGES = 1_000;
   private static final String LIST_TOKEN_V1_PREFIX = "v1:";
@@ -357,7 +357,9 @@ public class PointerBackedReconcileJobIndexStore implements ReconcileJobIndexSto
       }
     }
     return new JobIndexWriteBatch(
-        ops, buildReadyQueueMutation(previous, current, canonicalPointerKey));
+        ops,
+        buildReadyQueueMutation(previous, current, canonicalPointerKey),
+        new ReconcileProjectionBackend.ProjectionWriteBatch(List.of()));
   }
 
   public StoredReconcileJob cloneStoredRecord(StoredReconcileJob source) {
@@ -506,7 +508,7 @@ public class PointerBackedReconcileJobIndexStore implements ReconcileJobIndexSto
                 record.jobKind().name()));
       }
     }
-    readyKeys.removeIf(PointerBackedReconcileJobIndexStore::blank);
+    readyKeys.removeIf(NativeReconcileJobIndexStore::blank);
     return List.copyOf(readyKeys);
   }
 
@@ -602,18 +604,22 @@ public class PointerBackedReconcileJobIndexStore implements ReconcileJobIndexSto
     for (String stateKey : insert.stateKeys()) {
       ops.add(new JobIndexUpsert(stateKey, 0L, insert.canonicalKey()));
     }
-    if (!blank(insert.resultBlobUri())) {
-      String resultPointerKey =
-          Keys.reconcileJobResultPointerById(insert.record().accountId, insert.record().jobId);
-      ops.add(new JobIndexUpsert(resultPointerKey, 0L, insert.resultBlobUri()));
-    }
     return new JobIndexWriteBatch(
         ops,
         new ReadyQueueMutation(
             insert.readyKeys().stream()
                 .map(readyKey -> new ReadyQueueWrite(readyKey, insert.canonicalKey()))
                 .toList(),
-            List.of()));
+            List.of()),
+        blank(insert.resultBlobUri())
+            ? new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())
+            : new ReconcileProjectionBackend.ProjectionWriteBatch(
+                List.of(
+                    new ReconcileProjectionBackend.ResultReferenceUpsert(
+                        insert.record().accountId,
+                        insert.record().jobId,
+                        0L,
+                        insert.resultBlobUri()))));
   }
 
   private StoredJobPage listAccountWide(

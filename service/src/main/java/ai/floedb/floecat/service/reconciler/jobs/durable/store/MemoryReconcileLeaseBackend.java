@@ -17,11 +17,12 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -42,18 +43,63 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   }
 
   @Override
-  public Optional<Pointer> loadPointer(String pointerKey) {
-    return pointerStore.get(pointerKey);
+  public Optional<LeaseRecordSnapshot> loadLease(String accountId, String jobId) {
+    return pointerStore
+        .get(Keys.reconcileJobLeasePointerById(accountId, jobId))
+        .map(pointer -> new LeaseRecordSnapshot(pointer.getBlobUri(), pointer.getVersion()));
   }
 
   @Override
-  public boolean compareAndSetBatch(List<CasOp> ops) {
+  public Optional<LeaseExpirySnapshot> loadLeaseExpiry(String leaseExpiryKey) {
+    return pointerStore
+        .get(leaseExpiryKey)
+        .map(
+            pointer ->
+                new LeaseExpirySnapshot(
+                    leaseExpiryKey, pointer.getBlobUri(), pointer.getVersion()));
+  }
+
+  @Override
+  public Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey) {
+    return pointerStore
+        .get(ownerKey)
+        .map(
+            pointer ->
+                new LeaseOwnerSnapshot(ownerKey, pointer.getBlobUri(), pointer.getVersion()));
+  }
+
+  @Override
+  public ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
+      int limit, String pageToken) {
+    StringBuilder nextPageToken = new StringBuilder();
+    List<Pointer> pointers =
+        pointerStore.listPointersByPrefix(
+            LeaseBackendSupport.LEASE_EXPIRY_POINTER_PREFIX, limit, pageToken, nextPageToken);
+    List<ReconcileLeaseStore.LeaseExpiryEntry> entries = new ArrayList<>(pointers.size());
+    for (Pointer pointer : pointers) {
+      entries.add(new ReconcileLeaseStore.LeaseExpiryEntry(pointer.getKey(), pointer.getBlobUri()));
+    }
+    return new ReconcileLeaseStore.LeaseExpiryScanPage(
+        List.copyOf(entries), nextPageToken.toString());
+  }
+
+  @Override
+  public boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
+    List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops =
+        new ArrayList<>(
+            JobIndexWriteBatchSupport.toCasOps(
+                jobIndexBatch,
+                key ->
+                    pointerStore
+                        .get(key)
+                        .map(
+                            pointer ->
+                                new StoredPointerSnapshot(
+                                    pointer.getKey(),
+                                    pointer.getBlobUri(),
+                                    pointer.getVersion()))));
+    ops.addAll(LeaseWriteBatchSupport.toCasOps(leaseBatch));
     return pointerStore.compareAndSetBatch(ops);
-  }
-
-  @Override
-  public List<Pointer> listPointersByPrefix(
-      String prefix, int limit, String pageToken, StringBuilder nextPageToken) {
-    return pointerStore.listPointersByPrefix(prefix, limit, pageToken, nextPageToken);
   }
 }

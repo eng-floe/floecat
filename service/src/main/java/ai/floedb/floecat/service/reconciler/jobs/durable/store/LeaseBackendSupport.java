@@ -23,9 +23,12 @@ final class LeaseBackendSupport {
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
   static final String LEASE_PARTITION_PREFIX = "reconcile-lease/";
   static final String LEASE_SORT_PREFIX = "job/";
+  static final String LEASE_OWNER_PARTITION_PREFIX = "reconcile-lease-owner/";
+  static final String LEASE_OWNER_SORT_KEY = "owner";
   static final String LEASE_EXPIRY_PARTITION_KEY = "reconcile-lease-expiry";
   static final String LEASE_EXPIRY_PAGE_TOKEN_PREFIX = "rjlx:";
   static final String KIND_LEASE_ENTRY = "ReconcileJobLease";
+  static final String KIND_LEASE_OWNER_ENTRY = "ReconcileJobLeaseOwner";
   static final String KIND_LEASE_EXPIRY_ENTRY = "ReconcileJobLeaseExpiry";
   static final String ATTR_POINTER_KEY = "pointer_key";
   static final String ATTR_CANONICAL_POINTER_KEY = "canonical_pointer_key";
@@ -86,6 +89,10 @@ final class LeaseBackendSupport {
 
   static String leaseExpirySortKey(LeaseExpiryPointerKey key) {
     return key.expiryToken() + "/accounts/" + key.accountSegment() + "/jobs/" + key.jobSegment();
+  }
+
+  static String ownerPartitionKey(String ownerKey) {
+    return LEASE_OWNER_PARTITION_PREFIX + DynamoPointerBackendSupport.stripLeadingSlash(ownerKey);
   }
 
   static String encodeLeaseExpiryPageToken(String sortKey) {

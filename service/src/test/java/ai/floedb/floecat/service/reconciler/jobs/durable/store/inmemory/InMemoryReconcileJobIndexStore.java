@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.StoredPointerSnapshot;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -461,7 +462,9 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       }
     }
     return new JobIndexWriteBatch(
-        ops, buildReadyQueueMutation(previous, current, canonicalPointerKey));
+        ops,
+        buildReadyQueueMutation(previous, current, canonicalPointerKey),
+        new ReconcileProjectionBackend.ProjectionWriteBatch(List.of()));
   }
 
   @Override
@@ -573,18 +576,22 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     for (String stateKey : insert.stateKeys()) {
       ops.add(new JobIndexUpsert(stateKey, 0L, insert.canonicalKey()));
     }
-    if (!blank(insert.resultBlobUri())) {
-      String resultPointerKey =
-          Keys.reconcileJobResultPointerById(insert.record().accountId, insert.record().jobId);
-      ops.add(new JobIndexUpsert(resultPointerKey, 0L, insert.resultBlobUri()));
-    }
     return new JobIndexWriteBatch(
         ops,
         new ReadyQueueMutation(
             insert.readyKeys().stream()
                 .map(readyKey -> new ReadyQueueWrite(readyKey, insert.canonicalKey()))
                 .toList(),
-            List.of()));
+            List.of()),
+        blank(insert.resultBlobUri())
+            ? new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())
+            : new ReconcileProjectionBackend.ProjectionWriteBatch(
+                List.of(
+                    new ReconcileProjectionBackend.ResultReferenceUpsert(
+                        insert.record().accountId,
+                        insert.record().jobId,
+                        0L,
+                        insert.resultBlobUri()))));
   }
 
   private void appendReferenceUpsert(

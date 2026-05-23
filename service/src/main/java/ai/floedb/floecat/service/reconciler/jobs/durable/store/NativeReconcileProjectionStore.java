@@ -14,19 +14,19 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
+package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
-public final class InMemoryReconcileProjectionStore implements ReconcileProjectionStore {
-  private static final Logger LOG = Logger.getLogger(InMemoryReconcileProjectionStore.class);
+@ApplicationScoped
+public class NativeReconcileProjectionStore implements ReconcileProjectionStore {
+  private static final Logger LOG = Logger.getLogger(NativeReconcileProjectionStore.class);
 
   private ReconcileProjectionBackend projectionBackend;
   private ReconcilePayloadStore payloadStore;
@@ -51,6 +51,10 @@ public final class InMemoryReconcileProjectionStore implements ReconcileProjecti
         .map(ReconcileProjectionBackend.ContributionSnapshot::blobUri)
         .map(payloadStore::readInlineJobContribution)
         .flatMap(Optional::stream)
+        .filter(
+            contribution ->
+                accountId.equals(contribution.accountId)
+                    && parentJobId.equals(contribution.parentJobId))
         .collect(Collectors.toList());
   }
 
@@ -86,7 +90,7 @@ public final class InMemoryReconcileProjectionStore implements ReconcileProjecti
       }
     }
     LOG.warnf(
-        "Failed to upsert in-memory contribution account=%s parent=%s child=%s",
+        "Failed to upsert reconcile contribution account=%s parent=%s child=%s after CAS retries",
         contribution.accountId, contribution.parentJobId, contribution.childJobId);
     return false;
   }
@@ -123,7 +127,7 @@ public final class InMemoryReconcileProjectionStore implements ReconcileProjecti
       }
     }
     LOG.warnf(
-        "Failed to upsert in-memory file-group result reference account=%s job=%s",
+        "Failed to upsert reconcile file-group result reference account=%s job=%s after CAS retries",
         accountId, jobId);
     return false;
   }

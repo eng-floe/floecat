@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.reconciler.jobs;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
-import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -50,10 +49,10 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileJobIndexStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileProjectionStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileReadyQueueStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
@@ -107,10 +106,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   private static final int CAS_MAX = 16;
-  private static final String LEASE_EXPIRY_POINTER_PREFIX =
-      "/accounts/by-id/reconcile/job-leases/by-expiry/";
-  private static final long INVALID_ORDERED_POINTER_MS = -1L;
-
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
@@ -151,7 +146,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (payloadStore == null) {
       payloadStore = new ReconcilePayloadStore();
     }
-    payloadStore.bind(blobStore, pointerStore, mapper);
+    payloadStore.bind(
+        blobStore,
+        pointerStore,
+        mapper,
+        (accountId, jobId) -> projectionStore().loadFileGroupResultReference(accountId, jobId));
     return payloadStore;
   }
 
@@ -165,7 +164,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ReconcileProjectionStore projectionStore() {
     if (projectionStore == null) {
-      projectionStore = new PointerBackedReconcileProjectionStore();
+      projectionStore = new NativeReconcileProjectionStore();
     }
     if (projectionBackend == null) {
       String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
@@ -179,7 +178,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     if (projectionBackend instanceof MemoryReconcileProjectionBackend memoryBackend) {
-      memoryBackend.bind(pointerStore);
+      memoryBackend.bind();
     } else if (projectionBackend instanceof DynamoReconcileProjectionBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
@@ -191,7 +190,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ReconcileJobIndexStore jobIndexStore() {
     if (jobIndexStore == null) {
-      jobIndexStore = new PointerBackedReconcileJobIndexStore();
+      jobIndexStore = new NativeReconcileJobIndexStore();
     }
     if (jobIndexBackend == null) {
       String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
@@ -205,7 +204,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     if (jobIndexBackend instanceof MemoryReconcileJobIndexBackend memoryBackend) {
-      memoryBackend.bind(pointerStore);
+      projectionStore();
+      memoryBackend.bind(pointerStore, projectionBackend);
     } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
@@ -276,7 +276,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ReconcileLeaseStore leaseManager() {
     if (leaseStore == null) {
-      leaseStore = new PointerBackedReconcileLeaseStore();
+      leaseStore = new NativeReconcileLeaseStore();
     }
     if (leaseBackend == null) {
       String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
@@ -311,7 +311,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ReconcileReadyQueueStore readyQueue() {
     if (readyQueueStore == null) {
-      readyQueueStore = new PointerBackedReconcileReadyQueueStore();
+      readyQueueStore = new NativeReconcileReadyQueueStore();
     }
     if (readyQueueBackend == null) {
       String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
@@ -1167,11 +1167,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
   }
 
-  private boolean mutateByCanonicalPointer(
-      String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator) {
-    return mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator).isPresent();
-  }
-
   private Optional<StoredEnvelope> mutateByCanonicalPointerReturningRecord(
       String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator) {
     return jobIndexStore()
@@ -1219,10 +1214,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     leaseManager().reclaimExpiredLease(leaseExpiryEntry, nowMs);
   }
 
-  private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
-    return readyQueue().leaseReadyDue(nowMs, request);
-  }
-
   private Optional<LeasedJob> leaseReadyDue(
       long nowMs, LeaseRequest request, LeaseScanStats scanStats) {
     return readyQueue().leaseReadyDue(nowMs, request, scanStats);
@@ -1234,14 +1225,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private List<String> readyPointerKeys(StoredReconcileJob record) {
     return readyQueue().readyPointerKeys(record);
-  }
-
-  private boolean hasValidReadyPointers(StoredReconcileJob record, String expectedReference) {
-    return indexes().hasValidReadyPointers(record, expectedReference);
-  }
-
-  private Optional<StoredReconcileJob> readCanonicalRecordByKey(String canonicalPointerKey) {
-    return jobIndexStore().readCanonicalRecordByKey(canonicalPointerKey);
   }
 
   @Override
@@ -1304,58 +1287,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     statsProcessed));
   }
 
-  private long readyPointerDueAt(StoredReconcileJob record) {
-    return readyQueue().readyPointerDueAt(record);
-  }
-
-  private long parseLeaseExpiryMillis(String leaseExpiryPointerKey) {
-    return parseTimestampFromOrderedPointer(leaseExpiryPointerKey, LEASE_EXPIRY_POINTER_PREFIX);
-  }
-
-  private long parseDueMillis(String readyPointerKey) {
-    return parseTimestampFromOrderedPointer(readyPointerKey, Keys.reconcileReadyPointerPrefix());
-  }
-
-  private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String normalizedKey = normalizePointerKey(pointerKey);
-    String normalizedPrefix = normalizePointerKey(prefix);
-    if (!normalizedKey.startsWith(normalizedPrefix)) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    int slash = normalizedKey.indexOf('/', normalizedPrefix.length());
-    if (slash < 0) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-
-    String token = normalizedKey.substring(normalizedPrefix.length(), slash);
-    try {
-      return Long.parseLong(token);
-    } catch (NumberFormatException nfe) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-  }
-
   private List<String> statePointerKeys(StoredReconcileJob record) {
     return indexes().statePointerKeys(record);
-  }
-
-  private static String normalizePointerKey(String key) {
-    if (key == null || key.isBlank()) {
-      return "/";
-    }
-    return key.startsWith("/") ? key : "/" + key;
   }
 
   private long backoffMs(int attempts) {
     long base = baseBackoffMs * (1L << Math.min(8, Math.max(0, attempts - 1)));
     return Math.min(maxBackoffMs, base);
-  }
-
-  private StoredReconcileJob cloneStoredRecord(StoredReconcileJob source) {
-    return jobIndexStore().cloneStoredRecord(source);
   }
 
   // File-group result payload references are intentionally outside the canonical job-index
@@ -1391,10 +1329,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return jobKind == ReconcileJobKind.PLAN_CONNECTOR
         || jobKind == ReconcileJobKind.PLAN_TABLE
         || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
-  }
-
-  private void refreshContributionChain(StoredReconcileJob record) {
-    contributionRollups().refreshContributionChain(record);
   }
 
   private void refreshAncestorContributionRollups(
@@ -1447,29 +1381,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return first;
     }
     return Math.min(first, second);
-  }
-
-  private boolean isCanonicalJobPointerKey(String accountId, String pointerKey) {
-    String prefix = Keys.reconcileJobStateRowByIdPrefix(accountId);
-    if (pointerKey == null || prefix == null || !pointerKey.startsWith(prefix)) {
-      return false;
-    }
-    String suffix = pointerKey.substring(prefix.length());
-    return !suffix.isBlank() && suffix.indexOf('/') < 0;
-  }
-
-  private boolean isCanonicalJobPointerKey(String pointerKey) {
-    if (pointerKey == null
-        || pointerKey.isBlank()
-        || pointerKey.startsWith(Keys.reconcileJobLookupPointerByIdPrefix())) {
-      return false;
-    }
-    int marker = pointerKey.indexOf("/reconcile/jobs/by-id/");
-    if (!pointerKey.startsWith("/accounts/") || marker < 0) {
-      return false;
-    }
-    String suffix = pointerKey.substring(marker + "/reconcile/jobs/by-id/".length());
-    return !suffix.isBlank() && suffix.indexOf('/') < 0;
   }
 
   private static boolean requiresReadyPointer(StoredReconcileJob record) {
@@ -1563,76 +1474,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               + " snapshotId="
               + nextRecord.fileGroupSnapshotId);
     }
-  }
-
-  private static String canonicalCaptureRequest(ReconcileScope.ScopedCaptureRequest request) {
-    if (request == null) {
-      return "";
-    }
-    String selectors =
-        request.columnSelectors().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return request.tableId()
-        + "|"
-        + request.snapshotId()
-        + "|"
-        + request.targetSpec()
-        + "|"
-        + selectors;
-  }
-
-  private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
-    if (policy == null || policy.isEmpty()) {
-      return "";
-    }
-    String columns =
-        policy.columns().stream()
-            .map(
-                column ->
-                    column.selector() + ":" + column.captureStats() + ":" + column.captureIndex())
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("");
-    String outputs =
-        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns
-        + "|"
-        + outputs
-        + "|"
-        + policy.defaultColumnScope().name()
-        + "|"
-        + policy.maxDefaultColumns();
-  }
-
-  private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
-    if (fileGroups == null || fileGroups.isEmpty()) {
-      return List.of();
-    }
-    return fileGroups.stream()
-        .filter(group -> group != null && !group.isEmpty())
-        .map(
-            group ->
-                blankToEmpty(group.planId())
-                    + "|"
-                    + blankToEmpty(group.groupId())
-                    + "|"
-                    + blankToEmpty(group.tableId())
-                    + "|"
-                    + group.snapshotId()
-                    + "|"
-                    + String.join(",", canonicalFilePaths(group)))
-        .sorted()
-        .toList();
-  }
-
-  private static List<String> canonicalFilePaths(ReconcileFileGroupTask group) {
-    if (group == null || group.filePaths() == null || group.filePaths().isEmpty()) {
-      return List.of();
-    }
-    return group.filePaths().stream()
-        .filter(path -> path != null && !path.isBlank())
-        .map(String::trim)
-        .sorted()
-        .toList();
   }
 
   private static String blankToEmpty(String value) {

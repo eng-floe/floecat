@@ -23,7 +23,6 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
@@ -61,94 +60,21 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   }
 
   @Override
-  public Optional<Pointer> loadPointer(String pointerKey) {
-    LeaseBackendSupport.LeasePointerKey leaseKey =
-        LeaseBackendSupport.parseLeasePointerKey(pointerKey);
-    if (leaseKey != null) {
-      return loadLeasePointer(leaseKey);
-    }
+  public Optional<LeaseRecordSnapshot> loadLease(String accountId, String jobId) {
+    return loadLeaseSnapshot(
+        new LeaseBackendSupport.LeasePointerKey(
+            "", accountId == null ? "" : accountId, jobId == null ? "" : jobId));
+  }
+
+  @Override
+  public Optional<LeaseExpirySnapshot> loadLeaseExpiry(String leaseExpiryKey) {
     LeaseBackendSupport.LeaseExpiryPointerKey expiryKey =
-        LeaseBackendSupport.parseLeaseExpiryPointerKey(pointerKey);
-    if (expiryKey != null) {
-      return loadLeaseExpiryPointer(expiryKey);
-    }
-    return DynamoPointerBackendSupport.loadPointer(dynamoDb, table, pointerKey);
+        LeaseBackendSupport.parseLeaseExpiryPointerKey(leaseExpiryKey);
+    return expiryKey == null ? Optional.empty() : loadLeaseExpirySnapshot(expiryKey);
   }
 
   @Override
-  public boolean compareAndSetBatch(List<CasOp> ops) {
-    if (ops == null || ops.isEmpty()) {
-      return true;
-    }
-    List<TransactWriteItem> tx = new ArrayList<>(ops.size());
-    for (CasOp op : ops) {
-      if (op instanceof CasUpsert upsert) {
-        LeaseBackendSupport.LeasePointerKey leaseKey =
-            LeaseBackendSupport.parseLeasePointerKey(upsert.key());
-        if (leaseKey != null) {
-          tx.add(buildLeaseUpsert(leaseKey, upsert));
-          continue;
-        }
-        LeaseBackendSupport.LeaseExpiryPointerKey expiryKey =
-            LeaseBackendSupport.parseLeaseExpiryPointerKey(upsert.key());
-        if (expiryKey != null) {
-          tx.add(buildLeaseExpiryUpsert(expiryKey, upsert));
-          continue;
-        }
-        ReadyQueueBackendSupport.ReadyQueueRow readyRow =
-            ReadyQueueBackendSupport.toReadyQueueRow(upsert.key(), upsert.next().getBlobUri());
-        if (readyRow != null) {
-          tx.add(buildReadyUpsert(readyRow));
-          continue;
-        }
-        if (appendJobIndexUpsert(tx, upsert)) {
-          continue;
-        }
-        tx.add(DynamoPointerBackendSupport.buildPointerUpsert(table, upsert));
-      } else if (op instanceof CasDelete delete) {
-        LeaseBackendSupport.LeasePointerKey leaseKey =
-            LeaseBackendSupport.parseLeasePointerKey(delete.key());
-        if (leaseKey != null) {
-          tx.add(buildLeaseDelete(leaseKey, delete));
-          continue;
-        }
-        LeaseBackendSupport.LeaseExpiryPointerKey expiryKey =
-            LeaseBackendSupport.parseLeaseExpiryPointerKey(delete.key());
-        if (expiryKey != null) {
-          tx.add(buildLeaseExpiryDelete(expiryKey, delete));
-          continue;
-        }
-        ReadyQueueBackendSupport.ReadyQueueRow readyRow =
-            ReadyQueueBackendSupport.toReadyQueueRow(delete.key(), "");
-        if (readyRow != null) {
-          tx.add(buildReadyDelete(readyRow));
-          continue;
-        }
-        if (appendJobIndexDelete(tx, delete)) {
-          continue;
-        }
-        tx.add(DynamoPointerBackendSupport.buildPointerDelete(table, delete));
-      }
-    }
-    try {
-      dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder().transactItems(tx).build());
-      return true;
-    } catch (TransactionCanceledException e) {
-      return false;
-    }
-  }
-
-  @Override
-  public List<Pointer> listPointersByPrefix(
-      String prefix, int limit, String pageToken, StringBuilder nextPageToken) {
-    if (LeaseBackendSupport.LEASE_EXPIRY_POINTER_PREFIX.equals(prefix)) {
-      return listLeaseExpiryPointers(limit, pageToken, nextPageToken);
-    }
-    return DynamoPointerBackendSupport.listPointersByPrefix(
-        dynamoDb, table, prefix, limit, pageToken, nextPageToken);
-  }
-
-  private Optional<Pointer> loadLeasePointer(LeaseBackendSupport.LeasePointerKey leaseKey) {
+  public Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey) {
     var response =
         dynamoDb.getItem(
             GetItemRequest.builder()
@@ -157,48 +83,23 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                 .key(
                     Map.of(
                         ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leasePartitionKey(leaseKey)),
+                        AttributeValue.fromS(LeaseBackendSupport.ownerPartitionKey(ownerKey)),
                         ATTR_SORT_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leaseSortKey(leaseKey))))
+                        AttributeValue.fromS(LeaseBackendSupport.LEASE_OWNER_SORT_KEY)))
                 .build());
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
     return Optional.of(
-        Pointer.newBuilder()
-            .setKey(stringAttr(response.item(), LeaseBackendSupport.ATTR_POINTER_KEY))
-            .setBlobUri(stringAttr(response.item(), DynamoPointerBackendSupport.ATTR_BLOB_URI))
-            .setVersion(longAttr(response.item(), ATTR_VERSION))
-            .build());
+        new LeaseOwnerSnapshot(
+            stringAttr(response.item(), LeaseBackendSupport.ATTR_POINTER_KEY),
+            stringAttr(response.item(), LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY),
+            longAttr(response.item(), ATTR_VERSION)));
   }
 
-  private Optional<Pointer> loadLeaseExpiryPointer(
-      LeaseBackendSupport.LeaseExpiryPointerKey expiryKey) {
-    var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
-                .build());
-    if (!response.hasItem() || response.item().isEmpty()) {
-      return Optional.empty();
-    }
-    return Optional.of(
-        Pointer.newBuilder()
-            .setKey(stringAttr(response.item(), LeaseBackendSupport.ATTR_POINTER_KEY))
-            .setBlobUri(stringAttr(response.item(), LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY))
-            .setVersion(longAttr(response.item(), ATTR_VERSION))
-            .build());
-  }
-
-  private List<Pointer> listLeaseExpiryPointers(
-      int limit, String pageToken, StringBuilder nextPageToken) {
+  @Override
+  public ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
+      int limit, String pageToken) {
     QueryRequest.Builder query =
         QueryRequest.builder()
             .tableName(table)
@@ -221,26 +122,147 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     }
 
     var response = dynamoDb.query(query.build());
-    List<Pointer> pointers = new ArrayList<>(response.items().size());
+    List<ReconcileLeaseStore.LeaseExpiryEntry> entries = new ArrayList<>(response.items().size());
     for (var item : response.items()) {
-      pointers.add(
-          Pointer.newBuilder()
-              .setKey(stringAttr(item, LeaseBackendSupport.ATTR_POINTER_KEY))
-              .setBlobUri(stringAttr(item, LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY))
-              .setVersion(longAttr(item, ATTR_VERSION))
-              .build());
+      entries.add(
+          new ReconcileLeaseStore.LeaseExpiryEntry(
+              stringAttr(item, LeaseBackendSupport.ATTR_POINTER_KEY),
+              stringAttr(item, LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY)));
     }
-    nextPageToken.setLength(0);
+    String nextToken = "";
     if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
-      nextPageToken.append(
+      nextToken =
           LeaseBackendSupport.encodeLeaseExpiryPageToken(
-              response.lastEvaluatedKey().get(ATTR_SORT_KEY).s()));
+              response.lastEvaluatedKey().get(ATTR_SORT_KEY).s());
     }
-    return pointers;
+    return new ReconcileLeaseStore.LeaseExpiryScanPage(List.copyOf(entries), nextToken);
   }
 
-  private TransactWriteItem buildLeaseUpsert(
-      LeaseBackendSupport.LeasePointerKey leaseKey, CasUpsert upsert) {
+  @Override
+  public boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
+    if ((jobIndexBatch == null
+            || (jobIndexBatch.writes().isEmpty()
+                && jobIndexBatch.readyMutation().isEmpty()
+                && jobIndexBatch.projectionMutation().writes().isEmpty()))
+        && (leaseBatch == null || leaseBatch.writes().isEmpty())) {
+      return true;
+    }
+    List<TransactWriteItem> tx = new ArrayList<>();
+    if (jobIndexBatch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp write : jobIndexBatch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
+          appendJobIndexUpsert(
+              tx,
+              new CasUpsert(
+                  upsert.pointerKey(),
+                  upsert.expectedVersion(),
+                  Pointer.newBuilder()
+                      .setKey(upsert.pointerKey())
+                      .setBlobUri(upsert.blobUri())
+                      .setVersion(upsert.expectedVersion() + 1L)
+                      .build()));
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
+          appendJobIndexDelete(tx, new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        }
+      }
+      for (ReconcileJobIndexStore.ReadyQueueWrite readyUpsert :
+          jobIndexBatch.readyMutation().upserts()) {
+        tx.add(
+            buildReadyUpsert(
+                ReadyQueueBackendSupport.toReadyQueueRow(
+                    readyUpsert.readyPointerKey(), readyUpsert.canonicalPointerKey())));
+      }
+      for (String readyDeleteKey : jobIndexBatch.readyMutation().deletes()) {
+        ReadyQueueBackendSupport.ReadyQueueRow row =
+            ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey, "");
+        if (row != null) {
+          tx.add(buildReadyDelete(row));
+        }
+      }
+      for (var write : jobIndexBatch.projectionMutation().writes()) {
+        if (write instanceof ReconcileProjectionBackend.ContributionUpsert upsert) {
+          tx.add(buildProjectionContributionUpsert(upsert));
+        } else if (write instanceof ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
+          tx.add(buildProjectionResultReferenceUpsert(upsert));
+        }
+      }
+    }
+    if (leaseBatch != null) {
+      for (LeaseWriteOp write : leaseBatch.writes()) {
+        if (write instanceof LeaseRecordUpsert upsert) {
+          tx.add(buildLeaseUpsert(upsert));
+        } else if (write instanceof LeaseRecordDelete delete) {
+          tx.add(buildLeaseDelete(delete));
+        } else if (write instanceof LeaseExpiryUpsert upsert) {
+          tx.add(buildLeaseExpiryUpsert(upsert));
+        } else if (write instanceof LeaseExpiryDelete delete) {
+          tx.add(buildLeaseExpiryDelete(delete));
+        } else if (write instanceof LeaseOwnerUpsert upsert) {
+          tx.add(buildLeaseOwnerUpsert(upsert));
+        } else if (write instanceof LeaseOwnerDelete delete) {
+          tx.add(buildLeaseOwnerDelete(delete));
+        }
+      }
+    }
+    try {
+      dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder().transactItems(tx).build());
+      return true;
+    } catch (TransactionCanceledException e) {
+      return false;
+    }
+  }
+
+  private Optional<LeaseRecordSnapshot> loadLeaseSnapshot(
+      LeaseBackendSupport.LeasePointerKey leaseKey) {
+    var response =
+        dynamoDb.getItem(
+            GetItemRequest.builder()
+                .tableName(table)
+                .consistentRead(true)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(LeaseBackendSupport.leasePartitionKey(leaseKey)),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS(LeaseBackendSupport.leaseSortKey(leaseKey))))
+                .build());
+    if (!response.hasItem() || response.item().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new LeaseRecordSnapshot(
+            stringAttr(response.item(), DynamoPointerBackendSupport.ATTR_BLOB_URI),
+            longAttr(response.item(), ATTR_VERSION)));
+  }
+
+  private Optional<LeaseExpirySnapshot> loadLeaseExpirySnapshot(
+      LeaseBackendSupport.LeaseExpiryPointerKey expiryKey) {
+    var response =
+        dynamoDb.getItem(
+            GetItemRequest.builder()
+                .tableName(table)
+                .consistentRead(true)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS(LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
+                .build());
+    if (!response.hasItem() || response.item().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new LeaseExpirySnapshot(
+            stringAttr(response.item(), LeaseBackendSupport.ATTR_POINTER_KEY),
+            stringAttr(response.item(), LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY),
+            longAttr(response.item(), ATTR_VERSION)));
+  }
+
+  private TransactWriteItem buildLeaseUpsert(LeaseRecordUpsert upsert) {
+    LeaseBackendSupport.LeasePointerKey leaseKey =
+        new LeaseBackendSupport.LeasePointerKey("", upsert.accountId(), upsert.jobId());
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(
         ATTR_PARTITION_KEY, AttributeValue.fromS(LeaseBackendSupport.leasePartitionKey(leaseKey)));
@@ -249,8 +271,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
     item.put(LeaseBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(leaseKey.pointerKey()));
     item.put(
-        DynamoPointerBackendSupport.ATTR_BLOB_URI,
-        AttributeValue.fromS(upsert.next().getBlobUri()));
+        DynamoPointerBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.encodedLease()));
     Put.Builder put = Put.builder().tableName(table).item(item);
     if (upsert.expectedVersion() == 0L) {
       put.conditionExpression("attribute_not_exists(#pk)")
@@ -264,8 +285,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     return TransactWriteItem.builder().put(put.build()).build();
   }
 
-  private TransactWriteItem buildLeaseDelete(
-      LeaseBackendSupport.LeasePointerKey leaseKey, CasDelete delete) {
+  private TransactWriteItem buildLeaseDelete(LeaseRecordDelete delete) {
+    LeaseBackendSupport.LeasePointerKey leaseKey =
+        new LeaseBackendSupport.LeasePointerKey("", delete.accountId(), delete.jobId());
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
@@ -285,8 +307,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         .build();
   }
 
-  private TransactWriteItem buildLeaseExpiryUpsert(
-      LeaseBackendSupport.LeaseExpiryPointerKey expiryKey, CasUpsert upsert) {
+  private TransactWriteItem buildLeaseExpiryUpsert(LeaseExpiryUpsert upsert) {
+    LeaseBackendSupport.LeaseExpiryPointerKey expiryKey =
+        LeaseBackendSupport.parseLeaseExpiryPointerKey(upsert.leaseExpiryKey());
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(
         ATTR_PARTITION_KEY, AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY));
@@ -297,7 +320,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     item.put(LeaseBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(expiryKey.pointerKey()));
     item.put(
         LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY,
-        AttributeValue.fromS(upsert.next().getBlobUri()));
+        AttributeValue.fromS(upsert.canonicalPointerKey()));
     Put.Builder put = Put.builder().tableName(table).item(item);
     if (upsert.expectedVersion() == 0L) {
       put.conditionExpression("attribute_not_exists(#pk)")
@@ -311,8 +334,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     return TransactWriteItem.builder().put(put.build()).build();
   }
 
-  private TransactWriteItem buildLeaseExpiryDelete(
-      LeaseBackendSupport.LeaseExpiryPointerKey expiryKey, CasDelete delete) {
+  private TransactWriteItem buildLeaseExpiryDelete(LeaseExpiryDelete delete) {
+    LeaseBackendSupport.LeaseExpiryPointerKey expiryKey =
+        LeaseBackendSupport.parseLeaseExpiryPointerKey(delete.leaseExpiryKey());
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
@@ -330,6 +354,67 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                         ":expected", AttributeValue.fromN(Long.toString(delete.expectedVersion()))))
                 .build())
         .build();
+  }
+
+  private TransactWriteItem buildLeaseOwnerUpsert(LeaseOwnerUpsert upsert) {
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(LeaseBackendSupport.ownerPartitionKey(upsert.ownerKey())));
+    item.put(ATTR_SORT_KEY, AttributeValue.fromS(LeaseBackendSupport.LEASE_OWNER_SORT_KEY));
+    item.put(ATTR_KIND, AttributeValue.fromS(LeaseBackendSupport.KIND_LEASE_OWNER_ENTRY));
+    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
+    item.put(LeaseBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(upsert.ownerKey()));
+    item.put(
+        LeaseBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+        AttributeValue.fromS(upsert.canonicalPointerKey()));
+    return buildPut(item, upsert.expectedVersion());
+  }
+
+  private TransactWriteItem buildLeaseOwnerDelete(LeaseOwnerDelete delete) {
+    return buildDelete(
+        LeaseBackendSupport.ownerPartitionKey(delete.ownerKey()),
+        LeaseBackendSupport.LEASE_OWNER_SORT_KEY,
+        delete.expectedVersion());
+  }
+
+  private TransactWriteItem buildProjectionContributionUpsert(
+      ReconcileProjectionBackend.ContributionUpsert upsert) {
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(
+            ProjectionBackendSupport.contributionPartitionKey(
+                upsert.accountId(), upsert.parentJobId())));
+    item.put(
+        ATTR_SORT_KEY,
+        AttributeValue.fromS(ProjectionBackendSupport.contributionSortKey(upsert.childJobId())));
+    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_CONTRIBUTION));
+    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
+    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
+    item.put(
+        ProjectionBackendSupport.ATTR_PARENT_JOB_ID, AttributeValue.fromS(upsert.parentJobId()));
+    item.put(ProjectionBackendSupport.ATTR_CHILD_JOB_ID, AttributeValue.fromS(upsert.childJobId()));
+    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
+    return buildPut(item, upsert.expectedVersion());
+  }
+
+  private TransactWriteItem buildProjectionResultReferenceUpsert(
+      ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(
+            ProjectionBackendSupport.resultReferencePartitionKey(upsert.accountId())));
+    item.put(
+        ATTR_SORT_KEY,
+        AttributeValue.fromS(ProjectionBackendSupport.resultReferenceSortKey(upsert.jobId())));
+    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_RESULT_REFERENCE));
+    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
+    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
+    item.put(ProjectionBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(upsert.jobId()));
+    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
+    return buildPut(item, upsert.expectedVersion());
   }
 
   private boolean appendJobIndexUpsert(List<TransactWriteItem> tx, CasUpsert upsert) {

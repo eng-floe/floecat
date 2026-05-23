@@ -585,9 +585,14 @@ final class ConnectorCliSupport {
           throw new IllegalArgumentException("--dest-table cannot be combined with --dest-view");
         }
         if (!destView.isBlank()
-            && (!columns.isEmpty() || !snapshotToken.isBlank() || currentSnapshot)) {
+            && (!columns.isEmpty()
+                || !snapshotToken.isBlank()
+                || currentSnapshot
+                || allSnapshots
+                || latestN > 0)) {
           throw new IllegalArgumentException(
-              "--dest-view cannot be combined with --snapshot, --current, or --columns");
+              "--dest-view cannot be combined with --snapshot, --current, --latest-n, --all, or"
+                  + " --columns");
         }
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);

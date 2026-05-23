@@ -50,9 +50,15 @@ public interface ReconcileJobIndexStore {
 
   record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}
 
-  record JobIndexWriteBatch(List<JobIndexWriteOp> writes, ReadyQueueMutation readyMutation) {
+  record JobIndexWriteBatch(
+      List<JobIndexWriteOp> writes,
+      ReadyQueueMutation readyMutation,
+      ReconcileProjectionBackend.ProjectionWriteBatch projectionMutation) {
     public static JobIndexWriteBatch empty() {
-      return new JobIndexWriteBatch(List.of(), ReadyQueueMutation.empty());
+      return new JobIndexWriteBatch(
+          List.of(),
+          ReadyQueueMutation.empty(),
+          new ReconcileProjectionBackend.ProjectionWriteBatch(List.of()));
     }
   }
 

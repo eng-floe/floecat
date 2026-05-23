@@ -27,6 +27,7 @@ import java.util.Optional;
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend {
   private PointerStore pointerStore;
+  private ReconcileProjectionBackend projectionBackend;
 
   @Inject
   public MemoryReconcileJobIndexBackend(PointerStore pointerStore) {
@@ -35,8 +36,9 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   public MemoryReconcileJobIndexBackend() {}
 
-  public void bind(PointerStore pointerStore) {
+  public void bind(PointerStore pointerStore, ReconcileProjectionBackend projectionBackend) {
     this.pointerStore = pointerStore;
+    this.projectionBackend = projectionBackend;
   }
 
   @Override
@@ -51,16 +53,27 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
-    return pointerStore.compareAndSetBatch(
-        JobIndexWriteBatchSupport.toCasOps(
-            batch,
-            key ->
-                pointerStore
-                    .get(key)
-                    .map(
-                        pointer ->
-                            new StoredPointerSnapshot(
-                                pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()))));
+    boolean committed =
+        pointerStore.compareAndSetBatch(
+            JobIndexWriteBatchSupport.toCasOps(
+                batch,
+                key ->
+                    pointerStore
+                        .get(key)
+                        .map(
+                            pointer ->
+                                new StoredPointerSnapshot(
+                                    pointer.getKey(),
+                                    pointer.getBlobUri(),
+                                    pointer.getVersion()))));
+    if (!committed) {
+      return false;
+    }
+    if (batch.projectionMutation() == null || batch.projectionMutation().writes().isEmpty()) {
+      return true;
+    }
+    return projectionBackend != null
+        && projectionBackend.compareAndSetBatch(batch.projectionMutation());
   }
 
   @Override

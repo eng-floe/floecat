@@ -608,6 +608,77 @@ class ConnectorCliSupportTest {
   }
 
   @Test
+  void connectorTriggerRejectsDestViewWithLatestN() throws Exception {
+    try (Harness h = new Harness()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "trigger",
+                          CONNECTOR_UUID,
+                          "--incremental",
+                          "--mode",
+                          "metadata-and-capture",
+                          "--capture",
+                          "stats",
+                          "--dest-ns",
+                          "ns",
+                          "--dest-view",
+                          "orders_v",
+                          "--latest-n",
+                          "5"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertEquals(
+          "--dest-view cannot be combined with --snapshot, --current, --latest-n, --all, or"
+              + " --columns",
+          ex.getMessage());
+    }
+  }
+
+  @Test
+  void connectorTriggerRejectsDestViewWithAllSnapshots() throws Exception {
+    try (Harness h = new Harness()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "trigger",
+                          CONNECTOR_UUID,
+                          "--incremental",
+                          "--mode",
+                          "metadata-and-capture",
+                          "--capture",
+                          "stats",
+                          "--dest-ns",
+                          "ns",
+                          "--dest-view",
+                          "orders_v",
+                          "--all"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertEquals(
+          "--dest-view cannot be combined with --snapshot, --current, --latest-n, --all, or"
+              + " --columns",
+          ex.getMessage());
+    }
+  }
+
+  @Test
   void connectorTriggerPrintsUsageWhenMissingArgs() throws Exception {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();

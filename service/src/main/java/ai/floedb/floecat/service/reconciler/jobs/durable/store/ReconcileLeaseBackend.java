@@ -16,16 +16,55 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileLeaseBackend {
-  Optional<Pointer> loadPointer(String pointerKey);
+  sealed interface LeaseWriteOp
+      permits LeaseRecordUpsert,
+          LeaseRecordDelete,
+          LeaseExpiryUpsert,
+          LeaseExpiryDelete,
+          LeaseOwnerUpsert,
+          LeaseOwnerDelete {}
 
-  boolean compareAndSetBatch(List<CasOp> ops);
+  record LeaseRecordUpsert(
+      String accountId, String jobId, long expectedVersion, String encodedLease)
+      implements LeaseWriteOp {}
 
-  List<Pointer> listPointersByPrefix(
-      String prefix, int limit, String pageToken, StringBuilder nextPageToken);
+  record LeaseRecordDelete(String accountId, String jobId, long expectedVersion)
+      implements LeaseWriteOp {}
+
+  record LeaseExpiryUpsert(String leaseExpiryKey, long expectedVersion, String canonicalPointerKey)
+      implements LeaseWriteOp {}
+
+  record LeaseExpiryDelete(String leaseExpiryKey, long expectedVersion) implements LeaseWriteOp {}
+
+  record LeaseOwnerUpsert(String ownerKey, long expectedVersion, String canonicalPointerKey)
+      implements LeaseWriteOp {}
+
+  record LeaseOwnerDelete(String ownerKey, long expectedVersion) implements LeaseWriteOp {}
+
+  record LeaseWriteBatch(List<LeaseWriteOp> writes) {
+    public static LeaseWriteBatch empty() {
+      return new LeaseWriteBatch(List.of());
+    }
+  }
+
+  record LeaseRecordSnapshot(String encodedLease, long version) {}
+
+  record LeaseExpirySnapshot(String leaseExpiryKey, String canonicalPointerKey, long version) {}
+
+  record LeaseOwnerSnapshot(String ownerKey, String canonicalPointerKey, long version) {}
+
+  Optional<LeaseRecordSnapshot> loadLease(String accountId, String jobId);
+
+  Optional<LeaseExpirySnapshot> loadLeaseExpiry(String leaseExpiryKey);
+
+  Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey);
+
+  ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(int limit, String pageToken);
+
+  boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch);
 }

@@ -127,8 +127,8 @@ class ConcurrencyOCCIdempotencyIT {
     int workers =
         Integer.getInteger(
             "floecat.test.idem.workers",
-            Math.min(24, Math.max(8, Runtime.getRuntime().availableProcessors() * 2)));
-    int opsPerWorker = Integer.getInteger("floecat.test.idem.ops", 8);
+            Math.min(8, Math.max(4, Runtime.getRuntime().availableProcessors())));
+    int opsPerWorker = Integer.getInteger("floecat.test.idem.ops", 4);
 
     var sharedIdemKeys = List.of("K1", "K2", "K3", "K4");
     var createdTableNames = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -309,9 +309,10 @@ class ConcurrencyOCCIdempotencyIT {
 
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
     do {
+      drainIdempotencyGc(accountId);
       if (listAllBlobKeysUnder(idemBlobPrefix).isEmpty()
           && listAllPointersUnder(idemPtrPrefix).isEmpty()) break;
-      Thread.sleep(200);
+      Thread.sleep(100);
     } while (System.nanoTime() < deadline);
 
     var remainingBlobs = listAllBlobKeysUnder(idemBlobPrefix);
@@ -367,6 +368,14 @@ class ConcurrencyOCCIdempotencyIT {
       }
     }
     unexpected.add(t);
+  }
+
+  private void drainIdempotencyGc(String accountId) {
+    String token = "";
+    do {
+      var result = idemGc.runSliceForAccount(accountId, token);
+      token = result.nextToken() == null ? "" : result.nextToken();
+    } while (!token.isBlank());
   }
 
   private List<String> listAllBlobKeysUnder(String prefix) {

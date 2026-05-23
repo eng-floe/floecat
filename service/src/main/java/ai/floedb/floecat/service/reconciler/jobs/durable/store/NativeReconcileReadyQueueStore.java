@@ -29,8 +29,8 @@ import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class PointerBackedReconcileReadyQueueStore implements ReconcileReadyQueueStore {
-  private static final Logger LOG = Logger.getLogger(PointerBackedReconcileReadyQueueStore.class);
+public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore {
+  private static final Logger LOG = Logger.getLogger(NativeReconcileReadyQueueStore.class);
 
   private record ReadyIndexSelection(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {}
 

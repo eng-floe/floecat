@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
@@ -27,9 +26,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionUpdater;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
-import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,8 +39,8 @@ import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
-  private static final Logger LOG = Logger.getLogger(PointerBackedReconcileLeaseStore.class);
+public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
+  private static final Logger LOG = Logger.getLogger(NativeReconcileLeaseStore.class);
   private static final String LEASE_EXPIRY_POINTER_PREFIX =
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
@@ -144,21 +140,13 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         nextLeaseEpoch = UUID.randomUUID().toString();
         assertImmutableJobIdentityPreserved.accept(baseline, current);
 
-        Pointer nextPointer =
-            Pointer.newBuilder()
-                .setKey(canonicalPointerKey)
-                .setBlobUri(payloadStore.encodeInlineJobState(current))
-                .setVersion(currentSnapshot.version() + 1)
-                .build();
-
-        String leasePointerKey =
-            Keys.reconcileJobLeasePointerById(current.accountId, current.jobId);
-        Pointer currentLeasePointer = leaseBackend.loadPointer(leasePointerKey).orElse(null);
+        var currentLeaseSnapshot =
+            leaseBackend.loadLease(current.accountId, current.jobId).orElse(null);
         StoredJobLease currentLease =
-            currentLeasePointer == null
+            currentLeaseSnapshot == null
                 ? StoredJobLease.empty(current.accountId, current.jobId)
                 : payloadStore
-                    .readInlineJobLease(currentLeasePointer.getBlobUri())
+                    .readInlineJobLease(currentLeaseSnapshot.encodedLease())
                     .orElse(StoredJobLease.empty(current.accountId, current.jobId));
         if (currentLease.epoch != null
             && !currentLease.epoch.isBlank()
@@ -169,15 +157,9 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
             StoredJobLease.active(current.accountId, current.jobId, nextLeaseEpoch, now + leaseMs);
 
         long mutationStartMs = System.currentTimeMillis();
-        List<CasOp> pointerOps =
-            new ArrayList<>(
-                JobIndexWriteBatchSupport.toCasOps(
-                    jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, baseline, current),
-                    jobIndexStore::loadStoredPointer));
-        pointerOps.addAll(
-            buildLeaseCoordinationPointerBatchOps(
-                leasePointerKey, currentLeasePointer, currentLease, nextLease));
-        if (leaseBackend.compareAndSetBatch(pointerOps)) {
+        if (leaseBackend.compareAndSetBatch(
+            jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, baseline, current),
+            buildLeaseCoordinationWriteBatch(currentLeaseSnapshot, currentLease, nextLease))) {
           releaseSnapshotLease = false;
           try {
             long mutationElapsedMs = System.currentTimeMillis() - mutationStartMs;
@@ -373,12 +355,9 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     if (blank(accountId) || blank(jobId)) {
       return Optional.empty();
     }
-    String pointerKey = Keys.reconcileJobLeasePointerById(accountId, jobId);
-    Pointer leasePointer = leaseBackend.loadPointer(pointerKey).orElse(null);
-    if (leasePointer == null) {
-      return Optional.empty();
-    }
-    return payloadStore.readInlineJobLease(leasePointer.getBlobUri());
+    return leaseBackend
+        .loadLease(accountId, jobId)
+        .flatMap(snapshot -> payloadStore.readInlineJobLease(snapshot.encodedLease()));
   }
 
   public Optional<StoredJobLease> loadLease(StoredReconcileJob state) {
@@ -435,55 +414,57 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
   public LeaseExpiryScanPage scanExpiredLeasePointersPage(
       long nowMs, int pageSize, String pageToken) {
     int limit = Math.max(1, pageSize);
-    String token = pageToken == null ? "" : pageToken;
-    StringBuilder next = new StringBuilder();
-    List<Pointer> pointers =
-        leaseBackend.listPointersByPrefix(LEASE_EXPIRY_POINTER_PREFIX, limit, token, next);
-    if (pointers.isEmpty()) {
+    LeaseExpiryScanPage scanPage =
+        leaseBackend.scanExpiredLeaseEntries(limit, pageToken == null ? "" : pageToken);
+    if (scanPage.entries().isEmpty()) {
       return new LeaseExpiryScanPage(List.of(), "");
     }
-    List<LeaseExpiryEntry> expired = new ArrayList<>(pointers.size());
-    for (Pointer pointer : pointers) {
-      long expiresAtMs = parseLeaseExpiryMillis(pointer.getKey());
+    List<LeaseExpiryEntry> expired = new ArrayList<>(scanPage.entries().size());
+    for (LeaseExpiryEntry entry : scanPage.entries()) {
+      long expiresAtMs = parseLeaseExpiryMillis(entry.leaseExpiryPointerKey());
       if (expiresAtMs == INVALID_ORDERED_POINTER_MS) {
         continue;
       }
       if (expiresAtMs > nowMs) {
         return new LeaseExpiryScanPage(expired, "");
       }
-      expired.add(new LeaseExpiryEntry(pointer.getKey(), pointer.getBlobUri()));
+      expired.add(entry);
     }
-    return new LeaseExpiryScanPage(expired, next.toString());
+    return new LeaseExpiryScanPage(expired, scanPage.nextPageToken());
   }
 
   public boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch) {
     if (blank(accountId) || blank(jobId)) {
       return false;
     }
-    String pointerKey = Keys.reconcileJobLeasePointerById(accountId, jobId);
     for (int i = 0; i < casMax; i++) {
-      Pointer currentPointer = leaseBackend.loadPointer(pointerKey).orElse(null);
-      if (currentPointer == null) {
+      var currentSnapshot = leaseBackend.loadLease(accountId, jobId).orElse(null);
+      if (currentSnapshot == null) {
         return false;
       }
       StoredJobLease current =
           payloadStore
-              .readInlineJobLease(currentPointer.getBlobUri())
+              .readInlineJobLease(currentSnapshot.encodedLease())
               .orElse(StoredJobLease.empty(accountId, jobId));
       if (blank(leaseEpoch) || !leaseEpoch.equals(current.epoch)) {
         return false;
       }
-      List<CasOp> ops = new ArrayList<>(2);
-      ops.add(new CasDelete(pointerKey, currentPointer.getVersion()));
+      List<ReconcileLeaseBackend.LeaseWriteOp> writes = new ArrayList<>(2);
+      writes.add(
+          new ReconcileLeaseBackend.LeaseRecordDelete(accountId, jobId, currentSnapshot.version()));
       String expiryKey = leaseExpiryPointerKey(current.expiresAtMs, accountId, jobId);
       if (!expiryKey.isBlank()) {
-        Pointer expiryPointer = leaseBackend.loadPointer(expiryKey).orElse(null);
+        var expirySnapshot = leaseBackend.loadLeaseExpiry(expiryKey).orElse(null);
         String canonicalPointerKey = Keys.reconcileJobStateRowById(accountId, jobId);
-        if (expiryPointer != null && canonicalPointerKey.equals(expiryPointer.getBlobUri())) {
-          ops.add(new CasDelete(expiryKey, expiryPointer.getVersion()));
+        if (expirySnapshot != null
+            && canonicalPointerKey.equals(expirySnapshot.canonicalPointerKey())) {
+          writes.add(
+              new ReconcileLeaseBackend.LeaseExpiryDelete(expiryKey, expirySnapshot.version()));
         }
       }
-      if (leaseBackend.compareAndSetBatch(ops)) {
+      if (leaseBackend.compareAndSetBatch(
+          ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+          new ReconcileLeaseBackend.LeaseWriteBatch(List.copyOf(writes)))) {
         return true;
       }
     }
@@ -500,28 +481,27 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     }
     String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
     for (int i = 0; i < casMax; i++) {
-      Pointer existing = leaseBackend.loadPointer(lanePointerKey).orElse(null);
+      var existing = leaseBackend.loadOwner(lanePointerKey).orElse(null);
       if (existing == null) {
-        Pointer created =
-            Pointer.newBuilder()
-                .setKey(lanePointerKey)
-                .setBlobUri(canonicalPointerKey)
-                .setVersion(1L)
-                .build();
-        if (leaseBackend.compareAndSetBatch(List.of(new CasUpsert(lanePointerKey, 0L, created)))) {
+        if (leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseOwnerUpsert(
+                        lanePointerKey, 0L, canonicalPointerKey))))) {
           return true;
         }
         continue;
       }
-      if (canonicalPointerKey.equals(existing.getBlobUri())) {
-        var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+      if (canonicalPointerKey.equals(existing.canonicalPointerKey())) {
+        var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
         if (owner.isPresent() && hasActiveLaneLease(owner.get(), now)) {
           return false;
         }
         return true;
       }
 
-      var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+      var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isPresent()
           && record.jobId.equals(owner.get().jobId)
           && record.accountId.equals(owner.get().accountId)) {
@@ -534,7 +514,11 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         return false;
       }
       if (leaseBackend.compareAndSetBatch(
-          List.of(new CasDelete(lanePointerKey, existing.getVersion())))) {
+          ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+          new ReconcileLeaseBackend.LeaseWriteBatch(
+              List.of(
+                  new ReconcileLeaseBackend.LeaseOwnerDelete(
+                      lanePointerKey, existing.version()))))) {
         continue;
       }
     }
@@ -549,19 +533,19 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
       return;
     }
     String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
-    Pointer existing = leaseBackend.loadPointer(lanePointerKey).orElse(null);
+    var existing = leaseBackend.loadOwner(lanePointerKey).orElse(null);
     if (existing == null) {
       return;
     }
-    if (!expectedReference.equals(existing.getBlobUri())) {
-      var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+    if (!expectedReference.equals(existing.canonicalPointerKey())) {
+      var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isEmpty()
           || !record.jobId.equals(owner.get().jobId)
           || !record.accountId.equals(owner.get().accountId)) {
         return;
       }
     }
-    var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+    var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
     if (owner.isEmpty()
         || !record.jobId.equals(owner.get().jobId)
         || !record.accountId.equals(owner.get().accountId)) {
@@ -570,7 +554,11 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     if (hasActiveLaneLease(owner.get(), System.currentTimeMillis())) {
       return;
     }
-    leaseBackend.compareAndSetBatch(List.of(new CasDelete(lanePointerKey, existing.getVersion())));
+    leaseBackend.compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+        new ReconcileLeaseBackend.LeaseWriteBatch(
+            List.of(
+                new ReconcileLeaseBackend.LeaseOwnerDelete(lanePointerKey, existing.version()))));
   }
 
   public boolean tryAcquireSnapshotLease(
@@ -580,25 +568,28 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
       return true;
     }
     for (int i = 0; i < casMax; i++) {
-      Pointer existing = leaseBackend.loadPointer(pointerKey).orElse(null);
+      var existing = leaseBackend.loadOwner(pointerKey).orElse(null);
       if (existing == null) {
-        Pointer created =
-            Pointer.newBuilder()
-                .setKey(pointerKey)
-                .setBlobUri(expectedReference)
-                .setVersion(1L)
-                .build();
-        if (leaseBackend.compareAndSetBatch(List.of(new CasUpsert(pointerKey, 0L, created)))) {
+        if (leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseOwnerUpsert(
+                        pointerKey, 0L, expectedReference))))) {
           return true;
         }
         continue;
       }
-      if (expectedReference.equals(existing.getBlobUri())) {
+      if (expectedReference.equals(existing.canonicalPointerKey())) {
         return true;
       }
-      var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+      var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isEmpty()) {
-        leaseBackend.compareAndSetBatch(List.of(new CasDelete(pointerKey, existing.getVersion())));
+        leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))));
         continue;
       }
       if (record.jobId.equals(owner.get().jobId)
@@ -606,7 +597,11 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         return true;
       }
       if (!hasActiveSnapshotLease(owner.get(), now)) {
-        leaseBackend.compareAndSetBatch(List.of(new CasDelete(pointerKey, existing.getVersion())));
+        leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))));
         continue;
       }
       return false;
@@ -619,19 +614,19 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     if (pointerKey.isBlank()) {
       return;
     }
-    Pointer existing = leaseBackend.loadPointer(pointerKey).orElse(null);
+    var existing = leaseBackend.loadOwner(pointerKey).orElse(null);
     if (existing == null) {
       return;
     }
-    if (!blank(expectedReference) && !expectedReference.equals(existing.getBlobUri())) {
-      var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+    if (!blank(expectedReference) && !expectedReference.equals(existing.canonicalPointerKey())) {
+      var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isEmpty()
           || !record.jobId.equals(owner.get().jobId)
           || !record.accountId.equals(owner.get().accountId)) {
         return;
       }
     }
-    var owner = jobIndexStore.readCanonicalRecordByKey(existing.getBlobUri());
+    var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
     if (owner.isEmpty()
         || !record.jobId.equals(owner.get().jobId)
         || !record.accountId.equals(owner.get().accountId)) {
@@ -640,7 +635,10 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     if (hasActiveSnapshotLease(owner.get(), System.currentTimeMillis())) {
       return;
     }
-    leaseBackend.compareAndSetBatch(List.of(new CasDelete(pointerKey, existing.getVersion())));
+    leaseBackend.compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+        new ReconcileLeaseBackend.LeaseWriteBatch(
+            List.of(new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))));
   }
 
   public String leaseExpiryPointerKey(StoredJobLease lease) {
@@ -662,15 +660,13 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         + jobId;
   }
 
-  // Lease coordination pointers are runtime ownership state and are intentionally separate from
+  // Lease coordination state is runtime ownership state and is intentionally separate from
   // canonical job-index pointers.
-  public List<CasOp> buildLeaseCoordinationPointerBatchOps(
-      String leasePointerKey,
-      Pointer currentLeasePointer,
+  public ReconcileLeaseBackend.LeaseWriteBatch buildLeaseCoordinationWriteBatch(
+      ReconcileLeaseBackend.LeaseRecordSnapshot currentLeaseSnapshot,
       StoredJobLease previousLease,
       StoredJobLease nextLease) {
-    return buildLeaseCoordinationPointerOps(
-        leasePointerKey, currentLeasePointer, previousLease, nextLease);
+    return buildLeaseCoordinationWriteOps(currentLeaseSnapshot, previousLease, nextLease);
   }
 
   public void reclaimExpiredLease(LeaseExpiryEntry leaseExpiryEntry, long nowMs) {
@@ -678,10 +674,6 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
       return;
     }
     String canonicalKey = leaseExpiryEntry.canonicalPointerKey();
-    Pointer canonicalPointer = leaseBackend.loadPointer(canonicalKey).orElse(null);
-    if (canonicalPointer == null) {
-      return;
-    }
     var canonicalRecordOpt = jobIndexStore.readCanonicalRecordByKey(canonicalKey);
     if (canonicalRecordOpt.isEmpty()) {
       return;
@@ -788,14 +780,13 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
     if (blank(accountId) || blank(jobId)) {
       return Optional.empty();
     }
-    String pointerKey = Keys.reconcileJobLeasePointerById(accountId, jobId);
     for (int i = 0; i < casMax; i++) {
-      Pointer currentPointer = leaseBackend.loadPointer(pointerKey).orElse(null);
+      var currentSnapshot = leaseBackend.loadLease(accountId, jobId).orElse(null);
       StoredJobLease current =
-          currentPointer == null
+          currentSnapshot == null
               ? StoredJobLease.empty(accountId, jobId)
               : payloadStore
-                  .readInlineJobLease(currentPointer.getBlobUri())
+                  .readInlineJobLease(currentSnapshot.encodedLease())
                   .orElse(StoredJobLease.empty(accountId, jobId));
       StoredJobLease next = mutator.apply(cloneLease(current));
       if (next == null) {
@@ -805,7 +796,8 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         return Optional.of(current);
       }
       if (leaseBackend.compareAndSetBatch(
-          buildLeaseCoordinationPointerOps(pointerKey, currentPointer, current, next))) {
+          ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+          buildLeaseCoordinationWriteOps(currentSnapshot, current, next))) {
         return Optional.of(next);
       }
     }
@@ -837,50 +829,45 @@ public class PointerBackedReconcileLeaseStore implements ReconcileLeaseStore {
         && left.expiresAtMs == right.expiresAtMs;
   }
 
-  private List<CasOp> buildLeaseCoordinationPointerOps(
-      String leasePointerKey,
-      Pointer currentLeasePointer,
+  private ReconcileLeaseBackend.LeaseWriteBatch buildLeaseCoordinationWriteOps(
+      ReconcileLeaseBackend.LeaseRecordSnapshot currentLeaseSnapshot,
       StoredJobLease previousLease,
       StoredJobLease nextLease) {
-    List<CasOp> ops = new ArrayList<>(3);
+    List<ReconcileLeaseBackend.LeaseWriteOp> ops = new ArrayList<>(3);
     String canonicalPointerKey =
         Keys.reconcileJobStateRowById(previousLease.accountId, previousLease.jobId);
-    long leaseExpectedVersion = currentLeasePointer == null ? 0L : currentLeasePointer.getVersion();
-    Pointer nextLeasePointer =
-        Pointer.newBuilder()
-            .setKey(leasePointerKey)
-            .setBlobUri(payloadStore.encodeInlineJobLease(nextLease))
-            .setVersion(leaseExpectedVersion + 1L)
-            .build();
-    ops.add(new CasUpsert(leasePointerKey, leaseExpectedVersion, nextLeasePointer));
+    long leaseExpectedVersion = currentLeaseSnapshot == null ? 0L : currentLeaseSnapshot.version();
+    ops.add(
+        new ReconcileLeaseBackend.LeaseRecordUpsert(
+            previousLease.accountId,
+            previousLease.jobId,
+            leaseExpectedVersion,
+            payloadStore.encodeInlineJobLease(nextLease)));
 
     String previousExpiryKey = leaseExpiryPointerKey(previousLease);
     String nextExpiryKey = leaseExpiryPointerKey(nextLease);
     if (!Objects.equals(previousExpiryKey, nextExpiryKey)) {
       if (!previousExpiryKey.isBlank()) {
-        Pointer previousExpiryPointer = leaseBackend.loadPointer(previousExpiryKey).orElse(null);
+        var previousExpiryPointer = leaseBackend.loadLeaseExpiry(previousExpiryKey).orElse(null);
         if (previousExpiryPointer != null
-            && canonicalPointerKey.equals(previousExpiryPointer.getBlobUri())) {
-          ops.add(new CasDelete(previousExpiryKey, previousExpiryPointer.getVersion()));
+            && canonicalPointerKey.equals(previousExpiryPointer.canonicalPointerKey())) {
+          ops.add(
+              new ReconcileLeaseBackend.LeaseExpiryDelete(
+                  previousExpiryKey, previousExpiryPointer.version()));
         }
       }
       if (!nextExpiryKey.isBlank()) {
-        Pointer nextExpiryPointer =
-            Pointer.newBuilder()
-                .setKey(nextExpiryKey)
-                .setBlobUri(canonicalPointerKey)
-                .setVersion(
-                    leaseBackend
-                        .loadPointer(nextExpiryKey)
-                        .map(pointer -> pointer.getVersion() + 1L)
-                        .orElse(1L))
-                .build();
         long expectedVersion =
-            leaseBackend.loadPointer(nextExpiryKey).map(Pointer::getVersion).orElse(0L);
-        ops.add(new CasUpsert(nextExpiryKey, expectedVersion, nextExpiryPointer));
+            leaseBackend
+                .loadLeaseExpiry(nextExpiryKey)
+                .map(ReconcileLeaseBackend.LeaseExpirySnapshot::version)
+                .orElse(0L);
+        ops.add(
+            new ReconcileLeaseBackend.LeaseExpiryUpsert(
+                nextExpiryKey, expectedVersion, canonicalPointerKey));
       }
     }
-    return ops;
+    return new ReconcileLeaseBackend.LeaseWriteBatch(List.copyOf(ops));
   }
 
   private void logLeaseSkip(String op, String format, Object... args) {

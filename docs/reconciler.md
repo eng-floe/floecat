@@ -129,13 +129,14 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
   place rather than appending a backend version history.
 - **Durable queue ownership model**: `DurableReconcileJobStore` is split into explicit state
-  domains:
-  - canonical job state owns derived job-index pointers transactionally (`lookup`, `state`,
-    `ready`, `dedupe`, parent, and other job-state indexes)
-  - lease coordination owns runtime worker-ownership pointers separately (`lease`, `lease-expiry`,
+  domains with native durable-store boundaries:
+  - canonical job state owns the job-index domain transactionally (`lookup`, `state`, `dedupe`,
+    parent, connector, and related canonical indexes)
+  - ready-queue state is a separate due-ordered domain used for leasing eligibility and queue
+    slicing
+  - lease coordination owns runtime worker-ownership state separately (`lease`, `lease-expiry`,
     lane lease, snapshot lease)
-  - contribution pointers and file-group result pointers are separate projection and
-    payload-reference state
+  - projection/payload-reference state owns contribution rollups and file-group result references
 - **Job leasing**: workers lease from persisted ready pointers, mark jobs
   running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
   configured interval. Failed jobs are retried with backoff up to configured attempt limits before
@@ -144,6 +145,11 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
   job-state transitions update them together. Lease maintenance reclaims expired leases, but it does
   not repair unrelated queue state.
+- **Backend shape**:
+  - in `floecat.kv=dynamodb`, the durable store hot paths use native Dynamo-style partition/sort-key
+    layouts for job indexes, ready slices, and lease rows/expiry scans
+  - in `floecat.kv=memory`, the same domain model is preserved, but the physical implementation is
+    in-memory rather than a literal Dynamo simulator
 
 ### gRPC auth
 - Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker

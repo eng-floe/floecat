@@ -16,19 +16,38 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileProjectionBackend {
-  record ProjectionUpsert(String pointerKey, long expectedVersion, String blobUri) {}
+  sealed interface ProjectionWriteOp permits ContributionUpsert, ResultReferenceUpsert {}
 
-  record ProjectionWriteBatch(List<ProjectionUpsert> upserts) {}
+  record ContributionUpsert(
+      String accountId, String parentJobId, String childJobId, long expectedVersion, String blobUri)
+      implements ProjectionWriteOp {}
 
-  Optional<Pointer> loadPointer(String key);
+  record ResultReferenceUpsert(String accountId, String jobId, long expectedVersion, String blobUri)
+      implements ProjectionWriteOp {}
 
-  List<Pointer> listPointersByPrefix(
-      String prefix, int limit, String pageToken, StringBuilder nextPageToken);
+  record ProjectionWriteBatch(List<ProjectionWriteOp> writes) {}
+
+  record ContributionSnapshot(
+      String accountId, String parentJobId, String childJobId, String blobUri, long version) {}
+
+  record ResultReferenceSnapshot(String accountId, String jobId, String blobUri, long version) {}
+
+  Optional<ContributionSnapshot> loadContribution(
+      String accountId, String parentJobId, String childJobId);
+
+  List<ContributionSnapshot> listContributions(String accountId, String parentJobId);
+
+  List<ContributionSnapshot> listContributionsForChild(String accountId, String childJobId);
+
+  Optional<ResultReferenceSnapshot> loadResultReference(String accountId, String jobId);
+
+  boolean deleteContribution(String accountId, String parentJobId, String childJobId);
+
+  boolean deleteResultReference(String accountId, String jobId);
 
   boolean compareAndSetBatch(ProjectionWriteBatch batch);
 }

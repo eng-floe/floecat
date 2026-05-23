@@ -43,7 +43,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
@@ -55,8 +54,6 @@ import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
-import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.net.URLDecoder;
@@ -1392,36 +1389,25 @@ class DurableReconcileJobStoreTest {
   @Test
   void projectionStoreDoesNotRewriteMatchingResultReferencePointer() throws Exception {
     store.init();
-    Object projectionStore = invokePrivateMethod("projectionStore", new Class<?>[] {});
+    var projectionStore =
+        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
+            invokePrivateMethod("projectionStore", new Class<?>[] {});
 
     String jobId = "job-1";
     String reference = "inline:test-reference";
-    assertTrue(
-        (Boolean)
-            projectionStore
-                .getClass()
-                .getMethod(
-                    "upsertFileGroupResultReference", String.class, String.class, String.class)
-                .invoke(projectionStore, ACCOUNT_ID, jobId, reference));
+    assertTrue(projectionStore.upsertFileGroupResultReference(ACCOUNT_ID, jobId, reference));
 
-    String pointerKey = Keys.reconcileJobResultPointerById(ACCOUNT_ID, jobId);
-    Pointer original = store.pointerStore.get(pointerKey).orElseThrow();
+    String original = projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow();
 
-    assertTrue(
-        (Boolean)
-            projectionStore
-                .getClass()
-                .getMethod(
-                    "upsertFileGroupResultReference", String.class, String.class, String.class)
-                .invoke(projectionStore, ACCOUNT_ID, jobId, reference));
+    assertTrue(projectionStore.upsertFileGroupResultReference(ACCOUNT_ID, jobId, reference));
 
-    Pointer unchanged = store.pointerStore.get(pointerKey).orElseThrow();
-    assertEquals(original.getVersion(), unchanged.getVersion());
-    assertEquals(reference, unchanged.getBlobUri());
+    var unchanged = projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId);
+    assertEquals(original, unchanged.orElseThrow());
+    assertEquals(reference, unchanged.orElseThrow());
   }
 
   @Test
-  void persistFileGroupResultUpdatesPayloadReferenceWithoutCanonicalMutation() {
+  void persistFileGroupResultUpdatesPayloadReferenceWithoutCanonicalMutation() throws Exception {
     store.init();
 
     String jobId =
@@ -1460,11 +1446,14 @@ class DurableReconcileJobStoreTest {
 
     Pointer canonicalAfter =
         store.pointerStore.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow();
-    Pointer resultPointer =
-        store.pointerStore.get(Keys.reconcileJobResultPointerById(ACCOUNT_ID, jobId)).orElseThrow();
+    var projectionStore =
+        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
+            invokePrivateMethod("projectionStore", new Class<?>[] {});
+    String resultBlobUri =
+        projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow();
     var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
     assertEquals(canonicalBefore.getVersion(), canonicalAfter.getVersion());
-    assertFalse(resultPointer.getBlobUri().isBlank());
+    assertFalse(resultBlobUri.isBlank());
     assertEquals(1, job.fileGroupTask.fileResults().size());
     assertEquals(2L, job.fileGroupTask.fileResults().getFirst().statsProcessed());
     assertEquals(1L, job.indexesProcessed);
@@ -1679,9 +1668,11 @@ class DurableReconcileJobStoreTest {
     Pointer canonicalPointer =
         store.pointerStore.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow();
     var stateJson = store.mapper.valueToTree(readStoredRecord(canonicalPointer.getKey()));
-    Pointer resultPointer =
-        store.pointerStore.get(Keys.reconcileJobResultPointerById(ACCOUNT_ID, jobId)).orElseThrow();
-    var resultJson = readBlobJson(resultPointer.getBlobUri());
+    var projectionStore =
+        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
+            invokePrivateMethod("projectionStore", new Class<?>[] {});
+    var resultJson =
+        readBlobJson(projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow());
 
     assertFalse(stateJson.has("snapshotTaskFileGroups"));
     assertFalse(stateJson.has("fileGroupPaths"));
@@ -4873,7 +4864,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void readPathsDoNotRebuildMissingContributionProjectionPointers() {
+  void readPathsDoNotRebuildMissingContributionProjectionPointers() throws Exception {
     store.init();
 
     String parentJobId =
@@ -4896,19 +4887,16 @@ class DurableReconcileJobStoreTest {
             parentJobId,
             "");
 
-    String contributionKey =
-        Keys.reconcileJobContributionPointer(ACCOUNT_ID, parentJobId, childJobId);
-    deletePointerIfPresent(contributionKey);
-    assertTrue(store.pointerStore.get(contributionKey).isEmpty());
+    var projectionStore =
+        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
+            invokePrivateMethod("projectionStore", new Class<?>[] {});
+    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
 
     assertDoesNotThrow(() -> store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()));
-    assertTrue(store.pointerStore.get(contributionKey).isEmpty());
-
-    deletePointerIfPresent(contributionKey);
-    assertTrue(store.pointerStore.get(contributionKey).isEmpty());
+    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
 
     assertDoesNotThrow(() -> store.get(ACCOUNT_ID, parentJobId));
-    assertTrue(store.pointerStore.get(contributionKey).isEmpty());
+    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
   }
 
   @Test
@@ -5968,7 +5956,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void nestedContributionsPropagateFileGroupResultsAndStayOutOfCanonicalState() {
+  void nestedContributionsPropagateFileGroupResultsAndStayOutOfCanonicalState() throws Exception {
     store.init();
 
     String connectorJobId =
@@ -6077,12 +6065,11 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, listed.failedFiles);
     assertEquals(1L, listed.indexesProcessed);
 
-    Pointer contributionPointer =
-        store
-            .pointerStore
-            .get(Keys.reconcileJobContributionPointer(ACCOUNT_ID, snapshotJobId, execJobId))
-            .orElseThrow();
-    assertTrue(contributionPointer.getBlobUri().startsWith(INLINE_JOB_CONTRIBUTION_PREFIX));
+    var projectionStore =
+        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
+            invokePrivateMethod("projectionStore", new Class<?>[] {});
+    var contributions = projectionStore.loadDirectContributions(ACCOUNT_ID, snapshotJobId);
+    assertTrue(contributions.stream().anyMatch(c -> execJobId.equals(c.childJobId)));
 
     var stateJson =
         store.mapper.valueToTree(
@@ -6150,10 +6137,6 @@ class DurableReconcileJobStoreTest {
         .pointerStore
         .get(key)
         .ifPresent(pointer -> store.pointerStore.compareAndDelete(key, pointer.getVersion()));
-  }
-
-  private List<String> statePointerKeysFor(StoredReconcileJob record) throws Exception {
-    return indexes().statePointerKeys(record);
   }
 
   private List<String> readyPointerKeysFor(StoredReconcileJob record) {
@@ -6337,10 +6320,6 @@ class DurableReconcileJobStoreTest {
 
   private ReconcileReadyQueueStore readyQueue() throws Exception {
     return (ReconcileReadyQueueStore) invokePrivateMethod("readyQueue", new Class<?>[] {});
-  }
-
-  private ReconcileJobIndexes indexes() throws Exception {
-    return (ReconcileJobIndexes) invokePrivateMethod("indexes", new Class<?>[] {});
   }
 
   private Optional<Pointer> firstPointerWithPrefix(String prefix) {

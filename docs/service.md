@@ -6,6 +6,13 @@ implements every public API from [`proto/`](proto.md), manages multi-account sec
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
 tasks such as idempotency/CAS/pointer/transaction/reconcile-job GC and repository seeding.
 
+For durable reconcile jobs, the service now owns a native domain-split queue model rather than one
+generic pointer-prefix queue abstraction:
+- canonical job-index domain
+- ready-queue domain
+- lease-coordination domain
+- projection/payload-reference domain
+
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
 `service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java` and
@@ -134,7 +141,7 @@ idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob p
 CAS blobs with no remaining pointers once they exceed the configured min-age. `PointerGc` removes
 orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
 intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. It is retention-oriented GC, not a queue repair loop. `SeedRunner`
+terminal jobs. It is retention-oriented GC, not a queue repair or index rebuild loop. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
@@ -190,6 +197,10 @@ Notable `application.properties` keys:
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
+- **Durable reconcile storage** – The queue-facing reconciler store is split into native
+  job-index, ready, lease, and projection domains. Those are the extension seams to target if the
+  durable reconcile backend evolves further; they are no longer intended to share one generic
+  pointer-prefix queue abstraction.
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting

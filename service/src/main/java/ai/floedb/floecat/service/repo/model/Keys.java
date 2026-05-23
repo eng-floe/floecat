@@ -828,46 +828,6 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/by-parent/" + encode(pid) + "/";
   }
 
-  public static String reconcileJobContributionPointer(
-      String accountId, String parentJobId, String childJobId) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    String cid = req("child_job_id", childJobId);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/job-contributions/by-parent/"
-        + encode(pid)
-        + "/"
-        + encode(cid);
-  }
-
-  public static String reconcileJobContributionPointerPrefix(String accountId, String parentJobId) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/job-contributions/by-parent/"
-        + encode(pid)
-        + "/";
-  }
-
-  public static String reconcileJobContributionBlobUri(
-      String accountId, String parentJobId, String childJobId, String versionToken) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    String cid = req("child_job_id", childJobId);
-    String token = req("version_token", versionToken);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/jobs/"
-        + encode(pid)
-        + "/contributions/"
-        + encode(cid)
-        + "/contribution-"
-        + encode(token)
-        + ".json";
-  }
-
   public static String reconcileJobByConnectorPointer(
       String accountId, String connectorId, String sortableJobToken) {
     String tid = req("account_id", accountId);
@@ -965,12 +925,6 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/job-leases/by-id/" + encode(jid);
-  }
-
-  public static String reconcileJobResultPointerById(String accountId, String jobId) {
-    String tid = req("account_id", accountId);
-    String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/job-results/by-id/" + encode(jid);
   }
 
   public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {
@@ -1117,43 +1071,6 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
-  }
-
-  public static String reconcileAggregateContributionPointer(
-      String accountId, String parentJobId, String childJobId) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    String cid = req("child_job_id", childJobId);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/aggregates/contributions/"
-        + encode(pid)
-        + "/"
-        + encode(cid);
-  }
-
-  public static String reconcileAggregateContributionPointerPrefix(
-      String accountId, String parentJobId) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    return "/accounts/" + encode(tid) + "/reconcile/aggregates/contributions/" + encode(pid) + "/";
-  }
-
-  public static String reconcileAggregateContributionBlobUri(
-      String accountId, String parentJobId, String childJobId, String suffix) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    String cid = req("child_job_id", childJobId);
-    String s = req("suffix", suffix);
-    return "/accounts/"
-        + encode(tid)
-        + "/reconcile/aggregates/contributions/"
-        + encode(pid)
-        + "/"
-        + encode(cid)
-        + "/contribution-"
-        + encode(s)
-        + ".json";
   }
 
   // ===== Markers =====

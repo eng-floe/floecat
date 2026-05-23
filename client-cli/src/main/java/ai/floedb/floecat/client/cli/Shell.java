@@ -478,6 +478,7 @@ public class Shell implements Runnable {
          account create <display_name> [--desc <text>]
          account delete <id> (or omit id to use current account)
          catalogs
+         catalog use <catalog-name>
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
          catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
@@ -512,7 +513,7 @@ public class Shell implements Runnable {
          describe table <fq>
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
-         snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
+         snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
@@ -540,6 +541,7 @@ public class Shell implements Runnable {
          query renew <query_id> [--ttl <seconds>]
          query end <query_id> [--commit|--abort]
          query get <query_id>
+         query fetch-scan <query_id> <table_id>
          connectors
          connector list [--kind <KIND>] [--page-size <N>]
          connector get <display_name|id>
@@ -547,20 +549,22 @@ public class Shell implements Runnable {
              [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-ns <a.b[.c]>] [--dest-table <name>]
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
-             [--head k=v ...]
+             [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+             [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+             [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+             [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+             [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
@@ -572,8 +576,9 @@ public class Shell implements Runnable {
              [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
              [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
              # Defaults to --default-cols first-n --max-default-cols 32 when --columns is not set.
-         connector job <jobId>
-         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
+         connector job <jobId> [--json]
+         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
+         connector jobs --child <parentJobId> [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]

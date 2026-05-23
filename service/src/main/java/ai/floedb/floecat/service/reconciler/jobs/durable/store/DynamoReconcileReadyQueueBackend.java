@@ -30,8 +30,10 @@ import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
@@ -99,6 +101,76 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
       nextPageToken = "/" + response.lastEvaluatedKey().get(ATTR_SORT_KEY).s();
     }
     return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, nextPageToken);
+  }
+
+  @Override
+  public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
+    ScanRequest.Builder scan =
+        ScanRequest.builder()
+            .tableName(table)
+            .consistentRead(true)
+            .limit(Math.max(1, pageSize))
+            .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+            .filterExpression("begins_with(#pk, :pk)")
+            .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS("reconcile-ready#")));
+
+    ReadyQueueBackendSupport.ReadyRowCursor cursor =
+        ReadyQueueBackendSupport.decodeCursor(blankToEmpty(pageToken));
+    if (cursor != null) {
+      scan.exclusiveStartKey(
+          Map.of(
+              ATTR_PARTITION_KEY,
+              AttributeValue.fromS(cursor.partitionKey()),
+              ATTR_SORT_KEY,
+              AttributeValue.fromS(cursor.sortKey())));
+    }
+
+    var response = dynamoDb.scan(scan.build());
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
+        new ArrayList<>(response.items().size());
+    for (var item : response.items()) {
+      ReadyQueueBackendSupport.ReadyQueueRow row =
+          ReadyQueueBackendSupport.rowFromNativeReadyItem(
+              stringAttr(item, ATTR_READY_POINTER_KEY),
+              stringAttr(item, ATTR_CANONICAL_POINTER_KEY),
+              stringAttr(item, ATTR_PARTITION_KEY),
+              stringAttr(item, ATTR_SORT_KEY),
+              stringAttr(item, ATTR_FILTER_VALUE),
+              stringAttr(item, ATTR_INDEX_TYPE),
+              stringAttr(item, ATTR_ACCOUNT_ID),
+              stringAttr(item, ATTR_JOB_ID),
+              longAttr(item, ATTR_DUE_AT_MS));
+      if (row != null) {
+        entries.add(row.entry());
+      }
+    }
+
+    String nextPageToken = "";
+    if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
+      nextPageToken =
+          ReadyQueueBackendSupport.encodeCursor(
+              stringAttr(response.lastEvaluatedKey(), ATTR_PARTITION_KEY),
+              stringAttr(response.lastEvaluatedKey(), ATTR_SORT_KEY));
+    }
+    return new ReadyQueueScanPage(entries, nextPageToken);
+  }
+
+  @Override
+  public boolean deleteReadyEntry(String readyPointerKey) {
+    ReadyQueueBackendSupport.ReadyQueueRow row =
+        ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey, "");
+    if (row == null) {
+      return false;
+    }
+    dynamoDb.deleteItem(
+        DeleteItemRequest.builder()
+            .tableName(table)
+            .key(
+                Map.of(
+                    ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
+                    ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
+            .build());
+    return true;
   }
 
   @Override
@@ -192,4 +264,8 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   private record DynamoPointerKey(String partitionKey, String sortKey) {}
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
+  }
 }

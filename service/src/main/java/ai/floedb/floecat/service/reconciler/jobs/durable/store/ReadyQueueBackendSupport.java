@@ -33,6 +33,8 @@ final class ReadyQueueBackendSupport {
   record ReadyQueueRow(
       String partitionKey, String sortKey, ReconcileReadyQueueStore.ReadyQueueEntry entry) {}
 
+  record ReadyRowCursor(String partitionKey, String sortKey) {}
+
   static String readyIndexPrefix(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
     String normalizedFilterValue = blankToEmpty(slice.filterValue());
     return switch (slice.indexType()) {
@@ -121,6 +123,41 @@ final class ReadyQueueBackendSupport {
     return new ReadyQueueRow(partitionKey(slice), sortKey, entry);
   }
 
+  static ReadyQueueRow rowFromNativeReadyItem(
+      String readyPointerKey,
+      String canonicalPointerKey,
+      String partitionKey,
+      String sortKey,
+      String filterValue,
+      String indexType,
+      String accountId,
+      String jobId,
+      long dueAtMs) {
+    if (blankToEmpty(partitionKey).isBlank()
+        || blankToEmpty(sortKey).isBlank()
+        || blankToEmpty(readyPointerKey).isBlank()
+        || blankToEmpty(canonicalPointerKey).isBlank()) {
+      return null;
+    }
+    ReconcileReadyQueueStore.ReadyIndexType type;
+    try {
+      type = ReconcileReadyQueueStore.ReadyIndexType.valueOf(blankToEmpty(indexType));
+    } catch (Exception ignored) {
+      return null;
+    }
+    return new ReadyQueueRow(
+        partitionKey,
+        sortKey,
+        new ReconcileReadyQueueStore.ReadyQueueEntry(
+            readyPointerKey,
+            canonicalPointerKey,
+            accountId,
+            jobId,
+            dueAtMs,
+            type,
+            blankToEmpty(filterValue)));
+  }
+
   static String partitionKey(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
     String filterValue = blankToEmpty(slice.filterValue());
     return switch (slice.indexType()) {
@@ -180,6 +217,21 @@ final class ReadyQueueBackendSupport {
   static String stripLeadingSlash(String key) {
     String normalized = normalizePointerKey(key);
     return normalized.startsWith("/") ? normalized.substring(1) : normalized;
+  }
+
+  static String encodeCursor(String partitionKey, String sortKey) {
+    return blankToEmpty(partitionKey) + "\t" + blankToEmpty(sortKey);
+  }
+
+  static ReadyRowCursor decodeCursor(String token) {
+    if (blankToEmpty(token).isBlank()) {
+      return null;
+    }
+    int split = token.indexOf('\t');
+    if (split < 0) {
+      return null;
+    }
+    return new ReadyRowCursor(token.substring(0, split), token.substring(split + 1));
   }
 
   private static String extractEncodedFilterValue(String normalizedKey, String prefix) {
