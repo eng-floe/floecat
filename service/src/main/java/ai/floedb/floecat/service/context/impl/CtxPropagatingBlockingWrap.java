@@ -142,7 +142,8 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
     private volatile ServerCall.Listener<ReqT> delegate;
     private final Queue<Consumer<ServerCall.Listener<ReqT>>> incomingEvents =
         new ConcurrentLinkedQueue<>();
-    private volatile boolean isConsumingFromIncomingEvents;
+    private final Object drainLock = new Object();
+    private boolean isConsumingFromIncomingEvents;
 
     ReplayListener(
         Vertx vertx,
@@ -154,13 +155,10 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
     }
 
     void setDelegate(ServerCall.Listener<ReqT> delegate) {
-      this.delegate = delegate;
-      if (!isConsumingFromIncomingEvents) {
-        Consumer<ServerCall.Listener<ReqT>> consumer = incomingEvents.poll();
-        if (consumer != null) {
-          executeBlockingWithContext(consumer);
-        }
+      synchronized (drainLock) {
+        this.delegate = delegate;
       }
+      startDrainIfPossible();
     }
 
     private void scheduleOrEnqueue(Consumer<ServerCall.Listener<ReqT>> consumer) {
@@ -178,11 +176,25 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
               arrivalCtx.detach(prev);
             }
           };
-      if (delegate != null && !isConsumingFromIncomingEvents) {
-        executeBlockingWithContext(withCtx);
-      } else {
+      synchronized (drainLock) {
         incomingEvents.add(withCtx);
       }
+      startDrainIfPossible();
+    }
+
+    private void startDrainIfPossible() {
+      Consumer<ServerCall.Listener<ReqT>> next;
+      synchronized (drainLock) {
+        if (delegate == null || isConsumingFromIncomingEvents) {
+          return;
+        }
+        next = incomingEvents.poll();
+        if (next == null) {
+          return;
+        }
+        isConsumingFromIncomingEvents = true;
+      }
+      executeBlockingWithContext(next);
     }
 
     /**
@@ -193,7 +205,6 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
      */
     private void executeBlockingWithContext(Consumer<ServerCall.Listener<ReqT>> consumer) {
       final ServerCall.Listener<ReqT> target = delegate;
-      isConsumingFromIncomingEvents = true;
       vertx
           .<Void>executeBlocking(
               () -> {
@@ -222,12 +233,15 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
               false)
           .onComplete(
               p -> {
-                Consumer<ServerCall.Listener<ReqT>> nextEvent = incomingEvents.poll();
-                if (nextEvent != null) {
-                  executeBlockingWithContext(nextEvent);
-                } else {
-                  isConsumingFromIncomingEvents = false;
+                Consumer<ServerCall.Listener<ReqT>> nextEvent;
+                synchronized (drainLock) {
+                  nextEvent = incomingEvents.poll();
+                  if (nextEvent == null) {
+                    isConsumingFromIncomingEvents = false;
+                    return;
+                  }
                 }
+                executeBlockingWithContext(nextEvent);
               });
     }
 
