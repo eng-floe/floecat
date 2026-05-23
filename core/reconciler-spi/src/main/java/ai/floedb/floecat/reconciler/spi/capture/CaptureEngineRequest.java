@@ -82,8 +82,47 @@ public record CaptureEngineRequest(
   /**
    * Backward-compatible constructor that sets {@code maxCost = EXPENSIVE} (no restriction).
    *
-   * <p>Existing callers that do not need to enforce a cost budget may use this 13-arg form; new
-   * callers that need cost enforcement should use the full 14-arg form.
+   * <p>Existing callers that do not need to enforce a cost budget may use this legacy 14-arg form;
+   * new callers that need cost enforcement should use the full 15-arg form.
+   */
+  public CaptureEngineRequest(
+      Connector sourceConnector,
+      String sourceNamespace,
+      String sourceTable,
+      ResourceId tableId,
+      long snapshotId,
+      String planId,
+      String groupId,
+      List<String> plannedFilePaths,
+      Set<String> statsColumns,
+      Set<String> indexColumns,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
+      Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
+      boolean capturePageIndex,
+      Optional<String> authorizationToken) {
+    this(
+        sourceConnector,
+        sourceNamespace,
+        sourceTable,
+        tableId,
+        snapshotId,
+        planId,
+        groupId,
+        plannedFilePaths,
+        statsColumns,
+        indexColumns,
+        columnSelectorPolicy,
+        requestedStatsTargetKinds,
+        capturePageIndex,
+        authorizationToken,
+        JobCostHint.EXPENSIVE);
+  }
+
+  /**
+   * Backward-compatible constructor that sets default selector policy and {@code maxCost =
+   * EXPENSIVE} (no restriction).
+   *
+   * <p>Existing callers that do not need selector-policy or cost control may use this 13-arg form.
    */
   public CaptureEngineRequest(
       Connector sourceConnector,
