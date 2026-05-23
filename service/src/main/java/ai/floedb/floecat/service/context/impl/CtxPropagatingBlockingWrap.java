@@ -32,8 +32,8 @@ import java.util.function.Consumer;
 import org.jboss.logging.Logger;
 
 /**
- * Worker-thread {@link ServerInterceptor} wrap that preserves both the gRPC {@link Context} and the
- * CDI request context across the worker hop.
+ * Worker-thread wrap that preserves both the gRPC {@link Context} and the CDI request context
+ * across the worker hop.
  *
  * <p>The pattern mirrors {@code
  * io.quarkus.grpc.runtime.supports.blocking.BlockingServerInterceptor} + {@code
@@ -51,7 +51,7 @@ import org.jboss.logging.Logger;
  * <p>Package-private so the test suite can instantiate it directly without going through the full
  * Quarkus interceptor chain.
  */
-final class CtxPropagatingBlockingWrap implements ServerInterceptor {
+final class CtxPropagatingBlockingWrap {
   private static final Logger LOG = Logger.getLogger(CtxPropagatingBlockingWrap.class);
 
   private final Vertx vertx;
@@ -62,7 +62,6 @@ final class CtxPropagatingBlockingWrap implements ServerInterceptor {
     this.inner = inner;
   }
 
-  @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 

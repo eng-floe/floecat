@@ -63,7 +63,7 @@ class CtxPropagatingBlockingWrapTest {
   private static final Context.Key<String> KEY = Context.key("test-principal");
 
   private static ServerInterceptor makeWrap(Vertx vertx, ServerInterceptor inner) {
-    return new CtxPropagatingBlockingWrap(vertx, inner);
+    return new CtxPropagatingBlockingWrap(vertx, inner)::interceptCall;
   }
 
   /**
