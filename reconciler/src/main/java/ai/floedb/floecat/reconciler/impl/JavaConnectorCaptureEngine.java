@@ -79,8 +79,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     if (!supports(request)) {
       return Optional.empty();
     }
-    try (var source =
-        connectorOpener.open(resolveCredentials(request.sourceConnector(), request))) {
+    ConnectorConfig resolved = resolveCredentials(request.sourceConnector(), request);
+    try (var source = connectorOpener.open(resolved)) {
       return Optional.of(adapter.capture(source, request));
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {

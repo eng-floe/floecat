@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +31,7 @@ import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -59,6 +61,7 @@ class LeasedFileGroupExecutionServiceTest {
   private ReconcileJobStore jobs;
   private TableRepository tableRepo;
   private ConnectorRepository connectorRepo;
+  private SnapshotPlanBlobStore snapshotPlanBlobStore;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -67,10 +70,12 @@ class LeasedFileGroupExecutionServiceTest {
     jobs = mock(ReconcileJobStore.class);
     tableRepo = mock(TableRepository.class);
     connectorRepo = mock(ConnectorRepository.class);
+    snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.tableRepo = tableRepo;
     service.connectorRepo = connectorRepo;
+    service.snapshotPlanBlobStore = snapshotPlanBlobStore;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -101,13 +106,16 @@ class LeasedFileGroupExecutionServiceTest {
                         SNAPSHOT_ID,
                         "db",
                         "events",
-                        List.of(group),
+                        List.of(),
                         true,
                         ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
                         "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
+    when(snapshotPlanBlobStore.findFileGroup(
+            any(ReconcileSnapshotTask.class), any(ReconcileFileGroupTask.class)))
+        .thenReturn(Optional.of(group));
     when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
 
@@ -153,6 +161,9 @@ class LeasedFileGroupExecutionServiceTest {
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
+    when(snapshotPlanBlobStore.findFileGroup(
+            any(ReconcileSnapshotTask.class), any(ReconcileFileGroupTask.class)))
+        .thenReturn(Optional.empty());
 
     StatusRuntimeException error =
         assertThrows(
@@ -204,7 +215,7 @@ class LeasedFileGroupExecutionServiceTest {
                         SNAPSHOT_ID,
                         "db",
                         "events",
-                        List.of(group),
+                        List.of(),
                         true,
                         ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
                         "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
@@ -213,6 +224,9 @@ class LeasedFileGroupExecutionServiceTest {
                     "",
                     CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.empty())));
+    when(snapshotPlanBlobStore.findFileGroup(
+            any(ReconcileSnapshotTask.class), any(ReconcileFileGroupTask.class)))
+        .thenReturn(Optional.of(group));
     when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
 

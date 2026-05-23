@@ -653,6 +653,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             throw new IllegalArgumentException(
                 "persistSnapshotPlan requires explicit snapshot coverage metadata for PLAN_SNAPSHOT jobs");
           }
+          if (existing.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && !effective.fileGroups().isEmpty()) {
+            throw new IllegalArgumentException(
+                "persistSnapshotPlan requires manifest-only file-group representation for PLAN_SNAPSHOT jobs");
+          }
+          if (existing.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && effective.fileGroupCount() > 0
+              && blankToEmpty(effective.fileGroupPlanBlobUri()).isBlank()) {
+            throw new IllegalArgumentException(
+                "persistSnapshotPlan requires fileGroupPlanBlobUri when fileGroupCount > 0");
+          }
           return new ReconcileJob(
               existing.jobId,
               existing.accountId,
@@ -1047,6 +1060,48 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
     leaseExpiresAtMs.put(jobId, now + leaseMs);
     return true;
+  }
+
+  @Override
+  public Optional<LeasedJob> getCompletionLeaseView(
+      String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
+    long now = System.currentTimeMillis();
+    ReconcileJob job = jobs.get(jobId);
+    if (job == null) {
+      return Optional.empty();
+    }
+    if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
+      return Optional.empty();
+    }
+    String expectedEpoch = leaseEpochs.get(jobId);
+    Long expiry = leaseExpiresAtMs.get(jobId);
+    if (expectedEpoch == null
+        || expectedEpoch.isBlank()
+        || !expectedEpoch.equals(leaseEpoch)
+        || expiry == null) {
+      return Optional.empty();
+    }
+    if (expiry <= now && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new LeasedJob(
+            job.jobId,
+            job.accountId,
+            job.connectorId,
+            job.fullRescan,
+            job.captureMode,
+            job.scope,
+            job.executionPolicy,
+            leaseEpoch,
+            pinnedExecutors.getOrDefault(jobId, ""),
+            job.executorId,
+            job.jobKind,
+            job.tableTask,
+            job.viewTask,
+            job.snapshotTask,
+            job.fileGroupTask,
+            job.parentJobId));
   }
 
   @Override

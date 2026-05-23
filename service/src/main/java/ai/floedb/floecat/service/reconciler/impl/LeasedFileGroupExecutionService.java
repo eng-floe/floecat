@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -67,9 +68,12 @@ import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
+  private static final Logger LOG = Logger.getLogger(LeasedFileGroupExecutionService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
@@ -78,6 +82,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -109,6 +114,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
     Connector resolvedConnector = connector.toBuilder().setAuth(resolvedAuth(connector)).build();
+    ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -121,7 +127,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         plannedTask.planId(),
         plannedTask.groupId(),
         plannedTask.filePaths(),
-        FileGroupExecutionSupport.effectiveCapturePolicy(lease));
+        capturePolicy);
   }
 
   public boolean persistSuccess(
@@ -146,13 +152,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     String requiredResultId = requireResultId(resultId);
     List<TargetStatsRecord> effectiveStats = nonNullStatsRecords(statsRecords);
     List<TargetStatsRecord> effectiveFileStats =
-        effectiveStats.stream()
-            .filter(
-                record ->
-                    record != null
-                        && record.hasTarget()
-                        && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE)
-            .toList();
+        effectiveStats.stream().filter(LeasedFileGroupExecutionService::isFileStatsRecord).toList();
     StandaloneFileGroupExecutionResult.FileStatsBlobManifest fileStatsBlobManifest =
         validatedFileStatsBlobManifest(fileStatsBlobUri, fileStatsRecordCount, effectiveFileStats);
     List<ReconcilerBackend.StagedIndexArtifact> effectiveArtifacts =
@@ -634,6 +634,16 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return hashFingerprint(value.getBytes(StandardCharsets.UTF_8));
   }
 
+  private static boolean isFileStatsRecord(TargetStatsRecord record) {
+    if (record == null) {
+      return false;
+    }
+    if (record.hasFile()) {
+      return true;
+    }
+    return record.hasTarget() && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE;
+  }
+
   private ReconcileFileGroupTask resolvePlannedTask(ReconcileJobStore.LeasedJob lease) {
     ReconcileFileGroupTask task =
         lease == null || lease.fileGroupTask == null
@@ -654,16 +664,21 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .orElseThrow(this::unresolvedPlannedTask);
   }
 
-  private static java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(
+  private java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(
       ReconcileSnapshotTask snapshotTask, ReconcileFileGroupTask task) {
     if (snapshotTask == null || snapshotTask.isEmpty() || task == null || task.isEmpty()) {
       return java.util.Optional.empty();
     }
-    return snapshotTask.fileGroups().stream()
-        .filter(group -> group != null && !group.isEmpty())
-        .filter(group -> group.groupId().equals(task.groupId()))
-        .filter(group -> group.planId().equals(task.planId()))
-        .findFirst();
+    if (snapshotTask.fileGroupPlanRecorded()
+        && snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        && snapshotTask.fileGroupCount() > 0
+        && !snapshotTask.fileGroupPlanBlobUri().isBlank()) {
+      if (snapshotPlanBlobStore == null) {
+        return java.util.Optional.empty();
+      }
+      return snapshotPlanBlobStore.findFileGroup(snapshotTask, task);
+    }
+    return java.util.Optional.empty();
   }
 
   private StatusRuntimeException unresolvedPlannedTask() {

@@ -36,8 +36,6 @@ import org.junit.jupiter.api.Test;
 class DurableReconcileJobStoreLeaseOutcomeTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
-  private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
-
   private DurableReconcileJobStore store;
 
   @BeforeEach
@@ -52,6 +50,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   @AfterEach
   void tearDown() {
+    System.clearProperty("floecat.reconciler.job-store.lease-ms");
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
   }
 
@@ -275,32 +274,30 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   private void expireLease(String jobId) {
-    String pointerKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
-    Pointer pointer = store.pointerStore.get(pointerKey).orElseThrow();
-    DurableReconcileJobStore.StoredJobLease lease = readStoredLease(pointer.getBlobUri());
-    lease.expiresAtMs = System.currentTimeMillis() - 1L;
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonical = store.pointerStore.get(canonicalPointerKey).orElseThrow();
+    DurableReconcileJobStore.StoredReconcileJob record =
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+            () ->
+                store.mapper.readValue(
+                    store.blobStore.get(canonical.getBlobUri()),
+                    DurableReconcileJobStore.StoredReconcileJob.class));
+    record.leaseExpiresAtMs = System.currentTimeMillis() - 1L;
+    String expiredBlobUri = Keys.reconcileJobBlobUri(ACCOUNT_ID, jobId, "test-expired-lease");
+    org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+        () ->
+            store.blobStore.put(
+                expiredBlobUri,
+                store.mapper.writeValueAsBytes(record),
+                "application/json; charset=UTF-8"));
     Pointer expiredPointer =
         Pointer.newBuilder()
-            .setKey(pointerKey)
-            .setBlobUri(
-                INLINE_JOB_LEASE_PREFIX
-                    + java.util.Base64.getUrlEncoder()
-                        .withoutPadding()
-                        .encodeToString(
-                            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
-                                () -> store.mapper.writeValueAsBytes(lease))))
-            .setVersion(pointer.getVersion() + 1L)
+            .setKey(canonicalPointerKey)
+            .setBlobUri(expiredBlobUri)
+            .setVersion(canonical.getVersion() + 1L)
             .build();
-    assertTrue(store.pointerStore.compareAndSet(pointerKey, pointer.getVersion(), expiredPointer));
-  }
-
-  private DurableReconcileJobStore.StoredJobLease readStoredLease(String reference) {
-    assertTrue(reference.startsWith(INLINE_JOB_LEASE_PREFIX));
-    return org.junit.jupiter.api.Assertions.assertDoesNotThrow(
-        () ->
-            store.mapper.readValue(
-                java.util.Base64.getUrlDecoder()
-                    .decode(reference.substring(INLINE_JOB_LEASE_PREFIX.length())),
-                DurableReconcileJobStore.StoredJobLease.class));
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            canonicalPointerKey, canonical.getVersion(), expiredPointer));
   }
 }

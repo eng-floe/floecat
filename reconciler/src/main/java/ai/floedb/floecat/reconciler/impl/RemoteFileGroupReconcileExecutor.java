@@ -137,11 +137,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       String successResultId = successResultId(lease, payload);
       List<TargetStatsRecord> fileStats =
           captured.statsRecords().stream()
-              .filter(
-                  record ->
-                      record != null
-                          && record.hasTarget()
-                          && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE)
+              .filter(RemoteFileGroupReconcileExecutor::isFileStatsRecord)
               .toList();
       var uploadedStats = uploadFileStatsDirect(lease, successResultId, fileStats);
       var uploadedArtifacts = uploadIndexArtifactsDirect(lease, captured.stagedIndexArtifacts());
@@ -152,6 +148,23 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
               uploadedStats,
               uploadedArtifacts == null ? captured.stagedIndexArtifacts() : List.of(),
               uploadedArtifacts == null ? List.of() : uploadedArtifacts);
+      if (payload.requestsStats()
+          && payload
+              .capturePolicy()
+              .outputs()
+              .contains(ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.Output.FILE_STATS)
+          && fileStats.isEmpty()) {
+        LOG.warnf(
+            "File-group capture returned no file stats despite FILE_STATS request jobId=%s planId=%s groupId=%s source=%s.%s plannedFiles=%d samplePlannedFile=%s capturedStats=%d",
+            lease.jobId,
+            payload.planId(),
+            payload.groupId(),
+            payload.sourceNamespace(),
+            payload.sourceTable(),
+            payload.plannedFilePaths().size(),
+            payload.plannedFilePaths().isEmpty() ? "" : payload.plannedFilePaths().get(0),
+            captured.statsRecords().size());
+      }
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
         throw new IllegalStateException(
             "page-index capture produced no staged artifacts for file group " + payload.groupId());
@@ -334,6 +347,16 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
         groupId == null || groupId.isBlank()
             ? "Stopped during file-group execution"
             : "Stopped during file-group execution for " + groupId);
+  }
+
+  private static boolean isFileStatsRecord(TargetStatsRecord record) {
+    if (record == null) {
+      return false;
+    }
+    if (record.hasFile()) {
+      return true;
+    }
+    return record.hasTarget() && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE;
   }
 
   private static String failureDetail(Throwable error) {

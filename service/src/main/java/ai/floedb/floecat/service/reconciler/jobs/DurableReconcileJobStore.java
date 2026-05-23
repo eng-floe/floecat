@@ -682,6 +682,53 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return renewLeaseByCanonicalPointer(loaded.get().canonicalPointerKey, jobId, leaseEpoch);
   }
 
+  @Override
+  public Optional<LeasedJob> getCompletionLeaseView(
+      String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return Optional.empty();
+    }
+    StoredReconcileJob record = loaded.get().record;
+    if (leaseEpoch == null || leaseEpoch.isBlank()) {
+      return Optional.empty();
+    }
+    boolean stateAllowed =
+        "JS_RUNNING".equals(record.state) || "JS_CANCELLING".equals(record.state);
+    if (!stateAllowed) {
+      return Optional.empty();
+    }
+    if (!leaseEpoch.equals(record.leaseEpoch)) {
+      return Optional.empty();
+    }
+    long now = System.currentTimeMillis();
+    if (record.leaseExpiresAtMs <= 0L) {
+      return Optional.empty();
+    }
+    if (record.leaseExpiresAtMs <= now
+        && (!allowExpiredWithinGrace || (now - record.leaseExpiresAtMs) > leaseRenewGraceMs)) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new LeasedJob(
+            record.jobId,
+            record.accountId,
+            record.connectorId,
+            record.fullRescan,
+            record.captureMode(),
+            record.toScope(),
+            record.executionPolicy(),
+            leaseEpoch,
+            record.pinnedExecutorId(),
+            record.executorId(),
+            record.jobKind(),
+            record.tableTask(),
+            record.viewTask(),
+            record.snapshotTask(),
+            record.fileGroupTask(),
+            record.parentJobId()));
+  }
+
   public void persistSnapshotPlan(String jobId, ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
@@ -695,6 +742,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               && !effective.fileGroupPlanRecorded()) {
             throw new IllegalArgumentException(
                 "persistSnapshotPlan requires explicit snapshot coverage metadata for PLAN_SNAPSHOT jobs");
+          }
+          if (ReconcileJobKind.PLAN_SNAPSHOT.name().equals(existing.jobKind)
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && !effective.fileGroups().isEmpty()) {
+            throw new IllegalArgumentException(
+                "persistSnapshotPlan requires manifest-only file-group representation for PLAN_SNAPSHOT jobs");
+          }
+          if (ReconcileJobKind.PLAN_SNAPSHOT.name().equals(existing.jobKind)
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && effective.fileGroupCount() > 0
+              && blankToEmpty(effective.fileGroupPlanBlobUri()).isBlank()) {
+            throw new IllegalArgumentException(
+                "persistSnapshotPlan requires fileGroupPlanBlobUri when fileGroupCount > 0");
           }
           existing.snapshotTaskTableId = blankToEmpty(effective.tableId());
           existing.snapshotTaskSnapshotId = effective.snapshotId();
@@ -783,6 +843,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             throw new IllegalArgumentException(
                 "adoptSnapshotPlanManifest requires explicit snapshot coverage metadata for PLAN_SNAPSHOT jobs");
           }
+          if (ReconcileJobKind.PLAN_SNAPSHOT.name().equals(existing.jobKind)
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && !effective.fileGroups().isEmpty()) {
+            throw new IllegalArgumentException(
+                "adoptSnapshotPlanManifest requires manifest-only file-group representation for PLAN_SNAPSHOT jobs");
+          }
+          if (ReconcileJobKind.PLAN_SNAPSHOT.name().equals(existing.jobKind)
+              && effective.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+              && effective.fileGroupCount() > 0
+              && blankToEmpty(effective.fileGroupPlanBlobUri()).isBlank()) {
+            throw new IllegalArgumentException(
+                "adoptSnapshotPlanManifest requires fileGroupPlanBlobUri when fileGroupCount > 0");
+          }
           existing.snapshotTaskTableId = blankToEmpty(effective.tableId());
           existing.snapshotTaskSnapshotId = effective.snapshotId();
           existing.snapshotTaskSourceNamespace = effective.sourceNamespace();
@@ -813,6 +886,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.fileGroupGroupId = blankToEmpty(effective.groupId());
           existing.fileGroupTableId = blankToEmpty(effective.tableId());
           existing.fileGroupSnapshotId = effective.snapshotId();
+          existing.fileGroupFileCount = Math.max(0, effective.fileCount());
+          existing.fileGroupStatsBlobUri = blankToEmpty(effective.fileStatsBlobUri());
+          existing.fileGroupStatsRecordCount = Math.max(0, effective.fileStatsRecordCount());
           existing.fileGroupPaths = effective.filePaths();
           existing.fileGroupResults = effective.fileResults();
           return existing;
@@ -3230,6 +3306,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String fileGroupGroupId;
     public String fileGroupTableId;
     public long fileGroupSnapshotId;
+    public int fileGroupFileCount;
+    public String fileGroupStatsBlobUri;
+    public int fileGroupStatsRecordCount;
     public List<String> fileGroupPaths = List.of();
     public List<ReconcileFileResult> fileGroupResults = List.of();
     public String destinationTableId;
@@ -3344,6 +3423,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
       rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());
       rec.fileGroupSnapshotId = effectiveFileGroupTask.snapshotId();
+      rec.fileGroupFileCount = Math.max(0, effectiveFileGroupTask.fileCount());
+      rec.fileGroupStatsBlobUri = blankToEmpty(effectiveFileGroupTask.fileStatsBlobUri());
+      rec.fileGroupStatsRecordCount = Math.max(0, effectiveFileGroupTask.fileStatsRecordCount());
       rec.fileGroupPaths = effectiveFileGroupTask.filePaths();
       rec.fileGroupResults = effectiveFileGroupTask.fileResults();
       rec.destinationNamespaceIds = scope.destinationNamespaceIds();
@@ -3449,6 +3531,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           fileGroupGroupId,
           fileGroupTableId,
           fileGroupSnapshotId,
+          Math.max(0, fileGroupFileCount),
+          blankToEmpty(fileGroupStatsBlobUri),
+          Math.max(0, fileGroupStatsRecordCount),
           fileGroupPaths,
           fileGroupResults);
     }

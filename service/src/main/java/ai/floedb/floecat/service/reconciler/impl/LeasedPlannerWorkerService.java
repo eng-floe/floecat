@@ -613,24 +613,18 @@ public class LeasedPlannerWorkerService {
         || !effective.fileGroupPlanRecorded()) {
       return effective;
     }
+    if (effective.fileGroups() != null && !effective.fileGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot plan success must use manifest-only file-group representation")
+          .asRuntimeException();
+    }
     if (effective.fileGroupCount() > 0
         && blankToEmpty(effective.fileGroupPlanBlobUri()).isBlank()) {
       throw Status.FAILED_PRECONDITION
           .withDescription("snapshot plan success requires a persisted file-group manifest")
           .asRuntimeException();
     }
-    return ReconcileSnapshotTask.of(
-        effective.tableId(),
-        effective.snapshotId(),
-        effective.sourceNamespace(),
-        effective.sourceTable(),
-        List.of(),
-        true,
-        effective.completionMode(),
-        effective.fileGroupPlanBlobUri(),
-        effective.fileGroupCount(),
-        effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+    return effective;
   }
 
   public boolean persistPlanSnapshotFailure(

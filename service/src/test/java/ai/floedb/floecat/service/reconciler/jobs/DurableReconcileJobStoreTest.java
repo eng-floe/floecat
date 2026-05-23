@@ -272,20 +272,16 @@ class DurableReconcileJobStoreTest {
             55L,
             "db",
             "events",
-            List.of(
-                ReconcileFileGroupTask.of(
-                    jobId,
-                    "snapshot-55-group-0",
-                    "table-1",
-                    55L,
-                    List.of("s3://bucket/data/file-1.parquet"))),
-            true));
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "blob://plans/table-1/snapshot-55",
+            1));
 
     var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
-    assertEquals(1, job.snapshotTask.fileGroups().size());
-    assertEquals(
-        "s3://bucket/data/file-1.parquet",
-        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertTrue(job.snapshotTask.fileGroups().isEmpty());
+    assertEquals(1, job.snapshotTask.fileGroupCount());
+    assertEquals("blob://plans/table-1/snapshot-55", job.snapshotTask.fileGroupPlanBlobUri());
   }
 
   @Test
@@ -314,14 +310,11 @@ class DurableReconcileJobStoreTest {
             55L,
             "db",
             "events",
-            List.of(
-                ReconcileFileGroupTask.of(
-                    jobId,
-                    "snapshot-55-group-0",
-                    "table-1",
-                    55L,
-                    List.of("s3://bucket/data/file-1.parquet"))),
-            true));
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "blob://plans/table-1/snapshot-55",
+            1));
 
     Pointer currentLookup = store.pointerStore.get(lookupKey).orElseThrow();
     assertTrue(
@@ -336,10 +329,9 @@ class DurableReconcileJobStoreTest {
 
     var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
 
-    assertEquals(1, job.snapshotTask.fileGroups().size());
-    assertEquals(
-        "s3://bucket/data/file-1.parquet",
-        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertTrue(job.snapshotTask.fileGroups().isEmpty());
+    assertEquals(1, job.snapshotTask.fileGroupCount());
+    assertEquals("blob://plans/table-1/snapshot-55", job.snapshotTask.fileGroupPlanBlobUri());
     assertEquals(
         store
             .pointerStore

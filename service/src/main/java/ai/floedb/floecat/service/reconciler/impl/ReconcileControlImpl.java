@@ -1077,13 +1077,24 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (job == null) {
       return FileGroupCounts.empty();
     }
-    return new FileGroupCounts(
-        job.plannedFileGroups,
-        job.completedFileGroups,
-        job.failedFileGroups,
-        job.plannedFiles,
-        job.completedFiles,
-        job.failedFiles);
+    FileGroupCounts direct =
+        new FileGroupCounts(
+            job.plannedFileGroups,
+            job.completedFileGroups,
+            job.failedFileGroups,
+            job.plannedFiles,
+            job.completedFiles,
+            job.failedFiles);
+    if (direct.hasAnyCount()) {
+      return direct;
+    }
+    if (job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP) {
+      return fromSingleFileGroupJob(job);
+    }
+    if (job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
+      return fromSnapshotChildFileGroups(accountId, job, direct);
+    }
+    return direct;
   }
 
   private record FileGroupCounts(
@@ -1093,9 +1104,99 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       long totalFiles,
       long completedFiles,
       long failedFiles) {
+    private boolean hasAnyCount() {
+      return totalGroups > 0L
+          || completedGroups > 0L
+          || failedGroups > 0L
+          || totalFiles > 0L
+          || completedFiles > 0L
+          || failedFiles > 0L;
+    }
+
     private static FileGroupCounts empty() {
       return new FileGroupCounts(0L, 0L, 0L, 0L, 0L, 0L);
     }
+  }
+
+  private static FileGroupCounts fromSingleFileGroupJob(ReconcileJobStore.ReconcileJob job) {
+    long files = effectiveFileCount(job.fileGroupTask);
+    boolean succeeded = "JS_SUCCEEDED".equals(job.state);
+    boolean failed = "JS_FAILED".equals(job.state) || "JS_CANCELLED".equals(job.state);
+    return new FileGroupCounts(
+        1L,
+        succeeded ? 1L : 0L,
+        failed ? 1L : 0L,
+        files,
+        succeeded ? succeededFileCount(job.fileGroupTask, files) : 0L,
+        failed ? failedFileCount(job.fileGroupTask, files) : 0L);
+  }
+
+  private FileGroupCounts fromSnapshotChildFileGroups(
+      String accountId, ReconcileJobStore.ReconcileJob snapshotJob, FileGroupCounts baseCounts) {
+    long baseTotalGroups = Math.max(0L, snapshotJob.snapshotTask.fileGroupCount());
+
+    long observedGroups = 0L;
+    long observedFiles = 0L;
+    long completedGroups = 0L;
+    long failedGroups = 0L;
+    long completedFiles = 0L;
+    long failedFiles = 0L;
+    for (ReconcileJobStore.ReconcileJob child : childJobsFor(accountId, snapshotJob)) {
+      if (child == null || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
+        continue;
+      }
+      observedGroups++;
+      long groupFiles = effectiveFileCount(child.fileGroupTask);
+      observedFiles += groupFiles;
+      if ("JS_SUCCEEDED".equals(child.state)) {
+        completedGroups++;
+        completedFiles += succeededFileCount(child.fileGroupTask, groupFiles);
+      } else if ("JS_FAILED".equals(child.state) || "JS_CANCELLED".equals(child.state)) {
+        failedGroups++;
+        failedFiles += failedFileCount(child.fileGroupTask, groupFiles);
+      }
+    }
+
+    long totalGroups = Math.max(baseTotalGroups, observedGroups);
+    return new FileGroupCounts(
+        Math.max(totalGroups, baseCounts.totalGroups),
+        Math.max(completedGroups, baseCounts.completedGroups),
+        Math.max(failedGroups, baseCounts.failedGroups),
+        Math.max(observedFiles, baseCounts.totalFiles),
+        Math.max(completedFiles, baseCounts.completedFiles),
+        Math.max(failedFiles, baseCounts.failedFiles));
+  }
+
+  private static long effectiveFileCount(ReconcileFileGroupTask task) {
+    if (task == null) {
+      return 0L;
+    }
+    if (task.fileCount() > 0) {
+      return task.fileCount();
+    }
+    return task.filePaths().size();
+  }
+
+  private static long succeededFileCount(ReconcileFileGroupTask task, long fallback) {
+    if (task == null || task.fileResults().isEmpty()) {
+      return fallback;
+    }
+    long succeeded =
+        task.fileResults().stream()
+            .filter(file -> file != null && file.state() == ReconcileFileResult.State.SUCCEEDED)
+            .count();
+    return succeeded == 0L ? fallback : succeeded;
+  }
+
+  private static long failedFileCount(ReconcileFileGroupTask task, long fallback) {
+    if (task == null || task.fileResults().isEmpty()) {
+      return fallback;
+    }
+    long failed =
+        task.fileResults().stream()
+            .filter(file -> file != null && file.state() == ReconcileFileResult.State.FAILED)
+            .count();
+    return failed == 0L ? fallback : failed;
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(

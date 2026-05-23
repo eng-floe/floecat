@@ -331,6 +331,13 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     List<TargetStatsRecord> fileStats = listFileStats(tableId, snapshotTask.snapshotId());
     CoverageValidation coverageValidation = validateCoverage(coverage.expectedFiles(), fileStats);
     if (!coverageValidation.valid()) {
+      String coverageDebug =
+          coverageDebugContext(
+              childState.completedGroupTasks(),
+              coverage.expectedFiles().size(),
+              fileStats.size(),
+              requiresFileStatsOutput(lease),
+              lease.scope == null ? Set.of() : lease.scope.capturePolicy().outputs());
       return ExecutionResult.terminalFailure(
           0,
           0,
@@ -341,8 +348,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + coverageValidation.duplicateFiles().size(),
           0,
           0,
-          coverageValidation.message(),
-          new IllegalStateException(coverageValidation.message()));
+          coverageValidation.message() + coverageDebug,
+          new IllegalStateException(coverageValidation.message() + coverageDebug));
     }
     if (aggregateKinds.isEmpty()) {
       return ExecutionResult.success(
@@ -575,8 +582,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
       return new ExpectedCoverage(PlannedCoverageState.DIRECT_STATS, List.of(), List.of(), "");
     }
-    List<ReconcileFileGroupTask> plannedGroups =
-        snapshotTask.fileGroups() == null ? List.of() : snapshotTask.fileGroups();
+    List<ReconcileFileGroupTask> plannedGroups = plannedFileGroups(snapshotTask);
     LinkedHashSet<String> expectedFiles = new LinkedHashSet<>();
     for (ReconcileFileGroupTask fileGroup : plannedGroups) {
       if (fileGroup == null) {
@@ -595,6 +601,18 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(expectedGroups),
         List.copyOf(expectedFiles),
         "");
+  }
+
+  private List<ReconcileFileGroupTask> plannedFileGroups(ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask == null || snapshotTask.isEmpty()) {
+      return List.of();
+    }
+    if (snapshotTask.fileGroupPlanRecorded()
+        && snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+        && snapshotTask.fileGroupCount() > 0) {
+      return snapshotPlanBlobStore.loadFileGroups(snapshotTask);
+    }
+    return List.of();
   }
 
   private long ingestDirectStats(ReconcileSnapshotTask snapshotTask) {
@@ -759,6 +777,67 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     return !expectedGroup.filePaths().isEmpty() || !persistedGroup.fileResults().isEmpty();
+  }
+
+  private static String coverageDebugContext(
+      List<ReconcileFileGroupTask> completedGroups,
+      int expectedFiles,
+      int persistedFileStats,
+      boolean requiresFileStats,
+      Set<ReconcileCapturePolicy.Output> outputs) {
+    List<ReconcileFileGroupTask> effectiveGroups =
+        completedGroups == null ? List.of() : completedGroups;
+    long groupsWithBlob =
+        effectiveGroups.stream()
+            .filter(group -> group != null && !group.fileStatsBlobUri().isBlank())
+            .count();
+    long declaredBlobRecords =
+        effectiveGroups.stream()
+            .filter(group -> group != null && !group.fileStatsBlobUri().isBlank())
+            .mapToLong(group -> Math.max(0, group.fileStatsRecordCount()))
+            .sum();
+    long succeededFileResults =
+        effectiveGroups.stream()
+            .filter(group -> group != null)
+            .flatMap(group -> group.fileResults().stream())
+            .filter(
+                result -> result != null && result.state() == ReconcileFileResult.State.SUCCEEDED)
+            .count();
+    long fileResultsStatsProcessed =
+        effectiveGroups.stream()
+            .filter(group -> group != null)
+            .flatMap(group -> group.fileResults().stream())
+            .filter(
+                result -> result != null && result.state() == ReconcileFileResult.State.SUCCEEDED)
+            .mapToLong(result -> Math.max(0L, result.statsProcessed()))
+            .sum();
+    return " [debug expected_files="
+        + expectedFiles
+        + " persisted_file_stats="
+        + persistedFileStats
+        + " requires_file_stats="
+        + requiresFileStats
+        + " outputs="
+        + (outputs == null ? Set.of() : outputs)
+        + " completed_groups="
+        + effectiveGroups.size()
+        + " groups_with_blob="
+        + groupsWithBlob
+        + " declared_blob_records="
+        + declaredBlobRecords
+        + " succeeded_file_results="
+        + succeededFileResults
+        + " succeeded_file_result_stats_processed="
+        + fileResultsStatsProcessed
+        + "]";
+  }
+
+  private static boolean requiresFileStatsOutput(ReconcileJobStore.LeasedJob lease) {
+    ReconcileCapturePolicy policy =
+        lease == null || lease.scope == null
+            ? ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    return policy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS);
   }
 
   private static String groupKey(ReconcileFileGroupTask fileGroupTask) {

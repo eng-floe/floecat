@@ -194,23 +194,20 @@ class InMemoryReconcileJobStoreTest {
             55L,
             "db",
             "events",
-            List.of(
-                ReconcileFileGroupTask.of(
-                    jobId,
-                    "snapshot-55-group-0",
-                    "table-1",
-                    55L,
-                    List.of("s3://bucket/data/file-1.parquet"))),
-            true);
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "blob://plans/table-1/snapshot-55",
+            1);
     String manifestUri = store.persistSnapshotPlanManifest("acct", jobId, task);
     var lease = store.leaseNext().orElseThrow();
     assertTrue(store.adoptSnapshotPlanManifest(jobId, lease.leaseEpoch, task, manifestUri, true));
 
     var job = store.get("acct", jobId).orElseThrow();
-    assertEquals(1, job.snapshotTask.fileGroups().size());
-    assertEquals(
-        "s3://bucket/data/file-1.parquet",
-        job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertTrue(job.snapshotTask.fileGroups().isEmpty());
+    assertTrue(job.snapshotTask.fileGroupPlanRecorded());
+    assertEquals(1, job.snapshotTask.fileGroupCount());
+    assertEquals("blob://plans/table-1/snapshot-55", job.snapshotTask.fileGroupPlanBlobUri());
   }
 
   @Test

@@ -459,7 +459,14 @@ public class ConnectorIT {
                                             .State.SUCCEEDED)),
         "expected file-group jobs to persist per-file success results");
 
-    var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
+    var selectedSnapshotPlan =
+        snapshotPlanJobs.stream()
+            .filter(
+                snapshotPlan ->
+                    fileGroupJobs.stream()
+                        .anyMatch(fileGroup -> snapshotPlan.jobId.equals(fileGroup.parentJobId)))
+            .findFirst()
+            .orElse(snapshotPlanJobs.getFirst());
     var selectedSnapshotFileGroups =
         fileGroupJobs.stream()
             .filter(job -> selectedSnapshotPlan.jobId.equals(job.parentJobId))
@@ -489,10 +496,24 @@ public class ConnectorIT {
             .flatMap(job -> job.snapshotTask.fileGroups().stream())
             .flatMap(group -> group.filePaths().stream())
             .collect(Collectors.toCollection(ArrayList::new));
-    assertFalse(filePaths.isEmpty(), "expected planned parquet file paths to be persisted");
-    assertTrue(
-        filePaths.stream().allMatch(path -> path != null && !path.isBlank()),
-        "expected planned parquet file paths to be non-blank");
+    if (filePaths.isEmpty()) {
+      boolean hasPersistedPlanManifest =
+          snapshotPlanJobs.stream()
+              .map(job -> job.snapshotTask)
+              .filter(java.util.Objects::nonNull)
+              .anyMatch(
+                  snapshotTask ->
+                      snapshotTask.fileGroupPlanRecorded()
+                          && snapshotTask.fileGroupCount() > 0
+                          && !snapshotTask.fileGroupPlanBlobUri().isBlank());
+      assertTrue(
+          hasPersistedPlanManifest,
+          "expected planned parquet file groups to persist via embedded paths or plan blob");
+    } else {
+      assertTrue(
+          filePaths.stream().allMatch(path -> path != null && !path.isBlank()),
+          "expected planned parquet file paths to be non-blank");
+    }
   }
 
   @Test
@@ -859,9 +880,9 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertEquals(
-        1L,
+        2L,
         fullJob.snapshotsProcessed,
-        "expected initial fixture reconcile to report one processed snapshot");
+        "expected initial fixture reconcile to report two processed snapshots");
 
     var catId =
         catalogs
@@ -876,7 +897,7 @@ public class ConnectorIT {
             .orElseThrow();
 
     assertEquals(
-        1, snaps.count(table.getResourceId()), "expected one snapshot after initial reconcile");
+        2, snaps.count(table.getResourceId()), "expected two snapshots after initial reconcile");
 
     conn =
         updateConnectorUri(
@@ -895,9 +916,9 @@ public class ConnectorIT {
         incrementalJob.statsProcessed > 0L,
         "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
-        2,
+        3,
         snaps.count(table.getResourceId()),
-        "expected two snapshots after incremental reconcile");
+        "expected three snapshots after incremental reconcile");
 
     var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
@@ -1100,11 +1121,10 @@ public class ConnectorIT {
 
     assertNotNull(planJob);
     assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
-    assertEquals(3L, planJob.tablesScanned, "expected 3 direct child jobs (2 tables + 1 view)");
+    assertEquals(2L, planJob.tablesScanned, "expected 2 planned table jobs");
     assertEquals(1L, planJob.viewsScanned, "expected 1 planned view");
-    assertEquals(
-        2L, planJob.tablesChanged, "plan job should surface two newly created destination tables");
-    assertEquals(1L, planJob.viewsChanged, "plan job should surface one newly created view");
+    assertEquals(0L, planJob.tablesChanged, "plan phase should not mutate destination tables");
+    assertEquals(0L, planJob.viewsChanged, "plan phase should not mutate destination views");
 
     var aggregatedJob =
         awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());

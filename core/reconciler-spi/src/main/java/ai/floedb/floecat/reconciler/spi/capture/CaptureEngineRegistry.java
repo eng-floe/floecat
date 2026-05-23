@@ -22,10 +22,12 @@ import jakarta.inject.Inject;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import org.jboss.logging.Logger;
 
 /** Registry and routing layer for unified capture engines. */
 @ApplicationScoped
 public class CaptureEngineRegistry {
+  private static final Logger LOG = Logger.getLogger(CaptureEngineRegistry.class);
   private final List<CaptureEngine> captureEngines;
 
   @Inject
@@ -66,7 +68,19 @@ public class CaptureEngineRegistry {
    * to prevent expensive full-column scans from blocking query planning).
    */
   public CaptureEngineResult capture(CaptureEngineRequest request) {
-    for (CaptureEngine engine : candidates(request)) {
+    List<CaptureEngine> eligible = candidates(request);
+    if (eligible.isEmpty()) {
+      LOG.warnf(
+          "capture engine registry has no eligible engine for source=%s.%s snapshotId=%d requestedKinds=%s pageIndex=%s maxCost=%s enginesRegistered=%d",
+          request == null ? "" : request.sourceNamespace(),
+          request == null ? "" : request.sourceTable(),
+          request == null ? -1L : request.snapshotId(),
+          request == null ? List.of() : request.requestedStatsTargetKinds(),
+          request != null && request.capturePageIndex(),
+          request == null ? null : request.maxCost(),
+          captureEngines.size());
+    }
+    for (CaptureEngine engine : eligible) {
       if (!engine.estimatedCost(request).fitsIn(request.maxCost())) {
         continue;
       }

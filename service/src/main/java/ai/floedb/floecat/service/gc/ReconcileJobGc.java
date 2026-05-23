@@ -288,7 +288,12 @@ public class ReconcileJobGc {
         return null;
       }
     }
-    return null;
+    try {
+      byte[] payload = blobStore.get(reference);
+      return mapper.readTree(payload);
+    } catch (Exception ignored) {
+      return null;
+    }
   }
 
   private static String text(JsonNode node, String field) {
