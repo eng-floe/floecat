@@ -25,6 +25,10 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -48,6 +52,10 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     store.blobStore = new InMemoryBlobStore();
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
+    store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+    store.leaseStore = new InMemoryReconcileLeaseStore();
+    store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
+    store.projectionStore = new InMemoryReconcileProjectionStore();
     store.init();
   }
 

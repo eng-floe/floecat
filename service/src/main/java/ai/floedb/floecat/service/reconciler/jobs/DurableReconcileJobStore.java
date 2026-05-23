@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.jobs;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
@@ -36,26 +35,42 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileContributionRollupService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.JobProjection;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionUpdater;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCancellationService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCompleter;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobEnqueuer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobLister;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobMaintenanceService;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseManager;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue.LeaseScanStats;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobRepository;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileProjectionBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.PointerBackedReconcileReadyQueueStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
-import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Objects;
@@ -64,16 +79,19 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 @ApplicationScoped
 @IfBuildProperty(name = "floecat.reconciler.job-store", stringValue = "durable")
 // Domain model:
 // 1. Canonical job state owns all derived job-index pointers and updates them transactionally.
 // 2. Lease coordination pointers are a separate runtime ownership domain owned by
-//    ReconcileLeaseManager.
+//    ReconcileLeaseStore.
 // 3. Contribution pointers and file-group result pointers are projection/payload-reference state,
-//    not part of the canonical job-index invariant.
+//    not part of the canonical job-index invariant. That split is intentional and is the stop
+//    point for this refactor rather than a temporary fallback.
 // This store expects the post-port inline canonical reconcile layout only. It does not read
 // legacy StoredJobReference indirection, lane queue/head scheduling rows, or separate lease-state
 // blobs.
@@ -97,18 +115,29 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
   @Inject Config config;
+  @Inject Instance<DynamoDbClient> dynamoDb;
+
+  @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
+  String kvTable = "floecat_pointers";
+
   @Inject ReconcilePayloadStore payloadStore;
   @Inject ReconcileJobIndexes jobIndexes;
-  @Inject ReconcileJobRepository repository;
+  @Inject ReconcileJobIndexBackend jobIndexBackend;
+  @Inject ReconcileJobIndexStore jobIndexStore;
   @Inject ReconcileJobProjector projector;
   @Inject ReconcileContributionRollupService contributionRollupService;
+  @Inject ReconcileProjectionUpdater projectionUpdater;
   @Inject ReconcileJobLister lister;
-  @Inject ReconcileLeaseManager leaseManager;
+  @Inject ReconcileLeaseStore leaseStore;
+  @Inject ReconcileLeaseBackend leaseBackend;
   @Inject ReconcileJobEnqueuer enqueuer;
   @Inject ReconcileJobCancellationService cancellationService;
   @Inject ReconcileJobCompleter completer;
   @Inject ReconcileJobMaintenanceService maintenanceService;
-  @Inject ReconcileReadyQueue readyQueue;
+  @Inject ReconcileReadyQueueStore readyQueueStore;
+  @Inject ReconcileReadyQueueBackend readyQueueBackend;
+  @Inject ReconcileProjectionStore projectionStore;
+  @Inject ReconcileProjectionBackend projectionBackend;
 
   private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
@@ -134,19 +163,62 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return projector;
   }
 
-  private ReconcileJobRepository repository() {
-    if (repository == null) {
-      repository = new ReconcileJobRepository();
+  private ReconcileProjectionStore projectionStore() {
+    if (projectionStore == null) {
+      projectionStore = new PointerBackedReconcileProjectionStore();
     }
-    repository.bind(
-        pointerStore,
+    if (projectionBackend == null) {
+      String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
+      if ("memory".equalsIgnoreCase(kvMode)) {
+        projectionBackend = new MemoryReconcileProjectionBackend();
+      } else if ("dynamodb".equalsIgnoreCase(kvMode)) {
+        projectionBackend = new DynamoReconcileProjectionBackend();
+      } else {
+        throw new IllegalStateException(
+            "No reconcile projection backend available for floecat.kv=" + kvMode);
+      }
+    }
+    if (projectionBackend instanceof MemoryReconcileProjectionBackend memoryBackend) {
+      memoryBackend.bind(pointerStore);
+    } else if (projectionBackend instanceof DynamoReconcileProjectionBackend dynamoBackend
+        && dynamoDb != null
+        && dynamoDb.isResolvable()) {
+      dynamoBackend.bind(dynamoDb.get(), kvTable);
+    }
+    projectionStore.bind(projectionBackend, payloads(), CAS_MAX);
+    return projectionStore;
+  }
+
+  private ReconcileJobIndexStore jobIndexStore() {
+    if (jobIndexStore == null) {
+      jobIndexStore = new PointerBackedReconcileJobIndexStore();
+    }
+    if (jobIndexBackend == null) {
+      String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
+      if ("memory".equalsIgnoreCase(kvMode)) {
+        jobIndexBackend = new MemoryReconcileJobIndexBackend();
+      } else if ("dynamodb".equalsIgnoreCase(kvMode)) {
+        jobIndexBackend = new DynamoReconcileJobIndexBackend();
+      } else {
+        throw new IllegalStateException(
+            "No reconcile job index backend available for floecat.kv=" + kvMode);
+      }
+    }
+    if (jobIndexBackend instanceof MemoryReconcileJobIndexBackend memoryBackend) {
+      memoryBackend.bind(pointerStore);
+    } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
+        && dynamoDb != null
+        && dynamoDb.isResolvable()) {
+      dynamoBackend.bind(dynamoDb.get(), kvTable);
+    }
+    jobIndexStore.bind(
+        jobIndexBackend,
         payloads(),
         indexes(),
-        readyQueue(),
         CAS_MAX,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
         this::logStateTransition);
-    return repository;
+    return jobIndexStore;
   }
 
   private ReconcileJobIndexes indexes() {
@@ -162,13 +234,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (lister == null) {
       lister = new ReconcileJobLister();
     }
-    lister.bind(
-        pointerStore,
-        projector(),
-        this::readRecord,
-        readyQueue()::readCurrentRecordFromIndexPointer,
-        readyQueue()::readCurrentRecordFromStateIndexPointer,
-        this::isCanonicalJobPointerKey);
+    lister.bind(jobIndexStore(), projector());
     return lister;
   }
 
@@ -177,17 +243,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       contributionRollupService = new ReconcileContributionRollupService();
     }
     contributionRollupService.bind(
-        pointerStore,
-        payloads(),
         projector(),
-        leaseManager(),
+        this::hasLiveLeaseForProjection,
+        projectionStore(),
         jobId ->
             loadByAnyAccount(jobId)
                 .map(
                     env ->
                         new ReconcileContributionRollupService.CanonicalEnvelope(
                             env.canonicalPointerKey, env.record)),
-        this::upsertReferencePointer,
         (canonicalPointerKey, mutator) ->
             mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
                 .map(
@@ -198,42 +262,78 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return contributionRollupService;
   }
 
-  private ReconcileLeaseManager leaseManager() {
-    if (leaseManager == null) {
-      leaseManager = new ReconcileLeaseManager();
+  private ReconcileProjectionUpdater projectionUpdater() {
+    if (projectionUpdater == null) {
+      projectionUpdater = contributionRollups();
     }
-    leaseManager.bind(
-        pointerStore,
+    return projectionUpdater;
+  }
+
+  private boolean hasLiveLeaseForProjection(
+      StoredReconcileJob record, boolean tolerateLeasePointerDrift, long nowMs) {
+    return leaseManager().hasLiveLease(record, tolerateLeasePointerDrift, nowMs);
+  }
+
+  private ReconcileLeaseStore leaseManager() {
+    if (leaseStore == null) {
+      leaseStore = new PointerBackedReconcileLeaseStore();
+    }
+    if (leaseBackend == null) {
+      String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
+      if ("memory".equalsIgnoreCase(kvMode)) {
+        leaseBackend = new MemoryReconcileLeaseBackend();
+      } else if ("dynamodb".equalsIgnoreCase(kvMode)) {
+        leaseBackend = new DynamoReconcileLeaseBackend();
+      } else {
+        throw new IllegalStateException(
+            "No reconcile lease backend available for floecat.kv=" + kvMode);
+      }
+    }
+    if (leaseBackend instanceof MemoryReconcileLeaseBackend memoryBackend) {
+      memoryBackend.bind(pointerStore);
+    } else if (leaseBackend instanceof DynamoReconcileLeaseBackend dynamoBackend
+        && dynamoDb != null
+        && dynamoDb.isResolvable()) {
+      dynamoBackend.bind(dynamoDb.get(), kvTable);
+    }
+    leaseStore.bind(
+        leaseBackend,
         payloads(),
         CAS_MAX,
         leaseMs,
         leaseRenewGraceMs,
-        this::readCanonicalRecordByKey,
-        this::readRecord,
-        this::readCurrentRecordFromStateIndexPointer,
-        this::mutateByCanonicalPointer,
-        (record, dueAtMs) -> readyPointerKeyFor(record, dueAtMs.longValue()),
-        this::refreshContributionChain,
-        this::cloneStoredRecord,
+        jobIndexStore(),
+        projectionUpdater(),
         DurableReconcileJobStore::isTerminalState,
-        DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
-        this::buildJobIndexPointerBatchOps);
-    return leaseManager;
+        DurableReconcileJobStore::assertImmutableJobIdentityPreserved);
+    return leaseStore;
   }
 
-  private ReconcileReadyQueue readyQueue() {
-    if (readyQueue == null) {
-      readyQueue = new ReconcileReadyQueue();
+  private ReconcileReadyQueueStore readyQueue() {
+    if (readyQueueStore == null) {
+      readyQueueStore = new PointerBackedReconcileReadyQueueStore();
     }
-    readyQueue.bind(
-        pointerStore,
-        payloads(),
+    if (readyQueueBackend == null) {
+      String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
+      if ("memory".equalsIgnoreCase(kvMode)) {
+        MemoryReconcileReadyQueueBackend memoryBackend = new MemoryReconcileReadyQueueBackend();
+        memoryBackend.bind(pointerStore);
+        readyQueueBackend = memoryBackend;
+      } else {
+        throw new IllegalStateException(
+            "No reconcile ready queue backend available for floecat.kv=" + kvMode);
+      }
+    }
+    if (readyQueueBackend instanceof MemoryReconcileReadyQueueBackend memoryBackend) {
+      memoryBackend.bind(pointerStore);
+    }
+    readyQueueStore.bind(
+        readyQueueBackend,
+        jobIndexStore(),
         leaseManager(),
         readyScanLimit,
-        this::readRecord,
-        DurableReconcileJobStore::requiresReadyPointer,
-        DurableReconcileJobStore::isTerminalState);
-    return readyQueue;
+        DurableReconcileJobStore::requiresReadyPointer);
+    return readyQueueStore;
   }
 
   private ReconcileJobCompleter completer() {
@@ -267,16 +367,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       enqueuer = new ReconcileJobEnqueuer();
     }
     enqueuer.bind(
-        pointerStore,
         blobStore,
         payloads(),
         projector(),
+        jobIndexStore(),
         indexes(),
         this::materializeSnapshotPlanFileGroups,
         readyQueue()::readyPointerKeys,
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue,
-        readyQueue()::loadActiveFromDedupe,
         this::writeFileGroupResultPayloadBlobReference,
         this::incrementExpectedChildJobs,
         (record, includeSelfProjectionPayloads) ->
@@ -318,12 +417,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       maintenanceService = new ReconcileJobMaintenanceService();
     }
     maintenanceService.bind(
-        pointerStore,
-        this::parseLeaseExpiryMillis,
-        this::reclaimExpiredLeaseFromCanonicalPointer,
-        readyScanLimit,
-        reclaimIntervalMs,
-        INVALID_ORDERED_POINTER_MS);
+        leaseManager(), this::reclaimExpiredLease, readyScanLimit, reclaimIntervalMs);
     return maintenanceService;
   }
 
@@ -453,13 +547,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public QueueStats queueStats() {
-    long queued =
-        Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_QUEUED")))
-            + Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_WAITING")));
-    long running = Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_RUNNING")));
-    long cancelling = Math.max(0, pointerStore.countByPrefix(statePointerPrefix("JS_CANCELLING")));
+    long queuedCount = Math.max(0, jobIndexStore().countStoredJobsInState("JS_QUEUED"));
+    long waitingCount = Math.max(0, jobIndexStore().countStoredJobsInState("JS_WAITING"));
+    long queued = queuedCount + waitingCount;
+    long running = Math.max(0, jobIndexStore().countStoredJobsInState("JS_RUNNING"));
+    long cancelling = Math.max(0, jobIndexStore().countStoredJobsInState("JS_CANCELLING"));
     long oldestQueued =
-        firstPositiveMin(oldestStateTimestamp("JS_QUEUED"), oldestStateTimestamp("JS_WAITING"));
+        firstPositiveMin(
+            queuedCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_QUEUED") : 0L,
+            waitingCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_WAITING") : 0L);
     return new QueueStats(queued, running, cancelling, oldestQueued);
   }
 
@@ -848,8 +944,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             return;
           }
           validateFileGroupResultMatchesCanonical(loaded.get().record, effective);
-          writeFileGroupResultPayload(
-              loaded.get().record.accountId, loaded.get().record.jobId, effective);
+          String blobUri =
+              writeFileGroupResultPayloadBlobReference(
+                  loaded.get().record.accountId, loaded.get().record.jobId, effective);
+          if (!projectionStore()
+              .upsertFileGroupResultReference(
+                  loaded.get().record.accountId, loaded.get().record.jobId, blobUri)) {
+            blobStore.delete(blobUri);
+            throw new IllegalStateException("Failed to update reconcile job result pointer");
+          }
         });
   }
 
@@ -1052,19 +1155,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private Optional<StoredEnvelope> loadByAnyAccount(String jobId) {
-    return repository()
+    return jobIndexStore()
         .loadByAnyAccount(jobId)
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
   }
 
-  private Optional<StoredReconcileJob> readCurrentRecordFromStateIndexPointer(
-      Pointer indexPointer, java.util.function.Predicate<StoredReconcileJob> filter) {
-    return readyQueue().readCurrentRecordFromStateIndexPointer(indexPointer, filter);
-  }
-
   private Optional<StoredEnvelope> mutateByJobIdReturningRecord(
       String jobId, UnaryOperator<StoredReconcileJob> mutator) {
-    return repository()
+    return jobIndexStore()
         .mutateByJobIdReturningRecord(jobId, mutator)
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
   }
@@ -1076,7 +1174,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private Optional<StoredEnvelope> mutateByCanonicalPointerReturningRecord(
       String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator) {
-    return repository()
+    return jobIndexStore()
         .mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
   }
@@ -1116,8 +1214,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return renewed != null;
   }
 
-  private void reclaimExpiredLeaseFromCanonicalPointer(Pointer leaseExpiryPointer, long nowMs) {
-    leaseManager().reclaimExpiredLeaseFromCanonicalPointer(leaseExpiryPointer, nowMs);
+  private void reclaimExpiredLease(
+      ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs) {
+    leaseManager().reclaimExpiredLease(leaseExpiryEntry, nowMs);
   }
 
   private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
@@ -1129,10 +1228,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return readyQueue().leaseReadyDue(nowMs, request, scanStats);
   }
 
-  private Optional<StoredReconcileJob> readRecord(Pointer canonicalPointer) {
-    return repository().readRecord(canonicalPointer);
-  }
-
   private String readyPointerKeyFor(StoredReconcileJob record, long dueAtMs) {
     return readyQueue().readyPointerKeyFor(record, dueAtMs);
   }
@@ -1141,53 +1236,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return readyQueue().readyPointerKeys(record);
   }
 
-  private boolean upsertReferencePointer(String pointerKey, String reference) {
-    for (int i = 0; i < CAS_MAX; i++) {
-      Pointer existing = pointerStore.get(pointerKey).orElse(null);
-      if (existing == null) {
-        Pointer created =
-            Pointer.newBuilder().setKey(pointerKey).setBlobUri(reference).setVersion(1L).build();
-        if (pointerStore.compareAndSetBatch(List.of(new CasUpsert(pointerKey, 0L, created)))) {
-          return true;
-        }
-        continue;
-      }
-      if (reference.equals(existing.getBlobUri())) {
-        return true;
-      }
-
-      Pointer next =
-          Pointer.newBuilder()
-              .setKey(pointerKey)
-              .setBlobUri(reference)
-              .setVersion(existing.getVersion() + 1)
-              .build();
-      if (pointerStore.compareAndSetBatch(
-          List.of(new CasUpsert(pointerKey, existing.getVersion(), next)))) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   private boolean hasValidReadyPointers(StoredReconcileJob record, String expectedReference) {
     return indexes().hasValidReadyPointers(record, expectedReference);
   }
 
   private Optional<StoredReconcileJob> readCanonicalRecordByKey(String canonicalPointerKey) {
-    return repository().readCanonicalRecordByKey(canonicalPointerKey);
-  }
-
-  private List<CasOp> buildJobIndexPointerBatchOps(
-      String canonicalPointerKey,
-      Pointer currentPointer,
-      StoredReconcileJob previous,
-      StoredReconcileJob current,
-      Pointer nextPointer) {
-    return repository()
-        .buildJobIndexPointerBatchOps(
-            canonicalPointerKey, currentPointer, previous, current, nextPointer);
+    return jobIndexStore().readCanonicalRecordByKey(canonicalPointerKey);
   }
 
   @Override
@@ -1262,10 +1316,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return parseTimestampFromOrderedPointer(readyPointerKey, Keys.reconcileReadyPointerPrefix());
   }
 
-  private long parseStatePointerMillis(String statePointerKey, String state) {
-    return parseTimestampFromOrderedPointer(statePointerKey, statePointerPrefix(state));
-  }
-
   private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {
     if (pointerKey == null || pointerKey.isBlank()) {
       return INVALID_ORDERED_POINTER_MS;
@@ -1288,22 +1338,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
-  private String statePointerPrefix(String state) {
-    return indexes().statePointerPrefix(state);
-  }
-
   private List<String> statePointerKeys(StoredReconcileJob record) {
     return indexes().statePointerKeys(record);
-  }
-
-  private long oldestStateTimestamp(String state) {
-    String prefix = statePointerPrefix(state);
-    StringBuilder next = new StringBuilder();
-    List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 1, "", next);
-    if (pointers.isEmpty()) {
-      return 0L;
-    }
-    return Math.max(0L, parseStatePointerMillis(pointers.get(0).getKey(), state));
   }
 
   private static String normalizePointerKey(String key) {
@@ -1319,43 +1355,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private StoredReconcileJob cloneStoredRecord(StoredReconcileJob source) {
-    return repository().cloneStoredRecord(source);
-  }
-
-  private String writeFileGroupResultPayload(
-      String accountId, String jobId, ReconcileFileGroupTask fileGroupTask) {
-    String pointerKey = Keys.reconcileJobResultPointerById(accountId, jobId);
-    String nextBlobUri = writeFileGroupResultPayloadBlobReference(accountId, jobId, fileGroupTask);
-
-    for (int i = 0; i < CAS_MAX; i++) {
-      Pointer currentPointer = pointerStore.get(pointerKey).orElse(null);
-      if (currentPointer == null) {
-        Pointer created =
-            Pointer.newBuilder().setKey(pointerKey).setBlobUri(nextBlobUri).setVersion(1L).build();
-        if (pointerStore.compareAndSetBatch(List.of(new CasUpsert(pointerKey, 0L, created)))) {
-          return nextBlobUri;
-        }
-        continue;
-      }
-      if (nextBlobUri.equals(currentPointer.getBlobUri())) {
-        return nextBlobUri;
-      }
-      Pointer nextPointer =
-          Pointer.newBuilder()
-              .setKey(pointerKey)
-              .setBlobUri(nextBlobUri)
-              .setVersion(currentPointer.getVersion() + 1L)
-              .build();
-      if (pointerStore.compareAndSetBatch(
-          List.of(new CasUpsert(pointerKey, currentPointer.getVersion(), nextPointer)))) {
-        return nextBlobUri;
-      }
-    }
-
-    if (!nextBlobUri.isBlank()) {
-      blobStore.delete(nextBlobUri);
-    }
-    throw new IllegalStateException("Failed to update reconcile job result pointer");
+    return jobIndexStore().cloneStoredRecord(source);
   }
 
   // File-group result payload references are intentionally outside the canonical job-index
@@ -1436,9 +1436,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (blank(accountId) || blank(parentJobId)) {
       return 0L;
     }
-    return Math.max(
-        0L,
-        pointerStore.countByPrefix(Keys.reconcileJobByParentPointerPrefix(accountId, parentJobId)));
+    return Math.max(0L, jobIndexStore().countStoredChildJobs(accountId, parentJobId));
   }
 
   private static long firstPositiveMin(long first, long second) {

@@ -16,56 +16,44 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.projection;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.DirectChildCounts;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.JobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.ProjectedPublicJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseManager;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
-import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class ReconcileContributionRollupService {
+public class ReconcileContributionRollupService implements ReconcileProjectionUpdater {
   private static final Logger LOG = Logger.getLogger(ReconcileContributionRollupService.class);
   // Contribution pointers are projection state for parent rollups. They are not part of the
   // canonical job-index pointer invariant and are not repaired on reads.
 
-  private PointerStore pointerStore;
-  private ReconcilePayloadStore payloadStore;
   private ReconcileJobProjector projector;
-  private ReconcileLeaseManager leaseManager;
+  private ReconcileLeaseLiveness leaseLiveness;
+  private ReconcileProjectionStore projectionStore;
   private Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount;
-  private BiFunction<String, String, Boolean> upsertReferencePointer;
   private CanonicalMutator mutateByCanonicalPointerReturningRecord;
   private Function<StoredReconcileJob, StoredReconcileJob> copyStoredJob;
 
   public void bind(
-      PointerStore pointerStore,
-      ReconcilePayloadStore payloadStore,
       ReconcileJobProjector projector,
-      ReconcileLeaseManager leaseManager,
+      ReconcileLeaseLiveness leaseLiveness,
+      ReconcileProjectionStore projectionStore,
       Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount,
-      BiFunction<String, String, Boolean> upsertReferencePointer,
       CanonicalMutator mutateByCanonicalPointerReturningRecord,
       Function<StoredReconcileJob, StoredReconcileJob> copyStoredJob) {
-    this.pointerStore = pointerStore;
-    this.payloadStore = payloadStore;
     this.projector = projector;
-    this.leaseManager = leaseManager;
+    this.leaseLiveness = leaseLiveness;
+    this.projectionStore = projectionStore;
     this.loadByAnyAccount = loadByAnyAccount;
-    this.upsertReferencePointer = upsertReferencePointer;
     this.mutateByCanonicalPointerReturningRecord = mutateByCanonicalPointerReturningRecord;
     this.copyStoredJob = copyStoredJob;
   }
@@ -94,6 +82,7 @@ public class ReconcileContributionRollupService {
     return loadDirectContributions(accountId, parentJobId);
   }
 
+  @Override
   public void refreshContributionChain(StoredReconcileJob record) {
     StoredReconcileJob current = record;
     while (current != null && !blank(current.parentJobId)) {
@@ -124,39 +113,7 @@ public class ReconcileContributionRollupService {
 
   private List<StoredJobContribution> loadDirectContributions(
       String accountId, String parentJobId) {
-    if (blank(accountId) || blank(parentJobId)) {
-      return List.of();
-    }
-    String prefix = Keys.reconcileJobContributionPointerPrefix(accountId, parentJobId);
-    List<StoredJobContribution> out = new ArrayList<>();
-    String token = "";
-    while (true) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 256, token, next);
-      if (pointers.isEmpty()) {
-        break;
-      }
-      for (Pointer pointer : pointers) {
-        readContribution(pointer)
-            .filter(
-                contribution ->
-                    accountId.equals(contribution.accountId)
-                        && parentJobId.equals(contribution.parentJobId))
-            .ifPresent(out::add);
-      }
-      token = next.toString();
-      if (token.isBlank()) {
-        break;
-      }
-    }
-    return out;
-  }
-
-  private Optional<StoredJobContribution> readContribution(Pointer pointer) {
-    if (pointer == null || blank(pointer.getBlobUri())) {
-      return Optional.empty();
-    }
-    return payloadStore.readInlineJobContribution(pointer.getBlobUri());
+    return projectionStore.loadDirectContributions(accountId, parentJobId);
   }
 
   private StoredReconcileJob refreshCanonicalCountersFromContributions(
@@ -180,7 +137,7 @@ public class ReconcileContributionRollupService {
                 return existing;
               }
               boolean leaseOwnsCanonicalState =
-                  leaseManager.hasLiveLease(existing, true, System.currentTimeMillis());
+                  leaseLiveness.hasLiveLease(existing, true, System.currentTimeMillis());
               String nextState =
                   canonicalParentStateFromProjection(existing, projected, directChildCounts);
               String nextMessage =
@@ -270,10 +227,7 @@ public class ReconcileContributionRollupService {
     StoredJobContribution contribution =
         contributionSnapshot(
             childJob.accountId, childJob.parentJobId, childJob, includeSelfProjectionPayloads);
-    upsertReferencePointer.apply(
-        Keys.reconcileJobContributionPointer(
-            contribution.accountId, contribution.parentJobId, contribution.childJobId),
-        payloadStore.encodeInlineJobContribution(contribution));
+    projectionStore.upsertContribution(contribution);
     LOG.debugf(
         "reconcile contribution upsert parentJobId=%s childJobId=%s childKind=%s childState=%s projection=%s includeSelfProjectionPayloads=%s",
         contribution.parentJobId,
@@ -466,7 +420,7 @@ public class ReconcileContributionRollupService {
       message = "Waiting on child work";
       executorId = "";
     } else if ("JS_RUNNING".equals(state)
-        && !leaseManager.hasLiveLease(stored, true, System.currentTimeMillis())
+        && !leaseLiveness.hasLiveLease(stored, true, System.currentTimeMillis())
         && hasExpectedDirectChildJobs(stored)) {
       state = "JS_WAITING";
       message = "Waiting on child work";
@@ -534,7 +488,7 @@ public class ReconcileContributionRollupService {
         formatStoredProjection(current),
         blankToEmpty(projected.state()),
         blankToEmpty(projected.message()),
-        leaseManager.hasLiveLease(current, true, System.currentTimeMillis()));
+        leaseLiveness.hasLiveLease(current, true, System.currentTimeMillis()));
   }
 
   private void logAncestorRollupNoop(

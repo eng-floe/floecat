@@ -16,48 +16,38 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Function;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileJobMaintenanceService {
   private static final Logger LOG = Logger.getLogger(ReconcileJobMaintenanceService.class);
-  private static final String LEASE_EXPIRY_POINTER_PREFIX =
-      "/accounts/by-id/reconcile/job-leases/by-expiry/";
 
   @FunctionalInterface
   public interface ReclaimCanonicalJob {
-    void accept(Pointer leaseExpiryPointer, long nowMs);
+    void accept(ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs);
   }
 
-  private PointerStore pointerStore;
-  private Function<String, Long> parseLeaseExpiryMillis;
+  private ReconcileLeaseStore leaseStore;
   private ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer;
   private int readyScanLimit;
   private long reclaimIntervalMs;
-  private long invalidOrderedPointerMs;
 
   private volatile long lastReclaimAtMs;
   private final ReentrantLock reclaimLock = new ReentrantLock();
 
   public void bind(
-      PointerStore pointerStore,
-      Function<String, Long> parseLeaseExpiryMillis,
+      ReconcileLeaseStore leaseStore,
       ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer,
       int readyScanLimit,
-      long reclaimIntervalMs,
-      long invalidOrderedPointerMs) {
-    this.pointerStore = pointerStore;
-    this.parseLeaseExpiryMillis = parseLeaseExpiryMillis;
+      long reclaimIntervalMs) {
+    this.leaseStore = leaseStore;
     this.reclaimExpiredLeaseFromCanonicalPointer = reclaimExpiredLeaseFromCanonicalPointer;
     this.readyScanLimit = readyScanLimit;
     this.reclaimIntervalMs = reclaimIntervalMs;
-    this.invalidOrderedPointerMs = invalidOrderedPointerMs;
   }
 
   public void runMaintenanceOnce(long maxMillis) {
@@ -91,25 +81,17 @@ public class ReconcileJobMaintenanceService {
     String token = "";
     int pages = 0;
     while (true) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> leaseExpiries =
-          pointerStore.listPointersByPrefix(
-              LEASE_EXPIRY_POINTER_PREFIX, readyScanLimit, token, next);
+      ReconcileLeaseStore.LeaseExpiryScanPage page =
+          leaseStore.scanExpiredLeasePointersPage(nowMs, readyScanLimit, token);
+      List<ReconcileLeaseStore.LeaseExpiryEntry> leaseExpiries = page.entries();
       if (leaseExpiries.isEmpty()) {
         return;
       }
-      for (Pointer leaseExpiry : leaseExpiries) {
-        long expiresAtMs = parseLeaseExpiryMillis.apply(leaseExpiry.getKey());
-        if (expiresAtMs == invalidOrderedPointerMs) {
-          continue;
-        }
-        if (expiresAtMs > nowMs) {
-          return;
-        }
+      for (ReconcileLeaseStore.LeaseExpiryEntry leaseExpiry : leaseExpiries) {
         reclaimExpiredLeaseFromCanonicalPointer.accept(leaseExpiry, nowMs);
       }
 
-      String nextToken = next.toString();
+      String nextToken = page.nextPageToken();
       if (nextToken.isBlank()) {
         return;
       }
@@ -126,9 +108,5 @@ public class ReconcileJobMaintenanceService {
         return;
       }
     }
-  }
-
-  private static boolean blank(String value) {
-    return value == null || value.isBlank();
   }
 }

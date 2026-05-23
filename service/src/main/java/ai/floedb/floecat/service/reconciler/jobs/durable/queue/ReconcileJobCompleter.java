@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.CompletionKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -43,7 +44,7 @@ public class ReconcileJobCompleter {
 
   public record CanonicalEnvelope(String canonicalPointerKey, StoredReconcileJob record) {}
 
-  private ReconcileLeaseManager leaseManager;
+  private ReconcileLeaseStore leaseManager;
   private JobMutator mutateByJobIdReturningRecord;
   private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
   private BiFunction<String, String, Long> countDirectChildJobs;
@@ -54,7 +55,7 @@ public class ReconcileJobCompleter {
   private long baseBackoffMs;
 
   public void bind(
-      ReconcileLeaseManager leaseManager,
+      ReconcileLeaseStore leaseManager,
       JobMutator mutateByJobIdReturningRecord,
       BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
       BiFunction<String, String, Long> countDirectChildJobs,

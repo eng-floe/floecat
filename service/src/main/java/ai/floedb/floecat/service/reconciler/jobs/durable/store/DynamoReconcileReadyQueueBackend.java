@@ -1,0 +1,195 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.reconciler.jobs.durable.store;
+
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
+
+import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+
+@Singleton
+@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
+public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBackend {
+  static final String ATTR_READY_POINTER_KEY = "ready_pointer_key";
+  static final String ATTR_CANONICAL_POINTER_KEY = "canonical_pointer_key";
+  static final String ATTR_ACCOUNT_ID = "account_id";
+  static final String ATTR_JOB_ID = "job_id";
+  static final String ATTR_DUE_AT_MS = "due_at_ms";
+  static final String ATTR_INDEX_TYPE = "ready_index_type";
+  static final String ATTR_FILTER_VALUE = "ready_filter_value";
+  static final String KIND_READY_ENTRY = "ReconcileReadyEntry";
+  private static final String GLOBAL_POINTER_PARTITION_KEY = "_ACCOUNT_DIR";
+  private static final String ATTR_BLOB_URI = "blob_uri";
+
+  private final DynamoDbClient dynamoDb;
+  private final String table;
+
+  @Inject
+  public DynamoReconcileReadyQueueBackend(
+      DynamoDbClient dynamoDb, @ConfigProperty(name = "floecat.kv.table") String table) {
+    this.dynamoDb = dynamoDb;
+    this.table = table;
+  }
+
+  @Override
+  public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
+      ReadyQueueSlice slice, int pageSize, String pageToken) {
+    QueryRequest.Builder query =
+        QueryRequest.builder()
+            .tableName(table)
+            .consistentRead(true)
+            .limit(Math.max(1, pageSize))
+            .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+            .keyConditionExpression("#pk = :pk")
+            .expressionAttributeValues(
+                Map.of(":pk", AttributeValue.fromS(ReadyQueueBackendSupport.partitionKey(slice))));
+
+    String token = ReadyQueueBackendSupport.stripLeadingSlash(pageToken);
+    if (!token.isBlank()) {
+      query.exclusiveStartKey(
+          Map.of(
+              ATTR_PARTITION_KEY,
+                  AttributeValue.fromS(ReadyQueueBackendSupport.partitionKey(slice)),
+              ATTR_SORT_KEY, AttributeValue.fromS(token)));
+    }
+
+    var response = dynamoDb.query(query.build());
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
+        new ArrayList<>(response.items().size());
+    for (var item : response.items()) {
+      entries.add(
+          new ReconcileReadyQueueStore.ReadyQueueEntry(
+              stringAttr(item, ATTR_READY_POINTER_KEY),
+              stringAttr(item, ATTR_CANONICAL_POINTER_KEY),
+              stringAttr(item, ATTR_ACCOUNT_ID),
+              stringAttr(item, ATTR_JOB_ID),
+              longAttr(item, ATTR_DUE_AT_MS),
+              slice.indexType(),
+              stringAttr(item, ATTR_FILTER_VALUE)));
+    }
+
+    String nextPageToken = "";
+    if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
+      nextPageToken = "/" + response.lastEvaluatedKey().get(ATTR_SORT_KEY).s();
+    }
+    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, nextPageToken);
+  }
+
+  @Override
+  public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
+    var canonicalJobKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (canonicalJobKey != null) {
+      var response =
+          dynamoDb.getItem(
+              GetItemRequest.builder()
+                  .tableName(table)
+                  .consistentRead(true)
+                  .key(
+                      Map.of(
+                          ATTR_PARTITION_KEY,
+                          AttributeValue.fromS(
+                              JobIndexBackendSupport.canonicalPartitionKey(canonicalJobKey)),
+                          ATTR_SORT_KEY,
+                          AttributeValue.fromS(
+                              JobIndexBackendSupport.canonicalSortKey(canonicalJobKey))))
+                  .build());
+      if (!response.hasItem() || response.item().isEmpty()) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          new CanonicalPointerSnapshot(
+              canonicalPointerKey,
+              stringAttr(response.item(), ATTR_BLOB_URI),
+              longAttr(response.item(), ATTR_VERSION)));
+    }
+
+    DynamoPointerKey key = dynamoPointerKey(canonicalPointerKey);
+    if (key == null) {
+      return Optional.empty();
+    }
+    var response =
+        dynamoDb.getItem(
+            GetItemRequest.builder()
+                .tableName(table)
+                .consistentRead(true)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                .build());
+    if (!response.hasItem() || response.item().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new CanonicalPointerSnapshot(
+            canonicalPointerKey,
+            stringAttr(response.item(), ATTR_BLOB_URI),
+            longAttr(response.item(), ATTR_VERSION)));
+  }
+
+  private static DynamoPointerKey dynamoPointerKey(String pointerKey) {
+    String normalized = ReadyQueueBackendSupport.stripLeadingSlash(pointerKey);
+    if (normalized.isBlank()) {
+      return null;
+    }
+    if (normalized.startsWith("accounts/by-id/") || normalized.startsWith("accounts/by-name/")) {
+      return new DynamoPointerKey(GLOBAL_POINTER_PARTITION_KEY, normalized);
+    }
+    if (!normalized.startsWith("accounts/")) {
+      return null;
+    }
+    int firstSlash = normalized.indexOf('/');
+    int secondSlash = normalized.indexOf('/', firstSlash + 1);
+    if (secondSlash < 0) {
+      return null;
+    }
+    String accountId = normalized.substring(firstSlash + 1, secondSlash);
+    String remainder = normalized.substring(secondSlash + 1);
+    return new DynamoPointerKey("accounts/" + accountId, remainder);
+  }
+
+  private static String stringAttr(Map<String, AttributeValue> item, String name) {
+    AttributeValue value = item.get(name);
+    return value == null || value.s() == null ? "" : value.s();
+  }
+
+  private static long longAttr(Map<String, AttributeValue> item, String name) {
+    AttributeValue value = item.get(name);
+    if (value == null || value.n() == null) {
+      return 0L;
+    }
+    try {
+      return Long.parseLong(value.n());
+    } catch (NumberFormatException ignored) {
+      return 0L;
+    }
+  }
+
+  private record DynamoPointerKey(String partitionKey, String sortKey) {}
+}

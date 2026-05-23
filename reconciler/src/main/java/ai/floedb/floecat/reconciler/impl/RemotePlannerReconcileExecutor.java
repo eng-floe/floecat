@@ -326,6 +326,10 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     if (error instanceof ReconcileFailureException) {
       return error;
     }
+    Exception normalized = ReconcileFailureClassifier.normalize(error);
+    if (normalized instanceof ReconcileFailureException) {
+      return normalized;
+    }
     if (hasAwsCredentialsUnavailable(error)) {
       return new ReconcileFailureException(
           ExecutionResult.FailureKind.INTERNAL,

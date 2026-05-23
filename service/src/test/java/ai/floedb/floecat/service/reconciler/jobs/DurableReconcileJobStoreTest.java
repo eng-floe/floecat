@@ -43,9 +43,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseManager;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -55,6 +59,8 @@ import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -88,6 +94,10 @@ class DurableReconcileJobStoreTest {
     store.blobStore = new InMemoryBlobStore();
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
+    store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+    store.leaseStore = new InMemoryReconcileLeaseStore();
+    store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
+    store.projectionStore = new InMemoryReconcileProjectionStore();
   }
 
   @AfterEach
@@ -390,8 +400,7 @@ class DurableReconcileJobStoreTest {
       String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, item.jobId);
       var record = readStoredRecord(canonicalKey);
       assertEquals(item.jobId, record.jobId);
-      assertEquals(
-          canonicalKey, store.pointerStore.get(record.readyPointerKey).orElseThrow().getBlobUri());
+      assertTrue(readyEntryExists(record.readyPointerKey));
       assertEquals(
           canonicalKey,
           store
@@ -470,7 +479,7 @@ class DurableReconcileJobStoreTest {
         1, store.pointerStore.countByPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)));
     StoredReconcileJob stored =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, result.items.get(0).jobId));
-    assertTrue(store.pointerStore.get(stored.readyPointerKey).isPresent());
+    assertTrue(readyEntryExists(stored.readyPointerKey));
     assertEquals(
         1,
         store.pointerStore.countByPrefix(
@@ -1381,28 +1390,30 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void upsertReferencePointerDoesNotRewriteMatchingPointer() throws Exception {
+  void projectionStoreDoesNotRewriteMatchingResultReferencePointer() throws Exception {
     store.init();
+    Object projectionStore = invokePrivateMethod("projectionStore", new Class<?>[] {});
 
-    String pointerKey = "/test/pointer";
+    String jobId = "job-1";
     String reference = "inline:test-reference";
     assertTrue(
         (Boolean)
-            invokePrivateMethod(
-                "upsertReferencePointer",
-                new Class<?>[] {String.class, String.class},
-                pointerKey,
-                reference));
+            projectionStore
+                .getClass()
+                .getMethod(
+                    "upsertFileGroupResultReference", String.class, String.class, String.class)
+                .invoke(projectionStore, ACCOUNT_ID, jobId, reference));
 
+    String pointerKey = Keys.reconcileJobResultPointerById(ACCOUNT_ID, jobId);
     Pointer original = store.pointerStore.get(pointerKey).orElseThrow();
 
     assertTrue(
         (Boolean)
-            invokePrivateMethod(
-                "upsertReferencePointer",
-                new Class<?>[] {String.class, String.class},
-                pointerKey,
-                reference));
+            projectionStore
+                .getClass()
+                .getMethod(
+                    "upsertFileGroupResultReference", String.class, String.class, String.class)
+                .invoke(projectionStore, ACCOUNT_ID, jobId, reference));
 
     Pointer unchanged = store.pointerStore.get(pointerKey).orElseThrow();
     assertEquals(original.getVersion(), unchanged.getVersion());
@@ -2043,7 +2054,7 @@ class DurableReconcileJobStoreTest {
                 .setVersion(lanePointer.getVersion() + 1)
                 .build()));
 
-    ReconcileLeaseManager leaseManager = leaseManager();
+    InMemoryReconcileLeaseStore leaseManager = leaseManager();
     assertDoesNotThrow(() -> leaseManager.clearLaneLeaseIfOwned(activeRecord, canonicalPointerKey));
 
     Pointer retainedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
@@ -2060,7 +2071,7 @@ class DurableReconcileJobStoreTest {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
 
-    ReconcileLeaseManager leaseManager = leaseManager();
+    InMemoryReconcileLeaseStore leaseManager = leaseManager();
 
     boolean firstClaim =
         leaseManager.tryAcquireLaneLease(
@@ -2118,7 +2129,7 @@ class DurableReconcileJobStoreTest {
                 .setVersion(1L)
                 .build()));
 
-    ReconcileLeaseManager leaseManager = leaseManager();
+    InMemoryReconcileLeaseStore leaseManager = leaseManager();
 
     boolean acquired =
         leaseManager.tryAcquireLaneLease(
@@ -2152,7 +2163,7 @@ class DurableReconcileJobStoreTest {
     String laneOwnerBeforeAcquire =
         store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri();
 
-    ReconcileLeaseManager leaseManager = leaseManager();
+    InMemoryReconcileLeaseStore leaseManager = leaseManager();
 
     boolean acquired =
         leaseManager.tryAcquireLaneLease(
@@ -2269,7 +2280,7 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJob activeRecord = readStoredRecord(canonicalPointerKey);
 
-    ReconcileLeaseManager leaseManager = leaseManager();
+    InMemoryReconcileLeaseStore leaseManager = leaseManager();
     assertDoesNotThrow(
         () -> leaseManager.clearSnapshotLeaseIfOwned(activeRecord, canonicalPointerKey));
 
@@ -2453,7 +2464,7 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(jobId, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
     assertTrue(store.pointerStore.get(dedupePointer.getKey()).isEmpty());
-    assertEquals(0, store.pointerStore.countByPrefix(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(0, globalReadyEntryCount());
     assertTrue(store.pointerStore.get(lanePointerKey).isEmpty());
   }
 
@@ -2495,7 +2506,7 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(jobId, dedupedJobId);
     assertTrue(store.pointerStore.get(lookupKey).isEmpty());
-    assertTrue(store.pointerStore.get(expectedReadyKey).isEmpty());
+    assertFalse(readyEntryExists(expectedReadyKey));
     Pointer retainedDedupePointer =
         firstPointerWithPrefix(Keys.reconcileDedupePointerPrefix(ACCOUNT_ID)).orElseThrow();
     assertEquals(canonicalPointerKey, retainedDedupePointer.getBlobUri());
@@ -2506,7 +2517,7 @@ class DurableReconcileJobStoreTest {
     store.runMaintenanceOnce(1_000L);
     assertTrue(store.leaseNext().isEmpty());
     assertTrue(store.pointerStore.get(lookupKey).isEmpty());
-    assertTrue(store.pointerStore.get(expectedReadyKey).isEmpty());
+    assertFalse(readyEntryExists(expectedReadyKey));
   }
 
   @Test
@@ -2696,7 +2707,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", requeued.state);
     assertFalse(requeued.readyPointerKey.isBlank());
-    assertTrue(store.pointerStore.get(requeued.readyPointerKey).isPresent());
+    assertTrue(readyEntryExists(requeued.readyPointerKey));
   }
 
   @Test
@@ -3515,12 +3526,7 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
     assertTrue(cancelled.finishedAtMs > 0L);
-    assertFalse(
-        store
-            .pointerStore
-            .listPointersByPrefix(Keys.reconcileReadyPointerPrefix(), 20, "", new StringBuilder())
-            .stream()
-            .anyMatch(pointer -> pointer.getKey().contains(jobId)));
+    assertFalse(anyReadyEntryMatches(key -> key.contains(jobId)));
   }
 
   @Test
@@ -3552,12 +3558,7 @@ class DurableReconcileJobStoreTest {
     var cancelled = store.get(jobId).orElseThrow();
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
-    assertFalse(
-        store
-            .pointerStore
-            .listPointersByPrefix(Keys.reconcileReadyPointerPrefix(), 20, "", new StringBuilder())
-            .stream()
-            .anyMatch(pointer -> pointer.getKey().contains(jobId)));
+    assertFalse(anyReadyEntryMatches(key -> key.contains(jobId)));
   }
 
   @Test
@@ -3629,7 +3630,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob cancelling = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_CANCELLING", cancelling.state);
     assertTrue(cancelling.readyPointerKey == null || cancelling.readyPointerKey.isBlank());
-    assertTrue(staleReadyKeys.stream().allMatch(key -> store.pointerStore.get(key).isEmpty()));
+    assertTrue(staleReadyKeys.stream().allMatch(key -> !readyEntryExists(key)));
   }
 
   @Test
@@ -3660,7 +3661,7 @@ class DurableReconcileJobStoreTest {
     store.runMaintenanceOnce(1_000L);
     assertTrue(store.leaseNext().isEmpty());
 
-    assertTrue(store.pointerStore.get(originalReadyKey).isEmpty());
+    assertFalse(readyEntryExists(originalReadyKey));
   }
 
   @Test
@@ -3686,7 +3687,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
     assertEquals("JS_CANCELLING", readStoredRecord(canonicalPointerKey).state);
-    assertEquals(0, store.pointerStore.countByPrefix(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(0, globalReadyEntryCount());
   }
 
   @Test
@@ -3847,21 +3848,12 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void parseDueMillisAcceptsReadyKeyWithoutLeadingSlash() throws Exception {
+  void readyPointerKeyForDueBuildsExpectedGlobalReadyKey() throws Exception {
     store.init();
-    Method parseDueMillis =
-        ReconcileReadyQueue.class.getDeclaredMethod("parseDueMillis", String.class);
-    parseDueMillis.setAccessible(true);
-
     long dueAt = 123456789L;
-    String canonical = Keys.reconcileReadyPointerByDue(dueAt, ACCOUNT_ID, "lane", "job-1");
-    String normalized = canonical.substring(1);
-
-    long parsedCanonical = (long) parseDueMillis.invoke(readyQueue(), canonical);
-    long parsedNormalized = (long) parseDueMillis.invoke(readyQueue(), normalized);
-
-    assertEquals(dueAt, parsedCanonical);
-    assertEquals(dueAt, parsedNormalized);
+    assertEquals(
+        Keys.reconcileReadyPointerByDue(dueAt, ACCOUNT_ID, "lane", "job-1"),
+        readyQueue().readyPointerKeyForDue(ACCOUNT_ID, "lane", "job-1", dueAt));
   }
 
   @Test
@@ -3910,10 +3902,8 @@ class DurableReconcileJobStoreTest {
       futureDueAt += 1L;
     }
 
-    pointerStore.resetListCounts();
-
     assertTrue(store.leaseNext().isEmpty());
-    assertEquals(1, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(2, globalReadyEntryCount());
   }
 
   @Test
@@ -3940,9 +3930,6 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "tbl-pinned"),
             ReconcileExecutionPolicy.defaults(),
             "executor-a");
-
-    pointerStore.resetListCounts();
-
     var lease =
         store
             .leaseNext(
@@ -3951,92 +3938,41 @@ class DurableReconcileJobStoreTest {
             .orElseThrow();
 
     assertEquals(pinnedJobId, lease.jobId);
-    assertEquals(
-        1, pointerStore.listCount(Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-a")));
-    assertEquals(0, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
   }
 
   @Test
-  void decodeReadyPointerTargetUsesCorrectOrderedKeySegments() throws Exception {
+  void readyPointerKeysIncludeExpectedOrderedSlices() throws Exception {
     store.init();
-    Method decodeReadyPointerTarget =
-        ReconcileReadyQueue.class.getDeclaredMethod(
-            "decodeReadyPointerTarget",
-            String.class,
-            Class.forName(
-                "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexSelection"));
-    decodeReadyPointerTarget.setAccessible(true);
-    Class<?> readyIndexTypeClass =
-        Class.forName(
-            "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexType");
-    Class<?> readyIndexSelectionClass =
-        Class.forName(
-            "ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyQueue$ReadyIndexSelection");
-    var ctor =
-        readyIndexSelectionClass.getDeclaredConstructor(
-            String.class, readyIndexTypeClass, String.class);
-    ctor.setAccessible(true);
+    StoredReconcileJob record = new StoredReconcileJob();
+    record.accountId = ACCOUNT_ID;
+    record.jobId = "job-5";
+    record.state = "JS_QUEUED";
+    record.jobKind = ReconcileJobKind.PLAN_VIEW.name();
+    record.executionClass = ReconcileExecutionClass.BATCH.name();
+    record.executionLane = "lane-1";
+    record.laneKey = "lane-1";
+    record.pinnedExecutorId = "executor-1";
+    record.nextAttemptAtMs = 123L;
 
-    Object globalSelection =
-        ctor.newInstance(
-            Keys.reconcileReadyPointerPrefix(),
-            Enum.valueOf((Class<Enum>) readyIndexTypeClass, "GLOBAL"),
-            "");
-    Object classSelection =
-        ctor.newInstance(
-            Keys.reconcileReadyByExecutionClassPointerPrefix(ReconcileExecutionClass.BATCH.name()),
-            Enum.valueOf((Class<Enum>) readyIndexTypeClass, "EXECUTION_CLASS"),
-            ReconcileExecutionClass.BATCH.name());
-    Object laneSelection =
-        ctor.newInstance(
-            Keys.reconcileReadyByExecutionLanePointerPrefix("lane-1"),
-            Enum.valueOf((Class<Enum>) readyIndexTypeClass, "EXECUTION_LANE"),
-            "lane-1");
-    Object pinnedSelection =
-        ctor.newInstance(
-            Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-1"),
-            Enum.valueOf((Class<Enum>) readyIndexTypeClass, "PINNED_EXECUTOR"),
-            "executor-1");
-    Object kindSelection =
-        ctor.newInstance(
-            Keys.reconcileReadyByJobKindPointerPrefix(ReconcileJobKind.PLAN_VIEW.name()),
-            Enum.valueOf((Class<Enum>) readyIndexTypeClass, "JOB_KIND"),
-            ReconcileJobKind.PLAN_VIEW.name());
+    List<String> readyKeys = readyPointerKeysFor(record);
 
-    String globalKey = Keys.reconcileReadyPointerByDue(123L, ACCOUNT_ID, "lane-1", "job-1");
-    Object globalTarget = decodeReadyPointerTarget.invoke(readyQueue(), globalKey, globalSelection);
-    Method accountId = globalTarget.getClass().getDeclaredMethod("accountId");
-    Method jobId = globalTarget.getClass().getDeclaredMethod("jobId");
-    accountId.setAccessible(true);
-    jobId.setAccessible(true);
-    assertEquals(ACCOUNT_ID, accountId.invoke(globalTarget));
-    assertEquals("job-1", jobId.invoke(globalTarget));
-
-    String classKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            123L, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, "job-2");
-    Object classTarget = decodeReadyPointerTarget.invoke(readyQueue(), classKey, classSelection);
-    assertEquals(ACCOUNT_ID, accountId.invoke(classTarget));
-    assertEquals("job-2", jobId.invoke(classTarget));
-
-    String laneKey =
-        Keys.reconcileReadyByExecutionLanePointerByDue(123L, "lane-1", ACCOUNT_ID, "job-3");
-    Object laneTarget = decodeReadyPointerTarget.invoke(readyQueue(), laneKey, laneSelection);
-    assertEquals(ACCOUNT_ID, accountId.invoke(laneTarget));
-    assertEquals("job-3", jobId.invoke(laneTarget));
-
-    String pinnedKey =
-        Keys.reconcileReadyByPinnedExecutorPointerByDue(123L, "executor-1", ACCOUNT_ID, "job-4");
-    Object pinnedTarget = decodeReadyPointerTarget.invoke(readyQueue(), pinnedKey, pinnedSelection);
-    assertEquals(ACCOUNT_ID, accountId.invoke(pinnedTarget));
-    assertEquals("job-4", jobId.invoke(pinnedTarget));
-
-    String kindKey =
-        Keys.reconcileReadyByJobKindPointerByDue(
-            123L, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, "job-5");
-    Object kindTarget = decodeReadyPointerTarget.invoke(readyQueue(), kindKey, kindSelection);
-    assertEquals(ACCOUNT_ID, accountId.invoke(kindTarget));
-    assertEquals("job-5", jobId.invoke(kindTarget));
+    assertTrue(
+        readyKeys.contains(Keys.reconcileReadyPointerByDue(123L, ACCOUNT_ID, "lane-1", "job-5")));
+    assertTrue(
+        readyKeys.contains(
+            Keys.reconcileReadyByExecutionClassPointerByDue(
+                123L, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, "job-5")));
+    assertTrue(
+        readyKeys.contains(
+            Keys.reconcileReadyByExecutionLanePointerByDue(123L, "lane-1", ACCOUNT_ID, "job-5")));
+    assertTrue(
+        readyKeys.contains(
+            Keys.reconcileReadyByPinnedExecutorPointerByDue(
+                123L, "executor-1", ACCOUNT_ID, "job-5")));
+    assertTrue(
+        readyKeys.contains(
+            Keys.reconcileReadyByJobKindPointerByDue(
+                123L, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, "job-5")));
   }
 
   @Test
@@ -4063,9 +3999,6 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "tbl-batch"),
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.BATCH, "", Map.of()),
             "");
-
-    pointerStore.resetListCounts();
-
     var lease =
         store
             .leaseNext(
@@ -4073,12 +4006,6 @@ class DurableReconcileJobStoreTest {
             .orElseThrow();
 
     assertEquals(batchJobId, lease.jobId);
-    assertEquals(
-        1,
-        pointerStore.listCount(
-            Keys.reconcileReadyByExecutionClassPointerPrefix(
-                ReconcileExecutionClass.BATCH.name())));
-    assertEquals(0, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
   }
 
   @Test
@@ -4107,18 +4034,12 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "tbl-lane-a"),
             ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "lane-a", Map.of()),
             "");
-
-    pointerStore.resetListCounts();
-
     var lease =
         store
             .leaseNext(ReconcileJobStore.LeaseRequest.of(Set.of(), Set.of("lane-a")))
             .orElseThrow();
 
     assertEquals(laneJobId, lease.jobId);
-    assertEquals(
-        1, pointerStore.listCount(Keys.reconcileReadyByExecutionLanePointerPrefix("lane-a")));
-    assertEquals(0, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
   }
 
   @Test
@@ -4147,9 +4068,6 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "",
             "");
-
-    pointerStore.resetListCounts();
-
     var lease =
         store
             .leaseNext(
@@ -4158,11 +4076,6 @@ class DurableReconcileJobStoreTest {
             .orElseThrow();
 
     assertEquals(viewJobId, lease.jobId);
-    assertEquals(
-        1,
-        pointerStore.listCount(
-            Keys.reconcileReadyByJobKindPointerPrefix(ReconcileJobKind.PLAN_VIEW.name())));
-    assertEquals(0, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
   }
 
   @Test
@@ -4179,8 +4092,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "tbl-global"));
 
-    pointerStore.resetListCounts();
-
     var lease =
         store
             .leaseNext(
@@ -4190,8 +4101,10 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(globalJobId, lease.jobId);
     assertEquals(
-        1, pointerStore.listCount(Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-a")));
-    assertEquals(1, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
+        0,
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-a")
+            .size());
   }
 
   @Test
@@ -4273,41 +4186,13 @@ class DurableReconcileJobStoreTest {
     long newDueAt = requeued.nextAttemptAtMs;
     assertNotEquals(oldDueAt, newDueAt);
 
-    assertTrue(store.pointerStore.get(oldGlobalReadyKey).isEmpty());
-    assertTrue(store.pointerStore.get(oldClassReadyKey).isEmpty());
-    assertTrue(store.pointerStore.get(oldLaneReadyKey).isEmpty());
-    assertTrue(store.pointerStore.get(oldPinnedReadyKey).isEmpty());
-    assertTrue(store.pointerStore.get(oldKindReadyKey).isEmpty());
+    assertFalse(readyEntryExists(oldGlobalReadyKey));
+    assertFalse(readyEntryExists(oldClassReadyKey));
+    assertFalse(readyEntryExists(oldLaneReadyKey));
+    assertFalse(readyEntryExists(oldPinnedReadyKey));
+    assertFalse(readyEntryExists(oldKindReadyKey));
 
-    assertTrue(store.pointerStore.get(requeued.readyPointerKey).isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByExecutionClassPointerByDue(
-                    newDueAt, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId))
-            .isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByExecutionLanePointerByDue(
-                    newDueAt, "lane-retry", ACCOUNT_ID, jobId))
-            .isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByPinnedExecutorPointerByDue(
-                    newDueAt, "executor-retry", ACCOUNT_ID, jobId))
-            .isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByJobKindPointerByDue(
-                    newDueAt, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, jobId))
-            .isPresent());
+    assertTrue(readyEntryExists(requeued.readyPointerKey));
   }
 
   @Test
@@ -4334,24 +4219,29 @@ class DurableReconcileJobStoreTest {
                     ReconcileExecutionClass.BATCH, "lane-partial", Map.of()),
                 "executor-partial"));
 
-    assertEquals(0, store.pointerStore.countByPrefix(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(0, globalReadyEntryCount());
     assertEquals(
         0,
-        store.pointerStore.countByPrefix(
-            Keys.reconcileReadyByExecutionClassPointerPrefix(
-                ReconcileExecutionClass.BATCH.name())));
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+                ReconcileExecutionClass.BATCH.name())
+            .size());
     assertEquals(
         0,
-        store.pointerStore.countByPrefix(
-            Keys.reconcileReadyByExecutionLanePointerPrefix("lane-partial")));
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, "lane-partial")
+            .size());
     assertEquals(
         0,
-        store.pointerStore.countByPrefix(
-            Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-partial")));
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-partial")
+            .size());
     assertEquals(
         0,
-        store.pointerStore.countByPrefix(
-            Keys.reconcileReadyByJobKindPointerPrefix(ReconcileJobKind.PLAN_CONNECTOR.name())));
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+                ReconcileJobKind.PLAN_CONNECTOR.name())
+            .size());
   }
 
   @Test
@@ -4411,35 +4301,23 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, jobId, "cancel");
 
-    assertTrue(store.pointerStore.get(queued.readyPointerKey).isEmpty());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByExecutionClassPointerByDue(
-                    dueAt, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId))
-            .isEmpty());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByExecutionLanePointerByDue(
-                    dueAt, "lane-cancel", ACCOUNT_ID, jobId))
-            .isEmpty());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByPinnedExecutorPointerByDue(
-                    dueAt, "executor-cancel", ACCOUNT_ID, jobId))
-            .isEmpty());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByJobKindPointerByDue(
-                    dueAt, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, jobId))
-            .isEmpty());
+    assertFalse(readyEntryExists(queued.readyPointerKey));
+    assertFalse(
+        readyEntryExists(
+            Keys.reconcileReadyByExecutionClassPointerByDue(
+                dueAt, ReconcileExecutionClass.BATCH.name(), ACCOUNT_ID, jobId)));
+    assertFalse(
+        readyEntryExists(
+            Keys.reconcileReadyByExecutionLanePointerByDue(
+                dueAt, "lane-cancel", ACCOUNT_ID, jobId)));
+    assertFalse(
+        readyEntryExists(
+            Keys.reconcileReadyByPinnedExecutorPointerByDue(
+                dueAt, "executor-cancel", ACCOUNT_ID, jobId)));
+    assertFalse(
+        readyEntryExists(
+            Keys.reconcileReadyByJobKindPointerByDue(
+                dueAt, ReconcileJobKind.PLAN_VIEW.name(), ACCOUNT_ID, jobId)));
   }
 
   @Test
@@ -4462,28 +4340,24 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_CANCELLING", record.state);
     assertTrue(record.nextAttemptAtMs > 0L);
     assertTrue(record.readyPointerKey == null || record.readyPointerKey.isBlank());
-    assertEquals(0, store.pointerStore.countByPrefix(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(0, globalReadyEntryCount());
   }
 
   @Test
   void unfilteredLeaseStillUsesGlobalReadyIndex() {
-    TrackingPointerStore pointerStore = new TrackingPointerStore();
-    store.pointerStore = pointerStore;
     store.init();
 
-    store.enqueue(
-        ACCOUNT_ID,
-        CONNECTOR_ID,
-        false,
-        CaptureMode.METADATA_AND_CAPTURE,
-        ReconcileScope.of(List.of(), "tbl-global"));
-
-    pointerStore.resetListCounts();
-
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl-global"));
+    StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertTrue(readyEntryExists(queued.readyPointerKey));
+    assertEquals(1, globalReadyEntryCount());
     assertTrue(store.leaseNext().isPresent());
-    assertEquals(1, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
-    assertEquals(
-        0, pointerStore.listCount(Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-a")));
   }
 
   @Test
@@ -4526,8 +4400,8 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
 
     assertEquals(liveJobId, lease.jobId);
-    assertTrue(store.pointerStore.get(malformedKey).isPresent());
-    assertTrue(store.pointerStore.get(orphanKey).isPresent());
+    assertFalse(readyEntryExists(malformedKey));
+    assertTrue(readyEntryExists(orphanKey));
   }
 
   @Test
@@ -4556,7 +4430,7 @@ class DurableReconcileJobStoreTest {
     var lease = store.leaseNext().orElseThrow();
 
     assertEquals(liveJobId, lease.jobId);
-    assertTrue(store.pointerStore.get(malformedKey).isPresent());
+    assertFalse(readyEntryExists(malformedKey));
   }
 
   @Test
@@ -4580,24 +4454,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob afterAttempt = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", afterAttempt.state);
     assertEquals(queued.readyPointerKey, afterAttempt.readyPointerKey);
-    assertTrue(store.pointerStore.get(queued.readyPointerKey).isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByExecutionClassPointerByDue(
-                    queued.nextAttemptAtMs,
-                    queued.executionPolicy().executionClass().name(),
-                    ACCOUNT_ID,
-                    jobId))
-            .isPresent());
-    assertTrue(
-        store
-            .pointerStore
-            .get(
-                Keys.reconcileReadyByJobKindPointerByDue(
-                    queued.nextAttemptAtMs, queued.jobKind().name(), ACCOUNT_ID, jobId))
-            .isPresent());
+    assertTrue(readyEntryExists(queued.readyPointerKey));
     assertTrue(
         store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isEmpty());
   }
@@ -4668,10 +4525,10 @@ class DurableReconcileJobStoreTest {
             "executor-repair");
 
     assertEquals(jobId, dedupedJobId);
-    assertTrue(store.pointerStore.get(classKey).isEmpty());
-    assertTrue(store.pointerStore.get(laneKey).isEmpty());
-    assertTrue(store.pointerStore.get(pinnedKey).isEmpty());
-    assertTrue(store.pointerStore.get(kindKey).isEmpty());
+    assertFalse(readyEntryExists(classKey));
+    assertFalse(readyEntryExists(laneKey));
+    assertFalse(readyEntryExists(pinnedKey));
+    assertFalse(readyEntryExists(kindKey));
   }
 
   @Test
@@ -4699,11 +4556,9 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "executor-a");
 
-    pointerStore.resetListCounts();
     assertTrue(store.leaseNext().isEmpty());
-    assertEquals(1, pointerStore.listCount(Keys.reconcileReadyPointerPrefix()));
+    assertEquals(1, globalReadyEntryCount());
 
-    pointerStore.resetListCounts();
     assertTrue(
         store
             .leaseNext(
@@ -4711,9 +4566,11 @@ class DurableReconcileJobStoreTest {
                     Set.of(), Set.of(), Set.of("executor-b"), Set.of()))
             .isEmpty());
     assertEquals(
-        1, pointerStore.listCount(Keys.reconcileReadyByPinnedExecutorPointerPrefix("executor-b")));
+        0,
+        readyEntryKeysForSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-b")
+            .size());
 
-    pointerStore.resetListCounts();
     var lease =
         store
             .leaseNext(
@@ -4741,7 +4598,7 @@ class DurableReconcileJobStoreTest {
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).readyPointerKey;
 
     assertTrue(store.leaseNext().isEmpty());
-    assertTrue(store.pointerStore.get(readyKey).isPresent());
+    assertTrue(readyEntryExists(readyKey));
     assertTrue(
         store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isEmpty());
   }
@@ -5475,7 +5332,7 @@ class DurableReconcileJobStoreTest {
         canonicalParent.readyPointerKey == null || canonicalParent.readyPointerKey.isBlank());
     assertTrue(
         readyPointerKeysFor(canonicalParent).stream()
-            .allMatch(readyPointerKey -> store.pointerStore.get(readyPointerKey).isEmpty()));
+            .allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
     assertEquals("JS_WAITING", store.getLeaseView(parentJobId).orElseThrow().state);
 
     assertTrue(
@@ -5686,8 +5543,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob succeededParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_SUCCEEDED", succeededParent.state);
     assertTrue(
-        staleReadyKeys.stream()
-            .allMatch(readyPointerKey -> store.pointerStore.get(readyPointerKey).isEmpty()));
+        staleReadyKeys.stream().allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
   }
 
   @Test
@@ -5972,18 +5828,30 @@ class DurableReconcileJobStoreTest {
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 100L, "executor-snapshot");
     store.markSucceeded(snapshotJobId, snapshotLease.leaseEpoch, 200L, 0L, 0L, 1L, 1L);
 
-    ReconcileJobStore.LeasedJob execLease = leaseJob(execJobId, ReconcileJobKind.EXEC_FILE_GROUP);
-    store.markRunning(execJobId, execLease.leaseEpoch, 250L, "executor-exec");
+    ReconcileJobStore.LeasedJob execLease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    String firstExecJobId = execLease.jobId;
+    String firstExecGroupId = execJobId.equals(firstExecJobId) ? "group-1" : "group-2";
+    String firstExecFile =
+        execJobId.equals(firstExecJobId)
+            ? "s3://bucket/data/file-1.parquet"
+            : "s3://bucket/data/file-2.parquet";
+    long firstExecRows = execJobId.equals(firstExecJobId) ? 3L : 4L;
+    store.markRunning(firstExecJobId, execLease.leaseEpoch, 250L, "executor-exec");
     store.persistFileGroupResult(
-        execJobId,
+        firstExecJobId,
         ReconcileFileGroupTask.of(
             "plan-1",
-            "group-1",
+            firstExecGroupId,
             "table-1",
             55L,
-            List.of("s3://bucket/data/file-1.parquet"),
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
-    store.markSucceeded(execJobId, execLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L, 0L, 1L);
+            List.of(firstExecFile),
+            List.of(ReconcileFileResult.succeeded(firstExecFile, firstExecRows))));
+    store.markSucceeded(firstExecJobId, execLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L, 0L, 1L);
 
     ReconcileJob snapshot = store.get(ACCOUNT_ID, snapshotJobId).orElseThrow();
     assertEquals("JS_WAITING", snapshot.state);
@@ -6001,18 +5869,30 @@ class DurableReconcileJobStoreTest {
     assertEquals(2L, listedWaiting.plannedFileGroups);
     assertEquals(1L, listedWaiting.completedFileGroups);
 
-    ReconcileJobStore.LeasedJob execLease2 = leaseJob(execJobId2, ReconcileJobKind.EXEC_FILE_GROUP);
-    store.markRunning(execJobId2, execLease2.leaseEpoch, 350L, "executor-exec");
+    ReconcileJobStore.LeasedJob execLease2 =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    String secondExecJobId = execLease2.jobId;
+    String secondExecGroupId = execJobId.equals(secondExecJobId) ? "group-1" : "group-2";
+    String secondExecFile =
+        execJobId.equals(secondExecJobId)
+            ? "s3://bucket/data/file-1.parquet"
+            : "s3://bucket/data/file-2.parquet";
+    long secondExecRows = execJobId.equals(secondExecJobId) ? 3L : 4L;
+    store.markRunning(secondExecJobId, execLease2.leaseEpoch, 350L, "executor-exec");
     store.persistFileGroupResult(
-        execJobId2,
+        secondExecJobId,
         ReconcileFileGroupTask.of(
             "plan-1",
-            "group-2",
+            secondExecGroupId,
             "table-1",
             55L,
-            List.of("s3://bucket/data/file-2.parquet"),
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 4L))));
-    store.markSucceeded(execJobId2, execLease2.leaseEpoch, 400L, 0L, 0L, 0L, 0L, 0L, 1L);
+            List.of(secondExecFile),
+            List.of(ReconcileFileResult.succeeded(secondExecFile, secondExecRows))));
+    store.markSucceeded(secondExecJobId, execLease2.leaseEpoch, 400L, 0L, 0L, 0L, 0L, 0L, 1L);
 
     ReconcileJob snapshotSucceeded = store.get(ACCOUNT_ID, snapshotJobId).orElseThrow();
     assertEquals("JS_SUCCEEDED", snapshotSucceeded.state);
@@ -6276,16 +6156,187 @@ class DurableReconcileJobStoreTest {
     return indexes().statePointerKeys(record);
   }
 
-  private List<String> readyPointerKeysFor(StoredReconcileJob record) throws Exception {
-    return readyQueue().readyPointerKeys(record);
+  private List<String> readyPointerKeysFor(StoredReconcileJob record) {
+    try {
+      return readyQueue().readyPointerKeys(record);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 
-  private ReconcileLeaseManager leaseManager() throws Exception {
-    return (ReconcileLeaseManager) invokePrivateMethod("leaseManager", new Class<?>[] {});
+  private boolean readyEntryExists(String readyPointerKey) {
+    try {
+      ReconcileReadyQueueBackend.ReadyQueueSlice slice = readySliceForKey(readyPointerKey);
+      if (slice == null) {
+        return false;
+      }
+      String token = "";
+      for (int pages = 0; pages < 1_000; pages++) {
+        var page = readyQueue().scanReadySlice(slice, 100, token);
+        if (page.entries().stream()
+            .anyMatch(entry -> readyPointerKey.equals(entry.readyPointerKey()))) {
+          return true;
+        }
+        if (page.nextPageToken().isBlank() || page.nextPageToken().equals(token)) {
+          return false;
+        }
+        token = page.nextPageToken();
+      }
+      throw new IllegalStateException("Ready scan page cap exceeded for key " + readyPointerKey);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 
-  private ReconcileReadyQueue readyQueue() throws Exception {
-    return (ReconcileReadyQueue) invokePrivateMethod("readyQueue", new Class<?>[] {});
+  private boolean anyReadyEntryMatches(java.util.function.Predicate<String> keyPredicate) {
+    try {
+      for (var slice : allReadySlices()) {
+        String token = "";
+        for (int pages = 0; pages < 1_000; pages++) {
+          var page = readyQueue().scanReadySlice(slice, 100, token);
+          if (page.entries().stream()
+              .map(entry -> entry.readyPointerKey())
+              .anyMatch(keyPredicate)) {
+            return true;
+          }
+          if (page.nextPageToken().isBlank() || page.nextPageToken().equals(token)) {
+            break;
+          }
+          token = page.nextPageToken();
+        }
+      }
+      return false;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  private int globalReadyEntryCount() {
+    return readyEntriesForSlice(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""))
+        .size();
+  }
+
+  private List<String> readyEntryKeysForSlice(
+      ReconcileReadyQueueStore.ReadyIndexType indexType, String filterValue) {
+    return readyEntriesForSlice(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(indexType, filterValue))
+        .stream()
+        .map(entry -> entry.readyPointerKey())
+        .toList();
+  }
+
+  private List<ReconcileReadyQueueStore.ReadyQueueEntry> readyEntriesForSlice(
+      ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
+    try {
+      List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
+      String token = "";
+      for (int pages = 0; pages < 1_000; pages++) {
+        var page = readyQueue().scanReadySlice(slice, 100, token);
+        entries.addAll(page.entries());
+        if (page.nextPageToken().isBlank() || page.nextPageToken().equals(token)) {
+          return entries;
+        }
+        token = page.nextPageToken();
+      }
+      throw new IllegalStateException("Ready scan page cap exceeded for slice " + slice);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  private List<ReconcileReadyQueueBackend.ReadyQueueSlice> allReadySlices() {
+    return List.of(
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+            ReconcileExecutionClass.BATCH.name()),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+            ReconcileExecutionClass.DEFAULT.name()),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+            ReconcileExecutionClass.HEAVY.name()),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, ""),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, "lane-cancel"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, "lane-orphan"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, "lane-partial"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, "lane-retry"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-cancel"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-partial"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, "executor-retry"),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+            ReconcileJobKind.EXEC_FILE_GROUP.name()),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+            ReconcileJobKind.PLAN_CONNECTOR.name()),
+        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, ReconcileJobKind.PLAN_VIEW.name()));
+  }
+
+  private ReconcileReadyQueueBackend.ReadyQueueSlice readySliceForKey(String readyPointerKey) {
+    if (readyPointerKey == null || readyPointerKey.isBlank()) {
+      return null;
+    }
+    if (readyPointerKey.startsWith(Keys.reconcileReadyPointerPrefix())) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
+    }
+    String filterValue =
+        readyFilterValue(readyPointerKey, Keys.reconcileReadyByExecutionClassPointerPrefix());
+    if (filterValue != null) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS, filterValue);
+    }
+    filterValue =
+        readyFilterValue(readyPointerKey, Keys.reconcileReadyByExecutionLanePointerPrefix());
+    if (filterValue != null) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, filterValue);
+    }
+    filterValue =
+        readyFilterValue(readyPointerKey, Keys.reconcileReadyByPinnedExecutorPointerPrefix());
+    if (filterValue != null) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, filterValue);
+    }
+    filterValue = readyFilterValue(readyPointerKey, Keys.reconcileReadyByJobKindPointerPrefix());
+    if (filterValue != null) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, filterValue);
+    }
+    return null;
+  }
+
+  private String readyFilterValue(String readyPointerKey, String prefix) {
+    if (!readyPointerKey.startsWith(prefix)) {
+      return null;
+    }
+    int slash = readyPointerKey.indexOf('/', prefix.length());
+    if (slash < 0) {
+      return null;
+    }
+    return URLDecoder.decode(
+        readyPointerKey.substring(prefix.length(), slash), StandardCharsets.UTF_8);
+  }
+
+  private InMemoryReconcileLeaseStore leaseManager() throws Exception {
+    return (InMemoryReconcileLeaseStore) invokePrivateMethod("leaseManager", new Class<?>[] {});
+  }
+
+  private ReconcileReadyQueueStore readyQueue() throws Exception {
+    return (ReconcileReadyQueueStore) invokePrivateMethod("readyQueue", new Class<?>[] {});
   }
 
   private ReconcileJobIndexes indexes() throws Exception {

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -38,11 +37,9 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.JobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.PointerStore;
-import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
-import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -50,7 +47,6 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -59,11 +55,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcileJobEnqueuer {
   private static final Logger LOG = Logger.getLogger(ReconcileJobEnqueuer.class);
-
-  @FunctionalInterface
-  public interface LoadActiveFromDedupe {
-    Optional<StoredReconcileJob> load(String dedupePointerKey);
-  }
 
   @FunctionalInterface
   public interface ResultPayloadWriter {
@@ -75,17 +66,16 @@ public class ReconcileJobEnqueuer {
     void increment(String parentJobId, int delta);
   }
 
-  private PointerStore pointerStore;
   private BlobStore blobStore;
   private ReconcilePayloadStore payloadStore;
   private ReconcileJobProjector projector;
+  private ReconcileJobIndexStore jobIndexStore;
   private ReconcileJobIndexes indexes;
   private Function<ReconcileSnapshotTask, List<ReconcileFileGroupTask>>
       materializeSnapshotPlanFileGroups;
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
-  private LoadActiveFromDedupe loadActiveFromDedupe;
   private ResultPayloadWriter writeFileGroupResultPayload;
   private ChildCounterIncrementer incrementExpectedChildJobs;
   private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
@@ -97,31 +87,29 @@ public class ReconcileJobEnqueuer {
   }
 
   public void bind(
-      PointerStore pointerStore,
       BlobStore blobStore,
       ReconcilePayloadStore payloadStore,
       ReconcileJobProjector projector,
+      ReconcileJobIndexStore jobIndexStore,
       ReconcileJobIndexes indexes,
       Function<ReconcileSnapshotTask, List<ReconcileFileGroupTask>>
           materializeSnapshotPlanFileGroups,
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
       ReadyPointerKeyForDue readyPointerKeyForDue,
-      LoadActiveFromDedupe loadActiveFromDedupe,
       ResultPayloadWriter writeFileGroupResultPayload,
       ChildCounterIncrementer incrementExpectedChildJobs,
       BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
       int casMax) {
-    this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.payloadStore = payloadStore;
     this.projector = projector;
+    this.jobIndexStore = jobIndexStore;
     this.indexes = indexes;
     this.materializeSnapshotPlanFileGroups = materializeSnapshotPlanFileGroups;
     this.readyPointerKeys = readyPointerKeys;
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
-    this.loadActiveFromDedupe = loadActiveFromDedupe;
     this.writeFileGroupResultPayload = writeFileGroupResultPayload;
     this.incrementExpectedChildJobs = incrementExpectedChildJobs;
     this.refreshAncestorContributionRollups = refreshAncestorContributionRollups;
@@ -204,18 +192,18 @@ public class ReconcileJobEnqueuer {
   }
 
   private BulkEnqueueItemResult commitBulkEntry(PendingBulkEnqueue entry) {
-    for (int attempt = 0; attempt < casMax; attempt++) {
-      Pointer existingDedupePointer = pointerStore.get(entry.dedupePointerKey).orElse(null);
-      var existing = loadActiveFromDedupe.load(entry.dedupePointerKey);
-      if (existing.isPresent()) {
-        return new BulkEnqueueItemResult(entry.index, existing.get().jobId, false, "");
-      }
-      if (pointerStore.compareAndSetBatch(bulkEnqueuePointerOps(entry, existingDedupePointer))) {
-        return null;
-      }
-    }
-    return new BulkEnqueueItemResult(
-        entry.index, "", false, "Unable to enqueue reconcile job after CAS retries");
+    return jobIndexStore.commitQueuedJobInsert(
+        new ReconcileJobIndexStore.QueuedJobInsert(
+            entry.index,
+            entry.dedupePointerKey,
+            entry.canonicalKey,
+            entry.lookupKey,
+            entry.parentKey,
+            entry.readyKeys,
+            entry.stateKeys,
+            entry.connectorIndexKey,
+            entry.resultBlobUri,
+            entry.record));
   }
 
   private PendingBulkEnqueue prepareBulkEnqueue(int index, BulkEnqueueSpec spec, long now) {
@@ -486,100 +474,6 @@ public class ReconcileJobEnqueuer {
     if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
       blobStore.delete(entry.resultBlobUri);
     }
-  }
-
-  private List<CasOp> bulkEnqueuePointerOps(
-      PendingBulkEnqueue entry, Pointer existingDedupePointer) {
-    List<CasOp> ops = new ArrayList<>();
-    long dedupeExpectedVersion =
-        existingDedupePointer == null ? 0L : existingDedupePointer.getVersion();
-    long dedupeNextVersion =
-        existingDedupePointer == null ? 1L : existingDedupePointer.getVersion() + 1L;
-    ops.add(
-        new CasUpsert(
-            entry.dedupePointerKey,
-            dedupeExpectedVersion,
-            Pointer.newBuilder()
-                .setKey(entry.dedupePointerKey)
-                .setBlobUri(entry.canonicalKey)
-                .setVersion(dedupeNextVersion)
-                .build()));
-    ops.add(
-        new CasUpsert(
-            entry.canonicalKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(entry.canonicalKey)
-                .setBlobUri(payloadStore.encodeInlineJobState(entry.record))
-                .setVersion(1L)
-                .build()));
-    ops.add(
-        new CasUpsert(
-            entry.lookupKey,
-            0L,
-            Pointer.newBuilder()
-                .setKey(entry.lookupKey)
-                .setBlobUri(entry.canonicalKey)
-                .setVersion(1L)
-                .build()));
-    if (!entry.parentKey.isBlank()) {
-      ops.add(
-          new CasUpsert(
-              entry.parentKey,
-              0L,
-              Pointer.newBuilder()
-                  .setKey(entry.parentKey)
-                  .setBlobUri(entry.canonicalKey)
-                  .setVersion(1L)
-                  .build()));
-    }
-    if (!entry.connectorIndexKey.isBlank()) {
-      ops.add(
-          new CasUpsert(
-              entry.connectorIndexKey,
-              0L,
-              Pointer.newBuilder()
-                  .setKey(entry.connectorIndexKey)
-                  .setBlobUri(entry.canonicalKey)
-                  .setVersion(1L)
-                  .build()));
-    }
-    for (String stateKey : entry.stateKeys) {
-      ops.add(
-          new CasUpsert(
-              stateKey,
-              0L,
-              Pointer.newBuilder()
-                  .setKey(stateKey)
-                  .setBlobUri(entry.canonicalKey)
-                  .setVersion(1L)
-                  .build()));
-    }
-    for (String readyKey : entry.readyKeys) {
-      ops.add(
-          new CasUpsert(
-              readyKey,
-              0L,
-              Pointer.newBuilder()
-                  .setKey(readyKey)
-                  .setBlobUri(entry.canonicalKey)
-                  .setVersion(1L)
-                  .build()));
-    }
-    if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
-      String resultPointerKey =
-          Keys.reconcileJobResultPointerById(entry.record.accountId, entry.record.jobId);
-      ops.add(
-          new CasUpsert(
-              resultPointerKey,
-              0L,
-              Pointer.newBuilder()
-                  .setKey(resultPointerKey)
-                  .setBlobUri(entry.resultBlobUri)
-                  .setVersion(1L)
-                  .build()));
-    }
-    return ops;
   }
 
   private BulkEnqueueItemResult failedBulkEnqueue(int index, RuntimeException error) {
