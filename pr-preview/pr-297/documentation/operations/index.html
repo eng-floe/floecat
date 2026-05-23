@@ -1830,6 +1830,17 @@ auth resolution path, not a connector-specific feature.</p>
 <li><strong>Control plane</strong>: <code>QUARKUS_PROFILE=reconciler-control</code>; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.</li>
 <li><strong>Executor plane</strong>: <code>QUARKUS_PROFILE=reconciler-executor</code>; disables local queue ownership and automatic scheduling, then leases work remotely from the control plane over gRPC.</li>
 </ul>
+<p>The durable queue is intentionally split into domains:</p>
+<ul>
+<li>canonical job-index state</li>
+<li>ready-queue state</li>
+<li>lease-coordination state</li>
+<li>projection/payload-reference state</li>
+</ul>
+<p>The control plane owns canonical job-state transitions and the derived job-index plus ready-queue
+mutations that move with them transactionally. Executors participate through the separate
+lease-coordination domain when they lease, renew, cancel, and complete work. Reads and maintenance
+do not repair queue drift.</p>
 <p>Key reconciler mode flags live in <code>service/src/main/resources/application.properties</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.worker.mode</span>
 <span class="na">reconciler.max-parallelism</span>
@@ -1867,6 +1878,12 @@ APIs, while executor-plane nodes primarily run child <code>PLAN_TABLE</code>, <c
 and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> uses the same plan-plus-child execution path. File-group workers submit results through
 <code>SubmitLeasedFileGroupExecutionResult</code>, which requires <code>result_id</code> so the control plane can
 enforce replay safety across worker retries.</p>
+<p>For <code>floecat.kv=dynamodb</code>, the durable reconcile hot paths now use native queue-oriented storage
+layouts rather than broad generic prefix scans:
+- job-index queries are partitioned by their query slice
+- ready rows are stored in due-ordered ready slices
+- lease rows and lease-expiry scans are stored in dedicated lease partitions
+- projection state is separate from queue ownership and is not part of lease/read repair</p>
 <p>If <code>PLAN_CONNECTOR</code> jobs can be enqueued, at least one enabled executor must support that job kind.
 Planner jobs also need to remain leaseable under the configured execution lane semantics: planner
 executors advertise wildcard lane support, while child planning and file-group execution jobs carry

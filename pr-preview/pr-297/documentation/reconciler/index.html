@@ -1894,10 +1894,28 @@ reconcile control RPCs:</p>
 <li><strong>View reconciliation semantics</strong>: reconcile is current-state, not history-preserving. When an
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
   place rather than appending a backend version history.</li>
-<li><strong>Job leasing</strong>: <code>DurableReconcileJobStore</code> leases from persisted ready pointers, marks jobs
-  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort
-  interval. Failed jobs are retried with backoff up to configured attempt limits before terminal
-  failure.</li>
+<li><strong>Durable queue ownership model</strong>: <code>DurableReconcileJobStore</code> is split into explicit state
+  domains with native durable-store boundaries:</li>
+<li>canonical job state owns the job-index domain transactionally (<code>lookup</code>, <code>state</code>, <code>dedupe</code>,
+    parent, connector, and related canonical indexes)</li>
+<li>ready-queue state is a separate due-ordered domain used for leasing eligibility and queue
+    slicing</li>
+<li>lease coordination owns runtime worker-ownership state separately (<code>lease</code>, <code>lease-expiry</code>,
+    lane lease, snapshot lease)</li>
+<li>projection/payload-reference state owns contribution rollups and file-group result references</li>
+<li><strong>Job leasing</strong>: workers lease from persisted ready pointers, mark jobs
+  running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
+  configured interval. Failed jobs are retried with backoff up to configured attempt limits before
+  terminal failure.</li>
+<li><strong>No queue self-healing</strong>: read paths, lease scans, and maintenance do not rebuild missing or
+  stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
+  job-state transitions update them together. Lease maintenance reclaims expired leases, but it does
+  not repair unrelated queue state.</li>
+<li><strong>Backend shape</strong>:</li>
+<li>in <code>floecat.kv=dynamodb</code>, the durable store hot paths use native Dynamo-style partition/sort-key
+    layouts for job indexes, ready slices, and lease rows/expiry scans</li>
+<li>in <code>floecat.kv=memory</code>, the same domain model is preserved, but the physical implementation is
+    in-memory rather than a literal Dynamo simulator</li>
 </ul>
 <h3 id="grpc-auth">gRPC auth<a class="headerlink" href="#grpc-auth" title="Permanent link">&para;</a></h3>
 <ul>
