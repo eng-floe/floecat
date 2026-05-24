@@ -1938,6 +1938,12 @@
 implements every public API from <a href="../proto/"><code>proto/</code></a>, manages multi-account security contexts,
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
 tasks such as idempotency/CAS/pointer/transaction/reconcile-job GC and repository seeding.</p>
+<p>For durable reconcile jobs, the service now owns a native domain-split queue model rather than one
+generic pointer-prefix queue abstraction:
+- canonical job-index domain
+- ready-queue domain
+- lease-coordination domain
+- projection/payload-reference domain</p>
 <p>It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
 <code>service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java</code> and
@@ -2056,7 +2062,7 @@ idempotency records in slices to avoid starvation. <code>CasBlobGc</code> enumer
 CAS blobs with no remaining pointers once they exceed the configured min-age. <code>PointerGc</code> removes
 orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. <code>SeedRunner</code>
+terminal jobs. It is retention-oriented GC, not a queue repair or index rebuild loop. <code>SeedRunner</code>
 populates demo data when <code>floecat.seed.enabled=true</code>.</p>
 <p>For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using <code>METADATA_AND_CAPTURE</code>.</p>
@@ -2157,6 +2163,10 @@ rows upserted after all batches have been consumed.</p>
 </table>
 <p>Extension points:
 - <strong>Storage</strong> – Provide custom <code>PointerStore</code>/<code>BlobStore</code> (see <a href="../storage-spi/"><code>docs/storage-spi.md</code></a>).
+- <strong>Durable reconcile storage</strong> – The queue-facing reconciler store is split into native
+  job-index, ready, lease, and projection domains. Those are the extension seams to target if the
+  durable reconcile backend evolves further; they are no longer intended to share one generic
+  pointer-prefix queue abstraction.
 - <strong>Security</strong> – Replace <code>Authorizer</code> or interceptors with CDI alternatives.
 - <strong>Connectors</strong> – Register new SPI implementations and expose them via <code>ConnectorRepository</code>.
 - <strong>QueryService</strong> – Extend query metadata by enriching <code>QueryContext</code> creation or injecting

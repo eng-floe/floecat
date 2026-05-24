@@ -1783,13 +1783,17 @@ fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argume
 <p>The CLI exposes commands documented at runtime via <code>help</code>. Highlights:</p>
 <ul>
 <li><code>account &lt;UUID&gt;</code> – Sets <code>currentAccountId</code> environment for subsequent commands.</li>
+<li><code>account list|get|create|delete</code> – Manage accounts and resolve display names to IDs.</li>
 <li><code>catalogs</code> / <code>catalog &lt;subcommand&gt;</code> – List/create/update/delete catalogs.</li>
+<li><code>catalog use &lt;name&gt;</code> – Sets the default catalog used by <code>query begin</code> when inputs omit a catalog.</li>
 <li><code>namespaces</code> / <code>namespace &lt;subcommand&gt;</code> – Inspect namespace hierarchies, create nested paths.</li>
 <li><code>tables</code> / <code>table &lt;subcommand&gt;</code> – Manage table definitions, specify schema JSON, upstream
   connectors, and properties.</li>
+<li><code>views</code> / <code>view &lt;subcommand&gt;</code> – List and manage view definitions.</li>
 <li><code>snapshots</code> / <code>stats</code> – Query snapshot lineage, table/column/file statistics, and index artifacts
   (<code>stats files</code> lists per-file row/byte counts and per-column metrics; <code>stats index</code> lists stored
   sidecar index artifacts for a snapshot).</li>
+<li><code>analyze</code> – Run synchronous table-scoped capture for stats/index generation.</li>
 <li><code>constraints</code> – Manage snapshot-scoped table constraints (<code>get</code>, <code>list</code>, <code>put</code>/<code>update</code>/<code>add</code>,
   <code>delete</code>) using either table FQNs or table IDs.</li>
 <li><code>resolve</code> / <code>describe</code> – Exercise DirectoryService for name→ID lookups.</li>
@@ -1814,8 +1818,8 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 <li><strong>Secret handling</strong> – Secret-bearing connector and storage-authority values must be supplied via
   <code>--cred-type</code> / <code>--cred</code>, not <code>--auth k=v</code>. The service stores those secrets out-of-band and
   only returns redacted or client-safe values.</li>
-<li><strong>Pagination defaults</strong> – <code>DEFAULT_PAGE_SIZE</code> is 1000; commands like <code>catalogs</code> accept
-  <code>--page-size</code> overrides and persist <code>next_page_token</code> transparently.</li>
+<li><strong>Pagination defaults</strong> – <code>DEFAULT_PAGE_SIZE</code> is 1000; commands paginate internally by default.
+  Commands that expose <code>--page-size</code> include connector and storage-authority listing workflows.</li>
 <li><strong>Query display</strong> – <code>query get</code> prints the <code>QueryDescriptor</code> metadata (snapshots, expansions,
   obligations). Use <code>query fetch-scan &lt;query_id&gt; &lt;table_id&gt;</code> to print the data/delete <code>ScanFile</code>
   entries returned by connectors via the query lifecycle SPI.</li>
@@ -1836,9 +1840,9 @@ detailed human-readable view and also supports <code>--json</code>.</p>
 <li>Build via <code>make cli</code>. Run with <code>make cli-run</code> (build + run) or <code>make cli-start</code> (run only, no
   Maven rebuild — avoids triggering Quarkus live-reload on the service).</li>
 <li>Configure the target endpoint using Quarkus client properties (default <code>localhost:9100</code>), or pass
-  <code>--host</code> / <code>--port</code> flags at startup.</li>
-<li>Extend commands by adding nested <code>@Command</code> classes under <code>Shell</code>. Because the CLI already injects
-  every gRPC stub, new commands only need to format inputs and call the stub.</li>
+  <code>--host</code> / <code>--port</code> flags at startup. <code>FLOECAT_GRPC_HOST</code> and <code>FLOECAT_GRPC_PORT</code> are also
+  supported environment overrides.</li>
+<li>Extend commands by adding a new <code>*CliSupport</code> handler and wiring it into <code>CliCommandExecutor</code>.</li>
 <li>Add new parsing helpers in <code>client-cli/src/main/java/ai/floedb/floecat/client/cli/util</code> for custom
   arg shapes.</li>
 </ul>
@@ -1878,10 +1882,17 @@ namespace create demo.sales --desc &quot;Sales sandbox&quot; --props owner=analy
   --props iceberg.source=glue
 </code></pre></div>
 <ul>
+<li><strong>Configuring connector reconcile policy</strong></li>
+</ul>
+<div class="highlight"><pre><span></span><code>connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
+connector update glue-iceberg --policy-latest-n 5
+connector update glue-iceberg --policy-all
+</code></pre></div>
+<ul>
 <li><strong>Triggering a connector to read an upstream table</strong></li>
 </ul>
-<div class="highlight"><pre><span></span><code>connector trigger glue-iceberg --mode metadata-only
-connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
+<div class="highlight"><pre><span></span><code>connector trigger glue-iceberg --incremental --current --mode metadata-only
+connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
 </code></pre></div>
 <ul>
 <li><strong>Creating a storage authority for Iceberg REST credential vending</strong></li>
