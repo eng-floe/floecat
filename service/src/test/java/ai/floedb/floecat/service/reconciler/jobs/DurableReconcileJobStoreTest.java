@@ -4970,7 +4970,20 @@ class DurableReconcileJobStoreTest {
     store.markProgress(
         tableJobId, tableLease.leaseEpoch, 1L, 1L, 2L, 1L, 0L, 3L, 4L, "Table running");
 
-    ReconcileJob projected = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob projected =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_RUNNING".equals(current.state)
+                    && "Table running".equals(current.message)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L
+                    && current.viewsScanned == 2L
+                    && current.viewsChanged == 1L
+                    && current.snapshotsProcessed == 3L
+                    && current.statsProcessed == 4L
+                    && "executor-a".equals(current.executorId),
+            "connector parent projected child progress");
     assertEquals("JS_RUNNING", projected.state);
     assertEquals("Table running", projected.message);
     assertEquals(1L, projected.tablesScanned);
@@ -5070,7 +5083,11 @@ class DurableReconcileJobStoreTest {
     store.markFailedTerminal(
         childJobId, childLease.leaseEpoch, 200L, "child failed", 0L, 0L, 0L, 0L, 1L, 0L, 0L);
 
-    ReconcileJob parent = store.get(ACCOUNT_ID, parentJobId).orElseThrow();
+    ReconcileJob parent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
+            current -> "JS_FAILED".equals(current.state) && "child failed".equals(current.message),
+            "parent failed state projected from child contribution");
     assertEquals("JS_FAILED", parent.state);
     assertEquals("child failed", parent.message);
   }
@@ -6201,7 +6218,7 @@ class DurableReconcileJobStoreTest {
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
       String description) {
-    int attempts = isDynamoMode() ? 200 : 1;
+    int attempts = isDynamoMode() ? 400 : 1;
     long sleepMs = isDynamoMode() ? 50L : 0L;
     T value = supplier.get();
     for (int attempt = 0; attempt < attempts; attempt++) {
@@ -6218,6 +6235,7 @@ class DurableReconcileJobStoreTest {
       }
       value = supplier.get();
     }
+    assertTrue(done.test(value), "Timed out waiting for " + description + "; last value=" + value);
     return value;
   }
 
