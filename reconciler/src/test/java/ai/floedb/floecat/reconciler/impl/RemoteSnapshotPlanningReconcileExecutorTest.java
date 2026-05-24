@@ -26,7 +26,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -70,8 +69,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 false,
                 statsOnlyScope(),
                 task));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(Optional.of(mock(Snapshot.class)));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(
             Optional.of(
@@ -127,8 +124,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 false,
                 pageIndexScope(),
                 snapshotTask()));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(Optional.of(mock(Snapshot.class)));
     when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
@@ -189,8 +184,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 false,
                 statsOnlyScope(),
                 snapshotTask()));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(Optional.of(mock(Snapshot.class)));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
     when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
@@ -241,8 +234,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 false,
                 statsOnlyScope(),
                 snapshotTask()));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(Optional.of(mock(Snapshot.class)));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenThrow(
             new StatusRuntimeException(
@@ -262,6 +253,39 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             any(),
             any(),
             eq("grpc=RESOURCE_EXHAUSTED desc=grpc: received message larger than max"));
+  }
+
+  @Test
+  void executeDoesNotRequirePersistedSnapshotMetadataForCaptureOnlyPlanning() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.of(List.of()));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.success());
+    verify(backend, never()).fetchSnapshot(any(), any(), anyLong());
   }
 
   private static ReconcileJobStore.LeasedJob lease(ReconcileScope scope) {

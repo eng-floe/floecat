@@ -31,14 +31,8 @@ public class ReconcileJobMaintenanceService {
     void accept(ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs);
   }
 
-  @FunctionalInterface
-  public interface RepairActiveStateJobs {
-    void run(long nowMs, long deadlineMs, int pageSize);
-  }
-
   private ReconcileLeaseStore leaseStore;
   private ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer;
-  private RepairActiveStateJobs repairActiveStateJobs;
   private int readyScanLimit;
   private long reclaimIntervalMs;
 
@@ -48,12 +42,10 @@ public class ReconcileJobMaintenanceService {
   public void bind(
       ReconcileLeaseStore leaseStore,
       ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer,
-      RepairActiveStateJobs repairActiveStateJobs,
       int readyScanLimit,
       long reclaimIntervalMs) {
     this.leaseStore = leaseStore;
     this.reclaimExpiredLeaseFromCanonicalPointer = reclaimExpiredLeaseFromCanonicalPointer;
-    this.repairActiveStateJobs = repairActiveStateJobs;
     this.readyScanLimit = readyScanLimit;
     this.reclaimIntervalMs = reclaimIntervalMs;
   }
@@ -79,9 +71,6 @@ public class ReconcileJobMaintenanceService {
         return;
       }
       boolean completed = scanLeaseExpiryPointersForReclaim(nowMs, deadlineMs);
-      if (System.currentTimeMillis() <= deadlineMs && repairActiveStateJobs != null) {
-        repairActiveStateJobs.run(nowMs, deadlineMs, readyScanLimit);
-      }
       if (completed && System.currentTimeMillis() <= deadlineMs) {
         lastReclaimAtMs = System.currentTimeMillis();
       }

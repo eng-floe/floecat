@@ -50,7 +50,6 @@ public class StoredReconcileJob {
   public int fileGroupFileCount;
   public String definitionBlobUri;
   public String snapshotPlanBlobUri;
-  public String fileGroupPlanBlobUri;
   public String state;
   public String message;
   public long startedAtMs;

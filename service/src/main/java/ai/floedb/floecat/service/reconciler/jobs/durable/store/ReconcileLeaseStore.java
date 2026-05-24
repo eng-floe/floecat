@@ -78,8 +78,6 @@ public interface ReconcileLeaseStore {
 
   void reclaimExpiredLease(ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs);
 
-  void reclaimPossiblyExpiredLeaseByCanonicalPointer(String canonicalPointerKey, long nowMs);
-
   boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch);
 
   boolean tryAcquireLaneLease(StoredReconcileJob record, String canonicalPointerKey, long nowMs);

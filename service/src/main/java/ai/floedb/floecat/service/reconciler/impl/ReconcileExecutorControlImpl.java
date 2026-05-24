@@ -84,7 +84,6 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 @GrpcService
@@ -130,7 +129,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       lanesFrom(request),
                       executorIds,
                       jobKindsFrom(request));
-              var lease = leaseNextOrTreatMissingDefinitionAsAbsent(leaseRequest);
+              var lease = jobs.leaseNext(leaseRequest);
               if (lease.isEmpty()) {
                 return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
               }
@@ -1380,24 +1379,6 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
-  }
-
-  private Optional<ReconcileJobStore.LeasedJob> leaseNextOrTreatMissingDefinitionAsAbsent(
-      ReconcileJobStore.LeaseRequest leaseRequest) {
-    try {
-      return jobs.leaseNext(leaseRequest);
-    } catch (IllegalStateException e) {
-      if (isMissingRequiredJobDefinition(e)) {
-        return Optional.empty();
-      }
-      throw e;
-    }
-  }
-
-  private static boolean isMissingRequiredJobDefinition(Throwable error) {
-    return error != null
-        && error.getMessage() != null
-        && error.getMessage().contains("missing required job definition");
   }
 
   private void requireExecutorControl(PrincipalContext principalContext) {

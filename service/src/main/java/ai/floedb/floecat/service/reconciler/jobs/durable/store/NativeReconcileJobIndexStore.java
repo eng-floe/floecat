@@ -402,7 +402,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.fileGroupFileCount = source.fileGroupFileCount;
     copy.definitionBlobUri = source.definitionBlobUri;
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
-    copy.fileGroupPlanBlobUri = source.fileGroupPlanBlobUri;
     copy.state = source.state;
     copy.message = source.message;
     copy.startedAtMs = source.startedAtMs;

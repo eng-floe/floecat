@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -154,56 +153,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           new IllegalArgumentException("snapshot task is required"));
     }
 
-    Snapshot snapshot;
-    try {
-      snapshot = fetchSnapshot(lease, task).orElse(null);
-    } catch (Exception e) {
-      String failureDetail = failureDetail(e);
-      LOG.errorf(
-          e,
-          "Failed to fetch snapshot jobId=%s tableId=%s snapshotId=%d",
-          lease.jobId,
-          task.tableId(),
-          task.snapshotId());
-      workerClient.submitPlanSnapshotFailure(
-          remoteLease, failureKindOf(e), retryDispositionOf(e), retryClassOf(e), failureDetail);
-      return ExecutionResult.failure(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          failureKindOf(e),
-          retryDispositionOf(e),
-          retryClassOf(e),
-          "Failed to fetch snapshot " + task.snapshotId(),
-          e);
-    }
-    if (snapshot == null) {
-      IllegalStateException error = new IllegalStateException("snapshot not found");
-      workerClient.submitPlanSnapshotFailure(
-          remoteLease,
-          failureKindOf(error),
-          retryDispositionOf(error),
-          retryClassOf(error),
-          error.getMessage());
-      return ExecutionResult.failure(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          failureKindOf(error),
-          retryDispositionOf(error),
-          retryClassOf(error),
-          "Snapshot " + task.snapshotId() + " was not found for table " + task.tableId(),
-          error);
-    }
-
     try {
       PlannedSnapshotCapture plannedCapture = planSnapshotCapture(lease, payload, task);
       List<ReconcileFileGroupTask> fileGroupTasks = plannedCapture.fileGroupTasks();
@@ -310,37 +259,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           "Snapshot planning failed: " + classified.getMessage(),
           classified);
     }
-  }
-
-  private Optional<Snapshot> fetchSnapshot(
-      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
-    ResourceId connectorId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setId(lease.connectorId)
-            .setKind(ResourceKind.RK_CONNECTOR)
-            .build();
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setId(task.tableId())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    PrincipalContext principal =
-        PrincipalContext.newBuilder()
-            .setAccountId(lease.accountId)
-            .setSubject("reconciler.scheduler")
-            .setCorrelationId("reconciler-job-" + lease.jobId)
-            .build();
-    ReconcileContext reconcileContext =
-        new ReconcileContext(
-            "reconciler-job-" + lease.jobId,
-            principal,
-            id(),
-            Instant.now(),
-            Optional.ofNullable(workerAuthorizationHeader()));
-    backend.lookupConnector(reconcileContext, connectorId);
-    return backend.fetchSnapshot(reconcileContext, tableId, task.snapshotId());
   }
 
   private static ExecutionResult.FailureKind failureKindOf(Throwable error) {

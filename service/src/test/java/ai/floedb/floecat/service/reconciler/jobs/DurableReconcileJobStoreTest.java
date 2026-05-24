@@ -220,8 +220,13 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void childJobsPageReturnsDetailedExecFileGroupTasks() {
+  void childJobsPageReturnsExecFileGroupIdentityWithoutPlannedPaths() {
     store.init();
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(scopedCaptureRequest("table-1", 7L, "orders", List.of("c1"))));
 
     String parentJobId =
         store.enqueue(
@@ -236,7 +241,7 @@ class DurableReconcileJobStoreTest {
             CONNECTOR_ID,
             false,
             CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
+            scope,
             ReconcileJobKind.EXEC_FILE_GROUP,
             ReconcileTableTask.empty(),
             ReconcileViewTask.empty(),
@@ -262,6 +267,9 @@ class DurableReconcileJobStoreTest {
     assertEquals("table-1", child.fileGroupTask.tableId());
     assertEquals(7L, child.fileGroupTask.snapshotId());
     assertEquals(2, child.fileGroupTask.fileCount());
+    assertEquals(scope.destinationTableId(), child.scope.destinationTableId());
+    assertEquals(scope.destinationCaptureRequests(), child.scope.destinationCaptureRequests());
+    assertEquals(List.of(), child.fileGroupTask.filePaths());
     assertTrue(page.nextPageToken.isBlank());
   }
 
@@ -539,7 +547,7 @@ class DurableReconcileJobStoreTest {
             Keys.reconcileJobByConnectorPointerPrefix(ACCOUNT_ID, CONNECTOR_ID)));
     assertEquals(1, listChildJobs(ACCOUNT_ID, "parent-1").size());
     assertEquals(
-        2, blobStore.activeBlobCount(), "only the successful job payload blobs should remain");
+        1, blobStore.activeBlobCount(), "only the successful job payload blobs should remain");
   }
 
   @Test
@@ -595,7 +603,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         1, store.pointerStore.countByPrefix(Keys.reconcileJobStateRowByIdPrefix(ACCOUNT_ID)));
     assertEquals(1, listChildJobs(ACCOUNT_ID, "parent-1").size());
-    assertEquals(2, blobStore.activeBlobCount(), "dedupe hit should clean up prewritten payloads");
+    assertEquals(1, blobStore.activeBlobCount(), "dedupe hit should clean up prewritten payloads");
   }
 
   @Test
@@ -1352,7 +1360,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void leaseSnapshotPlanRollsBackLeaseAndSnapshotLockWhenDefinitionHydrationFails() {
+  void leaseSnapshotPlanFailsCorruptJobAndReleasesSnapshotLockWhenDefinitionHydrationFails() {
     assumeMemoryOnly("pointer corruption assertions are only meaningful in memory mode");
     store.init();
 
@@ -1372,22 +1380,23 @@ class DurableReconcileJobStoreTest {
     corrupted.definitionBlobUri = "blob://missing-definition";
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, corrupted);
 
-    assertThrows(
-        IllegalStateException.class,
-        () ->
-            store.leaseNext(
+    assertTrue(
+        store
+            .leaseNext(
                 ReconcileJobStore.LeaseRequest.of(
-                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.PLAN_SNAPSHOT))));
+                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.PLAN_SNAPSHOT)))
+            .isEmpty());
 
     assertTrue(
         store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isEmpty());
     assertTrue(
         store.pointerStore.get(Keys.reconcileSnapshotLeasePointer("table-1", 55L)).isEmpty());
 
-    StoredReconcileJob restored = readStoredRecord(canonicalPointerKey);
-    assertEquals("JS_QUEUED", restored.state);
-    assertEquals("Queued", restored.message);
-    assertTrue(restored.readyPointerKey != null && !restored.readyPointerKey.isBlank());
+    StoredReconcileJob failed = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_FAILED", failed.state);
+    assertEquals("Missing required job definition", failed.message);
+    assertEquals("Missing required job definition", failed.lastError);
+    assertTrue(failed.readyPointerKey == null || failed.readyPointerKey.isBlank());
   }
 
   @Test
@@ -1423,7 +1432,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void getThrowsWhenFileGroupPlanBlobIsMissing() {
+  void getExecFileGroupDoesNotDependOnChildPlanBlob() {
     store.init();
 
     String jobId =
@@ -1442,10 +1451,6 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "parent-1",
             "");
-    StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-
-    assertTrue(store.blobStore.delete(record.fileGroupPlanBlobUri));
-
     ReconcileJob job = store.get(ACCOUNT_ID, jobId).orElseThrow();
     assertEquals(ReconcileJobKind.EXEC_FILE_GROUP, job.jobKind);
     assertEquals(List.of(), job.fileGroupTask.filePaths());
@@ -1745,8 +1750,9 @@ class DurableReconcileJobStoreTest {
     assertFalse(stateJson.has("fileGroupPaths"));
     assertFalse(stateJson.has("fileGroupResults"));
     assertFalse(stateJson.has("fileGroupResultBlobUri"));
+    assertFalse(stateJson.path("definitionBlobUri").asText().isBlank());
     assertFalse(stateJson.path("snapshotPlanBlobUri").asText().isBlank());
-    assertFalse(stateJson.path("fileGroupPlanBlobUri").asText().isBlank());
+    assertFalse(stateJson.has("fileGroupPlanBlobUri"));
     assertEquals(1, stateJson.path("fileGroupFileCount").asInt());
     assertFalse(resultJson.has("planId"));
     assertFalse(resultJson.has("groupId"));
@@ -2669,9 +2675,11 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void renewLeaseNoOpDoesNotRewriteLeaseOrExpiryIndex() {
+  void renewLeaseExtendsLeaseAndRewritesExpiryIndexEvenBeforeHalfLife() {
     assumeMemoryOnly("pointer lease expiry assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "60000");
+    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
     store.init();
 
     String jobId =
@@ -2692,11 +2700,14 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
 
     Pointer afterLeasePointer = store.pointerStore.get(leaseKey).orElseThrow();
-    Pointer afterExpiryPointer = store.pointerStore.get(expiryKey).orElseThrow();
-    assertEquals(beforeLeasePointer.getVersion(), afterLeasePointer.getVersion());
-    assertEquals(beforeLeasePointer.getBlobUri(), afterLeasePointer.getBlobUri());
-    assertEquals(beforeExpiryPointer.getVersion(), afterExpiryPointer.getVersion());
-    assertEquals(beforeExpiryPointer.getBlobUri(), afterExpiryPointer.getBlobUri());
+    StoredJobLease afterLease = readStoredLease(ACCOUNT_ID, jobId);
+    String newExpiryKey = leaseExpiryPointerKey(afterLease.expiresAtMs, ACCOUNT_ID, jobId);
+    Pointer afterExpiryPointer = store.pointerStore.get(newExpiryKey).orElseThrow();
+    assertTrue(afterLease.expiresAtMs > beforeLease.expiresAtMs);
+    assertTrue(store.pointerStore.get(expiryKey).isEmpty());
+    assertTrue(afterLeasePointer.getVersion() > beforeLeasePointer.getVersion());
+    assertNotEquals(beforeLeasePointer.getBlobUri(), afterLeasePointer.getBlobUri());
+    assertEquals(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId), afterExpiryPointer.getBlobUri());
   }
 
   @Test
@@ -2795,6 +2806,8 @@ class DurableReconcileJobStoreTest {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
     store.init();
 
     String jobId =
@@ -2810,10 +2823,12 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
     pointerStore.resetListCounts();
 
-    Thread.sleep(1150L);
+    Thread.sleep(1700L);
 
     store.runMaintenanceOnce(1_000L);
-    assertTrue(store.leaseNext().isPresent());
+    StoredReconcileJob reclaimed = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_QUEUED", reclaimed.state);
+    assertTrue(reclaimed.readyPointerKey != null && !reclaimed.readyPointerKey.isBlank());
     assertEquals(0, pointerStore.listCount("/accounts/"));
     assertTrue(pointerStore.listCount(LEASE_EXPIRY_POINTER_PREFIX) > 0);
   }
@@ -3543,6 +3558,43 @@ class DurableReconcileJobStoreTest {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var firstLease = store.leaseNext();
+    assertTrue(firstLease.isPresent());
+    assertEquals(jobId, firstLease.get().jobId);
+    store.markRunning(
+        firstLease.get().jobId,
+        firstLease.get().leaseEpoch,
+        System.currentTimeMillis(),
+        "default_reconciler");
+
+    Thread.sleep(1700L);
+
+    store.runMaintenanceOnce(1_000L);
+    StoredReconcileJob reclaimed =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_QUEUED", reclaimed.state);
+    assertTrue(reclaimed.readyPointerKey != null && !reclaimed.readyPointerKey.isBlank());
+  }
+
+  @Test
+  void expiredLeaseReclaimAppliesBackoffBeforeRequeue() throws Exception {
+    assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "1000");
     store.init();
 
     String jobId =
@@ -3559,6 +3611,9 @@ class DurableReconcileJobStoreTest {
     Thread.sleep(1150L);
 
     store.runMaintenanceOnce(1_000L);
+    assertTrue(store.leaseNext().isEmpty());
+
+    Thread.sleep(1100L);
     var secondLease = store.leaseNext();
     assertTrue(secondLease.isPresent());
     assertEquals(jobId, secondLease.get().jobId);
@@ -3796,6 +3851,8 @@ class DurableReconcileJobStoreTest {
     System.setProperty("floecat.reconciler.job-store.lease-ms", "2000");
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
+    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
     store.init();
 
     String jobId =
@@ -3820,9 +3877,11 @@ class DurableReconcileJobStoreTest {
     Thread.sleep(700L);
     assertTrue(store.leaseNext().isEmpty());
 
-    Thread.sleep(1600L);
+    Thread.sleep(2800L);
     store.runMaintenanceOnce(1_000L);
-    assertEquals(jobId, store.leaseNext().orElseThrow().jobId);
+    StoredReconcileJob reclaimed = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_QUEUED", reclaimed.state);
+    assertTrue(reclaimed.readyPointerKey != null && !reclaimed.readyPointerKey.isBlank());
   }
 
   @Test
@@ -6116,18 +6175,21 @@ class DurableReconcileJobStoreTest {
   }
 
   private ReconcileJob findListedJobById(String jobId) {
-    int attempts = isDynamoMode() ? 20 : 1;
+    int attempts = isDynamoMode() ? 100 : 1;
     for (int attempt = 0; attempt < attempts; attempt++) {
-      Optional<ReconcileJob> job =
-          store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-              .filter(candidate -> jobId.equals(candidate.jobId))
-              .findFirst();
-      if (job.isPresent()) {
-        return job.get();
-      }
+      String pageToken = "";
+      do {
+        var page = store.list(ACCOUNT_ID, 100, pageToken, CONNECTOR_ID, Set.of());
+        Optional<ReconcileJob> job =
+            page.jobs.stream().filter(candidate -> jobId.equals(candidate.jobId)).findFirst();
+        if (job.isPresent()) {
+          return job.get();
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken != null && !pageToken.isBlank());
       if (attempt + 1 < attempts) {
         try {
-          Thread.sleep(25L);
+          Thread.sleep(50L);
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw new IllegalStateException("Interrupted while waiting for listed job " + jobId, ie);

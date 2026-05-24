@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -130,20 +129,23 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void leaseReconcileJobTreatsMissingRequiredDefinitionAsAbsent() {
+  void leaseReconcileJobDoesNotHideMissingRequiredDefinitionFailures() {
     when(service.jobs.leaseNext(any()))
         .thenThrow(
             new IllegalStateException(
                 "Reconcile job job-1 is missing required job definition"
                     + " blob=/accounts/acct/reconcile/jobs/job-1/job-definition.json"));
 
-    var response =
-        service
-            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
-            .await()
-            .indefinitely();
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
 
-    assertFalse(response.getFound());
+    assertEquals("INTERNAL", error.getStatus().getCode().name());
   }
 
   @Test

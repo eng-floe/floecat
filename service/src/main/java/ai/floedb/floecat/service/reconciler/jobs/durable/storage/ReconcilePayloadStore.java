@@ -20,7 +20,6 @@ import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupPlanPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
@@ -159,27 +158,6 @@ public class ReconcilePayloadStore {
         .fileGroups();
   }
 
-  public List<String> loadFileGroupPaths(StoredReconcileJob state) {
-    if (state == null) {
-      return List.of();
-    }
-    return readBlob(state.fileGroupPlanBlobUri, StoredFileGroupPlanPayload.class)
-        .map(StoredFileGroupPlanPayload::filePaths)
-        .orElse(List.of());
-  }
-
-  public Optional<StoredFileGroupPlanPayload> loadFileGroupPlanPayload(StoredReconcileJob state) {
-    if (state == null || blank(state.fileGroupPlanBlobUri)) {
-      return Optional.empty();
-    }
-    return Optional.of(
-        requireBlob(
-            state.fileGroupPlanBlobUri,
-            StoredFileGroupPlanPayload.class,
-            "file-group plan payload",
-            state.jobId));
-  }
-
   public List<ReconcileFileResult> loadFileGroupResults(StoredReconcileJob state) {
     if (state == null) {
       return List.of();
@@ -244,7 +222,7 @@ public class ReconcilePayloadStore {
         state.fileGroupFileCount,
         resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
         resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
-        resultPayload == null ? loadFileGroupPaths(state) : resultPayload.filePaths(),
+        resultPayload == null ? List.of() : resultPayload.filePaths(),
         resultPayload == null ? loadFileGroupResults(state) : resultPayload.fileResults());
   }
 

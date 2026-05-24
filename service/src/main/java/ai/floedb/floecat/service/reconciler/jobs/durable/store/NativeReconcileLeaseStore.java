@@ -229,6 +229,11 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                   fileGroupTask,
                   current.parentJobId()));
         } catch (RuntimeException e) {
+          if (isMissingRequiredJobDefinition(e)) {
+            failLeaseCanonicalOnHydrationFailure(
+                canonicalPointerKey, baseline, nextLeaseEpoch, now);
+            return Optional.empty();
+          }
           rollbackLeaseCanonicalOnHydrationFailure(canonicalPointerKey, baseline, nextLeaseEpoch);
           throw e;
         }
@@ -265,6 +270,39 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           existing.readyPointerKey = baseline.readyPointerKey;
           return existing;
         });
+  }
+
+  private void failLeaseCanonicalOnHydrationFailure(
+      String canonicalPointerKey, StoredReconcileJob baseline, String leaseEpoch, long now) {
+    if (baseline == null || blank(canonicalPointerKey) || blank(leaseEpoch)) {
+      return;
+    }
+    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
+    Optional<ReconcileJobIndexStore.CanonicalEnvelope> updated =
+        jobIndexStore.mutateByCanonicalPointerReturningRecord(
+            canonicalPointerKey,
+            existing -> {
+              if (existing == null
+                  || !"JS_RUNNING".equals(existing.state)
+                  || !"Leased".equals(blankToEmpty(existing.message))) {
+                return existing;
+              }
+              existing.attempt = Math.max(0, existing.attempt) + 1;
+              existing.lastError = "Missing required job definition";
+              existing.state = "JS_FAILED";
+              existing.message = "Missing required job definition";
+              if (existing.startedAtMs <= 0L) {
+                existing.startedAtMs = now;
+              }
+              existing.finishedAtMs = now;
+              existing.readyPointerKey = null;
+              return existing;
+            });
+    clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
+    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
+    updated
+        .map(ReconcileJobIndexStore.CanonicalEnvelope::record)
+        .ifPresent(projectionUpdater::refreshContributionChain);
   }
 
   private ReconcileLeaseBackend.LeaseWriteBatch mergeLeaseWrites(
@@ -513,9 +551,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           long expiry = current.expiresAtMs;
           if (blank(current.epoch) || !leaseEpoch.equals(current.epoch)) {
             return null;
-          }
-          if (expiry > 0L && (expiry - now) > (leaseMs / 2L)) {
-            return current;
           }
           if (expiry > 0L && now - expiry > leaseRenewGraceMs) {
             return null;
@@ -810,34 +845,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
   }
 
-  public void reclaimPossiblyExpiredLeaseByCanonicalPointer(String canonicalKey, long nowMs) {
-    if (blank(canonicalKey)) {
-      return;
-    }
-    StoredReconcileJob canonicalRecord =
-        jobIndexStore.readCanonicalRecordByKey(canonicalKey).orElse(null);
-    if (canonicalRecord == null) {
-      return;
-    }
-    if (!"JS_RUNNING".equals(canonicalRecord.state)
-        && !"JS_CANCELLING".equals(canonicalRecord.state)) {
-      return;
-    }
-    StoredJobLease lease = loadLease(canonicalRecord).orElse(null);
-    if (lease == null || blank(lease.epoch) || lease.expiresAtMs <= 0L) {
-      reclaimRunningOrCancellingJob(
-          canonicalKey,
-          canonicalRecord,
-          StoredJobLease.empty(canonicalRecord.accountId, canonicalRecord.jobId),
-          nowMs);
-      return;
-    }
-    if (lease.expiresAtMs > nowMs || nowMs - lease.expiresAtMs <= leaseRenewGraceMs) {
-      return;
-    }
-    reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
-  }
-
   private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
     return record != null && hasUnexpiredJobLease(record.accountId, record.jobId, now);
   }
@@ -905,7 +912,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                       record.finishedAtMs = nowMs;
                       record.readyPointerKey = null;
                     } else {
-                      long nextAttemptAtMs = nowMs;
+                      long nextAttemptAtMs =
+                          nowMs + Math.max(0L, backoffMs.applyAsLong(record.attempt));
                       record.state = "JS_QUEUED";
                       record.message = "Lease expired; requeued";
                       record.nextAttemptAtMs = nextAttemptAtMs;
@@ -992,6 +1000,12 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     copy.epoch = source.epoch;
     copy.expiresAtMs = source.expiresAtMs;
     return copy;
+  }
+
+  private static boolean isMissingRequiredJobDefinition(Throwable error) {
+    return error != null
+        && error.getMessage() != null
+        && error.getMessage().contains("missing required job definition");
   }
 
   private boolean leaseStateEquals(StoredJobLease left, StoredJobLease right) {
