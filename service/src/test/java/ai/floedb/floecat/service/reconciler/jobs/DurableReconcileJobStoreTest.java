@@ -4660,7 +4660,11 @@ class DurableReconcileJobStoreTest {
         "default_reconciler");
     store.cancel(ACCOUNT_ID, cancellingLease.jobId, "stop");
 
-    var stats = store.queueStats();
+    var stats =
+        waitForValue(
+            () -> store.queueStats(),
+            current -> current.queued == 2L && current.running == 1L && current.cancelling == 1L,
+            "queue stats to reflect queued/waiting/running/cancelling jobs");
 
     assertEquals(2L, stats.queued);
     assertEquals(1L, stats.running);
@@ -6175,28 +6179,47 @@ class DurableReconcileJobStoreTest {
   }
 
   private ReconcileJob findListedJobById(String jobId) {
-    int attempts = isDynamoMode() ? 100 : 1;
+    return waitForValue(
+            () -> findListedJobByIdOnce(jobId), Optional::isPresent, "listed job " + jobId)
+        .orElseThrow();
+  }
+
+  private Optional<ReconcileJob> findListedJobByIdOnce(String jobId) {
+    String pageToken = "";
+    do {
+      var page = store.list(ACCOUNT_ID, 100, pageToken, CONNECTOR_ID, Set.of());
+      Optional<ReconcileJob> job =
+          page.jobs.stream().filter(candidate -> jobId.equals(candidate.jobId)).findFirst();
+      if (job.isPresent()) {
+        return job;
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken != null && !pageToken.isBlank());
+    return Optional.empty();
+  }
+
+  private <T> T waitForValue(
+      java.util.function.Supplier<T> supplier,
+      java.util.function.Predicate<T> done,
+      String description) {
+    int attempts = isDynamoMode() ? 200 : 1;
+    long sleepMs = isDynamoMode() ? 50L : 0L;
+    T value = supplier.get();
     for (int attempt = 0; attempt < attempts; attempt++) {
-      String pageToken = "";
-      do {
-        var page = store.list(ACCOUNT_ID, 100, pageToken, CONNECTOR_ID, Set.of());
-        Optional<ReconcileJob> job =
-            page.jobs.stream().filter(candidate -> jobId.equals(candidate.jobId)).findFirst();
-        if (job.isPresent()) {
-          return job.get();
-        }
-        pageToken = page.nextPageToken;
-      } while (pageToken != null && !pageToken.isBlank());
+      if (done.test(value)) {
+        return value;
+      }
       if (attempt + 1 < attempts) {
         try {
-          Thread.sleep(50L);
+          Thread.sleep(sleepMs);
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
-          throw new IllegalStateException("Interrupted while waiting for listed job " + jobId, ie);
+          throw new IllegalStateException("Interrupted while waiting for " + description, ie);
         }
       }
+      value = supplier.get();
     }
-    throw new java.util.NoSuchElementException("No listed job for id " + jobId);
+    return value;
   }
 
   private ReconcileReadyQueueBackend.ReadyQueueSlice readySliceForKey(String readyPointerKey) {
