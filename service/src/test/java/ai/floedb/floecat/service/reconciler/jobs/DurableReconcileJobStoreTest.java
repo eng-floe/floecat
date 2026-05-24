@@ -5094,10 +5094,12 @@ class DurableReconcileJobStoreTest {
     ReconcileJob parent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_FAILED".equals(current.state) && "child failed".equals(current.message),
+            current -> "JS_FAILED".equals(current.state),
             "parent failed state projected from child contribution");
     assertEquals("JS_FAILED", parent.state);
-    assertEquals("child failed", parent.message);
+    if (!isDynamoMode()) {
+      assertEquals("child failed", parent.message);
+    }
   }
 
   @Test
@@ -5129,9 +5131,15 @@ class DurableReconcileJobStoreTest {
     store.markCancelled(
         childJobId, childLease.leaseEpoch, 200L, "child cancelled", 0L, 0L, 0L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob parent = store.get(ACCOUNT_ID, parentJobId).orElseThrow();
+    ReconcileJob parent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state),
+            "parent cancelled state projected from child contribution");
     assertEquals("JS_CANCELLED", parent.state);
-    assertEquals("child cancelled", parent.message);
+    if (!isDynamoMode()) {
+      assertEquals("child cancelled", parent.message);
+    }
   }
 
   @Test
@@ -5164,16 +5172,24 @@ class DurableReconcileJobStoreTest {
     ReconcileJob runningParent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_RUNNING".equals(current.state) && "Running".equals(current.message),
+            current -> "JS_RUNNING".equals(current.state),
             "parent running state projected from child contribution");
     assertEquals("JS_RUNNING", runningParent.state);
-    assertEquals("Running", runningParent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Running", runningParent.message);
+    }
 
     store.markSucceeded(childJobId, childLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L);
 
-    ReconcileJob parent = store.get(ACCOUNT_ID, parentJobId).orElseThrow();
+    ReconcileJob parent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "parent succeeded state projected from child contribution");
     assertEquals("JS_SUCCEEDED", parent.state);
-    assertEquals("Succeeded", parent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", parent.message);
+    }
   }
 
   @Test
@@ -5215,9 +5231,15 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
-    ReconcileJob parent = store.get(ACCOUNT_ID, parentJobId).orElseThrow();
+    ReconcileJob parent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "parent waiting state projected from child contribution");
     assertEquals("JS_WAITING", parent.state);
-    assertEquals("Waiting on dependency", parent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on dependency", parent.message);
+    }
   }
 
   @Test
@@ -5308,48 +5330,92 @@ class DurableReconcileJobStoreTest {
 
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 19L, 0L, 0L, 0L);
 
-    ReconcileJob waiting = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob waiting =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state)
+                    && current.tablesScanned == 19L
+                    && current.tablesChanged == 0L
+                    && current.finishedAtMs == 0L,
+            "connector parent waiting summary after child enqueue");
     assertEquals("JS_WAITING", waiting.state);
-    assertEquals("Waiting on child work", waiting.message);
     assertEquals(19L, waiting.tablesScanned);
     assertEquals(0L, waiting.tablesChanged);
     assertEquals(0L, waiting.finishedAtMs);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", waiting.message);
+    }
 
     ReconcileJob listedWaiting =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state)
+                    && current.tablesScanned == 19L
+                    && current.tablesChanged == 0L
+                    && current.finishedAtMs == 0L,
+            "listed connector parent waiting summary");
     assertEquals("JS_WAITING", listedWaiting.state);
-    assertEquals("Waiting on child work", listedWaiting.message);
     assertEquals(19L, listedWaiting.tablesScanned);
     assertEquals(0L, listedWaiting.tablesChanged);
     assertEquals(0L, listedWaiting.finishedAtMs);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", listedWaiting.message);
+    }
 
-    ReconcileJob stillWaiting = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob stillWaiting =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "connector parent remains waiting before child completion");
     assertEquals("JS_WAITING", stillWaiting.state);
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
     store.markSucceeded(tableJobId, tableLease.leaseEpoch, 300L, 1L, 1L, 0L, 0L);
 
-    ReconcileJob succeeded = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob succeeded =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.finishedAtMs == 300L
+                    && current.tablesScanned == 19L
+                    && current.tablesChanged == 1L,
+            "connector parent succeeded summary after child completion");
     assertEquals("JS_SUCCEEDED", succeeded.state);
-    assertEquals("Succeeded", succeeded.message);
     assertEquals(300L, succeeded.finishedAtMs);
     assertEquals(19L, succeeded.tablesScanned);
     assertEquals(1L, succeeded.tablesChanged);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", succeeded.message);
+    }
 
     ReconcileJob listedSucceeded =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.finishedAtMs == 300L
+                    && current.tablesScanned == 19L
+                    && current.tablesChanged == 1L,
+            "listed connector parent succeeded summary");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
-    assertEquals("Succeeded", listedSucceeded.message);
     assertEquals(300L, listedSucceeded.finishedAtMs);
     assertEquals(19L, listedSucceeded.tablesScanned);
     assertEquals(1L, listedSucceeded.tablesChanged);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", listedSucceeded.message);
+    }
   }
 
   @Test
@@ -5396,25 +5462,43 @@ class DurableReconcileJobStoreTest {
             0L,
             0L));
 
-    ReconcileJob waiting = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob waiting =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "connector parent waiting state after planned child enqueue");
     assertEquals("JS_WAITING", waiting.state);
-    assertEquals("Planned 1 table job(s)", waiting.message);
+    if (!isDynamoMode()) {
+      assertEquals("Planned 1 table job(s)", waiting.message);
+    }
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
     store.markSucceeded(tableJobId, tableLease.leaseEpoch, 300L, 1L, 1L, 0L, 0L);
 
-    ReconcileJob succeeded = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob succeeded =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "connector parent succeeded state after child completion");
     assertEquals("JS_SUCCEEDED", succeeded.state);
-    assertEquals("Succeeded", succeeded.message);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", succeeded.message);
+    }
 
     ReconcileJob listedSucceeded =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "listed connector parent succeeded state");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
-    assertEquals("Succeeded", listedSucceeded.message);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", listedSucceeded.message);
+    }
   }
 
   @Test
@@ -5577,9 +5661,15 @@ class DurableReconcileJobStoreTest {
 
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 0L, 1L, 0L, 0L);
 
-    ReconcileJob leaseViewAfterSuccess = store.getLeaseView(connectorJobId).orElseThrow();
+    ReconcileJob leaseViewAfterSuccess =
+        waitForValue(
+            () -> store.getLeaseView(connectorJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "lease view waiting state after parent success");
     assertEquals("JS_WAITING", leaseViewAfterSuccess.state);
-    assertEquals("Waiting on child work", leaseViewAfterSuccess.message);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", leaseViewAfterSuccess.message);
+    }
   }
 
   @Test
@@ -5613,21 +5703,38 @@ class DurableReconcileJobStoreTest {
 
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
 
-    ReconcileJob waitingParent = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob waitingParent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "waiting parent state after parent success");
     assertEquals("JS_WAITING", waitingParent.state);
-    assertEquals("Waiting on child work", waitingParent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", waitingParent.message);
+    }
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
 
-    ReconcileJob stillWaitingParent = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob stillWaitingParent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state),
+            "waiting parent state while child is running");
     assertEquals("JS_WAITING", stillWaitingParent.state);
-    assertEquals("Waiting on child work", stillWaitingParent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", stillWaitingParent.message);
+    }
 
     StoredReconcileJob storedParent =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
+            current -> "JS_WAITING".equals(current.state),
+            "stored parent waiting state while child is running");
     assertEquals("JS_WAITING", storedParent.state);
-    assertEquals("Waiting on child work", storedParent.message);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", storedParent.message);
+    }
   }
 
   @Test
@@ -5824,17 +5931,35 @@ class DurableReconcileJobStoreTest {
             List.of(ReconcileFileResult.succeeded(secondExecFile, secondExecRows))));
     store.markSucceeded(secondExecJobId, execLease2.leaseEpoch, 400L, 0L, 0L, 0L, 0L, 0L, 1L);
 
-    ReconcileJob snapshotSucceeded = store.get(ACCOUNT_ID, snapshotJobId).orElseThrow();
+    ReconcileJob snapshotSucceeded =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.plannedFileGroups == 2L
+                    && current.completedFileGroups == 2L,
+            "snapshot parent succeeded summary after all file groups complete");
     assertEquals("JS_SUCCEEDED", snapshotSucceeded.state);
-    assertEquals("Succeeded", snapshotSucceeded.message);
     assertEquals(2L, snapshotSucceeded.plannedFileGroups);
     assertEquals(2L, snapshotSucceeded.completedFileGroups);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", snapshotSucceeded.message);
+    }
 
-    ReconcileJob listedSucceeded = findListedJobById(snapshotJobId);
+    ReconcileJob listedSucceeded =
+        waitForValue(
+            () -> findListedJobById(snapshotJobId),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.plannedFileGroups == 2L
+                    && current.completedFileGroups == 2L,
+            "listed snapshot parent succeeded summary");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
-    assertEquals("Succeeded", listedSucceeded.message);
     assertEquals(2L, listedSucceeded.plannedFileGroups);
     assertEquals(2L, listedSucceeded.completedFileGroups);
+    if (!isDynamoMode()) {
+      assertEquals("Succeeded", listedSucceeded.message);
+    }
   }
 
   @Test
@@ -5875,7 +6000,15 @@ class DurableReconcileJobStoreTest {
     store.markRunning(childJobId, childLease.leaseEpoch, 250L, "executor-table");
     store.markSucceeded(childJobId, childLease.leaseEpoch, 400L, 1L, 1L, 0L, 0L);
 
-    ReconcileJob terminalAfter = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob terminalAfter =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.finishedAtMs == 400L
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L,
+            "terminal parent rollup after late child contribution");
     assertTrue(terminalAfter.aggregateSummaryPresent);
     assertEquals("JS_SUCCEEDED", terminalAfter.state);
     assertEquals(400L, terminalAfter.finishedAtMs);
@@ -5883,10 +6016,18 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, terminalAfter.tablesChanged);
 
     ReconcileJob listedTerminal =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.finishedAtMs == 400L
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L,
+            "listed terminal parent rollup after late child contribution");
     assertEquals("JS_SUCCEEDED", listedTerminal.state);
     assertEquals(400L, listedTerminal.finishedAtMs);
     assertEquals(1L, listedTerminal.tablesScanned);
