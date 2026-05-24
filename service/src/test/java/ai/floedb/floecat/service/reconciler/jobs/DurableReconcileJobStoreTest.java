@@ -5772,8 +5772,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, listedWaiting.completedFileGroups);
 
     ReconcileJobStore.LeasedJob execLease2 =
-        store
-            .leaseNext(
+        waitForLease(
                 ReconcileJobStore.LeaseRequest.of(
                     Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
@@ -6222,6 +6221,12 @@ class DurableReconcileJobStoreTest {
     return value;
   }
 
+  private Optional<ReconcileJobStore.LeasedJob> waitForLease(
+      ReconcileJobStore.LeaseRequest request) {
+    return waitForValue(
+        () -> store.leaseNext(request), Optional::isPresent, "lease for request " + request);
+  }
+
   private ReconcileReadyQueueBackend.ReadyQueueSlice readySliceForKey(String readyPointerKey) {
     if (readyPointerKey == null || readyPointerKey.isBlank()) {
       return null;
@@ -6284,7 +6289,8 @@ class DurableReconcileJobStoreTest {
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
     for (int i = 0; i < 16; i++) {
-      ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+      ReconcileJobStore.LeasedJob lease =
+          waitForLease(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
       if (jobId.equals(lease.jobId)) {
         return lease;
       }
@@ -6295,8 +6301,7 @@ class DurableReconcileJobStoreTest {
   private ReconcileJobStore.LeasedJob leaseJob(String jobId, ReconcileJobKind jobKind) {
     for (int i = 0; i < 16; i++) {
       ReconcileJobStore.LeasedJob lease =
-          store
-              .leaseNext(
+          waitForLease(
                   ReconcileJobStore.LeaseRequest.of(Set.of(), Set.of(), Set.of(), Set.of(jobKind)))
               .orElseThrow();
       if (jobId.equals(lease.jobId)) {
