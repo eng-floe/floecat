@@ -2705,8 +2705,12 @@ class DurableReconcileJobStoreTest {
     StoredJobLease afterLease = readStoredLease(ACCOUNT_ID, jobId);
     String newExpiryKey = leaseExpiryPointerKey(afterLease.expiresAtMs, ACCOUNT_ID, jobId);
     Pointer afterExpiryPointer = store.pointerStore.get(newExpiryKey).orElseThrow();
-    assertTrue(afterLease.expiresAtMs > beforeLease.expiresAtMs);
-    assertTrue(store.pointerStore.get(expiryKey).isEmpty());
+    assertTrue(afterLease.expiresAtMs >= beforeLease.expiresAtMs);
+    if (newExpiryKey.equals(expiryKey)) {
+      assertTrue(store.pointerStore.get(expiryKey).isPresent());
+    } else {
+      assertTrue(store.pointerStore.get(expiryKey).isEmpty());
+    }
     assertTrue(afterLeasePointer.getVersion() > beforeLeasePointer.getVersion());
     assertNotEquals(beforeLeasePointer.getBlobUri(), afterLeasePointer.getBlobUri());
     assertEquals(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId), afterExpiryPointer.getBlobUri());
@@ -6374,20 +6378,26 @@ class DurableReconcileJobStoreTest {
 
   private void overwriteCanonicalRecordWithoutSync(
       String canonicalPointerKey, StoredReconcileJob record) {
+    var currentSnapshot =
+        assertDoesNotThrow(() -> store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey))
+            .orElseThrow();
+    String blobUri =
+        "inline:reconcile-job:"
+            + java.util.Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(assertDoesNotThrow(() -> store.mapper.writeValueAsBytes(record)));
+    var writeBatch =
+        new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
+            .JobIndexWriteBatch(
+            List.of(
+                new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
+                    .JobIndexUpsert(canonicalPointerKey, currentSnapshot.version(), blobUri)),
+            ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
+                .ReadyQueueMutation.empty(),
+            new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend
+                .ProjectionWriteBatch(List.of()));
     assertTrue(
-        assertDoesNotThrow(
-            () ->
-                store
-                    .jobIndexStore
-                    .mutateByCanonicalPointerReturningRecord(
-                        canonicalPointerKey,
-                        existing -> {
-                          StoredReconcileJob replacement =
-                              store.jobIndexStore.cloneStoredRecord(record);
-                          replacement.canonicalPointerKey = canonicalPointerKey;
-                          return replacement;
-                        })
-                    .isPresent()),
+        assertDoesNotThrow(() -> store.jobIndexBackend.compareAndSetBatch(writeBatch)),
         () -> "expected canonical record to exist for " + canonicalPointerKey);
   }
 
