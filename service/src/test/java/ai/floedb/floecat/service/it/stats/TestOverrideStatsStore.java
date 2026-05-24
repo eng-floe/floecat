@@ -65,6 +65,14 @@ public class TestOverrideStatsStore implements StatsStore {
   }
 
   @Override
+  public boolean putTargetStatsIfAbsent(TargetStatsRecord value) {
+    PUT_COUNT.incrementAndGet();
+    return records.putIfAbsent(
+            StoreKey.of(value.getTableId(), value.getSnapshotId(), value.getTarget()), value)
+        == null;
+  }
+
+  @Override
   public Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target) {
     GET_COUNT.incrementAndGet();

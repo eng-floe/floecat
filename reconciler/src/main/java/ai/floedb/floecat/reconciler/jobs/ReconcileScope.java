@@ -16,19 +16,28 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Objects;
 
 /** Scope constraints for a reconcile job (namespaces, tables, views, and capture-target hints). */
 public final class ReconcileScope {
   private static final ReconcileScope EMPTY =
-      new ReconcileScope(List.of(), null, null, List.of(), ReconcileCapturePolicy.empty());
+      new ReconcileScope(
+          List.of(),
+          null,
+          null,
+          List.of(),
+          ReconcileCapturePolicy.empty(),
+          ReconcileSnapshotSelection.unspecified());
 
   private final List<String> destinationNamespaceIds;
   private final String destinationTableId;
   private final String destinationViewId;
   private final List<ScopedCaptureRequest> destinationCaptureRequests;
   private final ReconcileCapturePolicy capturePolicy;
+  private final ReconcileSnapshotSelection snapshotSelection;
 
   public record ScopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
@@ -46,12 +55,15 @@ public final class ReconcileScope {
     }
   }
 
+  @JsonCreator
   private ReconcileScope(
-      List<String> destinationNamespaceIds,
-      String destinationTableId,
-      String destinationViewId,
-      List<ScopedCaptureRequest> destinationCaptureRequests,
-      ReconcileCapturePolicy capturePolicy) {
+      @JsonProperty("destinationNamespaceIds") List<String> destinationNamespaceIds,
+      @JsonProperty("destinationTableId") String destinationTableId,
+      @JsonProperty("destinationViewId") String destinationViewId,
+      @JsonProperty("destinationCaptureRequests")
+          List<ScopedCaptureRequest> destinationCaptureRequests,
+      @JsonProperty("capturePolicy") ReconcileCapturePolicy capturePolicy,
+      @JsonProperty("snapshotSelection") ReconcileSnapshotSelection snapshotSelection) {
     if (destinationNamespaceIds == null || destinationNamespaceIds.isEmpty()) {
       this.destinationNamespaceIds = List.of();
     } else {
@@ -87,6 +99,8 @@ public final class ReconcileScope {
                 .distinct()
                 .toList();
     this.capturePolicy = capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    this.snapshotSelection =
+        snapshotSelection == null ? ReconcileSnapshotSelection.unspecified() : snapshotSelection;
 
     if (this.destinationTableId != null && !this.destinationNamespaceIds.isEmpty()) {
       throw new IllegalArgumentException(
@@ -127,7 +141,8 @@ public final class ReconcileScope {
         destinationTableId,
         null,
         List.of(),
-        ReconcileCapturePolicy.empty());
+        ReconcileCapturePolicy.empty(),
+        ReconcileSnapshotSelection.unspecified());
   }
 
   public static ReconcileScope ofView(
@@ -137,7 +152,8 @@ public final class ReconcileScope {
         null,
         destinationViewId,
         List.of(),
-        ReconcileCapturePolicy.empty());
+        ReconcileCapturePolicy.empty(),
+        ReconcileSnapshotSelection.unspecified());
   }
 
   public static ReconcileScope of(
@@ -149,7 +165,8 @@ public final class ReconcileScope {
         destinationTableId,
         null,
         destinationCaptureRequests,
-        ReconcileCapturePolicy.empty());
+        ReconcileCapturePolicy.empty(),
+        ReconcileSnapshotSelection.unspecified());
   }
 
   public static ReconcileScope of(
@@ -162,7 +179,8 @@ public final class ReconcileScope {
         destinationTableId,
         null,
         destinationCaptureRequests,
-        capturePolicy);
+        capturePolicy,
+        ReconcileSnapshotSelection.unspecified());
   }
 
   public static ReconcileScope of(
@@ -175,7 +193,8 @@ public final class ReconcileScope {
         destinationTableId,
         destinationViewId,
         destinationCaptureRequests,
-        ReconcileCapturePolicy.empty());
+        ReconcileCapturePolicy.empty(),
+        ReconcileSnapshotSelection.unspecified());
   }
 
   public static ReconcileScope of(
@@ -184,11 +203,28 @@ public final class ReconcileScope {
       String destinationViewId,
       List<ScopedCaptureRequest> destinationCaptureRequests,
       ReconcileCapturePolicy capturePolicy) {
+    return of(
+        destinationNamespaceIds,
+        destinationTableId,
+        destinationViewId,
+        destinationCaptureRequests,
+        capturePolicy,
+        ReconcileSnapshotSelection.unspecified());
+  }
+
+  public static ReconcileScope of(
+      List<String> destinationNamespaceIds,
+      String destinationTableId,
+      String destinationViewId,
+      List<ScopedCaptureRequest> destinationCaptureRequests,
+      ReconcileCapturePolicy capturePolicy,
+      ReconcileSnapshotSelection snapshotSelection) {
     if ((destinationNamespaceIds == null || destinationNamespaceIds.isEmpty())
         && (destinationTableId == null || destinationTableId.isBlank())
         && (destinationViewId == null || destinationViewId.isBlank())
         && (destinationCaptureRequests == null || destinationCaptureRequests.isEmpty())
-        && (capturePolicy == null || capturePolicy.isEmpty())) {
+        && (capturePolicy == null || capturePolicy.isEmpty())
+        && (snapshotSelection == null || !snapshotSelection.isSpecified())) {
       return EMPTY;
     }
     return new ReconcileScope(
@@ -196,27 +232,38 @@ public final class ReconcileScope {
         destinationTableId,
         destinationViewId,
         destinationCaptureRequests,
-        capturePolicy);
+        capturePolicy,
+        snapshotSelection);
   }
 
+  @JsonProperty("destinationNamespaceIds")
   public List<String> destinationNamespaceIds() {
     return destinationNamespaceIds;
   }
 
+  @JsonProperty("destinationTableId")
   public String destinationTableId() {
     return destinationTableId;
   }
 
+  @JsonProperty("destinationViewId")
   public String destinationViewId() {
     return destinationViewId;
   }
 
+  @JsonProperty("destinationCaptureRequests")
   public List<ScopedCaptureRequest> destinationCaptureRequests() {
     return destinationCaptureRequests;
   }
 
+  @JsonProperty("capturePolicy")
   public ReconcileCapturePolicy capturePolicy() {
     return capturePolicy;
+  }
+
+  @JsonProperty("snapshotSelection")
+  public ReconcileSnapshotSelection snapshotSelection() {
+    return snapshotSelection;
   }
 
   public boolean hasNamespaceFilter() {
@@ -267,5 +314,9 @@ public final class ReconcileScope {
 
   public boolean hasCapturePolicy() {
     return !capturePolicy.isEmpty();
+  }
+
+  public boolean hasSnapshotSelection() {
+    return snapshotSelection.isSpecified();
   }
 }

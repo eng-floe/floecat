@@ -97,7 +97,6 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.types.Hashing;
-import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
@@ -123,9 +122,17 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class GrpcReconcilerBackend implements ReconcilerBackend {
+  private static final int UPDATE_OCC_RETRIES = 4;
+  private static final int MAX_TARGET_STATS_RECORDS_PER_REQUEST = 250;
+  private static final int MAX_TARGET_STATS_REQUEST_BYTES = 128 * 1024;
+  private static final int[][] TARGET_STATS_RETRY_LIMITS = {
+    {MAX_TARGET_STATS_RECORDS_PER_REQUEST, MAX_TARGET_STATS_REQUEST_BYTES},
+    {100, 64 * 1024},
+    {25, 16 * 1024},
+    {1, 4 * 1024}
+  };
+
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
-  private static final Set<String> PRESERVED_TABLE_PROPERTIES =
-      ManagedTableProperties.engineManagedKeys();
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -331,43 +338,50 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       ResourceId namespaceId,
       NameRef tableRef,
       TableSpecDescriptor descriptor) {
-    var before =
-        table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
-    if (!before.getNamespaceId().equals(namespaceId)) {
-      throw new IllegalArgumentException(
-          "Destination table namespace mismatch for id: " + tableId.getId());
-    }
     NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
-    if (!before.getDisplayName().equals(normalizedTable.getName())) {
-      throw new IllegalArgumentException(
-          "Destination table display name mismatch for id: " + tableId.getId());
-    }
-
-    Map<String, String> mergedProperties =
-        mergedTableProperties(before.getPropertiesMap(), safeProperties(descriptor));
-
     TableSpec spec =
         TableSpec.newBuilder()
             .setDisplayName(descriptor.displayName())
             .setSchemaJson(descriptor.schemaJson())
             .setUpstream(buildUpstream(descriptor))
-            .putAllProperties(mergedProperties)
+            .putAllProperties(safeProperties(descriptor))
             .build();
-    var response =
-        table(ctx)
-            .updateTable(
-                UpdateTableRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSpec(spec)
-                    .setUpdateMask(
-                        FieldMask.newBuilder()
-                            .addPaths("schema_json")
-                            .addPaths("upstream")
-                            .addPaths("properties")
-                            .build())
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(spec)
+            .setUpdateMask(
+                FieldMask.newBuilder()
+                    .addPaths("schema_json")
+                    .addPaths("upstream")
+                    .addPaths("properties")
                     .build())
-            .getTable();
-    return !response.equals(before);
+            .build();
+
+    for (int attempt = 0; attempt < UPDATE_OCC_RETRIES; attempt++) {
+      var before =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      if (!before.getNamespaceId().equals(namespaceId)) {
+        throw new IllegalArgumentException(
+            "Destination table namespace mismatch for id: " + tableId.getId());
+      }
+      if (!before.getDisplayName().equals(normalizedTable.getName())) {
+        throw new IllegalArgumentException(
+            "Destination table display name mismatch for id: " + tableId.getId());
+      }
+      try {
+        var response = table(ctx).updateTable(request).getTable();
+        return !response.equals(before);
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION
+            || attempt + 1 >= UPDATE_OCC_RETRIES) {
+          throw e;
+        }
+      }
+    }
+    throw Status.FAILED_PRECONDITION
+        .withDescription("table update precondition failed after retries")
+        .asRuntimeException();
   }
 
   @Override
@@ -542,6 +556,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.plannedFilePaths(),
                       request.statsColumns(),
                       request.indexColumns(),
+                      request.columnSelectorPolicy(),
                       request.requestedStatsTargetKinds(),
                       request.capturePageIndex(),
                       ctx.authorizationToken()));
@@ -558,6 +573,34 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                   capture.statsRecords(),
                   capture.pageIndexEntries()));
         });
+  }
+
+  @Override
+  public Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<FloecatConnector.StatsTargetKind> includeTargetKinds,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy) {
+    if (tableId == null || snapshotId < 0) {
+      return Optional.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        Optional.<List<TargetStatsRecord>>empty(),
+        (source, sourceCtx) ->
+            source.captureSnapshotTargetStatsDirect(
+                sourceCtx.sourceNamespace(),
+                sourceCtx.sourceTable(),
+                tableId,
+                snapshotId,
+                includeColumns == null ? Set.of() : Set.copyOf(includeColumns),
+                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
+                columnSelectorPolicy == null
+                    ? FloecatConnector.ColumnSelectorPolicy.defaults()
+                    : columnSelectorPolicy));
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -788,10 +831,35 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (stats == null || stats.isEmpty()) {
       return;
     }
-    statisticsMutiny(ctx)
-        .putTargetStats(Multi.createFrom().iterable(groupTargetRequests(stats)))
-        .await()
-        .atMost(statsTimeout);
+    StatusRuntimeException lastResourceExhausted = null;
+    for (int attempt = 0; attempt < TARGET_STATS_RETRY_LIMITS.length; attempt++) {
+      int maxRecords = TARGET_STATS_RETRY_LIMITS[attempt][0];
+      int maxBytes = TARGET_STATS_RETRY_LIMITS[attempt][1];
+      try {
+        statisticsMutiny(ctx)
+            .putTargetStats(
+                Multi.createFrom().iterable(groupTargetRequests(stats, maxRecords, maxBytes)))
+            .await()
+            .atMost(statsTimeout);
+        return;
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.RESOURCE_EXHAUSTED
+            || attempt == TARGET_STATS_RETRY_LIMITS.length - 1) {
+          throw e;
+        }
+        lastResourceExhausted = e;
+        LOG.warnf(
+            "PutTargetStats hit RESOURCE_EXHAUSTED; retrying with smaller chunks "
+                + "attempt=%d maxRecords=%d maxBytes=%d stats=%d",
+            attempt + 2,
+            TARGET_STATS_RETRY_LIMITS[attempt + 1][0],
+            TARGET_STATS_RETRY_LIMITS[attempt + 1][1],
+            stats.size());
+      }
+    }
+    if (lastResourceExhausted != null) {
+      throw lastResourceExhausted;
+    }
   }
 
   @Override
@@ -932,6 +1000,12 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   private List<PutTargetStatsRequest> groupTargetRequests(List<TargetStatsRecord> stats) {
+    return groupTargetRequests(
+        stats, MAX_TARGET_STATS_RECORDS_PER_REQUEST, MAX_TARGET_STATS_REQUEST_BYTES);
+  }
+
+  private List<PutTargetStatsRequest> groupTargetRequests(
+      List<TargetStatsRecord> stats, int maxRecordsPerRequest, int maxRequestBytes) {
     Map<StatsGroupKey, List<TargetStatsRecord>> grouped = new LinkedHashMap<>();
     for (TargetStatsRecord record : stats) {
       StatsGroupKey key = new StatsGroupKey(record.getTableId(), record.getSnapshotId());
@@ -939,16 +1013,33 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     List<PutTargetStatsRequest> requests = new ArrayList<>(grouped.size());
     for (var entry : grouped.entrySet()) {
-      PutTargetStatsRequest.Builder builder =
-          PutTargetStatsRequest.newBuilder()
-              .setTableId(entry.getKey().tableId)
-              .setSnapshotId(entry.getKey().snapshotId);
+      PutTargetStatsRequest.Builder builder = newTargetStatsRequest(entry.getKey());
+      int currentRecords = 0;
       for (TargetStatsRecord record : entry.getValue()) {
+        if (currentRecords > 0
+            && (currentRecords >= maxRecordsPerRequest
+                || projectedTargetStatsRequestSize(builder, record) > maxRequestBytes)) {
+          requests.add(builder.build());
+          builder = newTargetStatsRequest(entry.getKey());
+          currentRecords = 0;
+        }
         builder.addRecords(record);
+        currentRecords++;
       }
-      requests.add(builder.build());
+      if (currentRecords > 0) {
+        requests.add(builder.build());
+      }
     }
     return requests;
+  }
+
+  private static PutTargetStatsRequest.Builder newTargetStatsRequest(StatsGroupKey key) {
+    return PutTargetStatsRequest.newBuilder().setTableId(key.tableId).setSnapshotId(key.snapshotId);
+  }
+
+  private static int projectedTargetStatsRequestSize(
+      PutTargetStatsRequest.Builder builder, TargetStatsRecord nextRecord) {
+    return builder.build().getSerializedSize() + nextRecord.getSerializedSize();
   }
 
   @Override
@@ -1336,24 +1427,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {
     return descriptor.properties() != null ? descriptor.properties() : Map.of();
-  }
-
-  private Map<String, String> mergedTableProperties(
-      Map<String, String> existingProperties, Map<String, String> incomingProperties) {
-    Map<String, String> merged = new LinkedHashMap<>();
-    if (incomingProperties != null && !incomingProperties.isEmpty()) {
-      merged.putAll(incomingProperties);
-    }
-    if (existingProperties == null || existingProperties.isEmpty()) {
-      return merged;
-    }
-    for (String key : PRESERVED_TABLE_PROPERTIES) {
-      String value = existingProperties.get(key);
-      if (value != null && !value.isBlank()) {
-        merged.put(key, value);
-      }
-    }
-    return merged;
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor) {

@@ -170,12 +170,21 @@ message ReconcilePolicy {
   int32 max_parallel = 3;
   google.protobuf.Timestamp not_before = 4;
   ReconcileMode mode = 5;
+  ReconcileSnapshotScope scope = 6;
+  uint32 latest_n = 7;
 }
 
 enum ReconcileMode {
   RM_UNSPECIFIED = 0;
   RM_INCREMENTAL = 1;
   RM_FULL = 2;
+}
+
+enum ReconcileSnapshotScope {
+  RSS_UNSPECIFIED = 0;
+  RSS_CURRENT = 1;
+  RSS_LATEST_N = 2;
+  RSS_ALL = 3;
 }
 
 message ConnectorSpec {

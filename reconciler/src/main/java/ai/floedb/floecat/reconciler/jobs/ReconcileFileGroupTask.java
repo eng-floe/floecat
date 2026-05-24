@@ -24,6 +24,9 @@ public record ReconcileFileGroupTask(
     String groupId,
     String tableId,
     long snapshotId,
+    int fileCount,
+    String fileStatsBlobUri,
+    int fileStatsRecordCount,
     List<String> filePaths,
     List<ReconcileFileResult> fileResults) {
 
@@ -31,7 +34,10 @@ public record ReconcileFileGroupTask(
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
     tableId = tableId == null ? "" : tableId.trim();
-    snapshotId = Math.max(0L, snapshotId);
+    snapshotId = snapshotId < -1L ? -1L : snapshotId;
+    fileCount = Math.max(0, fileCount);
+    fileStatsBlobUri = fileStatsBlobUri == null ? "" : fileStatsBlobUri.trim();
+    fileStatsRecordCount = Math.max(0, fileStatsRecordCount);
     filePaths =
         filePaths == null
             ? List.of()
@@ -39,6 +45,9 @@ public record ReconcileFileGroupTask(
                 .filter(path -> path != null && !path.isBlank())
                 .map(String::trim)
                 .toList();
+    if (fileCount == 0 && !filePaths.isEmpty()) {
+      fileCount = filePaths.size();
+    }
     fileResults =
         fileResults == null
             ? List.of()
@@ -50,37 +59,114 @@ public record ReconcileFileGroupTask(
       String groupId,
       String tableId,
       long snapshotId,
+      int fileCount,
+      String fileStatsBlobUri,
+      int fileStatsRecordCount,
       List<String> filePaths,
       List<ReconcileFileResult> fileResults) {
     if ((planId == null || planId.isBlank())
         && (groupId == null || groupId.isBlank())
         && (tableId == null || tableId.isBlank())
-        && snapshotId <= 0L
+        && snapshotId < 0L
+        && fileCount <= 0
+        && (fileStatsBlobUri == null || fileStatsBlobUri.isBlank())
+        && fileStatsRecordCount <= 0
         && (filePaths == null || filePaths.isEmpty())
         && (fileResults == null || fileResults.isEmpty())) {
       return empty();
     }
-    return new ReconcileFileGroupTask(planId, groupId, tableId, snapshotId, filePaths, fileResults);
+    return new ReconcileFileGroupTask(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        fileStatsBlobUri,
+        fileStatsRecordCount,
+        filePaths,
+        fileResults);
   }
 
   public static ReconcileFileGroupTask of(
       String planId, String groupId, String tableId, long snapshotId, List<String> filePaths) {
-    return of(planId, groupId, tableId, snapshotId, filePaths, List.of());
+    return of(planId, groupId, tableId, snapshotId, 0, "", 0, filePaths, List.of());
+  }
+
+  public static ReconcileFileGroupTask of(
+      String planId,
+      String groupId,
+      String tableId,
+      long snapshotId,
+      List<String> filePaths,
+      List<ReconcileFileResult> fileResults) {
+    return of(planId, groupId, tableId, snapshotId, 0, "", 0, filePaths, fileResults);
+  }
+
+  public static ReconcileFileGroupTask of(
+      String planId,
+      String groupId,
+      String tableId,
+      long snapshotId,
+      int fileCount,
+      List<String> filePaths) {
+    return of(planId, groupId, tableId, snapshotId, fileCount, "", 0, filePaths, List.of());
+  }
+
+  public static ReconcileFileGroupTask of(
+      String planId,
+      String groupId,
+      String tableId,
+      long snapshotId,
+      int fileCount,
+      List<String> filePaths,
+      List<ReconcileFileResult> fileResults) {
+    return of(planId, groupId, tableId, snapshotId, fileCount, "", 0, filePaths, fileResults);
   }
 
   public static ReconcileFileGroupTask empty() {
-    return new ReconcileFileGroupTask("", "", "", 0L, List.of(), List.of());
+    return new ReconcileFileGroupTask("", "", "", -1L, 0, "", 0, List.of(), List.of());
   }
 
   public ReconcileFileGroupTask asReference() {
     if (isEmpty()) {
       return this;
     }
-    return new ReconcileFileGroupTask(planId, groupId, tableId, snapshotId, List.of(), List.of());
+    return new ReconcileFileGroupTask(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        fileStatsBlobUri,
+        fileStatsRecordCount,
+        List.of(),
+        List.of());
   }
 
   public ReconcileFileGroupTask withFileResults(List<ReconcileFileResult> fileResults) {
-    return new ReconcileFileGroupTask(planId, groupId, tableId, snapshotId, filePaths, fileResults);
+    return new ReconcileFileGroupTask(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        fileStatsBlobUri,
+        fileStatsRecordCount,
+        filePaths,
+        fileResults);
+  }
+
+  public ReconcileFileGroupTask withFileStatsBlob(String blobUri, int recordCount) {
+    return new ReconcileFileGroupTask(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        blobUri,
+        recordCount,
+        filePaths,
+        fileResults);
   }
 
   @JsonIgnore
@@ -88,7 +174,10 @@ public record ReconcileFileGroupTask(
     return planId.isBlank()
         && groupId.isBlank()
         && tableId.isBlank()
-        && snapshotId == 0L
+        && snapshotId < 0L
+        && fileCount <= 0
+        && fileStatsBlobUri.isBlank()
+        && fileStatsRecordCount <= 0
         && filePaths.isEmpty()
         && fileResults.isEmpty();
   }

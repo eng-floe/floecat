@@ -16,11 +16,16 @@
 
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -29,19 +34,24 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.List;
 import java.util.Set;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class ReconcileJobGc {
 
+  private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final Set<String> TERMINAL_STATES =
       Set.of("JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED");
 
-  @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
   @Inject ReconcilerSettingsStore settings;
+  @Inject ReconcileJobIndexBackend jobIndexBackend;
+  @Inject ReconcileReadyQueueBackend readyQueueBackend;
+  @Inject ReconcileProjectionBackend projectionBackend;
+  @Inject ReconcileJobIndexes jobIndexes;
 
   public record AccountResult(
       int scanned,
@@ -86,35 +96,27 @@ public class ReconcileJobGc {
 
     String jobPrefix = Keys.reconcileJobPointerByIdPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      StringBuilder next = new StringBuilder();
-      var pointers = pointerStore.listPointersByPrefix(jobPrefix, pageSize, jobToken, next);
-      jobToken = next.toString();
+      var page = jobIndexBackend.listCanonicalEntries(accountId, pageSize, jobToken);
+      var pointers = page.entries();
+      jobToken = page.nextPageToken();
       if (pointers.isEmpty()) {
         break;
       }
 
-      for (Pointer canonical : pointers) {
+      for (var canonical : pointers) {
         if (scanned >= batchLimit || System.currentTimeMillis() >= deadline) {
           break;
         }
         scanned++;
 
-        JsonNode record = readRecord(canonical);
+        JsonNode record = readRecordByReference(canonical.blobUri());
+        String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
         if (record == null) {
-          if (pointerStore.compareAndDelete(canonical.getKey(), canonical.getVersion())) {
+          if (jobIndexBackend.purgeEntriesByCanonicalReference(canonical.pointerKey())) {
             ptrDeleted++;
-            if (blobStore.delete(canonical.getBlobUri())) {
-              blobDeleted++;
-            }
-            String jobId = decodeJobId(jobPrefix, canonical.getKey());
             if (jobId != null) {
-              deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
-              String parentJobId = text(record, "parentJobId");
-              if (!parentJobId.isBlank()) {
-                deletePointerIfPresent(
-                    Keys.reconcileJobByParentPointer(accountId, parentJobId, jobId));
-              }
-              blobStore.deletePrefix(Keys.reconcileJobBlobPrefix(accountId, jobId));
+              blobDeleted += deleteJobBlobs(accountId, jobId);
+              deleteProjectionRows(accountId, jobId, null);
             }
           }
           continue;
@@ -129,31 +131,24 @@ public class ReconcileJobGc {
 
         if (TERMINAL_STATES.contains(state)) {
           // Terminal jobs must never hold queue/dedupe references.
-          String dedupeKey = text(record, "dedupeKey");
-          if (!dedupeKey.isBlank() && deleteDedupePointer(accountId, dedupeKey)) {
+          StoredReconcileJob stored = storedJob(record);
+          String dedupePointerKey = stored == null ? "" : jobIndexes.dedupePointerKey(stored);
+          if (!dedupePointerKey.isBlank() && deleteJobIndexPointerIfPresent(dedupePointerKey)) {
             dedupeDeleted++;
           }
-          String readyKey = text(record, "readyPointerKey");
-          if (!readyKey.isBlank() && deletePointerIfPresent(readyKey)) {
-            readyDeleted++;
+          for (String readyKey : readyPointerKeys(record)) {
+            if (!readyKey.isBlank() && readyQueueBackend.deleteReadyEntry(readyKey)) {
+              readyDeleted++;
+            }
           }
 
           if (updatedAt <= nowMs - retentionMs) {
-            if (pointerStore.compareAndDelete(canonical.getKey(), canonical.getVersion())) {
+            if (deleteCanonicalFootprint(accountId, jobId, canonical, record)) {
               expired++;
               ptrDeleted++;
-              if (blobStore.delete(canonical.getBlobUri())) {
-                blobDeleted++;
-              }
-              String jobId = decodeJobId(jobPrefix, canonical.getKey());
               if (jobId != null) {
-                deletePointerIfPresent(Keys.reconcileJobLookupPointerById(jobId));
-                String parentJobId = text(record, "parentJobId");
-                if (!parentJobId.isBlank()) {
-                  deletePointerIfPresent(
-                      Keys.reconcileJobByParentPointer(accountId, parentJobId, jobId));
-                }
-                blobStore.deletePrefix(Keys.reconcileJobBlobPrefix(accountId, jobId));
+                blobDeleted += deleteJobBlobs(accountId, jobId);
+                deleteProjectionRows(accountId, jobId, record);
               }
             }
           }
@@ -167,30 +162,29 @@ public class ReconcileJobGc {
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      StringBuilder next = new StringBuilder();
-      var dedupePointers =
-          pointerStore.listPointersByPrefix(dedupePrefix, pageSize, dedupeToken, next);
-      dedupeToken = next.toString();
+      var dedupePage = jobIndexBackend.listDedupeEntries(accountId, pageSize, dedupeToken);
+      var dedupePointers = dedupePage.entries();
+      dedupeToken = dedupePage.nextPageToken();
       if (dedupePointers.isEmpty()) {
         break;
       }
 
-      for (Pointer dedupe : dedupePointers) {
+      for (var dedupe : dedupePointers) {
         if (scanned >= batchLimit || System.currentTimeMillis() >= deadline) {
           break;
         }
         scanned++;
 
-        JsonNode record = readRecordByBlobUri(dedupe.getBlobUri());
+        JsonNode record = readRecordByCanonicalKey(dedupe.blobUri());
         if (record == null) {
-          if (pointerStore.compareAndDelete(dedupe.getKey(), dedupe.getVersion())) {
+          if (deleteJobIndexPointerIfPresent(dedupe.pointerKey())) {
             dedupeDeleted++;
           }
           continue;
         }
 
         if (TERMINAL_STATES.contains(text(record, "state"))) {
-          if (pointerStore.compareAndDelete(dedupe.getKey(), dedupe.getVersion())) {
+          if (deleteJobIndexPointerIfPresent(dedupe.pointerKey())) {
             dedupeDeleted++;
           }
         }
@@ -225,37 +219,39 @@ public class ReconcileJobGc {
     String token = pageTokenIn == null ? "" : pageTokenIn;
 
     while (scanned < batchLimit) {
-      StringBuilder next = new StringBuilder();
-      var readyPointers =
-          pointerStore.listPointersByPrefix(
-              Keys.reconcileReadyPointerPrefix(), pageSize, token, next);
-      token = next.toString();
-      if (readyPointers.isEmpty()) {
+      var readyPage = readyQueueBackend.scanAllReadyEntries(pageSize, token);
+      token = readyPage.nextPageToken();
+      if (readyPage.entries().isEmpty()) {
         break;
       }
 
-      for (Pointer ready : readyPointers) {
+      for (var ready : readyPage.entries()) {
         if (scanned >= batchLimit) {
           break;
         }
         scanned++;
 
-        JsonNode record = readRecordByBlobUri(ready.getBlobUri());
+        JsonNode record = readRecordByCanonicalKey(ready.canonicalPointerKey());
         if (record == null) {
-          if (pointerStore.compareAndDelete(ready.getKey(), ready.getVersion())) {
+          if (readyQueueBackend.deleteReadyEntry(ready.readyPointerKey())) {
             deleted++;
           }
           continue;
         }
 
         String state = text(record, "state");
-        String preferredReadyKey = text(record, "readyPointerKey");
         boolean stale = !"JS_QUEUED".equals(state);
-        if (!stale && !preferredReadyKey.isBlank() && !ready.getKey().equals(preferredReadyKey)) {
-          stale = true;
+        if (!stale) {
+          java.util.LinkedHashSet<String> validReadyKeys = new java.util.LinkedHashSet<>();
+          String preferredReadyKey = text(record, "readyPointerKey");
+          if (!preferredReadyKey.isBlank()) {
+            validReadyKeys.add(preferredReadyKey);
+          }
+          validReadyKeys.addAll(readyPointerKeys(record));
+          stale = !validReadyKeys.contains(ready.readyPointerKey());
         }
 
-        if (stale && pointerStore.compareAndDelete(ready.getKey(), ready.getVersion())) {
+        if (stale && readyQueueBackend.deleteReadyEntry(ready.readyPointerKey())) {
           deleted++;
         }
       }
@@ -268,20 +264,28 @@ public class ReconcileJobGc {
     return new GlobalResult(scanned, deleted, token);
   }
 
-  private JsonNode readRecord(Pointer canonical) {
-    return readRecordByBlobUri(canonical.getBlobUri());
+  private JsonNode readRecordByCanonicalKey(String canonicalPointerKey) {
+    if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
+      return null;
+    }
+    var canonical = jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
+    return canonical == null ? null : readRecordByReference(canonical.blobUri());
   }
 
-  private JsonNode readRecordByBlobUri(String blobUri) {
-    byte[] payload = blobStore.get(blobUri);
-    if (payload == null || payload.length == 0) {
+  private JsonNode readRecordByReference(String reference) {
+    if (reference == null || reference.isBlank()) {
       return null;
     }
-    try {
-      return mapper.readTree(payload);
-    } catch (Exception ignored) {
-      return null;
+    if (reference.startsWith(INLINE_JOB_STATE_PREFIX)) {
+      try {
+        byte[] payload =
+            Base64.getUrlDecoder().decode(reference.substring(INLINE_JOB_STATE_PREFIX.length()));
+        return mapper.readTree(payload);
+      } catch (Exception ignored) {
+        return null;
+      }
     }
+    return null;
   }
 
   private static String text(JsonNode node, String field) {
@@ -318,19 +322,6 @@ public class ReconcileJobGc {
     return URLDecoder.decode(suffix, StandardCharsets.UTF_8);
   }
 
-  private boolean deleteDedupePointer(String accountId, String dedupeKey) {
-    String key = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
-    return deletePointerIfPresent(key);
-  }
-
-  private boolean deletePointerIfPresent(String key) {
-    Pointer pointer = pointerStore.get(key).orElse(null);
-    if (pointer == null) {
-      return false;
-    }
-    return pointerStore.compareAndDelete(key, pointer.getVersion());
-  }
-
   private static String hashValue(String value) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -341,5 +332,170 @@ public class ReconcileJobGc {
           .withoutPadding()
           .encodeToString(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
     }
+  }
+
+  private boolean deleteCanonicalFootprint(
+      String accountId, String jobId, JobIndexEntrySnapshot canonical, JsonNode record) {
+    if (canonical == null || jobId == null || jobId.isBlank()) {
+      return false;
+    }
+    var deletes = new java.util.ArrayList<ReconcileJobIndexStore.JobIndexWriteOp>();
+    deletes.add(
+        new ReconcileJobIndexStore.JobIndexDelete(canonical.pointerKey(), canonical.version()));
+    appendDeleteIfPresent(deletes, Keys.reconcileJobLookupPointerById(jobId));
+
+    if (record != null) {
+      String parentJobId = text(record, "parentJobId");
+      if (!parentJobId.isBlank()) {
+        appendDeleteIfPresent(deletes, jobIndexes.parentPointerKey(accountId, parentJobId, jobId));
+      }
+      StoredReconcileJob stored = storedJob(record);
+      appendDeleteIfPresent(
+          deletes,
+          jobIndexes.connectorIndexPointerKey(
+              accountId, text(record, "connectorId"), longValue(record, "createdAtMs", 0L), jobId));
+      for (String stateKey : jobIndexes.statePointerKeys(stored)) {
+        appendDeleteIfPresent(deletes, stateKey);
+      }
+      String dedupeKey = jobIndexes.dedupePointerKey(stored);
+      if (!dedupeKey.isBlank()) {
+        appendDeleteIfPresent(deletes, dedupeKey);
+      }
+    }
+
+    java.util.LinkedHashSet<String> readyDeletes = new java.util.LinkedHashSet<>();
+    if (record != null) {
+      String preferredReadyKey = text(record, "readyPointerKey");
+      if (!preferredReadyKey.isBlank()) {
+        readyDeletes.add(preferredReadyKey);
+      }
+      for (String readyKey : readyPointerKeys(record)) {
+        if (!readyKey.isBlank()) {
+          readyDeletes.add(readyKey);
+        }
+      }
+    }
+
+    return jobIndexBackend.compareAndSetBatch(
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            deletes,
+            new ReconcileJobIndexStore.ReadyQueueMutation(
+                List.of(), new java.util.ArrayList<>(readyDeletes)),
+            new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())));
+  }
+
+  private void appendDeleteIfPresent(
+      java.util.List<ReconcileJobIndexStore.JobIndexWriteOp> deletes, String pointerKey) {
+    if (pointerKey == null || pointerKey.isBlank()) {
+      return;
+    }
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
+    if (existing != null) {
+      deletes.add(
+          new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
+    }
+  }
+
+  private boolean deleteJobIndexPointerIfPresent(String pointerKey) {
+    if (pointerKey == null || pointerKey.isBlank()) {
+      return false;
+    }
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
+    if (existing == null) {
+      return false;
+    }
+    return jobIndexBackend.compareAndSetBatch(
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.of(
+                new ReconcileJobIndexStore.JobIndexDelete(
+                    existing.pointerKey(), existing.version())),
+            ReconcileJobIndexStore.ReadyQueueMutation.empty(),
+            new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())));
+  }
+
+  private int deleteJobBlobs(String accountId, String jobId) {
+    String prefix = Keys.reconcileJobBlobPrefix(accountId, jobId);
+    boolean hadBlob = !blobStore.list(prefix, 1, "").keys().isEmpty();
+    blobStore.deletePrefix(prefix);
+    return hadBlob ? 1 : 0;
+  }
+
+  private void deleteProjectionRows(String accountId, String jobId, JsonNode record) {
+    projectionBackend.deleteResultReference(accountId, jobId);
+    if (record != null) {
+      String parentJobId = text(record, "parentJobId");
+      if (!parentJobId.isBlank()) {
+        projectionBackend.deleteContribution(accountId, parentJobId, jobId);
+      }
+    }
+    for (var contribution : projectionBackend.listContributionsForChild(accountId, jobId)) {
+      projectionBackend.deleteContribution(
+          contribution.accountId(), contribution.parentJobId(), contribution.childJobId());
+    }
+  }
+
+  private StoredReconcileJob storedJob(JsonNode record) {
+    if (record == null) {
+      return null;
+    }
+    StoredReconcileJob stored = new StoredReconcileJob();
+    stored.jobId = text(record, "jobId");
+    stored.accountId = text(record, "accountId");
+    stored.connectorId = text(record, "connectorId");
+    stored.parentJobId = text(record, "parentJobId");
+    stored.state = text(record, "state");
+    stored.createdAtMs = longValue(record, "createdAtMs", 0L);
+    stored.updatedAtMs = longValue(record, "updatedAtMs", 0L);
+    stored.nextAttemptAtMs = longValue(record, "nextAttemptAtMs", 0L);
+    stored.laneKey = text(record, "laneKey");
+    stored.executionClass = text(record, "executionClass");
+    stored.pinnedExecutorId = text(record, "pinnedExecutorId");
+    stored.jobKind = text(record, "jobKind");
+    stored.readyPointerKey = text(record, "readyPointerKey");
+    stored.dedupeKeyHash = text(record, "dedupeKeyHash");
+    return stored;
+  }
+
+  private List<String> readyPointerKeys(JsonNode record) {
+    if (record == null) {
+      return List.of();
+    }
+    StoredReconcileJob stored = storedJob(record);
+    if (stored == null || !"JS_QUEUED".equals(stored.state)) {
+      return List.of();
+    }
+    if (stored.accountId == null
+        || stored.accountId.isBlank()
+        || stored.jobId == null
+        || stored.jobId.isBlank()
+        || stored.laneKey == null
+        || stored.laneKey.isBlank()) {
+      return List.of();
+    }
+    long dueAt = stored.nextAttemptAtMs > 0L ? stored.nextAttemptAtMs : System.currentTimeMillis();
+    java.util.ArrayList<String> keys = new java.util.ArrayList<>();
+    keys.add(
+        Keys.reconcileReadyPointerByDue(dueAt, stored.accountId, stored.laneKey, stored.jobId));
+    if (stored.executionClass != null && !stored.executionClass.isBlank()) {
+      keys.add(
+          Keys.reconcileReadyByExecutionClassPointerByDue(
+              dueAt, stored.executionClass, stored.accountId, stored.jobId));
+    }
+    if (stored.laneKey != null && !stored.laneKey.isBlank()) {
+      keys.add(
+          Keys.reconcileReadyByExecutionLanePointerByDue(
+              dueAt, stored.laneKey, stored.accountId, stored.jobId));
+    }
+    if (stored.pinnedExecutorId != null && !stored.pinnedExecutorId.isBlank()) {
+      keys.add(
+          Keys.reconcileReadyByPinnedExecutorPointerByDue(
+              dueAt, stored.pinnedExecutorId, stored.accountId, stored.jobId));
+    }
+    if (stored.jobKind != null && !stored.jobKind.isBlank()) {
+      keys.add(
+          Keys.reconcileReadyByJobKindPointerByDue(
+              dueAt, stored.jobKind, stored.accountId, stored.jobId));
+    }
+    return keys;
   }
 }

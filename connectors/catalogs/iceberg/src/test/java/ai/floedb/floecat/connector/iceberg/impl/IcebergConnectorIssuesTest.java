@@ -81,10 +81,16 @@ class IcebergConnectorIssuesTest {
     Schema resolved = IcebergConnector.schemaForSnapshot(table, snapshot);
 
     assertEquals(snapshotSchema, resolved);
-    assertEquals(Set.of(1, 2), IcebergConnector.resolveIncludedFieldIds(resolved, Set.of()));
     assertEquals(
         Set.of(1, 2),
-        IcebergConnector.resolveIncludedFieldIds(resolved, Set.of("old_col", "shared_col")));
+        IcebergConnector.resolveIncludedFieldIds(
+            resolved, Set.<String>of(), FloecatConnector.ColumnSelectorPolicy.defaults()));
+    assertEquals(
+        Set.of(1, 2),
+        IcebergConnector.resolveIncludedFieldIds(
+            resolved,
+            Set.of("old_col", "shared_col"),
+            FloecatConnector.ColumnSelectorPolicy.defaults()));
   }
 
   @Test

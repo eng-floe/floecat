@@ -78,6 +78,11 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
+  public boolean putTargetStatsIfAbsent(TargetStatsRecord value) {
+    return targetStatsRepo.createIfAbsent(value);
+  }
+
+  @Override
   public Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target) {
     return targetStatsRepo.getByKey(targetStatsLookupKey(tableId, snapshotId, target));

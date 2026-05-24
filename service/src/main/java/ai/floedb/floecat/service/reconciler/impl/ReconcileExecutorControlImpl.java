@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -79,7 +81,9 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 
 @GrpcService
@@ -185,23 +189,21 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
-              boolean leaseValid = jobs.renewLease(jobId, leaseEpoch);
-              if (leaseValid) {
-                jobs.markProgress(
-                    jobId,
-                    leaseEpoch,
-                    request.getTablesScanned(),
-                    request.getTablesChanged(),
-                    request.getViewsScanned(),
-                    request.getViewsChanged(),
-                    request.getErrors(),
-                    request.getSnapshotsProcessed(),
-                    request.getStatsProcessed(),
-                    request.getMessage());
-              }
+              var update =
+                  jobs.reportProgress(
+                      jobId,
+                      leaseEpoch,
+                      request.getTablesScanned(),
+                      request.getTablesChanged(),
+                      request.getViewsScanned(),
+                      request.getViewsChanged(),
+                      request.getErrors(),
+                      request.getSnapshotsProcessed(),
+                      request.getStatsProcessed(),
+                      request.getMessage());
               return ReportReconcileProgressResponse.newBuilder()
-                  .setLeaseValid(leaseValid)
-                  .setCancellationRequested(jobs.isCancellationRequested(jobId))
+                  .setLeaseValid(update.leaseValid)
+                  .setCancellationRequested(update.cancellationRequested)
                   .build();
             }),
         correlationId());
@@ -222,71 +224,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   || request.getState() == ReconcileCompletionState.UNRECOGNIZED) {
                 throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "state"));
               }
-              boolean leaseValid = jobs.renewLease(jobId, leaseEpoch);
-              if (!leaseValid) {
-                return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(false).build();
-              }
-              long finishedAtMs = System.currentTimeMillis();
-              switch (request.getState()) {
-                case RCS_SUCCEEDED ->
-                    jobs.markSucceeded(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                case RCS_FAILED -> {
-                  if (isDependencyNotReady(request)) {
-                    jobs.markWaiting(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                  } else if (isTerminalFailure(request)) {
-                    jobs.markFailedTerminal(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                    cancelChildJobs(jobId, request.getMessage());
-                  } else {
-                    jobs.markFailed(
-                        jobId,
-                        leaseEpoch,
-                        finishedAtMs,
-                        request.getMessage(),
-                        request.getTablesScanned(),
-                        request.getTablesChanged(),
-                        request.getViewsScanned(),
-                        request.getViewsChanged(),
-                        request.getErrors(),
-                        request.getSnapshotsProcessed(),
-                        request.getStatsProcessed());
-                  }
-                }
-                case RCS_CANCELLED -> {
-                  jobs.markCancelled(
+              var completionKind = completionKind(request);
+              boolean accepted =
+                  jobs.applyLeaseOutcome(
                       jobId,
                       leaseEpoch,
-                      finishedAtMs,
+                      completionKind,
+                      System.currentTimeMillis(),
                       request.getMessage(),
                       request.getTablesScanned(),
                       request.getTablesChanged(),
@@ -295,11 +239,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       request.getErrors(),
                       request.getSnapshotsProcessed(),
                       request.getStatsProcessed());
-                  cancelChildJobs(jobId, request.getMessage());
-                }
-                case RCS_UNSPECIFIED, UNRECOGNIZED ->
-                    throw GrpcErrors.invalidArgument(
-                        corr, null, java.util.Map.of("field", "state"));
+              if (!accepted) {
+                return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(false).build();
+              }
+              switch (completionKind) {
+                case FAILED_TERMINAL, CANCELLED -> cancelChildJobs(jobId, request.getMessage());
+                case SUCCEEDED, FAILED_RETRYABLE, FAILED_WAITING -> {}
               }
               return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build();
             }),
@@ -319,7 +264,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       return;
     }
     String message = (reason == null || reason.isBlank()) ? "Parent plan job terminated" : reason;
-    for (var child : jobs.childJobs(accountId, job.jobId)) {
+    for (var child : childJobsFor(accountId, job.jobId)) {
       var storedChild = jobs.get(accountId, child.jobId).orElse(child);
       var cancelled = jobs.cancel(accountId, child.jobId, message);
       if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
@@ -339,6 +284,24 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
+  private List<ReconcileJobStore.ReconcileJob> childJobsFor(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
+    }
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
   private static boolean isTerminalState(String state) {
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
@@ -354,6 +317,28 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return request != null
         && request.getFailureRetryDisposition() == ReconcileFailureRetryDisposition.RFRD_RETRYABLE
         && request.getFailureRetryClass() == ReconcileFailureRetryClass.RFRC_DEPENDENCY_NOT_READY;
+  }
+
+  private static ReconcileJobStore.CompletionKind completionKind(
+      CompleteLeasedReconcileJobRequest request) {
+    if (request == null) {
+      return ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
+    }
+    return switch (request.getState()) {
+      case RCS_SUCCEEDED -> ReconcileJobStore.CompletionKind.SUCCEEDED;
+      case RCS_CANCELLED -> ReconcileJobStore.CompletionKind.CANCELLED;
+      case RCS_FAILED -> {
+        if (isDependencyNotReady(request)) {
+          yield ReconcileJobStore.CompletionKind.FAILED_WAITING;
+        }
+        if (isTerminalFailure(request)) {
+          yield ReconcileJobStore.CompletionKind.FAILED_TERMINAL;
+        }
+        yield ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
+      }
+      case RCS_UNSPECIFIED, UNRECOGNIZED ->
+          throw new IllegalArgumentException("completion state is required");
+    };
   }
 
   private static ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
@@ -554,6 +539,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         principalContext,
                         jobId,
                         leaseEpoch,
+                        request.getSuccess().getTablesScanned(),
+                        request.getSuccess().getTablesChanged(),
+                        request.getSuccess().getErrors(),
+                        request.getSuccess().getSnapshotsProcessed(),
+                        request.getSuccess().getStatsProcessed(),
                         request.getSuccess().getSnapshotJobsList().stream()
                             .map(
                                 job ->
@@ -711,13 +701,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         principalContext,
                         jobId,
                         leaseEpoch,
-                        request.getSuccess().getFileGroupJobsList().stream()
-                            .map(
-                                job ->
-                                    new LeasedPlannerWorkerService.PlannedFileGroupJob(
-                                        fromProtoScope(job.getScope()),
-                                        fromProtoFileGroupTask(job.getFileGroupTask())))
-                            .toList());
+                        fromProtoSnapshotTask(request.getSuccess().getSnapshotTask()));
                 return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -782,6 +766,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   payload.capturePolicy().outputs().stream()
                                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                                       .toList())
+                              .setDefaultColumnScope(
+                                  toProtoDefaultColumnScope(
+                                      payload.capturePolicy().defaultColumnScope()))
+                              .setMaxDefaultColumns(payload.capturePolicy().maxDefaultColumns())
                               .build());
               if (payload.sourceConnector() != null) {
                 executionBuilder.setSourceConnector(payload.sourceConnector());
@@ -808,6 +796,30 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
+                var uploadedIndexArtifacts =
+                    new ArrayList<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>();
+                var inlineIndexArtifacts =
+                    new ArrayList<
+                        ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact>();
+                for (var artifact : request.getSuccess().getIndexArtifactsList()) {
+                  if (artifact.getUploadedArtifactUri().isBlank()) {
+                    inlineIndexArtifacts.add(
+                        new ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact(
+                            artifact.getRecord(),
+                            artifact.getContent().toByteArray(),
+                            artifact.getContentType()));
+                    continue;
+                  }
+                  if (!artifact.getContent().isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "uploaded index artifact manifest must not include inline content");
+                  }
+                  uploadedIndexArtifacts.add(
+                      new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                          artifact.getRecord(),
+                          artifact.getContentType(),
+                          artifact.getUploadedArtifactUri()));
+                }
                 boolean accepted =
                     leasedFileGroupExecutionService.persistSuccess(
                         principalContext,
@@ -815,15 +827,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         leaseEpoch,
                         request.getSuccess().getResultId(),
                         request.getSuccess().getStatsRecordsList(),
-                        request.getSuccess().getIndexArtifactsList().stream()
-                            .map(
-                                artifact ->
-                                    new ai.floedb.floecat.reconciler.spi.ReconcilerBackend
-                                        .StagedIndexArtifact(
-                                        artifact.getRecord(),
-                                        artifact.getContent().toByteArray(),
-                                        artifact.getContentType()))
-                            .toList());
+                        request.getSuccess().getFileStatsBlobUri(),
+                        request.getSuccess().getFileStatsRecordCount(),
+                        inlineIndexArtifacts,
+                        uploadedIndexArtifacts);
                 return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -967,6 +974,19 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+        .setFileGroupCount(effective.fileGroupCount())
+        .setDirectStatsBlobUri(effective.directStatsBlobUri())
+        .setDirectStatsRecordCount(effective.directStatsRecordCount())
+        .setCompletionMode(
+            switch (effective.completionMode()) {
+              case DIRECT_STATS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_DIRECT_STATS;
+              case FILE_GROUPS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_FILE_GROUPS;
+            })
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(ReconcileExecutorControlImpl::toProtoFileGroupTask)
@@ -1108,7 +1128,36 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   effectiveScope.capturePolicy().outputs().stream()
                       .map(ReconcileExecutorControlImpl::toProtoCaptureOutput)
                       .toList())
+              .setDefaultColumnScope(
+                  toProtoDefaultColumnScope(effectiveScope.capturePolicy().defaultColumnScope()))
+              .setMaxDefaultColumns(effectiveScope.capturePolicy().maxDefaultColumns())
               .build());
+    }
+    if (effectiveScope.hasSnapshotSelection()) {
+      builder.setSnapshotSelection(toProtoSnapshotSelection(effectiveScope.snapshotSelection()));
+    }
+    return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.SnapshotSelection toProtoSnapshotSelection(
+      ReconcileSnapshotSelection selection) {
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    var builder = ai.floedb.floecat.reconciler.rpc.SnapshotSelection.newBuilder();
+    switch (effective.kind()) {
+      case CURRENT ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_CURRENT);
+      case LATEST_N ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_LATEST_N)
+              .setLatestN(effective.latestN());
+      case EXPLICIT ->
+          builder
+              .setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_EXPLICIT)
+              .addAllSnapshotIds(effective.snapshotIds());
+      case ALL -> builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_ALL);
+      case UNSPECIFIED ->
+          builder.setKind(ai.floedb.floecat.reconciler.rpc.SnapshotSelectionKind.SSK_UNSPECIFIED);
     }
     return builder.build();
   }
@@ -1121,6 +1170,15 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
       case PARQUET_PAGE_INDEX ->
           ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.DefaultColumnScope toProtoDefaultColumnScope(
+      ReconcileCapturePolicy.DefaultColumnScope scope) {
+    return switch (scope == null ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N : scope) {
+      case ALL -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_ALL;
+      case EXPLICIT_ONLY -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY;
+      case FIRST_N -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_FIRST_N;
     };
   }
 
@@ -1158,8 +1216,39 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+                    .collect(java.util.stream.Collectors.toSet()),
+                fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
+                scope.getCapturePolicy().getMaxDefaultColumns())
+            : ReconcileCapturePolicy.empty(),
+        scope.hasSnapshotSelection()
+            ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
+            : ReconcileSnapshotSelection.unspecified());
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
+      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+    return switch (scope) {
+      case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+      case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+    };
+  }
+
+  private static ReconcileSnapshotSelection fromProtoSnapshotSelection(
+      ai.floedb.floecat.reconciler.rpc.SnapshotSelection selection) {
+    if (selection == null) {
+      return ReconcileSnapshotSelection.unspecified();
+    }
+    return switch (selection.getKind()) {
+      case SSK_CURRENT -> ReconcileSnapshotSelection.current();
+      case SSK_LATEST_N -> ReconcileSnapshotSelection.latestN(selection.getLatestN());
+      case SSK_EXPLICIT ->
+          ReconcileSnapshotSelection.explicit(
+              selection.getSnapshotIdsList().stream().map(Long::valueOf).toList());
+      case SSK_ALL -> ReconcileSnapshotSelection.all();
+      case SSK_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.unspecified();
+    };
   }
 
   private static ReconcileTableTask fromProtoTableTask(
@@ -1217,7 +1306,16 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         snapshotTask.getFileGroupsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileGroupTask)
             .toList(),
-        snapshotTask.getFileGroupPlanRecorded());
+        snapshotTask.getFileGroupPlanRecorded(),
+        switch (snapshotTask.getCompletionMode()) {
+          case RSCM_DIRECT_STATS -> ReconcileSnapshotTask.CompletionMode.DIRECT_STATS;
+          case RSCM_FILE_GROUPS, RSCM_UNSPECIFIED, UNRECOGNIZED ->
+              ReconcileSnapshotTask.CompletionMode.FILE_GROUPS;
+        },
+        snapshotTask.getFileGroupPlanBlobUri(),
+        snapshotTask.getFileGroupCount(),
+        snapshotTask.getDirectStatsBlobUri(),
+        snapshotTask.getDirectStatsRecordCount());
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(
@@ -1230,6 +1328,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         fileGroupTask.getGroupId(),
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
+        0,
         fileGroupTask.getFilePathsList(),
         fileGroupTask.getFileResultsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileResult)

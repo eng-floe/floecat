@@ -22,7 +22,13 @@ import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.TemporalCoercions;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
+import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -75,6 +81,59 @@ class ParquetFooterStatsTest {
     assertThat(inRange).isEqualTo(LocalTime.ofNanoOfDay(inRangeMicros * 1_000L));
   }
 
+  @Test
+  void timestampStatsWithoutLogicalAnnotationFallbackToMicrosForTimestamp() throws Exception {
+    Method m =
+        ParquetFooterStats.class.getDeclaredMethod(
+            "timestampStatValue", Object.class, Object.class, boolean.class, boolean.class);
+    m.setAccessible(true);
+
+    long micros = 1_735_734_896_123_456L;
+    Object value = m.invoke(null, null, micros, false, true);
+
+    Instant instant = Instant.parse("2025-01-01T12:34:56.123456Z");
+    assertThat(value).isEqualTo(LocalDateTime.ofInstant(instant, ZoneOffset.UTC));
+  }
+
+  @Test
+  void timestampStatsWithoutLogicalAnnotationFallbackToMicrosForTimestamptz() throws Exception {
+    Method m =
+        ParquetFooterStats.class.getDeclaredMethod(
+            "timestampStatValue", Object.class, Object.class, boolean.class, boolean.class);
+    m.setAccessible(true);
+
+    long micros = 1_735_734_896_123_456L;
+    Object value = m.invoke(null, null, micros, true, true);
+
+    assertThat(value).isEqualTo(Instant.parse("2025-01-01T12:34:56.123456Z"));
+  }
+
+  @Test
+  void timestampStatsDecodeInt96BinaryForTimestamp() throws Exception {
+    Method m =
+        ParquetFooterStats.class.getDeclaredMethod(
+            "timestampStatValue", Object.class, Object.class, boolean.class, boolean.class);
+    m.setAccessible(true);
+
+    Instant instant = Instant.parse("2025-01-01T12:34:56.123456Z");
+    Object value = m.invoke(null, null, int96Binary(instant), false, true);
+
+    assertThat(value).isEqualTo(LocalDateTime.ofInstant(instant, ZoneOffset.UTC));
+  }
+
+  @Test
+  void timestampStatsDecodeInt96BinaryForTimestamptz() throws Exception {
+    Method m =
+        ParquetFooterStats.class.getDeclaredMethod(
+            "timestampStatValue", Object.class, Object.class, boolean.class, boolean.class);
+    m.setAccessible(true);
+
+    Instant instant = Instant.parse("2025-01-01T12:34:56.123456Z");
+    Object value = m.invoke(null, null, int96Binary(instant), true, true);
+
+    assertThat(value).isEqualTo(instant);
+  }
+
   private static Object timeLogicalTypeAnnotation(TimeUnit unit) throws Exception {
     for (Method method : LogicalTypeAnnotation.class.getMethods()) {
       if (!method.getName().equals("timeType")) {
@@ -86,5 +145,18 @@ class ParquetFooterStatsTest {
       }
     }
     throw new IllegalStateException("Unable to locate LogicalTypeAnnotation.timeType");
+  }
+
+  private static Binary int96Binary(Instant instant) {
+    long epochSeconds = instant.getEpochSecond();
+    long epochDay = Math.floorDiv(epochSeconds, 86_400L);
+    long secondsOfDay = Math.floorMod(epochSeconds, 86_400L);
+    long nanosOfDay = secondsOfDay * 1_000_000_000L + instant.getNano();
+    int julianDay = Math.toIntExact(epochDay + 2_440_588L);
+
+    ByteBuffer buffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN);
+    buffer.putLong(nanosOfDay);
+    buffer.putInt(julianDay);
+    return Binary.fromConstantByteArray(buffer.array());
   }
 }

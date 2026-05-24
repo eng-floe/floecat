@@ -159,8 +159,10 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
                 ReconcileScope.of(
                     List.of(),
                     scope.destinationTableId(),
+                    null,
                     scope.destinationCaptureRequests(),
-                    scope.capturePolicy()),
+                    scope.capturePolicy(),
+                    scope.snapshotSelection()),
                 task));
         planned++;
         tablesPlanned++;
@@ -280,7 +282,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
             "standalone planner result submission was rejected",
             new IllegalStateException("planner result submission rejected"));
       }
-      return ExecutionResult.success(
+      return ExecutionResult.successHandled(
           tablesPlanned, 0, viewsPlanned, 0, 0, 0, 0, "Planned " + planned + " reconcile jobs");
     } catch (Exception e) {
       Exception classified =
@@ -323,6 +325,10 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   private static Exception classifyPlannerFailure(Exception error) {
     if (error instanceof ReconcileFailureException) {
       return error;
+    }
+    Exception normalized = ReconcileFailureClassifier.normalize(error);
+    if (normalized instanceof ReconcileFailureException) {
+      return normalized;
     }
     if (hasAwsCredentialsUnavailable(error)) {
       return new ReconcileFailureException(

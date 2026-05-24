@@ -52,6 +52,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.plannedFilePaths(),
                 payload.statsColumns(),
                 payload.indexColumns(),
+                FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
                 FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
                 payload.capturePageIndex(),
                 reconcileWorkerAuthProvider.authorizationHeader()));

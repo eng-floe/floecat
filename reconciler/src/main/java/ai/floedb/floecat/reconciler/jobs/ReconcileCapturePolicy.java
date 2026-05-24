@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -23,6 +26,12 @@ import java.util.Set;
 
 /** Output and column policy for reconcile-time capture execution. */
 public final class ReconcileCapturePolicy {
+  public enum DefaultColumnScope {
+    FIRST_N,
+    ALL,
+    EXPLICIT_ONLY
+  }
+
   public enum Output {
     TABLE_STATS,
     FILE_STATS,
@@ -40,13 +49,23 @@ public final class ReconcileCapturePolicy {
     }
   }
 
+  public static final int DEFAULT_MAX_COLUMNS = 32;
+
   private static final ReconcileCapturePolicy EMPTY =
-      new ReconcileCapturePolicy(List.of(), Set.of());
+      new ReconcileCapturePolicy(
+          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
 
   private final List<Column> columns;
   private final Set<Output> outputs;
+  private final DefaultColumnScope defaultColumnScope;
+  private final int maxDefaultColumns;
 
-  private ReconcileCapturePolicy(List<Column> columns, Set<Output> outputs) {
+  @JsonCreator
+  private ReconcileCapturePolicy(
+      @JsonProperty("columns") List<Column> columns,
+      @JsonProperty("outputs") Set<Output> outputs,
+      @JsonProperty("defaultColumnScope") DefaultColumnScope defaultColumnScope,
+      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns) {
     this.columns =
         columns == null
             ? List.of()
@@ -59,6 +78,12 @@ public final class ReconcileCapturePolicy {
                 .distinct()
                 .toList();
     this.outputs = outputs == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(outputs));
+    this.defaultColumnScope =
+        defaultColumnScope == null ? DefaultColumnScope.FIRST_N : defaultColumnScope;
+    this.maxDefaultColumns =
+        maxDefaultColumns == null || maxDefaultColumns <= 0
+            ? DEFAULT_MAX_COLUMNS
+            : maxDefaultColumns;
   }
 
   public static ReconcileCapturePolicy empty() {
@@ -66,20 +91,41 @@ public final class ReconcileCapturePolicy {
   }
 
   public static ReconcileCapturePolicy of(List<Column> columns, Set<Output> outputs) {
+    return of(columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
+  }
+
+  public static ReconcileCapturePolicy of(
+      List<Column> columns,
+      Set<Output> outputs,
+      DefaultColumnScope defaultColumnScope,
+      int maxDefaultColumns) {
     if ((columns == null || columns.isEmpty()) && (outputs == null || outputs.isEmpty())) {
       return EMPTY;
     }
-    return new ReconcileCapturePolicy(columns, outputs);
+    return new ReconcileCapturePolicy(columns, outputs, defaultColumnScope, maxDefaultColumns);
   }
 
+  @JsonProperty("columns")
   public List<Column> columns() {
     return columns;
   }
 
+  @JsonProperty("outputs")
   public Set<Output> outputs() {
     return outputs;
   }
 
+  @JsonProperty("defaultColumnScope")
+  public DefaultColumnScope defaultColumnScope() {
+    return defaultColumnScope;
+  }
+
+  @JsonProperty("maxDefaultColumns")
+  public int maxDefaultColumns() {
+    return maxDefaultColumns;
+  }
+
+  @JsonIgnore
   public boolean isEmpty() {
     return columns.isEmpty() && outputs.isEmpty();
   }
@@ -92,6 +138,10 @@ public final class ReconcileCapturePolicy {
 
   public boolean requestsIndexes() {
     return outputs.contains(Output.PARQUET_PAGE_INDEX);
+  }
+
+  public boolean hasExplicitColumns() {
+    return !columns.isEmpty();
   }
 
   public Set<String> selectorsForStats() {

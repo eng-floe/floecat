@@ -50,6 +50,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import com.google.protobuf.Duration;
 import java.io.PrintStream;
@@ -328,6 +329,8 @@ final class StatsCliSupport {
     if (args.isEmpty()) {
       out.println(
           "usage: analyze <tableFQ> [--columns c1,c2,...]"
+              + " [--default-cols first-n|all|explicit-only]"
+              + " [--max-default-cols <n>]"
               + " [--snapshot <id>|--current]"
               + " [--mode metadata-only|metadata-and-capture|capture-only]"
               + " [--capture stats|table-stats|file-stats|column-stats|index,...]"
@@ -339,6 +342,13 @@ final class StatsCliSupport {
     String fq = args.get(0);
     List<String> columns =
         CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+    DefaultColumnScope defaultColumnScope =
+        CliUtils.parseDefaultColumnScope(
+            Quotes.unquote(CliArgs.parseStringFlag(args, "--default-cols", "")));
+    int maxDefaultColumns = CliArgs.parseIntFlag(args, "--max-default-cols", 32);
+    if (maxDefaultColumns <= 0) {
+      throw new IllegalArgumentException("--max-default-cols must be greater than 0");
+    }
     String snapshotToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot", ""));
     String modeToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", ""));
     CaptureMode mode =
@@ -386,7 +396,9 @@ final class StatsCliSupport {
               .addAllColumnSelectors(columns)
               .build());
     }
-    CapturePolicy capturePolicy = CliUtils.buildCapturePolicy(mode, requestedOutputs, columns);
+    CapturePolicy capturePolicy =
+        CliUtils.buildCapturePolicy(
+            mode, requestedOutputs, columns, defaultColumnScope, maxDefaultColumns);
     if (capturePolicy != null) {
       scope.setCapturePolicy(capturePolicy);
     }

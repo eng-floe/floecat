@@ -4,14 +4,19 @@ The interactive shell surfaces most service capabilities directly. Full command 
 
 ```
 Commands:
-account <id>
+account <id|display_name>
+account list
+account get <id|display_name>
+account create <display_name> [--desc <text>]
+account delete <id|display_name>
 catalogs
+catalog use <catalog-name>
 catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
 catalog get <display_name|id>
 catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
 catalog delete <display_name|id> [--require-empty] [--etag <etag>]
 namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
-namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...]
+namespace create <catalog|catalog.ns[.ns...]> [--display <leaf>] [--path a.b[.c]] [--desc <text>] [--props k=v ...] [--policy <id>]
 namespace get <id | catalog.ns[.ns...]>
 namespace update <id|catalog.ns[.ns...]>
     [--display <name>] [--desc <text>]
@@ -24,17 +29,28 @@ table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema 
     [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
 table get <id|catalog.ns[.ns...].table>
 table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>]
-    [--root <uri>] [--schema <json>] [--parts k=v ...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
+    [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
+    [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--etag <etag>]
 table delete <id|fq> [--etag <etag>]
 
-snapshots <catalog.ns[.ns...].table>
-snapshot get <table> <snapshot_id|current>
-snapshot delete <table> <snapshot_id>
+views <catalog.ns[.ns...]>
+view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props k=v ...]
+view get <id|catalog.ns[.ns...].name>
+view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>] [--sql <text>] [--desc <text>] [--props k=v ...]
+view delete <id|fq>
 
-stats table <catalog.ns[.ns...].table> [--snapshot <id|current>]
-stats columns <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+snapshots <catalog.ns[.ns...].table>
+snapshot get <table> <snapshot_id>
+snapshot delete <table> <snapshot_id> [--etag <etag>]
+
+stats table <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json]
+stats columns <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--limit N] [--json]
 stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
 stats index <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
+analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
+    [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
+    [--capture stats|table-stats|file-stats|column-stats|index,...]
+    [--full] [--wait-seconds <n>]
 constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json]
 constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
 constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]
@@ -73,29 +89,37 @@ connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <
     [--dest-ns <a.b[.c]>] [--dest-table <name>]
     [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
     [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-    [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+    [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+    [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
-    [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+    [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+    [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
-    [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+    [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+    [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
-connector trigger <display_name|id> [--full]
+connector trigger <display_name|id> (--full|--incremental)
     --mode metadata-only|metadata-and-capture|capture-only
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
-    [--snapshot <id>|--current] [--columns c1,#id2,...]
+    [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
 connector job <jobId> [--json]
-connector jobs [--connector <id|name>] [--state queued,running,...] [--json]
-connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,running,...] [--json]
+connector jobs [--connector <id|name>] [--state queued,running,...] [--page-size <N>] [--json]
+connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,running,...] [--page-size <N>] [--json]
+connector cancel <jobId> [--reason <text>]
+connector settings get
+connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
 
 storage-authorities
 storage-authority list [--page-size <N>]
@@ -144,9 +168,17 @@ Auth properties (generic options):
 - `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
 - `--auth cache_path=<path>` – optional CLI cache path.
 
+Connector policy examples:
+- `connector create demo-iceberg ICEBERG ... --policy-enabled --policy-mode incremental --policy-current`
+- `connector update demo-iceberg --policy-latest-n 5`
+- `connector update demo-iceberg --policy-all`
+
 Trigger notes:
 - `--mode` is required on `connector trigger`.
 - `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
+  unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,
+  `--snapshot`, or `--all`).
 - Use `--mode metadata-only` when you want a metadata-only reconcile without stats capture.
 
 CLI cache examples:

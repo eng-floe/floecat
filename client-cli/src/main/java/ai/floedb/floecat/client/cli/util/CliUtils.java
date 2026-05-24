@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
+import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
@@ -242,9 +243,26 @@ public final class CliUtils {
     return Set.copyOf(outputs);
   }
 
+  /** Parses a default column scope token for trigger-time capture policy defaults. */
+  public static DefaultColumnScope parseDefaultColumnScope(String s) {
+    if (s == null || s.isBlank()) {
+      return DefaultColumnScope.DCS_FIRST_N;
+    }
+    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+      case "FIRST_N", "DCS_FIRST_N" -> DefaultColumnScope.DCS_FIRST_N;
+      case "ALL", "DCS_ALL" -> DefaultColumnScope.DCS_ALL;
+      case "EXPLICIT_ONLY", "DCS_EXPLICIT_ONLY" -> DefaultColumnScope.DCS_EXPLICIT_ONLY;
+      default -> throw new IllegalArgumentException("invalid default column scope: " + s);
+    };
+  }
+
   /** Builds a capture policy from explicit outputs. */
   public static CapturePolicy buildCapturePolicy(
-      CaptureMode mode, Set<CaptureOutput> requestedOutputs, List<String> columns) {
+      CaptureMode mode,
+      Set<CaptureOutput> requestedOutputs,
+      List<String> columns,
+      DefaultColumnScope defaultColumnScope,
+      int maxDefaultColumns) {
     if (mode == CaptureMode.CM_METADATA_ONLY) {
       return null;
     }
@@ -253,7 +271,12 @@ public final class CliUtils {
     if (outputs.isEmpty()) {
       throw new IllegalArgumentException("--capture is required for capture modes");
     }
-    CapturePolicy.Builder policy = CapturePolicy.newBuilder().addAllOutputs(outputs);
+    CapturePolicy.Builder policy =
+        CapturePolicy.newBuilder()
+            .addAllOutputs(outputs)
+            .setDefaultColumnScope(
+                defaultColumnScope == null ? DefaultColumnScope.DCS_FIRST_N : defaultColumnScope)
+            .setMaxDefaultColumns(maxDefaultColumns <= 0 ? 32 : maxDefaultColumns);
     for (String column : columns == null ? List.<String>of() : columns) {
       if (column == null || column.isBlank()) {
         continue;

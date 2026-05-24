@@ -128,10 +128,28 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **View reconciliation semantics**: reconcile is current-state, not history-preserving. When an
   upstream view already exists in Floecat, reconcile updates the stored canonical definition in
   place rather than appending a backend version history.
-- **Job leasing**: `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
-  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort
-  interval. Failed jobs are retried with backoff up to configured attempt limits before terminal
-  failure.
+- **Durable queue ownership model**: `DurableReconcileJobStore` is split into explicit state
+  domains with native durable-store boundaries:
+  - canonical job state owns the job-index domain transactionally (`lookup`, `state`, `dedupe`,
+    parent, connector, and related canonical indexes)
+  - ready-queue state is a separate due-ordered domain used for leasing eligibility and queue
+    slicing
+  - lease coordination owns runtime worker-ownership state separately (`lease`, `lease-expiry`,
+    lane lease, snapshot lease)
+  - projection/payload-reference state owns contribution rollups and file-group result references
+- **Job leasing**: workers lease from persisted ready pointers, mark jobs
+  running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
+  configured interval. Failed jobs are retried with backoff up to configured attempt limits before
+  terminal failure.
+- **No queue self-healing**: read paths, lease scans, and maintenance do not rebuild missing or
+  stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
+  job-state transitions update them together. Lease maintenance reclaims expired leases, but it does
+  not repair unrelated queue state.
+- **Backend shape**:
+  - in `floecat.kv=dynamodb`, the durable store hot paths use native Dynamo-style partition/sort-key
+    layouts for job indexes, ready slices, and lease rows/expiry scans
+  - in `floecat.kv=memory`, the same domain model is preserved, but the physical implementation is
+    in-memory rather than a literal Dynamo simulator
 
 ### gRPC auth
 - Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
@@ -219,14 +237,16 @@ within the same instance while continuing to repoll until worker slots are full.
 
 ## Examples & Scenarios
 - **Full metadata rescan**: operator triggers
-  `connector trigger demo-glue --full --mode metadata-only`. The job store enqueues a
+  `connector trigger demo-glue --full --all --mode metadata-only`. The job store enqueues a
   full `PLAN_CONNECTOR` job, the worker poller leases it, and the reconciler walks connector
   discovery and metadata planning across the full upstream history.
 - **Incremental capture run**: operator triggers
-  `connector trigger demo-glue --mode metadata-and-capture --capture stats`. The reconcile path
+  `connector trigger demo-glue --incremental --current --mode metadata-and-capture --capture stats`.
+  The reconcile path
   captures table/file/column stats for matching table work while still allowing metadata mutation.
-- **Incremental run**: without `--full`, `ReconcilerService` restricts its work to the connector's
-  configured `source.table` (if set) and only processes newly discovered snapshots.
+- **Incremental run**: `--incremental` restricts work to snapshots not already ingested, and the
+  explicit snapshot scope (`--current`, `--latest-n`, `--snapshot`, or `--all`) controls which
+  upstream snapshots are eligible for planning.
 
 ## Cross-References
 - Connector SPI details: [`docs/connectors-spi.md`](connectors-spi.md)

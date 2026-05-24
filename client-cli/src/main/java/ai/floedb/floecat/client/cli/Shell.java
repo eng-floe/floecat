@@ -47,6 +47,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringTokenizer;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -477,6 +478,7 @@ public class Shell implements Runnable {
          account create <display_name> [--desc <text>]
          account delete <id> (or omit id to use current account)
          catalogs
+         catalog use <catalog-name>
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
          catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
@@ -511,7 +513,7 @@ public class Shell implements Runnable {
          describe table <fq>
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
-         snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
+         snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
@@ -529,15 +531,17 @@ public class Shell implements Runnable {
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         analyze <tableFQ> [--columns c1,c2,...] [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
+         analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
+             [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # Defaults to --mode capture-only --capture stats.
+             # Defaults to --mode capture-only --capture stats --default-cols first-n --max-default-cols 32.
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          query renew <query_id> [--ttl <seconds>]
          query end <query_id> [--commit|--abort]
          query get <query_id>
+         query fetch-scan <query_id> <table_id>
          connectors
          connector list [--kind <KIND>] [--page-size <N>]
          connector get <display_name|id>
@@ -545,27 +549,36 @@ public class Shell implements Runnable {
              [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-ns <a.b[.c]>] [--dest-table <name>]
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
-             [--head k=v ...]
-             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
+             [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+             [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
-             [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
+             [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+             [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
+             [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+             [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
-             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
-             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
+             [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
+             [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
+             [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
-         connector trigger <display_name|id> [--full]
+         connector trigger <display_name|id> (--full|--incremental)
              [--mode metadata-only|metadata-and-capture|capture-only]
              [--capture stats|table-stats|file-stats|column-stats|index,...]
              # --mode is required. --capture is required for capture modes.
-             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--snapshot <id>|--current] [--columns c1,#id2,...]
-         connector job <jobId>
-         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
+             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
+             [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
+             [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
+             # Defaults to --default-cols first-n --max-default-cols 32 when --columns is not set.
+         connector job <jobId> [--json]
+         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
+         connector jobs --child <parentJobId> [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
@@ -645,11 +658,18 @@ public class Shell implements Runnable {
   }
 
   private void configureGrpcChannel() {
-    if (grpcHost == null && grpcPort == null) {
+    GrpcEndpointOverride endpointOverride =
+        resolveGrpcEndpointOverride(
+            grpcHost,
+            grpcPort,
+            System.getenv("FLOECAT_GRPC_HOST"),
+            System.getenv("FLOECAT_GRPC_PORT"),
+            System.getProperty("sun.java.command", ""));
+    if (endpointOverride == null) {
       return;
     }
-    String host = grpcHost == null || grpcHost.isBlank() ? "localhost" : grpcHost.trim();
-    int port = grpcPort == null ? 9100 : grpcPort;
+    String host = endpointOverride.host();
+    int port = endpointOverride.port();
     overrideChannel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
     catalogs = CatalogServiceGrpc.newBlockingStub(overrideChannel);
     namespaces = NamespaceServiceGrpc.newBlockingStub(overrideChannel);
@@ -667,6 +687,85 @@ public class Shell implements Runnable {
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
   }
+
+  static GrpcEndpointOverride resolveGrpcEndpointOverride(
+      String optionHost, Integer optionPort, String envHost, String envPort, String launchCommand) {
+    String host = firstNonBlank(optionHost, launchArgValue(launchCommand, "--host"), envHost);
+    Integer port =
+        firstNonNull(
+            optionPort, parsePort(launchArgValue(launchCommand, "--port")), parsePort(envPort));
+    if (host == null && port == null) {
+      return null;
+    }
+    return new GrpcEndpointOverride(host == null ? "localhost" : host, port == null ? 9100 : port);
+  }
+
+  static String launchArgValue(String launchCommand, String optionName) {
+    if (launchCommand == null
+        || launchCommand.isBlank()
+        || optionName == null
+        || optionName.isBlank()) {
+      return null;
+    }
+    List<String> tokens = tokenizeLaunchCommand(launchCommand);
+    for (int i = 0; i < tokens.size(); i++) {
+      String token = tokens.get(i);
+      if (optionName.equals(token)) {
+        if (i + 1 < tokens.size()) {
+          return blankToNull(tokens.get(i + 1));
+        }
+        return null;
+      }
+      String prefix = optionName + "=";
+      if (token.startsWith(prefix)) {
+        return blankToNull(token.substring(prefix.length()));
+      }
+    }
+    return null;
+  }
+
+  static List<String> tokenizeLaunchCommand(String launchCommand) {
+    List<String> tokens = new ArrayList<>();
+    if (launchCommand == null || launchCommand.isBlank()) {
+      return tokens;
+    }
+    StringTokenizer tokenizer = new StringTokenizer(launchCommand);
+    while (tokenizer.hasMoreTokens()) {
+      tokens.add(tokenizer.nextToken());
+    }
+    return tokens;
+  }
+
+  private static String firstNonBlank(String... values) {
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private static Integer firstNonNull(Integer... values) {
+    for (Integer value : values) {
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private static Integer parsePort(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    return Integer.parseInt(value.trim());
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
+  }
+
+  record GrpcEndpointOverride(String host, int port) {}
 
   private void initAuthConfig() {
     if (authToken == null || authToken.isBlank()) {

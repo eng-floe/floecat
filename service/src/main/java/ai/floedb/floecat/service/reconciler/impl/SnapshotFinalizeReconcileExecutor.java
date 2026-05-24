@@ -23,12 +23,14 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -50,6 +52,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   @Override
   public String id() {
@@ -115,6 +118,39 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
+    if (coverage.state() == PlannedCoverageState.DIRECT_STATS) {
+      try {
+        long statsProcessed =
+            requestsStatsOutputs
+                ? ingestDirectStats(snapshotTask)
+                : snapshotTask.directStatsRecordCount();
+        return ExecutionResult.success(
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            statsProcessed,
+            "Finalized snapshot capture " + snapshotTask.snapshotId() + " from direct stats");
+      } catch (IllegalStateException e) {
+        return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, e.getMessage(), e);
+      } catch (RuntimeException e) {
+        return ExecutionResult.failure(
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            "Direct stats blob ingest failed for snapshot "
+                + snapshotTask.snapshotId()
+                + ": "
+                + e.getMessage(),
+            e);
+      }
+    }
     if (coverage.state() == PlannedCoverageState.EXPLICIT_EMPTY) {
       List<String> unexpectedChildren =
           fileGroupChildDescriptions(lease.accountId, parentJobId, lease.jobId);
@@ -249,6 +285,23 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no stats outputs)");
     }
+    try {
+      ingestFileGroupStatsBlobs(childState.completedGroupTasks());
+    } catch (RuntimeException e) {
+      return ExecutionResult.failure(
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          "File-group stats blob ingest failed for snapshot "
+              + snapshotTask.snapshotId()
+              + ": "
+              + e.getMessage(),
+          e);
+    }
 
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -319,7 +372,12 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             .setKind(ResourceKind.RK_TABLE)
             .setId(snapshotTask.tableId())
             .build();
-    statsStore.putTargetStats(
+    if (statsStore
+        .getTargetStats(tableId, snapshotTask.snapshotId(), StatsTargetIdentity.tableTarget())
+        .isPresent()) {
+      return 0L;
+    }
+    TargetStatsRecord zeroMarker =
         TargetStatsRecords.tableRecord(
             tableId,
             snapshotTask.snapshotId(),
@@ -328,8 +386,20 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 .setDataFileCount(0L)
                 .setTotalSizeBytes(0L)
                 .build(),
-            null));
-    return 1L;
+            null);
+    if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
+      return 1L;
+    }
+    if (statsStore
+        .getTargetStats(tableId, snapshotTask.snapshotId(), StatsTargetIdentity.tableTarget())
+        .isPresent()) {
+      return 0L;
+    }
+    throw new IllegalStateException(
+        "snapshot finalization failed to persist empty completion marker for table "
+            + snapshotTask.tableId()
+            + " snapshot "
+            + snapshotTask.snapshotId());
   }
 
   private ChildState childState(
@@ -338,17 +408,27 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String finalizerJobId,
       List<ReconcileFileGroupTask> expectedGroups) {
     if (parentJobId == null || parentJobId.isBlank()) {
-      return new ChildState(0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+      return new ChildState(
+          0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
     HashMap<String, ReconcileJobStore.ReconcileJob> childByGroupKey = new HashMap<>();
     LinkedHashSet<String> duplicateGroups = new LinkedHashSet<>();
-    for (ReconcileJobStore.ReconcileJob child : jobs.childJobs(accountId, parentJobId)) {
+    for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
       if (child == null
           || child.jobId == null
           || child.jobId.equals(finalizerJobId)
           || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
         continue;
       }
+      LOG.debugf(
+          "finalizer child readback childJobId=%s state=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d",
+          child.jobId,
+          child.state,
+          child.fileGroupTask == null ? "" : child.fileGroupTask.planId(),
+          child.fileGroupTask == null ? "" : child.fileGroupTask.groupId(),
+          child.fileGroupTask == null ? "" : child.fileGroupTask.tableId(),
+          child.fileGroupTask == null ? -1L : child.fileGroupTask.snapshotId(),
+          child.fileGroupTask == null ? 0 : child.fileGroupTask.fileCount());
       String groupKey = groupKey(child.fileGroupTask);
       if (groupKey.isBlank()) {
         duplicateGroups.add("unkeyed-child:" + child.jobId);
@@ -360,6 +440,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     int completedGroups = 0;
+    List<ReconcileFileGroupTask> completedGroupTasks = new ArrayList<>();
     LinkedHashSet<String> pendingGroups = new LinkedHashSet<>();
     LinkedHashSet<String> failedGroups = new LinkedHashSet<>();
     LinkedHashSet<String> cancelledGroups = new LinkedHashSet<>();
@@ -380,6 +461,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       if ("JS_SUCCEEDED".equals(child.state)) {
         if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
           completedGroups++;
+          completedGroupTasks.add(child.fileGroupTask);
         } else {
           invalidSucceededGroups.add(description);
         }
@@ -399,7 +481,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(cancelledGroups),
         List.copyOf(duplicateGroups),
         List.copyOf(missingGroups),
-        List.copyOf(invalidSucceededGroups));
+        List.copyOf(invalidSucceededGroups),
+        List.copyOf(completedGroupTasks));
   }
 
   private List<String> fileGroupChildDescriptions(
@@ -408,7 +491,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return List.of();
     }
     LinkedHashSet<String> childDescriptions = new LinkedHashSet<>();
-    for (ReconcileJobStore.ReconcileJob child : jobs.childJobs(accountId, parentJobId)) {
+    for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
       if (child == null
           || child.jobId == null
           || child.jobId.equals(finalizerJobId)
@@ -435,6 +518,24 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     return List.copyOf(out);
   }
 
+  private List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
+    }
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
   private ExpectedCoverage expectedCoverage(ReconcileSnapshotTask snapshotTask) {
     snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     if (!snapshotTask.fileGroupPlanRecorded()) {
@@ -444,17 +545,20 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           List.of(),
           "snapshot finalization requires explicit snapshot coverage metadata");
     }
+    if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
+      return new ExpectedCoverage(PlannedCoverageState.DIRECT_STATS, List.of(), List.of(), "");
+    }
+    List<ReconcileFileGroupTask> plannedGroups =
+        snapshotTask.fileGroups() == null ? List.of() : snapshotTask.fileGroups();
     LinkedHashSet<String> expectedFiles = new LinkedHashSet<>();
-    for (ReconcileFileGroupTask fileGroup : snapshotTask.fileGroups()) {
+    for (ReconcileFileGroupTask fileGroup : plannedGroups) {
       if (fileGroup == null) {
         continue;
       }
       expectedFiles.addAll(fileGroup.filePaths());
     }
     List<ReconcileFileGroupTask> expectedGroups =
-        snapshotTask.fileGroups().stream()
-            .filter(group -> group != null && !group.isEmpty())
-            .toList();
+        plannedGroups.stream().filter(group -> group != null && !group.isEmpty()).toList();
     if (expectedGroups.isEmpty()) {
       return new ExpectedCoverage(
           PlannedCoverageState.EXPLICIT_EMPTY, List.of(), List.copyOf(expectedFiles), "");
@@ -464,6 +568,51 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(expectedGroups),
         List.copyOf(expectedFiles),
         "");
+  }
+
+  private long ingestDirectStats(ReconcileSnapshotTask snapshotTask) {
+    List<TargetStatsRecord> records = snapshotPlanBlobStore.loadDirectStats(snapshotTask);
+    if (snapshotTask.directStatsRecordCount() > 0
+        && records.size() != snapshotTask.directStatsRecordCount()) {
+      throw new IllegalStateException(
+          "Direct stats blob record count mismatch expected="
+              + snapshotTask.directStatsRecordCount()
+              + " actual="
+              + records.size());
+    }
+    long processed = 0L;
+    for (TargetStatsRecord record : records) {
+      statsStore.putTargetStats(record);
+      processed++;
+    }
+    return processed;
+  }
+
+  private long ingestFileGroupStatsBlobs(List<ReconcileFileGroupTask> completedGroups) {
+    long processed = 0L;
+    List<ReconcileFileGroupTask> groups =
+        completedGroups == null ? List.<ReconcileFileGroupTask>of() : completedGroups;
+    for (ReconcileFileGroupTask group : groups) {
+      if (group == null || group.fileStatsBlobUri().isBlank()) {
+        continue;
+      }
+      List<TargetStatsRecord> records =
+          snapshotPlanBlobStore.loadFileGroupStats(group.fileStatsBlobUri());
+      if (group.fileStatsRecordCount() > 0 && records.size() != group.fileStatsRecordCount()) {
+        throw new IllegalStateException(
+            "File-group stats blob record count mismatch expected="
+                + group.fileStatsRecordCount()
+                + " actual="
+                + records.size()
+                + " group="
+                + describeGroup(group));
+      }
+      for (TargetStatsRecord record : records) {
+        statsStore.putTargetStats(record);
+        processed++;
+      }
+    }
+    return processed;
   }
 
   private CoverageValidation validateCoverage(
@@ -615,10 +764,12 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       List<String> cancelledGroups,
       List<String> duplicateGroups,
       List<String> missingGroups,
-      List<String> invalidSucceededGroups) {}
+      List<String> invalidSucceededGroups,
+      List<ReconcileFileGroupTask> completedGroupTasks) {}
 
   private enum PlannedCoverageState {
     UNKNOWN,
+    DIRECT_STATS,
     EXPLICIT_EMPTY,
     NON_EMPTY
   }

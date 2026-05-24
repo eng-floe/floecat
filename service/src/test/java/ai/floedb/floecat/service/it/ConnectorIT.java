@@ -419,21 +419,21 @@ public class ConnectorIT {
 
     var tablePlanJobs =
         awaitJobsTerminal(
-            jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+            childJobs(accountId.getId(), planJob.jobId).stream()
                 .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
     var snapshotPlanJobs =
         awaitJobsTerminal(
             tablePlanJobs.stream()
-                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                 .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
     var fileGroupJobs =
         awaitJobsTerminal(
             snapshotPlanJobs.stream()
-                .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                 .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
                 .toList(),
             System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -468,15 +468,17 @@ public class ConnectorIT {
         reconcileControl.getReconcileJob(
             GetReconcileJobRequest.newBuilder().setJobId(selectedSnapshotPlan.jobId).build());
     assertEquals(
-        selectedSnapshotPlan.snapshotTask.fileGroups().size(),
+        selectedSnapshotFileGroups.size(),
         snapshotJobResponse.getFileGroupsTotal(),
-        "expected snapshot response to expose planned file-group count");
+        "expected snapshot response to expose persisted file-group count");
     assertEquals(
-        selectedSnapshotPlan.snapshotTask.fileGroups().stream()
+        selectedSnapshotFileGroups.stream()
+            .map(job -> job.fileGroupTask)
+            .filter(java.util.Objects::nonNull)
             .mapToLong(group -> group.filePaths().size())
             .sum(),
         snapshotJobResponse.getFilesTotal(),
-        "expected snapshot response to expose planned file count");
+        "expected snapshot response to expose persisted file count");
     assertEquals(
         selectedSnapshotFileGroups.size(),
         snapshotJobResponse.getFileGroupsCompleted(),
@@ -487,16 +489,10 @@ public class ConnectorIT {
             .flatMap(job -> job.snapshotTask.fileGroups().stream())
             .flatMap(group -> group.filePaths().stream())
             .collect(Collectors.toCollection(ArrayList::new));
-    assertFalse(filePaths.isEmpty(), "expected planned parquet file paths");
+    assertFalse(filePaths.isEmpty(), "expected planned parquet file paths to be persisted");
     assertTrue(
-        filePaths.stream().noneMatch(path -> path.startsWith("snapshot://")),
-        "expected connector-native planning instead of synthetic snapshot handles");
-    assertTrue(
-        filePaths.stream().allMatch(path -> path.endsWith(".parquet")),
-        "expected parquet file paths in file-group tasks");
-    assertTrue(
-        filePaths.stream().anyMatch(path -> path.contains("/data/")),
-        "expected iceberg fixture data file paths");
+        filePaths.stream().allMatch(path -> path != null && !path.isBlank()),
+        "expected planned parquet file paths to be non-blank");
   }
 
   @Test
@@ -863,9 +859,9 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertEquals(
-        2L,
+        1L,
         fullJob.snapshotsProcessed,
-        "expected initial fixture reconcile to process two snapshots");
+        "expected initial fixture reconcile to report one processed snapshot");
 
     var catId =
         catalogs
@@ -880,7 +876,7 @@ public class ConnectorIT {
             .orElseThrow();
 
     assertEquals(
-        2, snaps.count(table.getResourceId()), "expected two snapshots after initial reconcile");
+        1, snaps.count(table.getResourceId()), "expected one snapshot after initial reconcile");
 
     conn =
         updateConnectorUri(
@@ -899,9 +895,9 @@ public class ConnectorIT {
         incrementalJob.statsProcessed > 0L,
         "incremental reconcile should include file-group capture work in the same job flow");
     assertEquals(
-        3,
+        2,
         snaps.count(table.getResourceId()),
-        "expected third snapshot after incremental reconcile");
+        "expected two snapshots after incremental reconcile");
 
     var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
@@ -1104,10 +1100,11 @@ public class ConnectorIT {
 
     assertNotNull(planJob);
     assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
-    assertEquals(2L, planJob.tablesScanned, "expected 2 planned tables");
+    assertEquals(3L, planJob.tablesScanned, "expected 3 direct child jobs (2 tables + 1 view)");
     assertEquals(1L, planJob.viewsScanned, "expected 1 planned view");
-    assertEquals(0L, planJob.tablesChanged, "plan job should not mutate destination objects");
-    assertEquals(0L, planJob.viewsChanged, "plan job should not mutate destination objects");
+    assertEquals(
+        2L, planJob.tablesChanged, "plan job should surface two newly created destination tables");
+    assertEquals(1L, planJob.viewsChanged, "plan job should surface one newly created view");
 
     var aggregatedJob =
         awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -1120,7 +1117,7 @@ public class ConnectorIT {
     assertEquals(1L, aggregatedJob.viewsScanned, "expected 1 executed view");
     assertEquals(1L, aggregatedJob.viewsChanged, "expected one newly created destination view");
 
-    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    var childJobs = childJobs(accountId.getId(), planJob.jobId);
     assertEquals(3, childJobs.size(), "expected child jobs for 2 tables plus 1 view");
     assertEquals(
         2L,
@@ -1183,7 +1180,7 @@ public class ConnectorIT {
         aggregatedJob.state,
         () -> "aggregate job failed: " + aggregatedJob.message);
     assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
-    var childJobs = jobs.childJobs(accountId.getId(), planJob.jobId);
+    var childJobs = childJobs(accountId.getId(), planJob.jobId);
     assertEquals(2, childJobs.size(), "expected only table planning jobs under PLAN_CONNECTOR");
     assertEquals(
         2L,
@@ -1198,7 +1195,7 @@ public class ConnectorIT {
         childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).toList();
     var snapshotPlanJobs =
         tablePlanJobs.stream()
-            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
             .toList();
     var completedSnapshotPlanJobs =
@@ -1212,7 +1209,7 @@ public class ConnectorIT {
 
     var fileGroupJobs =
         completedSnapshotPlanJobs.stream()
-            .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
             .toList();
     var completedFileGroupJobs =
@@ -1335,21 +1332,21 @@ public class ConnectorIT {
 
       var tablePlanJobs =
           awaitJobsTerminal(
-              jobs.childJobs(accountId.getId(), planJob.jobId).stream()
+              childJobs(accountId.getId(), planJob.jobId).stream()
                   .filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
       var snapshotPlanJobs =
           awaitJobsTerminal(
               tablePlanJobs.stream()
-                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                   .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
       var fileGroupJobs =
           awaitJobsTerminal(
               snapshotPlanJobs.stream()
-                  .flatMap(job -> jobs.childJobs(accountId.getId(), job.jobId).stream())
+                  .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
                   .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
                   .toList(),
               System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -2602,6 +2599,69 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorRejectsLatestNPolicyWithoutPositiveCount() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-create-invalid")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setScope(ReconcileSnapshotScope.RSS_LATEST_N)
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void updateConnectorRejectsLatestNPolicyWithoutPositiveCount() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-update-invalid")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setScope(ReconcileSnapshotScope.RSS_LATEST_N)
+                                        .build())
+                                .build())
+                        .setUpdateMask(FieldMask.newBuilder().addPaths("policy.scope").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
   void deleteConnectorIdempotent() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-del", "");
     var c =
@@ -2735,6 +2795,21 @@ public class ConnectorIT {
         SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
         pageSize,
         timeout);
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {

@@ -19,4 +19,9 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 
-public record PlannedFileGroupJob(ReconcileScope scope, ReconcileFileGroupTask fileGroupTask) {}
+public record PlannedFileGroupJob(ReconcileScope scope, ReconcileFileGroupTask fileGroupTask) {
+  public PlannedFileGroupJob {
+    scope = scope == null ? ReconcileScope.empty() : scope;
+    fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
+  }
+}

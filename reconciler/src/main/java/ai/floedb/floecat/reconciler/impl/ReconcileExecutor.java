@@ -140,6 +140,7 @@ public interface ReconcileExecutor {
     public final RetryClass retryClass;
     public final String message;
     public final Exception error;
+    public final boolean completionHandled;
 
     private ExecutionResult(
         long tablesScanned,
@@ -155,7 +156,8 @@ public interface ReconcileExecutor {
         RetryDisposition retryDisposition,
         RetryClass retryClass,
         String message,
-        Exception error) {
+        Exception error,
+        boolean completionHandled) {
       this.tablesScanned = tablesScanned;
       this.tablesChanged = tablesChanged;
       this.viewsScanned = viewsScanned;
@@ -173,6 +175,7 @@ public interface ReconcileExecutor {
       this.retryClass = retryClass == null ? RetryClass.NONE : retryClass;
       this.message = message == null ? "" : message;
       this.error = error;
+      this.completionHandled = completionHandled;
     }
 
     public static ExecutionResult success(
@@ -209,7 +212,35 @@ public interface ReconcileExecutor {
           RetryDisposition.RETRYABLE,
           RetryClass.NONE,
           message,
-          null);
+          null,
+          false);
+    }
+
+    public static ExecutionResult successHandled(
+        long tablesScanned,
+        long tablesChanged,
+        long viewsScanned,
+        long viewsChanged,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message) {
+      return new ExecutionResult(
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          false,
+          JobOutcome.SUCCESS,
+          FailureKind.NONE,
+          RetryDisposition.RETRYABLE,
+          RetryClass.NONE,
+          message,
+          null,
+          true);
     }
 
     public static ExecutionResult cancelled(
@@ -246,7 +277,8 @@ public interface ReconcileExecutor {
           RetryDisposition.RETRYABLE,
           RetryClass.NONE,
           message,
-          null);
+          null,
+          false);
     }
 
     public static ExecutionResult failure(
@@ -293,7 +325,8 @@ public interface ReconcileExecutor {
           RetryDisposition.RETRYABLE,
           RetryClass.TRANSIENT_ERROR,
           message,
-          error);
+          error,
+          false);
     }
 
     public static ExecutionResult failure(
@@ -427,7 +460,8 @@ public interface ReconcileExecutor {
           retryDisposition,
           retryClass,
           message,
-          error);
+          error,
+          false);
     }
 
     public static ExecutionResult dependencyNotReady(
@@ -548,7 +582,8 @@ public interface ReconcileExecutor {
           RetryDisposition.TERMINAL,
           RetryClass.NONE,
           message,
-          error);
+          error,
+          false);
     }
 
     public static ExecutionResult obsolete(
@@ -576,7 +611,8 @@ public interface ReconcileExecutor {
           RetryDisposition.RETRYABLE,
           RetryClass.NONE,
           message,
-          error);
+          error,
+          false);
     }
 
     public boolean success() {

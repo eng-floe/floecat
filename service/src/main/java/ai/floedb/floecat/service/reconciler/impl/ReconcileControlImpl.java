@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -50,6 +51,7 @@ import ai.floedb.floecat.reconciler.rpc.JobState;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControl;
+import ai.floedb.floecat.reconciler.rpc.SnapshotSelection;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -75,6 +77,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -250,11 +253,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                         correlationId,
                                         GeneratedErrorMessages.MessageKey.JOB,
                                         Map.of("id", request.getJobId())));
-                    job = aggregateIfPlanJob(principalContext.getAccountId(), job);
+                    job = aggregateIfPlanJob(job);
 
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB, "get_reconcile_job", "success", null);
-                    return toResponse(principalContext.getAccountId(), job);
+                    return toResponse(principalContext.getAccountId(), job, true);
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB,
@@ -305,8 +308,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     for (var job : page.jobs) {
                       builder.addJobs(
                           toResponse(
-                              principalContext.getAccountId(),
-                              aggregateIfPlanJob(principalContext.getAccountId(), job)));
+                              principalContext.getAccountId(), aggregateIfPlanJob(job), false));
                     }
                     builder.setPage(
                         PageResponse.newBuilder()
@@ -355,7 +357,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                           corr,
                                           GeneratedErrorMessages.MessageKey.JOB,
                                           Map.of("id", request.getJobId())));
-                      var effective = aggregateIfPlanJob(principalContext.getAccountId(), existing);
+                      var effective = aggregateIfPlanJob(existing);
                       if (!canCancelViaActiveChildren(existing, effective)) {
                         throw GrpcErrors.notFound(
                             corr,
@@ -367,7 +369,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                       cancelledViaActiveChildren = true;
                       cancelled =
                           jobs.get(principalContext.getAccountId(), request.getJobId())
-                              .map(job -> aggregateIfPlanJob(principalContext.getAccountId(), job))
+                              .map(this::aggregateIfPlanJob)
                               .or(() -> Optional.of(effective));
                     }
                     var cancelledJob = cancelled.get();
@@ -377,12 +379,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     }
                     cancelled =
                         jobs.get(principalContext.getAccountId(), request.getJobId())
-                            .map(job -> aggregateIfPlanJob(principalContext.getAccountId(), job))
-                            .or(
-                                () ->
-                                    Optional.of(
-                                        aggregateIfPlanJob(
-                                            principalContext.getAccountId(), cancelledJob)));
+                            .map(this::aggregateIfPlanJob)
+                            .or(() -> Optional.of(aggregateIfPlanJob(cancelledJob)));
                     if ("JS_CANCELLING".equals(cancelled.get().state)) {
                       cancellations.requestCancel(cancelled.get().jobId);
                     }
@@ -395,7 +393,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         .setCancelled(
                             "JS_CANCELLED".equals(cancelled.get().state)
                                 || "JS_CANCELLING".equals(cancelled.get().state))
-                        .setJob(toResponse(principalContext.getAccountId(), cancelled.get()))
+                        .setJob(toResponse(principalContext.getAccountId(), cancelled.get(), true))
                         .build();
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
@@ -606,8 +604,29 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     .toList(),
                 scope.getCapturePolicy().getOutputsList().stream()
                     .map(ReconcileControlImpl::mapCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()))
-            : ReconcileCapturePolicy.empty());
+                    .collect(java.util.stream.Collectors.toSet()),
+                fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
+                scope.getCapturePolicy().getMaxDefaultColumns())
+            : ReconcileCapturePolicy.empty(),
+        scope.hasSnapshotSelection()
+            ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
+            : ReconcileSnapshotSelection.current());
+  }
+
+  private static ReconcileSnapshotSelection fromProtoSnapshotSelection(
+      SnapshotSelection selection) {
+    if (selection == null) {
+      return ReconcileSnapshotSelection.unspecified();
+    }
+    return switch (selection.getKind()) {
+      case SSK_CURRENT -> ReconcileSnapshotSelection.current();
+      case SSK_LATEST_N -> ReconcileSnapshotSelection.latestN(selection.getLatestN());
+      case SSK_EXPLICIT ->
+          ReconcileSnapshotSelection.explicit(
+              selection.getSnapshotIdsList().stream().map(Long::valueOf).toList());
+      case SSK_ALL -> ReconcileSnapshotSelection.all();
+      case SSK_UNSPECIFIED, UNRECOGNIZED -> ReconcileSnapshotSelection.unspecified();
+    };
   }
 
   private static ReconcileCapturePolicy.Output mapCaptureOutput(
@@ -619,6 +638,16 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
       case CO_UNSPECIFIED, UNRECOGNIZED ->
           throw new IllegalArgumentException("capture output is required");
+    };
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
+      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+    return switch (scope) {
+      case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+      case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
     };
   }
 
@@ -745,7 +774,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                   () ->
                       GrpcErrors.notFound(
                           corr, GeneratedErrorMessages.MessageKey.JOB, Map.of("id", jobId)));
-      var effectiveJob = aggregateIfPlanJob(accountId, job);
+      var effectiveJob = aggregateIfPlanJob(job);
       switch (effectiveJob.state) {
         case "JS_SUCCEEDED" -> {
           return effectiveJob;
@@ -812,11 +841,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     boolean cancelledViaActiveChildren = false;
     if (cancelled.isEmpty()) {
       var existing = jobs.get(accountId, jobId).orElse(null);
-      var effective = aggregateIfPlanJob(accountId, existing);
+      var effective = aggregateIfPlanJob(existing);
       if (canCancelViaActiveChildren(existing, effective)) {
         cancelChildJobs(accountId, existing, reason);
         cancelledViaActiveChildren = true;
-        cancelled = jobs.get(accountId, jobId).map(job -> aggregateIfPlanJob(accountId, job));
+        cancelled = jobs.get(accountId, jobId).map(this::aggregateIfPlanJob);
         if (cancelled.isEmpty()) {
           cancelled = Optional.ofNullable(effective);
         }
@@ -884,6 +913,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     }
     return switch (state) {
       case "JS_QUEUED" -> JobState.JS_QUEUED;
+      case "JS_WAITING" -> JobState.JS_WAITING;
       case "JS_RUNNING" -> JobState.JS_RUNNING;
       case "JS_SUCCEEDED" -> JobState.JS_SUCCEEDED;
       case "JS_FAILED" -> JobState.JS_FAILED;
@@ -896,6 +926,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   private static String fromProtoState(JobState state) {
     return switch (state) {
       case JS_QUEUED -> "JS_QUEUED";
+      case JS_WAITING -> "JS_WAITING";
       case JS_RUNNING -> "JS_RUNNING";
       case JS_SUCCEEDED -> "JS_SUCCEEDED";
       case JS_FAILED -> "JS_FAILED";
@@ -905,82 +936,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     };
   }
 
-  private ReconcileJobStore.ReconcileJob aggregateIfPlanJob(
-      String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job == null || !supportsChildAggregation(job.jobKind)) {
-      return job;
-    }
-    List<ReconcileJobStore.ReconcileJob> children = childJobsFor(accountId, job);
-    if (children.isEmpty()) {
-      return job;
-    }
-
-    String state = aggregateState(job, children);
-    boolean planTerminatedFirst = "JS_FAILED".equals(job.state) || "JS_CANCELLED".equals(job.state);
-    String message =
-        planTerminatedFirst
-            ? job.message
-            : children.stream()
-                .filter(child -> child.message != null && !child.message.isBlank())
-                .filter(child -> !"JS_SUCCEEDED".equals(child.state))
-                .map(child -> child.jobId + ": " + child.message)
-                .findFirst()
-                .orElse(job.message);
-    long startedAtMs =
-        children.stream()
-            .mapToLong(child -> child.startedAtMs)
-            .filter(v -> v > 0L)
-            .min()
-            .orElse(job.startedAtMs);
-    long finishedAtMs =
-        isTerminalState(state)
-            ? Math.max(
-                job.finishedAtMs,
-                children.stream().mapToLong(child -> child.finishedAtMs).max().orElse(0L))
-            : 0L;
-    long tablesScanned = children.stream().mapToLong(child -> child.tablesScanned).sum();
-    long tablesChanged = children.stream().mapToLong(child -> child.tablesChanged).sum();
-    long viewsScanned = children.stream().mapToLong(child -> child.viewsScanned).sum();
-    long viewsChanged = children.stream().mapToLong(child -> child.viewsChanged).sum();
-    long errors = job.errors + children.stream().mapToLong(child -> child.errors).sum();
-    long snapshotsProcessed =
-        job.snapshotsProcessed
-            + children.stream().mapToLong(child -> child.snapshotsProcessed).sum();
-    long statsProcessed =
-        job.statsProcessed + children.stream().mapToLong(child -> child.statsProcessed).sum();
-    String executorId =
-        children.stream()
-            .map(child -> child.executorId == null ? "" : child.executorId)
-            .filter(v -> !v.isBlank())
-            .findFirst()
-            .orElse(job.executorId);
-
-    return new ReconcileJobStore.ReconcileJob(
-        job.jobId,
-        job.accountId,
-        job.connectorId,
-        state,
-        message,
-        startedAtMs,
-        finishedAtMs,
-        tablesScanned,
-        tablesChanged,
-        viewsScanned,
-        viewsChanged,
-        errors,
-        job.fullRescan,
-        job.captureMode,
-        snapshotsProcessed,
-        statsProcessed,
-        job.scope,
-        job.executionPolicy,
-        executorId,
-        job.jobKind,
-        job.tableTask,
-        job.viewTask,
-        job.snapshotTask,
-        job.fileGroupTask,
-        job.parentJobId);
+  private ReconcileJobStore.ReconcileJob aggregateIfPlanJob(ReconcileJobStore.ReconcileJob job) {
+    return job;
   }
 
   private List<ReconcileJobStore.ReconcileJob> childJobsFor(
@@ -988,9 +945,18 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (planJob == null || !supportsChildAggregation(planJob.jobKind)) {
       return List.of();
     }
-    return jobs.childJobs(accountId, planJob.jobId).stream()
-        .map(child -> aggregateIfPlanJob(accountId, child))
-        .toList();
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, planJob.jobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      out.addAll(page.jobs);
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
   }
 
   private void cancelChildJobs(
@@ -1023,46 +989,16 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
-  private static String aggregateState(
-      ReconcileJobStore.ReconcileJob planJob, List<ReconcileJobStore.ReconcileJob> children) {
-    if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
-      return planJob.state;
-    }
-    if ("JS_CANCELLING".equals(planJob.state)) {
-      return "JS_CANCELLING";
-    }
-    if ("JS_RUNNING".equals(planJob.state)) {
-      return "JS_RUNNING";
-    }
-    if ("JS_QUEUED".equals(planJob.state)) {
-      return "JS_QUEUED";
-    }
-    if (children.stream().anyMatch(child -> "JS_CANCELLING".equals(child.state))) {
-      return "JS_CANCELLING";
-    }
-    if (children.stream().anyMatch(child -> "JS_RUNNING".equals(child.state))) {
-      return "JS_RUNNING";
-    }
-    if (children.stream().anyMatch(child -> "JS_QUEUED".equals(child.state))) {
-      return "JS_QUEUED";
-    }
-    if (children.stream().anyMatch(child -> "JS_FAILED".equals(child.state))) {
-      return "JS_FAILED";
-    }
-    if (children.stream().anyMatch(child -> "JS_CANCELLED".equals(child.state))) {
-      return "JS_CANCELLED";
-    }
-    return "JS_SUCCEEDED";
-  }
-
   private static boolean isTerminalState(String state) {
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
         || "JS_CANCELLED".equals(state);
   }
 
-  private GetReconcileJobResponse toResponse(String accountId, ReconcileJobStore.ReconcileJob job) {
-    FileGroupCounts fileGroupCounts = fileGroupCounts(accountId, job);
+  private GetReconcileJobResponse toResponse(
+      String accountId, ReconcileJobStore.ReconcileJob job, boolean includeFileGroupCounts) {
+    FileGroupCounts fileGroupCounts =
+        includeFileGroupCounts ? fileGroupCounts(accountId, job) : FileGroupCounts.empty();
     return GetReconcileJobResponse.newBuilder()
         .setJobId(job.jobId)
         .setConnectorId(job.connectorId)
@@ -1081,7 +1017,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setFullRescan(job.fullRescan)
         .setSnapshotsProcessed(job.snapshotsProcessed)
         .setStatsProcessed(job.statsProcessed)
-        .setIndexesProcessed(indexesProcessed(accountId, job))
+        .setIndexesProcessed(indexesProcessed(job))
         .setDurationMs(durationMs(job))
         .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
         .setExecutorId(job.executorId == null ? "" : job.executorId)
@@ -1100,141 +1036,21 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .build();
   }
 
-  private long indexesProcessed(String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job == null) {
-      return 0L;
-    }
-    long self = indexesProcessedSelf(job);
-    if (!supportsChildAggregation(job.jobKind)) {
-      return self;
-    }
-    return self
-        + childJobsFor(accountId, job).stream()
-            .mapToLong(child -> indexesProcessed(accountId, child))
-            .sum();
-  }
-
-  private long indexesProcessedSelf(ReconcileJobStore.ReconcileJob job) {
-    if (job == null || job.fileGroupTask == null) {
-      return 0L;
-    }
-    return job.fileGroupTask.fileResults().stream()
-        .filter(result -> result != null && result.indexArtifact() != null)
-        .filter(
-            result ->
-                !result.indexArtifact().artifactUri().isBlank()
-                    || !result.indexArtifact().artifactFormat().isBlank()
-                    || result.indexArtifact().artifactFormatVersion() > 0)
-        .count();
+  private long indexesProcessed(ReconcileJobStore.ReconcileJob job) {
+    return job == null ? 0L : job.indexesProcessed;
   }
 
   private FileGroupCounts fileGroupCounts(String accountId, ReconcileJobStore.ReconcileJob job) {
     if (job == null) {
       return FileGroupCounts.empty();
     }
-    if (job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
-      return snapshotFileGroupCounts(accountId, job);
-    }
-    if (job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP) {
-      return fileGroupExecutionCounts(accountId, job);
-    }
-    return FileGroupCounts.empty();
-  }
-
-  private FileGroupCounts snapshotFileGroupCounts(
-      String accountId, ReconcileJobStore.ReconcileJob job) {
-    var snapshotTask = job.snapshotTask == null ? ReconcileSnapshotTask.empty() : job.snapshotTask;
-    long totalGroups = snapshotTask.fileGroups().size();
-    long totalFiles =
-        snapshotTask.fileGroups().stream().mapToLong(group -> group.filePaths().size()).sum();
-    if (totalGroups == 0L) {
-      return FileGroupCounts.empty();
-    }
-    List<ReconcileJobStore.ReconcileJob> children = jobs.childJobs(accountId, job.jobId);
-    long completedGroups = 0L;
-    long failedGroups = 0L;
-    long completedFiles = 0L;
-    long failedFiles = 0L;
-    for (var child : children) {
-      if (child == null || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
-        continue;
-      }
-      FileResultCounts fileCounts = fileResultCounts(accountId, child);
-      if ("JS_SUCCEEDED".equals(child.state)) {
-        completedGroups++;
-      } else if ("JS_FAILED".equals(child.state) || "JS_CANCELLED".equals(child.state)) {
-        failedGroups++;
-      }
-      completedFiles += fileCounts.completed;
-      failedFiles += fileCounts.failed;
-    }
     return new FileGroupCounts(
-        totalGroups, completedGroups, failedGroups, totalFiles, completedFiles, failedFiles);
-  }
-
-  private FileGroupCounts fileGroupExecutionCounts(
-      String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job.fileGroupTask == null || job.fileGroupTask.isEmpty()) {
-      return FileGroupCounts.empty();
-    }
-    FileResultCounts fileCounts = fileResultCounts(accountId, job);
-    long fileCount = fileCounts.total;
-    long completedGroups = "JS_SUCCEEDED".equals(job.state) ? 1L : 0L;
-    long failedGroups = "JS_FAILED".equals(job.state) || "JS_CANCELLED".equals(job.state) ? 1L : 0L;
-    return new FileGroupCounts(
-        1L, completedGroups, failedGroups, fileCount, fileCounts.completed, fileCounts.failed);
-  }
-
-  private long plannedFileCount(String accountId, ReconcileJobStore.ReconcileJob job) {
-    if (job == null || job.fileGroupTask == null || job.fileGroupTask.isEmpty()) {
-      return 0L;
-    }
-    if (!job.fileGroupTask.filePaths().isEmpty()) {
-      return job.fileGroupTask.filePaths().size();
-    }
-    if (job.parentJobId == null || job.parentJobId.isBlank()) {
-      return 0L;
-    }
-    return jobs.get(accountId, job.parentJobId)
-        .map(parent -> parent.snapshotTask)
-        .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
-        .flatMap(
-            snapshotTask ->
-                snapshotTask.fileGroups().stream()
-                    .filter(group -> group != null && !group.isEmpty())
-                    .filter(group -> group.groupId().equals(job.fileGroupTask.groupId()))
-                    .filter(group -> group.planId().equals(job.fileGroupTask.planId()))
-                    .findFirst())
-        .map(group -> (long) group.filePaths().size())
-        .orElse(0L);
-  }
-
-  private FileResultCounts fileResultCounts(String accountId, ReconcileJobStore.ReconcileJob job) {
-    long total = plannedFileCount(accountId, job);
-    if (job == null || job.fileGroupTask == null || job.fileGroupTask.fileResults().isEmpty()) {
-      if ("JS_SUCCEEDED".equals(job == null ? "" : job.state)) {
-        return new FileResultCounts(total, total, 0L);
-      }
-      if ("JS_FAILED".equals(job == null ? "" : job.state)
-          || "JS_CANCELLED".equals(job == null ? "" : job.state)) {
-        return new FileResultCounts(total, 0L, total);
-      }
-      return new FileResultCounts(total, 0L, 0L);
-    }
-    long completed = 0L;
-    long failed = 0L;
-    for (var result : job.fileGroupTask.fileResults()) {
-      if (result == null || result.isEmpty()) {
-        continue;
-      }
-      if (result.state() == ReconcileFileResult.State.SUCCEEDED
-          || result.state() == ReconcileFileResult.State.SKIPPED) {
-        completed++;
-      } else if (result.state() == ReconcileFileResult.State.FAILED) {
-        failed++;
-      }
-    }
-    return new FileResultCounts(total, completed, failed);
+        job.plannedFileGroups,
+        job.completedFileGroups,
+        job.failedFileGroups,
+        job.plannedFiles,
+        job.completedFiles,
+        job.failedFiles);
   }
 
   private record FileGroupCounts(
@@ -1248,8 +1064,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       return new FileGroupCounts(0L, 0L, 0L, 0L, 0L, 0L);
     }
   }
-
-  private record FileResultCounts(long total, long completed, long failed) {}
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
       ReconcileJobKind jobKind) {
@@ -1299,6 +1113,20 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setSnapshotId(effective.snapshotId())
         .setSourceNamespace(effective.sourceNamespace())
         .setSourceTable(effective.sourceTable())
+        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+        .setFileGroupCount(effective.fileGroupCount())
+        .setDirectStatsBlobUri(effective.directStatsBlobUri())
+        .setDirectStatsRecordCount(effective.directStatsRecordCount())
+        .setCompletionMode(
+            switch (effective.completionMode()) {
+              case DIRECT_STATS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_DIRECT_STATS;
+              case FILE_GROUPS ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                      .RSCM_FILE_GROUPS;
+            })
         .addAllFileGroups(
             effective.fileGroups().stream()
                 .map(ReconcileControlImpl::toProtoFileGroupTask)

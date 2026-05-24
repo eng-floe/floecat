@@ -87,6 +87,18 @@ The reconciler runs in three shapes from the same artifact:
 - **Control plane**: `QUARKUS_PROFILE=reconciler-control`; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.
 - **Executor plane**: `QUARKUS_PROFILE=reconciler-executor`; disables local queue ownership and automatic scheduling, then leases work remotely from the control plane over gRPC.
 
+The durable queue is intentionally split into domains:
+
+- canonical job-index state
+- ready-queue state
+- lease-coordination state
+- projection/payload-reference state
+
+The control plane owns canonical job-state transitions and the derived job-index plus ready-queue
+mutations that move with them transactionally. Executors participate through the separate
+lease-coordination domain when they lease, renew, cancel, and complete work. Reads and maintenance
+do not repair queue drift.
+
 Key reconciler mode flags live in `service/src/main/resources/application.properties`:
 
 ```properties
@@ -127,6 +139,13 @@ APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, 
 and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through
 `SubmitLeasedFileGroupExecutionResult`, which requires `result_id` so the control plane can
 enforce replay safety across worker retries.
+
+For `floecat.kv=dynamodb`, the durable reconcile hot paths now use native queue-oriented storage
+layouts rather than broad generic prefix scans:
+- job-index queries are partitioned by their query slice
+- ready rows are stored in due-ordered ready slices
+- lease rows and lease-expiry scans are stored in dedicated lease partitions
+- projection state is separate from queue ownership and is not part of lease/read repair
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
 Planner jobs also need to remain leaseable under the configured execution lane semantics: planner

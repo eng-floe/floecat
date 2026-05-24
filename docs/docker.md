@@ -110,6 +110,9 @@ Notes:
   connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.
 - Both services must share the same blob/kv backend configuration.
+- The durable reconcile store is split into native job-index, ready-queue, lease, and projection
+  domains. Control-plane job-state transitions own job-index and ready mutations. Executor replicas
+  only participate in lease coordination; they do not repair or rebuild queue indexes on reads.
 - In OIDC mode, configure the reconciler worker service principal with
   `FLOECAT_RECONCILER_OIDC_ISSUER`, `FLOECAT_RECONCILER_OIDC_CLIENT_ID`, and
   `FLOECAT_RECONCILER_OIDC_CLIENT_SECRET`. Executors then authenticate to

@@ -166,16 +166,28 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
     }
 
     if (!status.isOk()) {
-      LOG.error(logMessage);
+      logError(logMessage);
       return;
     }
     if (durationMs >= slowRpcMs) {
-      LOG.warn(logMessage + " slow=true");
+      logSlowSuccessfulCall(logMessage + " slow=true");
       return;
     }
     if (logSuccessfulCalls) {
-      LOG.info(logMessage);
+      logSuccessfulCall(logMessage);
     }
+  }
+
+  void logError(String message) {
+    LOG.error(message);
+  }
+
+  void logSlowSuccessfulCall(String message) {
+    LOG.debug(message);
+  }
+
+  void logSuccessfulCall(String message) {
+    LOG.info(message);
   }
 
   private static Error extractFloecatError(Status statusProto) {

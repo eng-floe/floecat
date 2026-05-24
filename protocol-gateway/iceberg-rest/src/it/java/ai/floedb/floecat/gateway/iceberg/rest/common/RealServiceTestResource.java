@@ -364,6 +364,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     command.add("-am");
     command.add("package");
     command.add("-DskipTests");
+    command.add("-DskipUTs=true");
+    command.add("-DskipITs=true");
     command.add("-Dquarkus.profile=test");
     for (var entry : desiredProps.entrySet()) {
       command.add("-D" + entry.getKey() + "=" + entry.getValue());

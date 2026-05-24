@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -45,6 +46,8 @@ import java.util.Set;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 class JavaConnectorCaptureEngineTest {
   private static final Connector SOURCE_CONNECTOR =
@@ -93,6 +96,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(),
             Set.of(),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             Optional.empty());
@@ -119,13 +123,15 @@ class JavaConnectorCaptureEngineTest {
             List.of(),
             Set.of(),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             Optional.empty());
 
     assertThat(engine.capture(request)).isEmpty();
     verify(connector, never())
-        .capturePlannedFileGroup(any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean());
+        .capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
   }
@@ -151,7 +157,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any()))
         .thenReturn(resolvedConfig);
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean()))
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of()));
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
@@ -167,6 +173,7 @@ class JavaConnectorCaptureEngineTest {
             List.of("s3://bucket/path/file-1.parquet"),
             Set.of("id"),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
             Optional.of("worker-token"));
@@ -174,6 +181,53 @@ class JavaConnectorCaptureEngineTest {
     assertThat(engine.capture(request)).isPresent();
     verify(storageResolver)
         .resolveWithAuthorization(eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any());
+  }
+
+  @Test
+  void captureNormalizesTypedAwsAuthFailuresToTerminal() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of("s3://bucket/path/file-1.parquet"),
+            Set.of("id"),
+            Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(FloecatConnector.StatsTargetKind.FILE),
+            false,
+            Optional.empty());
+
+    S3Exception expiredToken =
+        (S3Exception)
+            S3Exception.builder()
+                .message("request failed")
+                .statusCode(400)
+                .awsErrorDetails(
+                    AwsErrorDetails.builder().serviceName("S3").errorCode("ExpiredToken").build())
+                .build();
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenThrow(expiredToken);
+
+    assertThatThrownBy(() -> engine.capture(request))
+        .isInstanceOf(ReconcileFailureException.class)
+        .satisfies(
+            error -> {
+              ReconcileFailureException failure = (ReconcileFailureException) error;
+              assertThat(failure.retryDisposition())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+              assertThat(failure.getCause()).isSameAs(expiredToken);
+            });
   }
 
   @Test
@@ -225,7 +279,8 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.TABLE,
                     FloecatConnector.StatsTargetKind.COLUMN,
                     FloecatConnector.StatsTargetKind.FILE)),
-            eq(false)))
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -240,6 +295,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(plannedFile),
             Set.of("id"),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(
                 FloecatConnector.StatsTargetKind.TABLE,
                 FloecatConnector.StatsTargetKind.COLUMN,
@@ -275,7 +331,8 @@ class JavaConnectorCaptureEngineTest {
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
-        .capturePlannedFileGroup(any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean());
+        .capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
   }
 
   @Test
@@ -311,7 +368,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(plannedFile)),
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
-            eq(false)))
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -326,6 +384,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(plannedFile),
             Set.of(),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
             Optional.empty());
@@ -337,7 +396,8 @@ class JavaConnectorCaptureEngineTest {
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
-        .capturePlannedFileGroup(any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean());
+        .capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
   }
 
   @Test
@@ -358,7 +418,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(fileOne, fileTwo)),
             eq(Set.of("id")),
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
-            eq(false)))
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(
@@ -378,6 +439,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(fileOne, fileTwo),
             Set.of("id"),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
             Optional.empty());
@@ -433,7 +495,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(plannedFile)),
             eq(Set.of("stats_only")),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
-            eq(true)))
+            eq(true),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecord),
@@ -491,6 +554,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(plannedFile),
             Set.of("stats_only"),
             Set.of("index_only"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             true,
             Optional.empty());
@@ -642,7 +706,8 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.TABLE,
                     FloecatConnector.StatsTargetKind.COLUMN,
                     FloecatConnector.StatsTargetKind.FILE)),
-            eq(false)))
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecordOne, fileRecordTwo), List.of()));
@@ -659,6 +724,7 @@ class JavaConnectorCaptureEngineTest {
             List.of(fileOne, fileTwo),
             Set.of(),
             Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(
                 FloecatConnector.StatsTargetKind.TABLE,
                 FloecatConnector.StatsTargetKind.COLUMN,

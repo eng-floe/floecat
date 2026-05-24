@@ -63,12 +63,28 @@ class IcebergConnectorIncrementalEnumerationTest {
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
-            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
     List<Snapshot> snapshots =
-        (List<Snapshot>) method.invoke(connector, table, false, Set.of(100L, 200L), Set.of());
+        (List<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                false,
+                Set.of(100L, 200L),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.ALL,
+                Set.of(),
+                0);
 
     assertEquals(List.of(300L, 250L), snapshots.stream().map(Snapshot::snapshotId).toList());
   }
@@ -100,14 +116,30 @@ class IcebergConnectorIncrementalEnumerationTest {
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
-            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
     List<Snapshot> snapshots =
-        (List<Snapshot>) method.invoke(connector, table, true, Set.of(), Set.of());
+        (List<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                true,
+                Set.of(),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.ALL,
+                Set.of(),
+                0);
 
-    assertEquals(List.of(300L, 200L, 100L), snapshots.stream().map(Snapshot::snapshotId).toList());
+    assertEquals(List.of(100L, 200L, 300L), snapshots.stream().map(Snapshot::snapshotId).toList());
   }
 
   @Test

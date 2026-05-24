@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
@@ -39,12 +40,13 @@ import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
+import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
@@ -70,11 +72,12 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
-import ai.floedb.floecat.types.ManagedTableProperties;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -404,6 +407,57 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
+  void groupTargetRequestsSplitsLargeSingleSnapshotByRecordCount() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    List<TargetStatsRecord> stats = new ArrayList<>();
+    for (int i = 0; i < 251; i++) {
+      stats.add(fileStatsRecord(tableId, 44L, "s3://bucket/path/file-" + i + ".parquet"));
+    }
+
+    List<PutTargetStatsRequest> requests = invokeGroupTargetRequests(backend, stats);
+
+    assertThat(requests).hasSize(2);
+    assertThat(requests.get(0).getRecordsCount()).isEqualTo(250);
+    assertThat(requests.get(1).getRecordsCount()).isEqualTo(1);
+    assertThat(requests)
+        .allMatch(req -> req.getTableId().equals(tableId) && req.getSnapshotId() == 44L);
+  }
+
+  @Test
+  void groupTargetRequestsSplitsLargeSingleSnapshotBySerializedSize() throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    String largePath = "s3://bucket/path/" + "x".repeat(60_000) + ".parquet";
+    List<TargetStatsRecord> stats =
+        List.of(
+            fileStatsRecord(tableId, 44L, largePath + "-a"),
+            fileStatsRecord(tableId, 44L, largePath + "-b"),
+            fileStatsRecord(tableId, 44L, largePath + "-c"));
+
+    List<PutTargetStatsRequest> requests = invokeGroupTargetRequests(backend, stats);
+
+    assertThat(requests).hasSizeGreaterThan(1);
+    assertThat(requests).allMatch(req -> req.getSerializedSize() <= 128 * 1024);
+    assertThat(requests.stream().mapToInt(PutTargetStatsRequest::getRecordsCount).sum())
+        .isEqualTo(3);
+  }
+
+  @Test
   void fetchSnapshotFilePlanUsesSourceConnectorFromUpstreamMetadata() throws Exception {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
@@ -558,6 +612,7 @@ class GrpcReconcilerBackendTest {
                 List.of("s3://bucket/path/file.parquet"),
                 Set.of(),
                 Set.of(),
+                ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy.defaults(),
                 Set.of(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE),
                 false));
 
@@ -686,7 +741,7 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
-  void updateTableByIdPreservesManagedIcebergProperties() {
+  void updateTableByIdRetriesFailedPreconditionAndSucceeds() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
@@ -694,80 +749,67 @@ class GrpcReconcilerBackendTest {
         mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
     when(backend.table.withInterceptors(any())).thenReturn(backend.table);
 
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("table-1")
-            .build();
     ResourceId namespaceId =
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("ns-1")
             .build();
-
-    Map<String, String> existingManaged = new LinkedHashMap<>();
-    int index = 0;
-    for (String key : ManagedTableProperties.engineManagedKeys()) {
-      existingManaged.put(key, "existing-" + index++);
-    }
-    Map<String, String> incoming = new LinkedHashMap<>();
-    index = 0;
-    for (String key : ManagedTableProperties.engineManagedKeys()) {
-      incoming.put(key, "incoming-" + index++);
-    }
-    incoming.put("write.parquet.compression-codec", "zstd");
-
-    Table.Builder beforeBuilder =
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    Table before =
         Table.newBuilder()
             .setResourceId(tableId)
+            .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
-            .setDisplayName("lineitem");
-    beforeBuilder.putAllProperties(existingManaged);
-    Table before = beforeBuilder.build();
-    Table after =
-        before.toBuilder().putProperties("write.parquet.compression-codec", "zstd").build();
+            .setDisplayName("orders")
+            .build();
+    Table after = before.toBuilder().putProperties("reconciled", "true").build();
 
     when(backend.table.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
     when(backend.table.updateTable(any()))
+        .thenThrow(
+            new StatusRuntimeException(
+                Status.FAILED_PRECONDITION.withDescription("Version mismatch")))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
-
-    TableSpecDescriptor descriptor =
-        new TableSpecDescriptor(
-            "tpch_1",
-            "lineitem",
-            "{}",
-            incoming,
-            List.of(),
-            ColumnIdAlgorithm.CID_FIELD_ID,
-            ConnectorFormat.CF_ICEBERG,
-            ResourceId.newBuilder()
-                .setAccountId("acct")
-                .setKind(ResourceKind.RK_CONNECTOR)
-                .setId("connector-1")
-                .build(),
-            "http://localhost:1234",
-            "tpch_1",
-            "lineitem");
 
     boolean changed =
         backend.updateTableById(
             reconcileContext(),
             tableId,
             namespaceId,
-            NameRef.newBuilder().setName("lineitem").build(),
-            descriptor);
+            NameRef.newBuilder().setCatalog("cat").addPath("main").setName("orders").build(),
+            new TableSpecDescriptor(
+                "main",
+                "orders",
+                "{}",
+                Map.of("reconciled", "true"),
+                List.of(),
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                ConnectorFormat.CF_ICEBERG,
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_CONNECTOR)
+                    .setId("conn-1")
+                    .build(),
+                "uri",
+                "src.ns",
+                "orders"));
 
     assertThat(changed).isTrue();
-    var updateCaptor = org.mockito.ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(backend.table).updateTable(updateCaptor.capture());
-    Map<String, String> props = updateCaptor.getValue().getSpec().getPropertiesMap();
-    for (Map.Entry<String, String> managed : existingManaged.entrySet()) {
-      assertThat(props.get(managed.getKey())).isEqualTo(managed.getValue());
-    }
-    assertThat(props.get("write.parquet.compression-codec")).isEqualTo("zstd");
+    verify(backend.table, org.mockito.Mockito.times(2)).updateTable(any());
+    verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
   }
 
   private static ReconcileContext reconcileContext() {
@@ -777,5 +819,26 @@ class GrpcReconcilerBackendTest {
         "svc",
         Instant.now(),
         Optional.empty());
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<PutTargetStatsRequest> invokeGroupTargetRequests(
+      GrpcReconcilerBackend backend, List<TargetStatsRecord> stats) throws Exception {
+    Method method =
+        GrpcReconcilerBackend.class.getDeclaredMethod("groupTargetRequests", List.class);
+    method.setAccessible(true);
+    return (List<PutTargetStatsRequest>) method.invoke(backend, stats);
+  }
+
+  private static TargetStatsRecord fileStatsRecord(
+      ResourceId tableId, long snapshotId, String filePath) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setTarget(
+            StatsTarget.newBuilder()
+                .setFile(FileStatsTarget.newBuilder().setFilePath(filePath).build())
+                .build())
+        .build();
   }
 }

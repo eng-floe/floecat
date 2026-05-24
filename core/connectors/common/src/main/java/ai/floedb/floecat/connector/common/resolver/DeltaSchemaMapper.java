@@ -19,44 +19,66 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import java.util.Locale;
+import io.delta.kernel.internal.types.DataTypeJsonSerDe;
+import io.delta.kernel.types.ArrayType;
+import io.delta.kernel.types.BinaryType;
+import io.delta.kernel.types.BooleanType;
+import io.delta.kernel.types.ByteType;
+import io.delta.kernel.types.DataType;
+import io.delta.kernel.types.DateType;
+import io.delta.kernel.types.DecimalType;
+import io.delta.kernel.types.DoubleType;
+import io.delta.kernel.types.FieldMetadata;
+import io.delta.kernel.types.FloatType;
+import io.delta.kernel.types.IntegerType;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.MapType;
+import io.delta.kernel.types.ShortType;
+import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructField;
+import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.TimestampNTZType;
+import io.delta.kernel.types.TimestampType;
+import io.delta.kernel.types.VariantType;
 import java.util.Set;
 
 /**
- * DeltaSchemaMapper: Converts Delta Lake-formatted schema JSON to logical SchemaDescriptor.
+ * DeltaSchemaMapper: Converts Delta Lake schema JSON to logical SchemaDescriptor.
  *
- * <p>Handles Delta's JSON metadata format with support for nested structures (struct, array, map)
- * and variant values.
+ * <p>This parser intentionally delegates JSON decoding to Delta Kernel so we stay compatible with
+ * real snapshot metadata emitted by Databricks/Delta Lake, including shapes our previous manual
+ * parser did not understand.
  */
 final class DeltaSchemaMapper {
   private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final String COLUMN_MAPPING_ID_KEY = "delta.columnMapping.id";
+  private static final int MAX_DECIMAL_PRECISION = 38;
 
   private DeltaSchemaMapper() {}
 
-  /**
-   * Map a Delta schema JSON to logical SchemaDescriptor.
-   *
-   * @param cid_algo Column ID algorithm to use
-   * @param schemaJson Delta schema in JSON form (Delta Lake table schema)
-   * @param partitionKeys Set of partition column names (logical names)
-   * @return SchemaDescriptor with all nested columns flattened
-   */
   static SchemaDescriptor map(
       ColumnIdAlgorithm cid_algo, String schemaJson, Set<String> partitionKeys) {
     SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
 
     try {
-      JsonNode root = MAPPER.readTree(schemaJson);
-      JsonNode fields = root.get("fields");
-      if (fields == null || !fields.isArray()) {
-        throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
+      Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
+      try {
+        StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
+        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys);
+      } catch (Exception kernelFailure) {
+        JsonNode root = MAPPER.readTree(schemaJson);
+        JsonNode fields = root.get("fields");
+        if (fields == null || !fields.isArray()) {
+          throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
+        }
+        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys);
       }
-      walkDeltaStruct(cid_algo, sb, root, "", partitionKeys);
     } catch (Exception e) {
       throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
@@ -64,130 +86,181 @@ final class DeltaSchemaMapper {
     return sb.build();
   }
 
-  /**
-   * Recursively walk a Delta struct JSON node and add columns to the schema builder.
-   *
-   * <p>Delta structs have format: { "fields": [ { "name": "...", "type": {...}, "nullable": true,
-   * "fieldId": N, ... }, ... ] }
-   *
-   * @param cid_algo Column ID algorithm
-   * @param sb SchemaDescriptor builder accumulating columns
-   * @param node The Delta struct node being walked
-   * @param prefix Current path prefix (e.g., "" for top-level, "address" for nested)
-   * @param partitionKeys Set of partition column names
-   */
   private static void walkDeltaStruct(
       ColumnIdAlgorithm cid_algo,
       SchemaDescriptor.Builder sb,
-      JsonNode node,
+      StructType structType,
       String prefix,
       Set<String> partitionKeys) {
-
-    if (node == null || !node.has("fields")) {
+    if (structType == null) {
       return;
     }
 
-    ArrayNode fields = (ArrayNode) node.get("fields");
-
-    for (int i = 0; i < fields.size(); i++) {
-      JsonNode f = fields.get(i);
-      int ordinal = i + 1; // 1-based ordinal within the parent struct
-
-      String name = f.path("name").asText();
-      String logicalType = deltaTypeToCanonical(f.get("type"));
-
-      boolean nullable = f.path("nullable").asBoolean(true);
-
+    for (int i = 0; i < structType.fields().size(); i++) {
+      StructField field = structType.fields().get(i);
+      DataType dataType = field.getDataType();
+      String name = field.getName();
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
-
       boolean isPartition = partitionKeys.contains(name) || partitionKeys.contains(physical);
-
-      int fieldId = f.path("fieldId").asInt(0);
-
-      JsonNode typeNode = f.get("type");
-
-      // Emit both container and leaf nodes. Stats will later filter to leaf=true.
-      // For Delta JSON, treat struct/array/map as containers (leaf=false), regardless of
-      // element/value type.
-      boolean isLeaf = true;
-      if (typeNode != null && typeNode.isObject()) {
-        String typeTag = typeNode.path("type").asText("");
-        if ("struct".equals(typeTag) || "array".equals(typeTag) || "map".equals(typeTag)) {
-          isLeaf = false;
-        }
-      }
 
       sb.addColumns(
           ColumnIdComputer.withComputedId(
               cid_algo,
               SchemaColumn.newBuilder()
                   .setName(name)
-                  .setLogicalType(logicalType)
-                  .setFieldId(fieldId)
-                  .setNullable(nullable)
+                  .setLogicalType(LogicalTypeFormat.format(toLogicalType(dataType)))
+                  .setFieldId(extractFieldId(field.getMetadata()))
+                  .setNullable(field.isNullable())
                   .setPhysicalPath(physical)
                   .setPartitionKey(isPartition)
-                  .setOrdinal(ordinal) // 1-based ordinal within the parent schema object
-                  .setLeaf(isLeaf)
+                  .setOrdinal(i + 1)
+                  .setLeaf(!isContainerType(dataType))
+                  .build()));
+
+      if (dataType instanceof StructType nestedStruct) {
+        walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys);
+      } else if (dataType instanceof ArrayType arrayType
+          && arrayType.getElementType() instanceof StructType elementStruct) {
+        walkDeltaStruct(cid_algo, sb, elementStruct, physical + "[]", partitionKeys);
+      } else if (dataType instanceof MapType mapType
+          && mapType.getValueType() instanceof StructType valueStruct) {
+        walkDeltaStruct(cid_algo, sb, valueStruct, physical + "{}", partitionKeys);
+      }
+    }
+  }
+
+  private static boolean isContainerType(DataType dataType) {
+    return dataType instanceof StructType
+        || dataType instanceof ArrayType
+        || dataType instanceof MapType;
+  }
+
+  private static int extractFieldId(FieldMetadata metadata) {
+    if (metadata == null) {
+      return 0;
+    }
+    Long fieldId = metadata.getLong(COLUMN_MAPPING_ID_KEY);
+    if (fieldId == null) {
+      return 0;
+    }
+    if (fieldId <= 0L || fieldId > Integer.MAX_VALUE) {
+      return 0;
+    }
+    return fieldId.intValue();
+  }
+
+  private static LogicalType toLogicalType(DataType dataType) {
+    if (dataType instanceof BooleanType) return LogicalType.of(LogicalKind.BOOLEAN);
+    if (dataType instanceof ByteType
+        || dataType instanceof ShortType
+        || dataType instanceof IntegerType
+        || dataType instanceof LongType) {
+      return LogicalType.of(LogicalKind.INT);
+    }
+    if (dataType instanceof FloatType) return LogicalType.of(LogicalKind.FLOAT);
+    if (dataType instanceof DoubleType) return LogicalType.of(LogicalKind.DOUBLE);
+    if (dataType instanceof StringType) return LogicalType.of(LogicalKind.STRING);
+    if (dataType instanceof BinaryType) return LogicalType.of(LogicalKind.BINARY);
+    if (dataType instanceof DateType) return LogicalType.of(LogicalKind.DATE);
+    if (dataType instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
+    if (dataType instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
+    if (dataType instanceof ArrayType) return LogicalType.of(LogicalKind.ARRAY);
+    if (dataType instanceof MapType) return LogicalType.of(LogicalKind.MAP);
+    if (dataType instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
+    if (dataType instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
+    if (dataType instanceof DecimalType decimalType) {
+      LogicalType logicalType =
+          LogicalType.decimal(decimalType.getPrecision(), decimalType.getScale());
+      DecimalPrecisionConstraints.validateDecimalPrecision(
+          logicalType, "Delta", decimalType.toString(), MAX_DECIMAL_PRECISION);
+      return logicalType;
+    }
+
+    throw new IllegalArgumentException(
+        "Unrecognized Delta type: '" + dataType.getClass().getSimpleName() + "'");
+  }
+
+  private static void walkFallbackStruct(
+      ColumnIdAlgorithm cid_algo,
+      SchemaDescriptor.Builder sb,
+      JsonNode node,
+      String prefix,
+      Set<String> partitionKeys) {
+    if (node == null || !node.has("fields")) {
+      return;
+    }
+
+    ArrayNode fields = (ArrayNode) node.get("fields");
+    for (int i = 0; i < fields.size(); i++) {
+      JsonNode field = fields.get(i);
+      JsonNode typeNode = field.get("type");
+      String name = field.path("name").asText();
+      String physical = prefix.isEmpty() ? name : prefix + "." + name;
+      boolean isPartition = partitionKeys.contains(name) || partitionKeys.contains(physical);
+
+      sb.addColumns(
+          ColumnIdComputer.withComputedId(
+              cid_algo,
+              SchemaColumn.newBuilder()
+                  .setName(name)
+                  .setLogicalType(deltaTypeToCanonical(typeNode))
+                  .setFieldId(fallbackFieldId(field))
+                  .setNullable(field.path("nullable").asBoolean(true))
+                  .setPhysicalPath(physical)
+                  .setPartitionKey(isPartition)
+                  .setOrdinal(i + 1)
+                  .setLeaf(!fallbackContainerType(typeNode))
                   .build()));
 
       if (typeNode == null || !typeNode.isObject()) {
         continue;
       }
-
-      // struct
       if ("struct".equals(typeNode.path("type").asText(""))) {
-        walkDeltaStruct(cid_algo, sb, typeNode, physical, partitionKeys);
-      }
-
-      // list<struct>
-      if ("array".equals(typeNode.path("type").asText(""))) {
+        walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys);
+      } else if ("array".equals(typeNode.path("type").asText(""))) {
         JsonNode elem = typeNode.get("elementType");
         if (elem != null && elem.isObject() && "struct".equals(elem.path("type").asText(""))) {
-
-          walkDeltaStruct(cid_algo, sb, elem, physical + "[]", partitionKeys);
+          walkFallbackStruct(cid_algo, sb, elem, physical + "[]", partitionKeys);
         }
-      }
-
-      // map<*, struct>
-      if ("map".equals(typeNode.path("type").asText(""))) {
-        JsonNode val = typeNode.get("valueType");
-        if (val != null && val.isObject() && "struct".equals(val.path("type").asText(""))) {
-
-          walkDeltaStruct(cid_algo, sb, val, physical + "{}", partitionKeys);
+      } else if ("map".equals(typeNode.path("type").asText(""))) {
+        JsonNode value = typeNode.get("valueType");
+        if (value != null && value.isObject() && "struct".equals(value.path("type").asText(""))) {
+          walkFallbackStruct(cid_algo, sb, value, physical + "{}", partitionKeys);
         }
       }
     }
   }
 
-  /**
-   * Convert a Delta Lake type JSON node to its canonical logical-type string.
-   *
-   * <p>Delta types are either textual scalars (e.g. {@code "string"}, {@code "timestamp"}) or JSON
-   * objects for complex types ({@code {"type":"struct",...}}, {@code {"type":"array",...}}, {@code
-   * {"type":"map",...}}, {@code {"type":"variant"}}).
-   *
-   * <p>Timestamp semantics: Delta's {@code "timestamp"} is always UTC-stored → canonical {@code
-   * "TIMESTAMPTZ"}. Delta's {@code "timestamp_ntz"} is timezone-naive → canonical {@code
-   * "TIMESTAMP"}. Note: the spec decode matrix v1 has these inverted; the semantically correct
-   * mapping is applied here.
-   *
-   * <p>Integer aliases: {@code "byte"}, {@code "short"}, {@code "integer"}, {@code "long"} and
-   * their SQL synonyms all collapse to canonical {@code "INT"} (64-bit), consistent with {@link
-   * ai.floedb.floecat.types.LogicalKind}.
-   *
-   * <p>For {@code decimal(p,s)}, the raw Delta string (e.g. {@code "decimal(10,2)"}) is upper-cased
-   * and returned as-is; it is parseable by the canonical type parser.
-   *
-   * @param typeNode Delta "type" JSON node (may be textual or object)
-   * @return canonical logical-type string (never null)
-   */
+  private static boolean fallbackContainerType(JsonNode typeNode) {
+    if (typeNode == null || !typeNode.isObject()) {
+      return false;
+    }
+    String typeTag = typeNode.path("type").asText("");
+    return "struct".equals(typeTag) || "array".equals(typeTag) || "map".equals(typeTag);
+  }
+
+  private static int fallbackFieldId(JsonNode field) {
+    if (field == null) {
+      return 0;
+    }
+    JsonNode metadata = field.get("metadata");
+    if (metadata != null && metadata.isObject()) {
+      JsonNode columnMappingId = metadata.get(COLUMN_MAPPING_ID_KEY);
+      if (columnMappingId != null && columnMappingId.canConvertToInt()) {
+        int id = columnMappingId.asInt(0);
+        if (id > 0) {
+          return id;
+        }
+      }
+    }
+    int fieldId = field.path("fieldId").asInt(0);
+    return Math.max(fieldId, 0);
+  }
+
   private static String deltaTypeToCanonical(JsonNode typeNode) {
     if (typeNode == null) {
       throw new IllegalArgumentException("Delta field type is missing");
     }
-
-    // Complex types are represented as JSON objects with a "type" discriminator.
     if (typeNode.isObject()) {
       return switch (typeNode.path("type").asText("")) {
         case "struct" -> "STRUCT";
@@ -200,26 +273,20 @@ final class DeltaSchemaMapper {
       };
     }
 
-    // Scalar types are textual identifiers.
     String raw = typeNode.asText("");
-    String lowerRaw = raw.toLowerCase(Locale.ROOT);
+    String lowerRaw = raw.toLowerCase(java.util.Locale.ROOT);
     return switch (lowerRaw) {
       case "boolean" -> "BOOLEAN";
-      // All integer sizes collapse to canonical INT (64-bit).
       case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" -> "INT";
       case "float" -> "FLOAT";
       case "double" -> "DOUBLE";
       case "string" -> "STRING";
       case "binary" -> "BINARY";
       case "date" -> "DATE";
-      // Delta "timestamp" is UTC-stored → TIMESTAMPTZ.
-      // Delta "timestamp_ntz" is timezone-naive → TIMESTAMP.
-      // Note: the spec decode matrix v1 has these inverted; correct semantic mapping applied.
       case "timestamp" -> "TIMESTAMPTZ";
       case "timestamp_ntz" -> "TIMESTAMP";
       case "interval" -> "INTERVAL";
       default -> {
-        // decimal(p,s) arrives as e.g. "decimal(10,2)" — upper-case and pass through.
         if (lowerRaw.startsWith("decimal")) {
           yield canonicalDeltaDecimal(raw);
         }
@@ -239,6 +306,4 @@ final class DeltaSchemaMapper {
         logicalType, "Delta", raw, MAX_DECIMAL_PRECISION);
     return LogicalTypeFormat.format(logicalType);
   }
-
-  private static final int MAX_DECIMAL_PRECISION = 38;
 }

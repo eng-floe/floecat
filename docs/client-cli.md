@@ -34,13 +34,17 @@ Responsibilities:
 The CLI exposes commands documented at runtime via `help`. Highlights:
 
 - `account <UUID>` – Sets `currentAccountId` environment for subsequent commands.
+- `account list|get|create|delete` – Manage accounts and resolve display names to IDs.
 - `catalogs` / `catalog <subcommand>` – List/create/update/delete catalogs.
+- `catalog use <name>` – Sets the default catalog used by `query begin` when inputs omit a catalog.
 - `namespaces` / `namespace <subcommand>` – Inspect namespace hierarchies, create nested paths.
 - `tables` / `table <subcommand>` – Manage table definitions, specify schema JSON, upstream
   connectors, and properties.
+- `views` / `view <subcommand>` – List and manage view definitions.
 - `snapshots` / `stats` – Query snapshot lineage, table/column/file statistics, and index artifacts
   (`stats files` lists per-file row/byte counts and per-column metrics; `stats index` lists stored
   sidecar index artifacts for a snapshot).
+- `analyze` – Run synchronous table-scoped capture for stats/index generation.
 - `constraints` – Manage snapshot-scoped table constraints (`get`, `list`, `put`/`update`/`add`,
   `delete`) using either table FQNs or table IDs.
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
@@ -66,8 +70,8 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 - **Secret handling** – Secret-bearing connector and storage-authority values must be supplied via
   `--cred-type` / `--cred`, not `--auth k=v`. The service stores those secrets out-of-band and
   only returns redacted or client-safe values.
-- **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands like `catalogs` accept
-  `--page-size` overrides and persist `next_page_token` transparently.
+- **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands paginate internally by default.
+  Commands that expose `--page-size` include connector and storage-authority listing workflows.
 - **Query display** – `query get` prints the `QueryDescriptor` metadata (snapshots, expansions,
   obligations). Use `query fetch-scan <query_id> <table_id>` to print the data/delete `ScanFile`
   entries returned by connectors via the query lifecycle SPI.
@@ -93,9 +97,9 @@ detailed human-readable view and also supports `--json`.
 - Build via `make cli`. Run with `make cli-run` (build + run) or `make cli-start` (run only, no
   Maven rebuild — avoids triggering Quarkus live-reload on the service).
 - Configure the target endpoint using Quarkus client properties (default `localhost:9100`), or pass
-  `--host` / `--port` flags at startup.
-- Extend commands by adding nested `@Command` classes under `Shell`. Because the CLI already injects
-  every gRPC stub, new commands only need to format inputs and call the stub.
+  `--host` / `--port` flags at startup. `FLOECAT_GRPC_HOST` and `FLOECAT_GRPC_PORT` are also
+  supported environment overrides.
+- Extend commands by adding a new `*CliSupport` handler and wiring it into `CliCommandExecutor`.
 - Add new parsing helpers in `client-cli/src/main/java/ai/floedb/floecat/client/cli/util` for custom
   arg shapes.
 
@@ -143,11 +147,19 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --props iceberg.source=glue
   ```
 
+- **Configuring connector reconcile policy**
+
+  ```
+  connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
+  connector update glue-iceberg --policy-latest-n 5
+  connector update glue-iceberg --policy-all
+  ```
+
 - **Triggering a connector to read an upstream table**
 
   ```
-  connector trigger glue-iceberg --mode metadata-only
-  connector trigger glue-iceberg --full --mode metadata-and-capture --capture stats
+  connector trigger glue-iceberg --incremental --current --mode metadata-only
+  connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
   ```
 
 - **Creating a storage authority for Iceberg REST credential vending**

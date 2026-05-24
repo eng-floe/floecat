@@ -28,9 +28,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -48,6 +50,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -68,6 +71,7 @@ class ReconcileExecutorControlImplTest {
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
+    service.leasedFileGroupExecutionService = mock(LeasedFileGroupExecutionService.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -122,6 +126,42 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(!response.getFound());
+  }
+
+  @Test
+  void leaseReconcileJobDoesNotHideMissingRequiredDefinitionFailures() {
+    when(service.jobs.leaseNext(any()))
+        .thenThrow(
+            new IllegalStateException(
+                "Reconcile job job-1 is missing required job definition"
+                    + " blob=/accounts/acct/reconcile/jobs/job-1/job-definition.json"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    assertEquals("INTERNAL", error.getStatus().getCode().name());
+  }
+
+  @Test
+  void leaseReconcileJobDoesNotHideUnrelatedIllegalStateFailures() {
+    when(service.jobs.leaseNext(any())).thenThrow(new IllegalStateException("other failure"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    assertEquals("INTERNAL", error.getStatus().getCode().name());
   }
 
   @Test
@@ -225,7 +265,8 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void reportReconcileProgressActsAsHeartbeat() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.reportProgress("job-1", "lease-1", 4L, 2L, 0L, 0L, 1L, 3L, 5L, "working"))
+        .thenReturn(new ReconcileJobStore.ProgressUpdate(true, false));
 
     var response =
         service
@@ -244,12 +285,25 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(response.getLeaseValid());
-    verify(service.jobs).markProgress("job-1", "lease-1", 4, 2, 0, 0, 1, 3, 5, "working");
+    verify(service.jobs).reportProgress("job-1", "lease-1", 4L, 2L, 0L, 0L, 1L, 3L, 5L, "working");
   }
 
   @Test
   void completeLeasedReconcileJobMarksSucceeded() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq(""),
+            eq(7L),
+            eq(3L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(2L),
+            eq(9L)))
+        .thenReturn(true);
 
     var response =
         service
@@ -268,13 +322,122 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markSucceeded(
-            eq("job-1"), eq("lease-1"), anyLong(), eq(7L), eq(3L), eq(0L), eq(0L), eq(2L), eq(9L));
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq(""),
+            eq(7L),
+            eq(3L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(2L),
+            eq(9L));
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultRoutesUploadedArtifactsToManifestPath() {
+    when(service.leasedFileGroupExecutionService.persistSuccess(
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), eq(""), eq(0), any(), any()))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .addIndexArtifacts(
+                                ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact
+                                    .newBuilder()
+                                    .setRecord(
+                                        IndexArtifactRecord.newBuilder()
+                                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
+                                            .build())
+                                    .setContentType("application/x-parquet")
+                                    .setUploadedArtifactUri("s3://bucket/artifacts/file-1.idx")
+                                    .build())
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.leasedFileGroupExecutionService)
+        .persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq(List.of()),
+            eq(""),
+            eq(0),
+            eq(List.of()),
+            eq(
+                List.of(
+                    new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
+                        IndexArtifactRecord.newBuilder()
+                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
+                            .build(),
+                        "application/x-parquet",
+                        "s3://bucket/artifacts/file-1.idx"))));
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultRoutesFileStatsBlobManifest() {
+    when(service.leasedFileGroupExecutionService.persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq(List.of()),
+            eq("/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json"),
+            eq(4),
+            eq(List.of()),
+            eq(List.of())))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .setFileStatsBlobUri(
+                                "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json")
+                            .setFileStatsRecordCount(4)
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
   }
 
   @Test
   void completeLeasedReconcileJobLeavesDescendantsIntactOnRetryableFailure() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE),
+            anyLong(),
+            eq("boom"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
     when(service.jobs.get(null, "job-1"))
         .thenReturn(Optional.of(job("job-1", "acct", ReconcileJobKind.PLAN_CONNECTOR, "")));
     var response =
@@ -292,9 +455,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markFailed(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE),
             anyLong(),
             eq("boom"),
             eq(0L),
@@ -308,7 +472,20 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void completeLeasedReconcileJobRequeuesDependencyNotReadyWithoutPenalty() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            anyLong(),
+            eq("waiting on file-group children"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
 
     var response =
         service
@@ -326,9 +503,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markWaiting(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
             anyLong(),
             eq("waiting on file-group children"),
             eq(0L),
@@ -342,7 +520,20 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void completeLeasedReconcileJobMarksStructuredTerminalFailureTerminal() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_TERMINAL),
+            anyLong(),
+            eq("deterministic invariant failure"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
     when(service.jobs.get(null, "job-1"))
         .thenReturn(
             Optional.of(job("job-1", "acct", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, "")));
@@ -362,9 +553,10 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.jobs)
-        .markFailedTerminal(
+        .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.FAILED_TERMINAL),
             anyLong(),
             eq("deterministic invariant failure"),
             eq(0L),

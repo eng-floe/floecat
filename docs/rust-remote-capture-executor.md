@@ -67,6 +67,10 @@ configured reconciler service principal via client credentials. Worker RPCs shou
 bearer token explicitly; they should not rely on propagated inbound user auth or global client
 interceptor behavior for correctness.
 
+The worker participates only in the lease-coordination domain. Canonical reconcile job indexes stay
+owned by control-plane job-state transitions, and remote workers should not assume reads or
+maintenance will repair queue drift for them.
+
 ## Worker Identity and Leasing
 The lease request supports:
 

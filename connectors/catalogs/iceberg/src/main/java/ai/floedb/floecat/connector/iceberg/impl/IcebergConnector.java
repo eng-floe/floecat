@@ -59,7 +59,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileScanTask;
@@ -243,7 +242,14 @@ public abstract class IcebergConnector implements FloecatConnector {
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
     Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
     List<Snapshot> snapshots =
-        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds);
+        snapshotsToEnumerate(
+            table,
+            fullRescan,
+            knownSnapshotIds,
+            targetSnapshotIds,
+            options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind(),
+            options == null ? Set.of() : options.selectionSnapshotIds(),
+            options == null ? 0 : options.latestN());
     if (shouldRetryEmptyIncrementalEnumeration(table, fullRescan, knownSnapshotIds, snapshots)) {
       throw new ConnectorNotReadyException(
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
@@ -326,6 +332,25 @@ public abstract class IcebergConnector implements FloecatConnector {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0) {
       return List.of();
     }
@@ -335,7 +360,13 @@ public abstract class IcebergConnector implements FloecatConnector {
       return List.of();
     }
     return buildTargetStats(
-        table, destinationTableId, snapshot, includeColumns, includeTargetKinds, Set.of());
+        table,
+        destinationTableId,
+        snapshot,
+        includeColumns,
+        columnSelectorPolicy,
+        includeTargetKinds,
+        Set.of());
   }
 
   @Override
@@ -348,6 +379,29 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -362,6 +416,7 @@ public abstract class IcebergConnector implements FloecatConnector {
             destinationTableId,
             snapshot,
             includeColumns,
+            columnSelectorPolicy,
             includeTargetKinds == null || includeTargetKinds.isEmpty()
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
@@ -402,6 +457,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Snapshot snapshot,
       Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
@@ -414,7 +470,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     long snapshotId = snapshot.snapshotId();
     long createdMs = snapshot.timestampMillis();
     Schema schema = schemaForSnapshot(table, snapshot);
-    final Set<Integer> includeIds = resolveIncludedFieldIds(schema, includeColumns);
+    final Set<Integer> includeIds =
+        resolveIncludedFieldIds(schema, includeColumns, columnSelectorPolicy);
 
     EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
     var columnNames = engineOutput.columnNames();
@@ -628,42 +685,62 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
-      List<Snapshot> snapshots = new ArrayList<>();
-      for (Snapshot snapshot : table.snapshots()) {
-        if (snapshot == null) {
-          continue;
-        }
-        if (targetSnapshotIds != null
-            && !targetSnapshotIds.isEmpty()
-            && !targetSnapshotIds.contains(snapshot.snapshotId())) {
-          continue;
-        }
-        snapshots.add(snapshot);
-      }
-      return snapshots;
-    }
-    List<Snapshot> incremental = new ArrayList<>();
+      Table table,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      FloecatConnector.SnapshotSelectionKind selectionKind,
+      Set<Long> selectionSnapshotIds,
+      int latestN) {
+    List<Snapshot> eligible = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
       if (snapshot == null) {
         continue;
       }
-      long snapshotId = snapshot.snapshotId();
-      if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
+      if (selectionKind == FloecatConnector.SnapshotSelectionKind.EXPLICIT
+          && (selectionSnapshotIds == null
+              || selectionSnapshotIds.isEmpty()
+              || !selectionSnapshotIds.contains(snapshot.snapshotId()))) {
         continue;
       }
       if (targetSnapshotIds != null
           && !targetSnapshotIds.isEmpty()
-          && !targetSnapshotIds.contains(snapshotId)) {
+          && !targetSnapshotIds.contains(snapshot.snapshotId())) {
+        continue;
+      }
+      eligible.add(snapshot);
+    }
+    eligible.sort(
+        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
+            .thenComparingLong(Snapshot::timestampMillis)
+            .thenComparingLong(Snapshot::snapshotId));
+    if (selectionKind == FloecatConnector.SnapshotSelectionKind.CURRENT) {
+      Snapshot current = table.currentSnapshot();
+      if (current == null) {
+        return List.of();
+      }
+      eligible =
+          eligible.stream()
+              .filter(snapshot -> snapshot.snapshotId() == current.snapshotId())
+              .toList();
+    } else if (selectionKind == FloecatConnector.SnapshotSelectionKind.LATEST_N) {
+      int keep = Math.max(0, latestN);
+      if (keep == 0 || eligible.isEmpty()) {
+        return List.of();
+      }
+      int from = Math.max(0, eligible.size() - keep);
+      eligible = List.copyOf(eligible.subList(from, eligible.size()));
+    }
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      return eligible;
+    }
+    List<Snapshot> incremental = new ArrayList<>();
+    for (Snapshot snapshot : eligible) {
+      if (knownSnapshotIds.contains(snapshot.snapshotId())) {
         continue;
       }
       incremental.add(snapshot);
     }
-    incremental.sort(
-        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
-            .thenComparingLong(Snapshot::timestampMillis)
-            .thenComparingLong(Snapshot::snapshotId));
     return incremental;
   }
 
@@ -1091,16 +1168,20 @@ public abstract class IcebergConnector implements FloecatConnector {
     return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
   }
 
-  static Set<Integer> resolveIncludedFieldIds(Schema schema, Set<String> includeColumns) {
+  static Set<Integer> resolveIncludedFieldIds(
+      Schema schema, Set<String> includeColumns, ColumnSelectorPolicy columnSelectorPolicy) {
     if (schema == null) {
       return Set.of();
     }
-    if (includeColumns == null || includeColumns.isEmpty()) {
-      return schema.columns().stream()
-          .map(Types.NestedField::fieldId)
-          .collect(Collectors.toCollection(LinkedHashSet::new));
+    Set<String> effectiveColumns =
+        FloecatConnector.resolveIncludedColumns(
+            schema.columns().stream().map(Types.NestedField::name).toList(),
+            includeColumns,
+            columnSelectorPolicy);
+    if (effectiveColumns.isEmpty()) {
+      return Set.of();
     }
-    return resolveFieldIdsNested(schema, includeColumns);
+    return resolveFieldIdsNested(schema, effectiveColumns);
   }
 
   private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {
