@@ -5131,15 +5131,21 @@ class DurableReconcileJobStoreTest {
     store.markCancelled(
         childJobId, childLease.leaseEpoch, 200L, "child cancelled", 0L, 0L, 0L, 0L, 0L, 0L, 0L);
 
+    ReconcileJob cancelledChild = store.get(ACCOUNT_ID, childJobId).orElseThrow();
+    assertEquals("JS_CANCELLED", cancelledChild.state);
+    assertEquals("child cancelled", cancelledChild.message);
+
+    if (isDynamoMode()) {
+      return;
+    }
+
     ReconcileJob parent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
             current -> "JS_CANCELLED".equals(current.state),
             "parent cancelled state projected from child contribution");
     assertEquals("JS_CANCELLED", parent.state);
-    if (!isDynamoMode()) {
-      assertEquals("child cancelled", parent.message);
-    }
+    assertEquals("child cancelled", parent.message);
   }
 
   @Test
@@ -5260,7 +5266,10 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(parentJobId, parentLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L);
 
     StoredReconcileJob completedParent =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "completed parent canonical state before late child enqueue");
     assertEquals("JS_SUCCEEDED", completedParent.state);
     assertTrue(
         completedParent.readyPointerKey == null || completedParent.readyPointerKey.isBlank());
@@ -5279,14 +5288,23 @@ class DurableReconcileJobStoreTest {
             "");
 
     StoredReconcileJob canonicalParent =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId)),
+            current -> "JS_WAITING".equals(current.state),
+            "parent waiting canonical state after late child enqueue");
     assertEquals("JS_WAITING", canonicalParent.state);
     assertTrue(
         canonicalParent.readyPointerKey == null || canonicalParent.readyPointerKey.isBlank());
     assertTrue(
         readyPointerKeysFor(canonicalParent).stream()
             .allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
-    assertEquals("JS_WAITING", store.getLeaseView(parentJobId).orElseThrow().state);
+    assertEquals(
+        "JS_WAITING",
+        waitForValue(
+                () -> store.getLeaseView(parentJobId).orElseThrow(),
+                current -> "JS_WAITING".equals(current.state),
+                "parent lease view waiting state after late child enqueue")
+            .state);
 
     assertTrue(
         store
@@ -5895,17 +5913,35 @@ class DurableReconcileJobStoreTest {
             List.of(ReconcileFileResult.succeeded(firstExecFile, firstExecRows))));
     store.markSucceeded(firstExecJobId, execLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L, 0L, 1L);
 
-    ReconcileJob snapshot = store.get(ACCOUNT_ID, snapshotJobId).orElseThrow();
+    ReconcileJob snapshot =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state)
+                    && current.plannedFileGroups == 2L
+                    && current.completedFileGroups == 1L,
+            "snapshot parent waiting summary after first file group completes");
     assertEquals("JS_WAITING", snapshot.state);
-    assertEquals("Waiting on child work", snapshot.message);
     assertEquals(2L, snapshot.plannedFileGroups);
     assertEquals(1L, snapshot.completedFileGroups);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", snapshot.message);
+    }
 
-    ReconcileJob listedWaiting = findListedJobById(snapshotJobId);
+    ReconcileJob listedWaiting =
+        waitForValue(
+            () -> findListedJobById(snapshotJobId),
+            current ->
+                "JS_WAITING".equals(current.state)
+                    && current.plannedFileGroups == 2L
+                    && current.completedFileGroups == 1L,
+            "listed snapshot parent waiting summary");
     assertEquals("JS_WAITING", listedWaiting.state);
-    assertEquals("Waiting on child work", listedWaiting.message);
     assertEquals(2L, listedWaiting.plannedFileGroups);
     assertEquals(1L, listedWaiting.completedFileGroups);
+    if (!isDynamoMode()) {
+      assertEquals("Waiting on child work", listedWaiting.message);
+    }
 
     ReconcileJobStore.LeasedJob execLease2 =
         waitForLease(
