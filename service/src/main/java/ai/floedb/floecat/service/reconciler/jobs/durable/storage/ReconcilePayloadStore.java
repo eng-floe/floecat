@@ -138,15 +138,18 @@ public class ReconcilePayloadStore {
     if (state == null) {
       return Optional.empty();
     }
-    return readBlob(state.definitionBlobUri, StoredJobDefinition.class);
+    return Optional.ofNullable(state.definition);
   }
 
   public StoredJobDefinition requireDefinition(StoredReconcileJob state) {
-    if (state == null) {
-      throw new IllegalStateException("Reconcile job definition missing for null job state");
+    StoredJobDefinition definition = state == null ? null : state.definition;
+    if (definition == null) {
+      throw new IllegalStateException(
+          String.format(
+              "Reconcile job %s is missing required job definition",
+              state == null ? "" : blankToEmpty(state.jobId)));
     }
-    return requireBlob(
-        state.definitionBlobUri, StoredJobDefinition.class, "job definition", state.jobId);
+    return definition;
   }
 
   public List<ReconcileFileGroupTask> loadSnapshotFileGroups(StoredReconcileJob state) {

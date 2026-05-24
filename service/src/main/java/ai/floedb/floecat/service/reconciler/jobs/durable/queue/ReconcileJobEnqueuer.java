@@ -282,14 +282,13 @@ public class ReconcileJobEnqueuer {
             spec.pinnedExecutorId);
     String dedupeKeyHash = hashValue(dedupeKey);
     String canonicalKey = Keys.reconcileJobStateRowById(spec.accountId, jobId);
-    String definitionBlobUri =
-        Keys.reconcileJobBlobUri(
-            spec.accountId, jobId, "definition-" + now + "-" + UUID.randomUUID());
     String snapshotPlanBlobUri =
         snapshotPlanFileGroups.isEmpty()
             ? ""
             : Keys.reconcileJobBlobUri(
                 spec.accountId, jobId, "snapshot-plan-" + now + "-" + UUID.randomUUID());
+    StoredJobDefinition definition =
+        StoredJobDefinition.of(scope, effectiveTableTask, effectiveViewTask);
     StoredReconcileJob record =
         newQueuedRecord(
             jobId,
@@ -308,7 +307,7 @@ public class ReconcileJobEnqueuer {
             now,
             readyPointerKeyForDue.apply(spec.accountId, laneKey, jobId, now),
             indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
-            definitionBlobUri,
+            definition,
             snapshotPlanBlobUri);
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
       LOG.debugf(
@@ -331,9 +330,7 @@ public class ReconcileJobEnqueuer {
         readyPointerKeys.apply(record),
         statePointerKeys.apply(record),
         record.connectorIndexPointerKey,
-        definitionBlobUri,
         snapshotPlanBlobUri,
-        StoredJobDefinition.of(scope, effectiveTableTask, effectiveViewTask),
         snapshotPlanBlob(snapshotPlanFileGroups),
         effectiveFileGroupTask.fileResults().isEmpty()
             ? ReconcileFileGroupTask.empty()
@@ -358,7 +355,7 @@ public class ReconcileJobEnqueuer {
       long now,
       String readyPointerKey,
       String connectorIndexPointerKey,
-      String definitionBlobUri,
+      StoredJobDefinition definition,
       String snapshotPlanBlobUri) {
     StoredReconcileJob rec = new StoredReconcileJob();
     rec.jobId = jobId;
@@ -393,7 +390,7 @@ public class ReconcileJobEnqueuer {
     rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());
     rec.fileGroupSnapshotId = effectiveFileGroupTask.snapshotId();
     rec.fileGroupFileCount = (int) plannedFilesForGroup(effectiveFileGroupTask);
-    rec.definitionBlobUri = definitionBlobUri;
+    rec.definition = definition == null ? new StoredJobDefinition() : definition;
     rec.snapshotPlanBlobUri = snapshotPlanBlobUri;
 
     JobProjection initialProjection =
@@ -423,11 +420,6 @@ public class ReconcileJobEnqueuer {
   }
 
   private void persistBulkPayloads(PendingBulkEnqueue entry) {
-    if (!entry.definitionBlobUri.isBlank() && entry.definition != null) {
-      payloadStore.writeBlob(
-          entry.definitionBlobUri, entry.definition, "Failed to persist reconcile job definition");
-      entry.definitionWritten = true;
-    }
     if (!entry.snapshotPlanBlobUri.isBlank()) {
       payloadStore.writeBlob(
           entry.snapshotPlanBlobUri,
@@ -445,9 +437,6 @@ public class ReconcileJobEnqueuer {
   private void rollbackFailedBulkEnqueue(PendingBulkEnqueue entry) {
     if (entry == null) {
       return;
-    }
-    if (entry.definitionWritten) {
-      blobStore.delete(entry.definitionBlobUri);
     }
     if (entry.snapshotPlanWritten) {
       blobStore.delete(entry.snapshotPlanBlobUri);
@@ -871,13 +860,10 @@ public class ReconcileJobEnqueuer {
     final List<String> readyKeys;
     final List<String> stateKeys;
     final String connectorIndexKey;
-    final String definitionBlobUri;
     final String snapshotPlanBlobUri;
-    final StoredJobDefinition definition;
     final SnapshotPlanBlob snapshotPlanPayload;
     final ReconcileFileGroupTask resultPayloadTask;
     final StoredReconcileJob record;
-    boolean definitionWritten;
     boolean snapshotPlanWritten;
     String resultBlobUri;
 
@@ -890,9 +876,7 @@ public class ReconcileJobEnqueuer {
         List<String> readyKeys,
         List<String> stateKeys,
         String connectorIndexKey,
-        String definitionBlobUri,
         String snapshotPlanBlobUri,
-        StoredJobDefinition definition,
         SnapshotPlanBlob snapshotPlanPayload,
         ReconcileFileGroupTask resultPayloadTask,
         StoredReconcileJob record) {
@@ -904,9 +888,7 @@ public class ReconcileJobEnqueuer {
       this.readyKeys = readyKeys == null ? List.of() : List.copyOf(readyKeys);
       this.stateKeys = stateKeys == null ? List.of() : List.copyOf(stateKeys);
       this.connectorIndexKey = connectorIndexKey;
-      this.definitionBlobUri = definitionBlobUri;
       this.snapshotPlanBlobUri = snapshotPlanBlobUri;
-      this.definition = definition;
       this.snapshotPlanPayload = snapshotPlanPayload;
       this.resultPayloadTask = resultPayloadTask;
       this.record = record;

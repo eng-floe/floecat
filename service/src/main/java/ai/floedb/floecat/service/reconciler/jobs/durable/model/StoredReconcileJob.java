@@ -48,7 +48,7 @@ public class StoredReconcileJob {
   public String fileGroupTableId;
   public long fileGroupSnapshotId;
   public int fileGroupFileCount;
-  public String definitionBlobUri;
+  public StoredJobDefinition definition = new StoredJobDefinition();
   public String snapshotPlanBlobUri;
   public String state;
   public String message;

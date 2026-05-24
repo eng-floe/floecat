@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
@@ -487,7 +488,7 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     copy.fileGroupTableId = source.fileGroupTableId;
     copy.fileGroupSnapshotId = source.fileGroupSnapshotId;
     copy.fileGroupFileCount = source.fileGroupFileCount;
-    copy.definitionBlobUri = source.definitionBlobUri;
+    copy.definition = cloneDefinition(source.definition);
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
     copy.state = source.state;
     copy.message = source.message;
@@ -538,6 +539,45 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
                 canonicalPointer.pointerKey(),
                 canonicalPointer.blobUri(),
                 canonicalPointer.version()));
+  }
+
+  private static StoredJobDefinition cloneDefinition(StoredJobDefinition source) {
+    if (source == null) {
+      return null;
+    }
+    StoredJobDefinition copy = new StoredJobDefinition();
+    copy.sourceNamespace = source.sourceNamespace;
+    copy.sourceTable = source.sourceTable;
+    copy.taskMode = source.taskMode;
+    copy.taskDestinationNamespaceId = source.taskDestinationNamespaceId;
+    copy.taskDestinationTableId = source.taskDestinationTableId;
+    copy.taskDestinationTableDisplayName = source.taskDestinationTableDisplayName;
+    copy.sourceView = source.sourceView;
+    copy.taskDestinationViewId = source.taskDestinationViewId;
+    copy.taskDestinationViewDisplayName = source.taskDestinationViewDisplayName;
+    copy.destinationTableId = source.destinationTableId;
+    copy.destinationViewId = source.destinationViewId;
+    copy.destinationNamespaceIds =
+        source.destinationNamespaceIds == null
+            ? List.of()
+            : List.copyOf(source.destinationNamespaceIds);
+    copy.destinationCaptureRequests =
+        source.destinationCaptureRequests == null
+            ? List.of()
+            : List.copyOf(source.destinationCaptureRequests);
+    copy.capturePolicyColumns =
+        source.capturePolicyColumns == null ? List.of() : List.copyOf(source.capturePolicyColumns);
+    copy.capturePolicyOutputs =
+        source.capturePolicyOutputs == null ? List.of() : List.copyOf(source.capturePolicyOutputs);
+    copy.capturePolicyDefaultColumnScope = source.capturePolicyDefaultColumnScope;
+    copy.capturePolicyMaxDefaultColumns = source.capturePolicyMaxDefaultColumns;
+    copy.snapshotSelectionKind = source.snapshotSelectionKind;
+    copy.snapshotSelectionSnapshotIds =
+        source.snapshotSelectionSnapshotIds == null
+            ? List.of()
+            : List.copyOf(source.snapshotSelectionSnapshotIds);
+    copy.snapshotSelectionLatestN = source.snapshotSelectionLatestN;
+    return copy;
   }
 
   private JobIndexWriteBatch queuedJobInsertOps(

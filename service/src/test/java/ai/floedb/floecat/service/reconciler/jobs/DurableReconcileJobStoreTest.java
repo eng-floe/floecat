@@ -95,7 +95,6 @@ class DurableReconcileJobStoreTest {
   @BeforeEach
   void setUp() {
     store = new DurableReconcileJobStore();
-    store.pointerStore = new InMemoryPointerStore();
     store.blobStore = new InMemoryBlobStore();
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
@@ -131,6 +130,7 @@ class DurableReconcileJobStoreTest {
               store.projectionBackend)
           .bind(dynamoDbClient, store.kvTable);
     } else {
+      store.pointerStore = new InMemoryPointerStore();
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
       store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
@@ -547,7 +547,7 @@ class DurableReconcileJobStoreTest {
             Keys.reconcileJobByConnectorPointerPrefix(ACCOUNT_ID, CONNECTOR_ID)));
     assertEquals(1, listChildJobs(ACCOUNT_ID, "parent-1").size());
     assertEquals(
-        1, blobStore.activeBlobCount(), "only the successful job payload blobs should remain");
+        0, blobStore.activeBlobCount(), "inline job definitions should not leave payload blobs");
   }
 
   @Test
@@ -603,7 +603,8 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         1, store.pointerStore.countByPrefix(Keys.reconcileJobStateRowByIdPrefix(ACCOUNT_ID)));
     assertEquals(1, listChildJobs(ACCOUNT_ID, "parent-1").size());
-    assertEquals(1, blobStore.activeBlobCount(), "dedupe hit should clean up prewritten payloads");
+    assertEquals(
+        0, blobStore.activeBlobCount(), "inline job definitions should not leave payload blobs");
   }
 
   @Test
@@ -1340,7 +1341,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void getThrowsWhenDefinitionBlobIsMissing() {
+  void getThrowsWhenInlineDefinitionIsMissing() {
     store.init();
 
     String jobId =
@@ -1352,7 +1353,8 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.empty());
     StoredReconcileJob record = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
-    assertTrue(store.blobStore.delete(record.definitionBlobUri));
+    record.definition = null;
+    overwriteCanonicalRecordWithoutSync(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId), record);
 
     IllegalStateException error =
         assertThrows(IllegalStateException.class, () -> store.get(ACCOUNT_ID, jobId));
@@ -1377,7 +1379,7 @@ class DurableReconcileJobStoreTest {
             "");
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     StoredReconcileJob corrupted = readStoredRecord(canonicalPointerKey);
-    corrupted.definitionBlobUri = "blob://missing-definition";
+    corrupted.definition = null;
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, corrupted);
 
     assertTrue(
@@ -1750,7 +1752,7 @@ class DurableReconcileJobStoreTest {
     assertFalse(stateJson.has("fileGroupPaths"));
     assertFalse(stateJson.has("fileGroupResults"));
     assertFalse(stateJson.has("fileGroupResultBlobUri"));
-    assertFalse(stateJson.path("definitionBlobUri").asText().isBlank());
+    assertTrue(stateJson.has("definition"));
     assertFalse(stateJson.path("snapshotPlanBlobUri").asText().isBlank());
     assertFalse(stateJson.has("fileGroupPlanBlobUri"));
     assertEquals(1, stateJson.path("fileGroupFileCount").asInt());
@@ -4827,7 +4829,9 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(CONNECTOR_ID, lease.connectorId);
     assertEquals(
-        1, blobStore.getCount(), "expected one ready-candidate read on the uncontended happy path");
+        0,
+        blobStore.getCount(),
+        "inline job definitions should avoid blob reads on the uncontended happy path");
   }
 
   /** BlobStore that throws StorageNotFoundException on every get() call. */
@@ -5153,7 +5157,11 @@ class DurableReconcileJobStoreTest {
     ReconcileJobStore.LeasedJob childLease = leaseJob(childJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(childJobId, childLease.leaseEpoch, 100L, "executor-success");
 
-    ReconcileJob runningParent = store.get(ACCOUNT_ID, parentJobId).orElseThrow();
+    ReconcileJob runningParent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
+            current -> "JS_RUNNING".equals(current.state) && "Running".equals(current.message),
+            "parent running state projected from child contribution");
     assertEquals("JS_RUNNING", runningParent.state);
     assertEquals("Running", runningParent.message);
 
@@ -6364,24 +6372,23 @@ class DurableReconcileJobStoreTest {
         Keys.encodeSegment(jobId));
   }
 
-  private Pointer overwriteCanonicalRecordWithoutSync(
+  private void overwriteCanonicalRecordWithoutSync(
       String canonicalPointerKey, StoredReconcileJob record) {
-    Pointer currentPointer = store.pointerStore.get(canonicalPointerKey).orElseThrow();
-    Pointer nextPointer =
-        Pointer.newBuilder()
-            .setKey(canonicalPointerKey)
-            .setBlobUri(
-                "inline:reconcile-job:"
-                    + java.util.Base64.getUrlEncoder()
-                        .withoutPadding()
-                        .encodeToString(
-                            assertDoesNotThrow(() -> store.mapper.writeValueAsBytes(record))))
-            .setVersion(currentPointer.getVersion() + 1L)
-            .build();
     assertTrue(
-        store.pointerStore.compareAndSet(
-            canonicalPointerKey, currentPointer.getVersion(), nextPointer));
-    return nextPointer;
+        assertDoesNotThrow(
+            () ->
+                store
+                    .jobIndexStore
+                    .mutateByCanonicalPointerReturningRecord(
+                        canonicalPointerKey,
+                        existing -> {
+                          StoredReconcileJob replacement =
+                              store.jobIndexStore.cloneStoredRecord(record);
+                          replacement.canonicalPointerKey = canonicalPointerKey;
+                          return replacement;
+                        })
+                    .isPresent()),
+        () -> "expected canonical record to exist for " + canonicalPointerKey);
   }
 
   private static final class PrefixFailingPointerStore extends InMemoryPointerStore {
