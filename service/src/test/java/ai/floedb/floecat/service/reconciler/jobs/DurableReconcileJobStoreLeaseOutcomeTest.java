@@ -250,7 +250,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_RUNNING", store.get(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_RUNNING",
+        waitForValue(
+                () -> store.get(jobId).orElseThrow(),
+                current -> "JS_RUNNING".equals(current.state),
+                "stale lease epoch leaves job running")
+            .state);
   }
 
   @Test
@@ -305,7 +311,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_SUCCEEDED", store.get(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        waitForValue(
+                () -> store.get(jobId).orElseThrow(),
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "terminal lease outcome remains succeeded")
+            .state);
   }
 
   @Test
@@ -331,7 +343,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_RUNNING", store.get(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_RUNNING",
+        waitForValue(
+                () -> store.get(jobId).orElseThrow(),
+                current -> "JS_RUNNING".equals(current.state),
+                "expired lease outcome leaves job running")
+            .state);
   }
 
   private String enqueueRoot() {

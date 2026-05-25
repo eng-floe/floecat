@@ -5344,10 +5344,10 @@ class DurableReconcileJobStoreTest {
     ReconcileJob parent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state) && "Succeeded".equals(current.message),
+            current -> "JS_SUCCEEDED".equals(current.state) && current.finishedAtMs == 200L,
             "parent succeeded state projected from child contribution");
     assertEquals("JS_SUCCEEDED", parent.state);
-    assertEquals("Succeeded", parent.message);
+    assertEquals(200L, parent.finishedAtMs);
   }
 
   @Test
@@ -6169,7 +6169,7 @@ class DurableReconcileJobStoreTest {
             "");
 
     ReconcileJobStore.LeasedJob snapshotLease =
-        leaseJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
+        leaseSpecificReadyJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 100L, "executor-snapshot");
     assertTrue(
         store.applyLeaseOutcome(
@@ -6474,7 +6474,7 @@ class DurableReconcileJobStoreTest {
             0L));
 
     ReconcileJobStore.LeasedJob snapshotLease =
-        leaseJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
+        leaseSpecificReadyJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 75L, "executor-snapshot");
     assertTrue(
         store.applyLeaseOutcome(
@@ -6962,27 +6962,20 @@ class DurableReconcileJobStoreTest {
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
-    for (int i = 0; i < 16; i++) {
-      ReconcileJobStore.LeasedJob lease =
-          waitForLease(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
-      if (jobId.equals(lease.jobId)) {
-        return lease;
-      }
-    }
-    throw new IllegalStateException("Unable to lease job " + jobId);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob readyRecord =
+        waitForValue(
+            () -> readStoredRecord(canonicalPointerKey),
+            current ->
+                "JS_QUEUED".equals(current.state)
+                    && current.readyPointerKey != null
+                    && !current.readyPointerKey.isBlank(),
+            "job " + jobId + " to become ready for leasing");
+    return leaseSpecificReadyJob(jobId, readyRecord.jobKind());
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId, ReconcileJobKind jobKind) {
-    for (int i = 0; i < 16; i++) {
-      ReconcileJobStore.LeasedJob lease =
-          waitForLease(
-                  ReconcileJobStore.LeaseRequest.of(Set.of(), Set.of(), Set.of(), Set.of(jobKind)))
-              .orElseThrow();
-      if (jobId.equals(lease.jobId)) {
-        return lease;
-      }
-    }
-    throw new IllegalStateException("Unable to lease job " + jobId);
+    return leaseSpecificReadyJob(jobId, jobKind);
   }
 
   private ReconcileJobStore.LeasedJob leaseSpecificReadyJob(
