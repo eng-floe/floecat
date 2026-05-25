@@ -3150,7 +3150,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "first"));
-    Thread.sleep(5L);
+    awaitNextMillis(readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, first)).createdAtMs);
     String second =
         store.enqueue(
             ACCOUNT_ID,
@@ -3158,7 +3158,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "second"));
-    Thread.sleep(5L);
+    awaitNextMillis(readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, second)).createdAtMs);
     String third =
         store.enqueue(
             ACCOUNT_ID,
@@ -3167,12 +3167,21 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.of(List.of(), "third"));
 
-    var firstPage = store.list(ACCOUNT_ID, 2, "", CONNECTOR_ID, java.util.Set.of());
+    var firstPage =
+        waitForValue(
+            () -> store.list(ACCOUNT_ID, 2, "", CONNECTOR_ID, java.util.Set.of()),
+            current -> current.jobs.size() == 2,
+            "first connector history page");
     assertEquals(List.of(third, second), firstPage.jobs.stream().map(job -> job.jobId).toList());
     assertFalse(firstPage.nextPageToken.isBlank());
 
     var secondPage =
-        store.list(ACCOUNT_ID, 2, firstPage.nextPageToken, CONNECTOR_ID, java.util.Set.of());
+        waitForValue(
+            () ->
+                store.list(
+                    ACCOUNT_ID, 2, firstPage.nextPageToken, CONNECTOR_ID, java.util.Set.of()),
+            current -> current.jobs.size() == 1,
+            "second connector history page");
     assertEquals(List.of(first), secondPage.jobs.stream().map(job -> job.jobId).toList());
     assertEquals("", secondPage.nextPageToken);
   }
@@ -3193,7 +3202,13 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, lease.jobId);
     store.markSucceeded(jobId, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
-    var page = store.list(ACCOUNT_ID, 10, "", CONNECTOR_ID, java.util.Set.of());
+    var page =
+        waitForValue(
+            () -> store.list(ACCOUNT_ID, 10, "", CONNECTOR_ID, java.util.Set.of()),
+            current ->
+                current.jobs.stream()
+                    .anyMatch(job -> jobId.equals(job.jobId) && "JS_SUCCEEDED".equals(job.state)),
+            "connector history retains succeeded terminal job");
 
     assertTrue(page.jobs.stream().anyMatch(job -> jobId.equals(job.jobId)));
     assertEquals(
@@ -3229,7 +3244,15 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(
         leasedJobId, lease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0, 0, 0);
 
-    var page = store.list(ACCOUNT_ID, 10, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED"));
+    var page =
+        waitForValue(
+            () -> store.list(ACCOUNT_ID, 10, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED")),
+            current ->
+                current.jobs.stream()
+                    .map(job -> job.jobId)
+                    .toList()
+                    .equals(List.of(succeededJobId)),
+            "connector succeeded-state listing");
 
     assertEquals(List.of(succeededJobId), page.jobs.stream().map(job -> job.jobId).toList());
     assertTrue(page.jobs.stream().noneMatch(job -> queuedJobId.equals(job.jobId)));
@@ -3424,7 +3447,13 @@ class DurableReconcileJobStoreTest {
           ReconcileScope.of(List.of(), "queued-" + i));
     }
 
-    var page = store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED"));
+    var page =
+        waitForValue(
+            () -> store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED")),
+            current ->
+                current.jobs.stream().map(job -> job.jobId).toList().equals(List.of(succeededJobId))
+                    && current.nextPageToken.isBlank(),
+            "connector succeeded-state pagination across index pages");
 
     assertEquals(List.of(succeededJobId), page.jobs.stream().map(job -> job.jobId).toList());
     assertEquals("", page.nextPageToken);
@@ -3459,17 +3488,29 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.of(List.of(), "queued"));
 
     var firstPage =
-        store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED", "JS_QUEUED"));
-    assertEquals(1, firstPage.jobs.size());
-    assertFalse(firstPage.nextPageToken.isBlank());
+        waitForValue(
+            () ->
+                store.list(
+                    ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of("JS_SUCCEEDED", "JS_QUEUED")),
+            current -> current.jobs.size() == 1 && !current.nextPageToken.isBlank(),
+            "first connector multi-state page");
 
     var secondPage =
-        store.list(
-            ACCOUNT_ID,
-            1,
-            firstPage.nextPageToken,
-            CONNECTOR_ID,
-            java.util.Set.of("JS_SUCCEEDED", "JS_QUEUED"));
+        waitForValue(
+            () ->
+                store.list(
+                    ACCOUNT_ID,
+                    1,
+                    firstPage.nextPageToken,
+                    CONNECTOR_ID,
+                    java.util.Set.of("JS_SUCCEEDED", "JS_QUEUED")),
+            current ->
+                java.util.stream.Stream.concat(firstPage.jobs.stream(), current.jobs.stream())
+                        .map(job -> job.jobId)
+                        .collect(java.util.stream.Collectors.toSet())
+                        .equals(java.util.Set.of(queuedJobId, succeededJobId))
+                    && current.nextPageToken.isBlank(),
+            "second connector multi-state page");
 
     assertEquals(
         java.util.Set.of(queuedJobId, succeededJobId),
@@ -6415,22 +6456,7 @@ class DurableReconcileJobStoreTest {
             0L,
             0L));
 
-    String tableCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId);
-    StoredReconcileJob queuedTable = readStoredRecord(tableCanonicalPointerKey);
-    ReconcileJobStore.LeasedJob tableLease =
-        assertDoesNotThrow(
-                () ->
-                    leaseManager()
-                        .leaseCanonical(
-                            tableCanonicalPointerKey,
-                            queuedTable.readyPointerKey,
-                            System.currentTimeMillis(),
-                            store
-                                .jobIndexStore
-                                .loadCanonicalSnapshot(tableCanonicalPointerKey)
-                                .orElseThrow(),
-                            queuedTable))
-            .orElseThrow();
+    ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     assertTrue(
         store.applyLeaseOutcome(
@@ -6465,22 +6491,7 @@ class DurableReconcileJobStoreTest {
             0L,
             0L));
 
-    String execCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId);
-    StoredReconcileJob queuedExec = readStoredRecord(execCanonicalPointerKey);
-    ReconcileJobStore.LeasedJob execLease =
-        assertDoesNotThrow(
-                () ->
-                    leaseManager()
-                        .leaseCanonical(
-                            execCanonicalPointerKey,
-                            queuedExec.readyPointerKey,
-                            System.currentTimeMillis(),
-                            store
-                                .jobIndexStore
-                                .loadCanonicalSnapshot(execCanonicalPointerKey)
-                                .orElseThrow(),
-                            queuedExec))
-            .orElseThrow();
+    ReconcileJobStore.LeasedJob execLease = leaseJob(execJobId, ReconcileJobKind.EXEC_FILE_GROUP);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.persistFileGroupResult(
         execJobId,
@@ -6829,6 +6840,19 @@ class DurableReconcileJobStoreTest {
 
   private void runMaintenance() {
     store.runMaintenanceOnce(isDynamoMode() ? 10L : 50L);
+  }
+
+  private static void awaitNextMillis(long previousMs) {
+    long now = System.currentTimeMillis();
+    int spins = 0;
+    while (now <= previousMs) {
+      Thread.onSpinWait();
+      now = System.currentTimeMillis();
+      if (++spins > 10_000_000) {
+        throw new IllegalStateException(
+            "Timed out waiting for wall clock to advance beyond " + previousMs);
+      }
+    }
   }
 
   private static String describeValue(Object value) {
