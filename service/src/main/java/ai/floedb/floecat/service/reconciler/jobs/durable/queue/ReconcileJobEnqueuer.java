@@ -70,9 +70,6 @@ public class ReconcileJobEnqueuer {
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
   private ResultPayloadWriter writeFileGroupResultPayload;
-  private Function<StoredReconcileJob, List<ReconcileJobIndexStore.CanonicalRecordMutation>>
-      buildAncestorMutations;
-  private int casMax;
 
   @FunctionalInterface
   public interface ReadyPointerKeyForDue {
@@ -90,10 +87,7 @@ public class ReconcileJobEnqueuer {
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
       ReadyPointerKeyForDue readyPointerKeyForDue,
-      ResultPayloadWriter writeFileGroupResultPayload,
-      Function<StoredReconcileJob, List<ReconcileJobIndexStore.CanonicalRecordMutation>>
-          buildAncestorMutations,
-      int casMax) {
+      ResultPayloadWriter writeFileGroupResultPayload) {
     this.blobStore = blobStore;
     this.payloadStore = payloadStore;
     this.projector = projector;
@@ -104,8 +98,6 @@ public class ReconcileJobEnqueuer {
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
     this.writeFileGroupResultPayload = writeFileGroupResultPayload;
-    this.buildAncestorMutations = buildAncestorMutations;
-    this.casMax = casMax;
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
@@ -146,17 +138,6 @@ public class ReconcileJobEnqueuer {
 
       try {
         persistBulkPayloads(entry);
-        BulkEnqueueItemResult existingResult = commitBulkEntry(entry);
-        if (existingResult != null) {
-          rollbackFailedBulkEnqueue(entry);
-          results.set(entry.index, existingResult);
-          if (existingResult.succeeded()) {
-            logEnqueueDeduped(entry, existingResult.jobId, "store");
-          } else {
-            logEnqueueFailed(entry, existingResult.error);
-          }
-          continue;
-        }
       } catch (RuntimeException e) {
         rollbackFailedBulkEnqueue(entry);
         BulkEnqueueItemResult failed = failedBulkEnqueue(entry.index, e);
@@ -164,7 +145,17 @@ public class ReconcileJobEnqueuer {
         logEnqueueFailed(entry, failed.error);
         continue;
       }
-
+      BulkEnqueueItemResult existingResult = commitBulkEntry(entry);
+      if (existingResult != null) {
+        rollbackFailedBulkEnqueue(entry);
+        results.set(entry.index, existingResult);
+        if (existingResult.succeeded()) {
+          logEnqueueDeduped(entry, existingResult.jobId, "store");
+        } else {
+          logEnqueueFailed(entry, existingResult.error);
+        }
+        continue;
+      }
       BulkEnqueueItemResult created =
           new BulkEnqueueItemResult(entry.index, entry.record.jobId, true, "");
       results.set(entry.index, created);
@@ -187,8 +178,7 @@ public class ReconcileJobEnqueuer {
             entry.stateKeys,
             entry.connectorIndexKey,
             entry.resultBlobUri,
-            entry.record),
-        () -> buildAncestorMutations.apply(entry.record));
+            entry.record));
   }
 
   private void logEnqueueCreated(PendingBulkEnqueue entry, String jobId) {

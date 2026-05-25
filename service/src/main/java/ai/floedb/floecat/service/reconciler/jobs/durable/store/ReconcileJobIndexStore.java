@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -105,6 +106,10 @@ public interface ReconcileJobIndexStore {
 
   BulkEnqueueItemResult commitQueuedJobInsert(
       QueuedJobInsert insert, Supplier<List<CanonicalRecordMutation>> ancestorMutationsSupplier);
+
+  List<BulkEnqueueItemResult> commitQueuedJobInserts(
+      List<QueuedJobInsert> inserts,
+      Function<List<QueuedJobInsert>, List<CanonicalRecordMutation>> ancestorMutationsBuilder);
 
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);

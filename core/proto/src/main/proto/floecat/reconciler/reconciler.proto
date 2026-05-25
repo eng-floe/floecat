@@ -774,11 +774,21 @@ message ListReconcileJobsRequest {
   string connector_id = 2;
   // Optional state filter. Empty means all states.
   repeated JobState states = 3;
+  // Return only top-level root jobs.
+  bool roots_only = 4;
 }
 
 message ListReconcileJobsResponse {
   repeated GetReconcileJobResponse jobs = 1;
   ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message GetReconcileJobTreeRequest {
+  string job_id = 1;
+}
+
+message GetReconcileJobTreeResponse {
+  repeated GetReconcileJobResponse jobs = 1;
 }
 
 // Requests cancellation of a top-level or child reconcile job.
@@ -843,6 +853,8 @@ service ReconcileControl {
   rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
   // Returns one reconcile job by id.
   rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
+  // Returns one reconcile job plus all descendants.
+  rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (GetReconcileJobTreeResponse);
   // Lists reconcile jobs visible to the caller.
   rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
   // Requests cancellation for a reconcile job.

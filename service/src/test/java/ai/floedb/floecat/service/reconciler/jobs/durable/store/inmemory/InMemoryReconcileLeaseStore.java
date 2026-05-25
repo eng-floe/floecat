@@ -144,8 +144,10 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       }
       StoredJobLease nextLease =
           StoredJobLease.active(current.accountId, current.jobId, nextLeaseEpoch, now + leaseMs);
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch =
+          buildLeaseJobIndexWriteBatch(currentSnapshot, baseline, current);
       if (leaseBackend.compareAndSetBatch(
-          jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, baseline, current),
+          jobIndexBatch,
           mergeLeaseWrites(
               ownerWrites, buildLeaseWriteBatch(currentLeaseSnapshot, previousLease, nextLease)))) {
         synchronized (state) {
@@ -184,6 +186,13 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       }
     }
     return Optional.empty();
+  }
+
+  private ReconcileJobIndexStore.JobIndexWriteBatch buildLeaseJobIndexWriteBatch(
+      CanonicalPointerSnapshot currentSnapshot,
+      StoredReconcileJob previous,
+      StoredReconcileJob current) {
+    return jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, previous, current);
   }
 
   @Override

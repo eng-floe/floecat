@@ -45,6 +45,8 @@ import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
@@ -275,6 +277,53 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   @Override
+  public Uni<GetReconcileJobTreeResponse> getReconcileJobTree(GetReconcileJobTreeRequest request) {
+    var L = LogHelper.start(LOG, "GetReconcileJobTree");
+    return mapFailures(
+            run(
+                () -> {
+                  try {
+                    var principalContext = principalProvider.get();
+                    var correlationId = principalContext.getCorrelationId();
+
+                    authz.require(principalContext, "connector.manage");
+
+                    var jobsInTree =
+                        jobs.jobTree(principalContext.getAccountId(), request.getJobId());
+                    if (jobsInTree.isEmpty()) {
+                      throw GrpcErrors.notFound(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.JOB,
+                          Map.of("id", request.getJobId()));
+                    }
+
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.GET_JOB,
+                        "get_reconcile_job_tree",
+                        "success",
+                        null);
+                    var builder = GetReconcileJobTreeResponse.newBuilder();
+                    for (var job : jobsInTree) {
+                      builder.addJobs(toResponse(principalContext.getAccountId(), job, false));
+                    }
+                    return builder.build();
+                  } catch (RuntimeException e) {
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.GET_JOB,
+                        "get_reconcile_job_tree",
+                        "error",
+                        normalizeReason(e));
+                    throw e;
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
   public Uni<ListReconcileJobsResponse> listReconcileJobs(ListReconcileJobsRequest request) {
     var L = LogHelper.start(LOG, "ListReconcileJobs");
     return mapFailures(
@@ -295,12 +344,19 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                       }
                     }
                     var page =
-                        jobs.list(
-                            principalContext.getAccountId(),
-                            pageSize,
-                            pageToken,
-                            request.getConnectorId(),
-                            states);
+                        request.getRootsOnly()
+                            ? jobs.listRootJobs(
+                                principalContext.getAccountId(),
+                                pageSize,
+                                pageToken,
+                                request.getConnectorId(),
+                                states)
+                            : jobs.list(
+                                principalContext.getAccountId(),
+                                pageSize,
+                                pageToken,
+                                request.getConnectorId(),
+                                states);
 
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.LIST_JOBS, "list_reconcile_jobs", "success", null);

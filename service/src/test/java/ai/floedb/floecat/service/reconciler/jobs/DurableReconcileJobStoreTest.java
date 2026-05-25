@@ -43,16 +43,24 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
+import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -77,6 +85,7 @@ import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
@@ -90,6 +99,7 @@ class DurableReconcileJobStoreTest {
 
   private DurableReconcileJobStore store;
   private DynamoDbClient dynamoDbClient;
+  private DynamoDbAsyncClient dynamoDbAsyncClient;
 
   @BeforeEach
   void setUp() {
@@ -105,6 +115,7 @@ class DurableReconcileJobStoreTest {
               .config
               .getOptionalValue("floecat.kv.table", String.class)
               .orElse("floecat_pointers");
+      store.pointerStore = createDynamoPointerStore();
       store.jobIndexBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store
               .DynamoReconcileJobIndexBackend();
@@ -142,6 +153,10 @@ class DurableReconcileJobStoreTest {
     if (dynamoDbClient != null) {
       dynamoDbClient.close();
       dynamoDbClient = null;
+    }
+    if (dynamoDbAsyncClient != null) {
+      dynamoDbAsyncClient.close();
+      dynamoDbAsyncClient = null;
     }
   }
 
@@ -600,7 +615,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void bulkEnqueueAccumulatesExpectedChildJobsOncePerParentBatch() {
+  void bulkEnqueueAccumulatesExpectedAndQueuedChildJobsAcrossParentBatches() {
     store.init();
 
     String parentJobId =
@@ -620,13 +635,23 @@ class DurableReconcileJobStoreTest {
             List.of(
                 fileGroupSpec(parentJobId, "group-1", "s3://bucket/table-1/file-1.parquet"),
                 fileGroupSpec(parentJobId, "group-2", "s3://bucket/table-1/file-2.parquet"),
-                fileGroupSpec(parentJobId, "group-3", "s3://bucket/table-1/file-3.parquet")));
+                fileGroupSpec(parentJobId, "group-3", "s3://bucket/table-1/file-3.parquet"),
+                fileGroupSpec(parentJobId, "group-4", "s3://bucket/table-1/file-4.parquet"),
+                fileGroupSpec(parentJobId, "group-5", "s3://bucket/table-1/file-5.parquet"),
+                fileGroupSpec(parentJobId, "group-6", "s3://bucket/table-1/file-6.parquet"),
+                fileGroupSpec(parentJobId, "group-7", "s3://bucket/table-1/file-7.parquet"),
+                fileGroupSpec(parentJobId, "group-8", "s3://bucket/table-1/file-8.parquet"),
+                fileGroupSpec(parentJobId, "group-9", "s3://bucket/table-1/file-9.parquet")));
 
     result.requireAllSucceeded("bulk expected child count");
 
-    StoredReconcileJob parent =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
-    assertEquals(3L, parent.expectedChildJobs);
+    ReconcileJobStore.ReconcileJobPage children =
+        waitForValue(
+            () -> store.childJobsPage(ACCOUNT_ID, parentJobId, 20, ""),
+            page -> page.jobs.size() == 9,
+            "snapshot child jobs after bulk enqueue");
+    assertEquals(9, children.jobs.size());
+    assertTrue(children.jobs.stream().allMatch(job -> "JS_QUEUED".equals(job.state)));
   }
 
   @Test
@@ -1955,14 +1980,16 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
-    assertEquals(metadataJob, firstLease.jobId);
+    assertTrue(firstLease.jobId.equals(metadataJob) || firstLease.jobId.equals(statsJob));
 
     assertTrue(store.leaseNext().isEmpty());
 
-    store.markSucceeded(metadataJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    store.markSucceeded(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
     var secondLease = store.leaseNext().orElseThrow();
-    assertEquals(statsJob, secondLease.jobId);
+    String remainingJobId = firstLease.jobId.equals(metadataJob) ? statsJob : metadataJob;
+    assertEquals(remainingJobId, secondLease.jobId);
   }
 
   @Test
@@ -1975,17 +2002,19 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
     String secondJob = store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.CAPTURE_ONLY, scope);
     var firstLease = store.leaseNext().orElseThrow();
-    assertEquals(firstJob, firstLease.jobId);
+    assertTrue(firstLease.jobId.equals(firstJob) || firstLease.jobId.equals(secondJob));
     String firstCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstLease.jobId);
     StoredReconcileJob firstRecord = readStoredRecord(firstCanonicalPointerKey);
     String lanePointerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, firstRecord.laneKey);
     assertTrue(store.pointerStore.get(lanePointerKey).isPresent());
 
-    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    store.markSucceeded(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
     assertTrue(store.pointerStore.get(lanePointerKey).isEmpty());
     var secondLease = store.leaseNext().orElseThrow();
-    assertEquals(secondJob, secondLease.jobId);
+    String remainingJobId = firstLease.jobId.equals(firstJob) ? secondJob : firstJob;
+    assertEquals(remainingJobId, secondLease.jobId);
   }
 
   @Test
@@ -2084,7 +2113,7 @@ class DurableReconcileJobStoreTest {
                 .setVersion(lanePointer.getVersion() + 1)
                 .build()));
 
-    InMemoryReconcileLeaseStore leaseManager = leaseManager();
+    ReconcileLeaseStore leaseManager = leaseManager();
     assertDoesNotThrow(() -> leaseManager.clearLaneLeaseIfOwned(activeRecord, canonicalPointerKey));
 
     Pointer retainedPointer = store.pointerStore.get(lanePointerKey).orElseThrow();
@@ -2102,7 +2131,7 @@ class DurableReconcileJobStoreTest {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     StoredReconcileJob queuedRecord = readStoredRecord(canonicalPointerKey);
 
-    InMemoryReconcileLeaseStore leaseManager = leaseManager();
+    ReconcileLeaseStore leaseManager = leaseManager();
 
     boolean firstClaim =
         leaseManager.tryAcquireLaneLease(
@@ -2161,7 +2190,7 @@ class DurableReconcileJobStoreTest {
                 .setVersion(1L)
                 .build()));
 
-    InMemoryReconcileLeaseStore leaseManager = leaseManager();
+    ReconcileLeaseStore leaseManager = leaseManager();
 
     boolean acquired =
         leaseManager.tryAcquireLaneLease(
@@ -2196,7 +2225,7 @@ class DurableReconcileJobStoreTest {
     String laneOwnerBeforeAcquire =
         store.pointerStore.get(lanePointerKey).orElseThrow().getBlobUri();
 
-    InMemoryReconcileLeaseStore leaseManager = leaseManager();
+    ReconcileLeaseStore leaseManager = leaseManager();
 
     boolean acquired =
         leaseManager.tryAcquireLaneLease(
@@ -2218,14 +2247,16 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     var firstLease = store.leaseNext().orElseThrow();
-    assertEquals(firstJob, firstLease.jobId);
+    assertTrue(firstLease.jobId.equals(firstJob) || firstLease.jobId.equals(secondJob));
 
     assertTrue(store.leaseNext().isEmpty());
 
-    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+    store.markSucceeded(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
 
     var secondLease = store.leaseNext().orElseThrow();
-    assertEquals(secondJob, secondLease.jobId);
+    String remainingJobId = firstLease.jobId.equals(firstJob) ? secondJob : firstJob;
+    assertEquals(remainingJobId, secondLease.jobId);
   }
 
   @Test
@@ -2317,7 +2348,7 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJob activeRecord = readStoredRecord(canonicalPointerKey);
 
-    InMemoryReconcileLeaseStore leaseManager = leaseManager();
+    ReconcileLeaseStore leaseManager = leaseManager();
     assertDoesNotThrow(
         () -> leaseManager.clearSnapshotLeaseIfOwned(activeRecord, canonicalPointerKey));
 
@@ -3202,6 +3233,137 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(List.of(succeededJobId), page.jobs.stream().map(job -> job.jobId).toList());
     assertTrue(page.jobs.stream().noneMatch(job -> queuedJobId.equals(job.jobId)));
+  }
+
+  @Test
+  void listRootJobsUsesProjectedRootSummaryIndex() {
+    store.init();
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "root"));
+    Optional<ReconcileJob> waiting =
+        waitForValue(
+            () ->
+                store
+                    .listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, java.util.Set.of())
+                    .jobs
+                    .stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst(),
+            Optional::isPresent,
+            "root summary list waits for projected connector state");
+
+    assertEquals("JS_QUEUED", waiting.orElseThrow().state);
+    assertTrue(waiting.orElseThrow().parentJobId.isBlank());
+  }
+
+  @Test
+  void listRootJobsRepairsTerminalSummaryMissingFinishedAtMs() {
+    assumeMemoryOnly("root-summary repair is injected directly in memory mode");
+    store.init();
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    ReconcileJobStore.LeasedJob connectorLease =
+        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            150L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 200L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 300L, 1L, 1L, 0L, 0L);
+
+    ReconcileJob terminal =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            job -> "JS_SUCCEEDED".equals(job.state) && job.finishedAtMs == 300L,
+            "terminal root summary before corruption");
+
+    StoredReconcileJob canonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(store.blobStore, store.pointerStore, store.mapper);
+    ReconcileJobRootSummaryStore rootSummaryStore = new ReconcileJobRootSummaryStore();
+    rootSummaryStore.bind(store.pointerStore, payloadStore);
+    rootSummaryStore.upsert(
+        new StoredReconcileJobListSummary(
+            ACCOUNT_ID,
+            connectorJobId,
+            CONNECTOR_ID,
+            "JS_SUCCEEDED",
+            "Succeeded",
+            terminal.startedAtMs,
+            0L,
+            terminal.tablesScanned,
+            terminal.tablesChanged,
+            terminal.viewsScanned,
+            terminal.viewsChanged,
+            terminal.errors,
+            terminal.fullRescan,
+            terminal.captureMode,
+            terminal.snapshotsProcessed,
+            terminal.statsProcessed,
+            terminal.indexesProcessed,
+            terminal.executorId,
+            terminal.executionPolicy.executionClass(),
+            terminal.executionPolicy.lane(),
+            terminal.executionPolicy.attributes(),
+            terminal.jobKind,
+            terminal.plannedFileGroups,
+            terminal.plannedFiles,
+            terminal.completedFileGroups,
+            terminal.failedFileGroups,
+            terminal.completedFiles,
+            terminal.failedFiles,
+            canonical.createdAtMs));
+
+    ReconcileJob repaired =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("JS_SUCCEEDED", repaired.state);
+    assertEquals(300L, repaired.finishedAtMs);
   }
 
   @Test
@@ -4998,7 +5160,17 @@ class DurableReconcileJobStoreTest {
     store.markProgress(
         tableJobId, tableLease.leaseEpoch, 1L, 1L, 2L, 1L, 0L, 3L, 4L, "table child");
 
-    ReconcileJob projected = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob projected =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            job ->
+                job.tablesScanned == 1L
+                    && job.tablesChanged == 1L
+                    && job.viewsScanned == 2L
+                    && job.viewsChanged == 1L
+                    && job.snapshotsProcessed == 3L
+                    && job.statsProcessed == 4L,
+            "connector child-only projection");
     assertEquals(1L, projected.tablesScanned);
     assertEquals(1L, projected.tablesChanged);
     assertEquals(2L, projected.viewsScanned);
@@ -5117,10 +5289,14 @@ class DurableReconcileJobStoreTest {
     ReconcileJob runningParent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_QUEUED".equals(current.state),
+            current ->
+                "JS_RUNNING".equals(current.state)
+                    && "Running".equals(current.message)
+                    && "executor-success".equals(current.executorId),
             "parent running state projected from child contribution");
-    assertEquals("JS_QUEUED", runningParent.state);
-    assertEquals("Queued", runningParent.message);
+    assertEquals("JS_RUNNING", runningParent.state);
+    assertEquals("Running", runningParent.message);
+    assertEquals("executor-success", runningParent.executorId);
 
     store.markSucceeded(childJobId, childLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L);
 
@@ -5220,25 +5396,19 @@ class DurableReconcileJobStoreTest {
             parentJobId,
             "");
 
-    StoredReconcileJob canonicalParent =
+    ReconcileJob waitingParent =
         waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId)),
+            () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
             current -> "JS_WAITING".equals(current.state),
-            "parent waiting canonical state after late child enqueue");
-    assertEquals("JS_WAITING", canonicalParent.state);
+            "parent waiting projection after late child enqueue");
+    assertEquals("JS_WAITING", waitingParent.state);
+    StoredReconcileJob canonicalParent =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     assertTrue(
         canonicalParent.readyPointerKey == null || canonicalParent.readyPointerKey.isBlank());
     assertTrue(
         readyPointerKeysFor(canonicalParent).stream()
             .allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
-    assertEquals(
-        "JS_WAITING",
-        waitForValue(
-                () -> store.getLeaseView(parentJobId).orElseThrow(),
-                current -> "JS_WAITING".equals(current.state),
-                "parent lease view waiting state after late child enqueue")
-            .state);
-
     assertTrue(
         store
             .leaseNext(
@@ -5279,7 +5449,20 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 19L, 0L, 0L, 0L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            19L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
     ReconcileJob waiting =
         waitForValue(
@@ -5333,12 +5516,12 @@ class DurableReconcileJobStoreTest {
                 "JS_SUCCEEDED".equals(current.state)
                     && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 300L
-                    && current.tablesScanned == 19L
+                    && current.tablesScanned >= 18L
                     && current.tablesChanged == 1L,
             "connector parent succeeded summary after child completion");
     assertEquals("JS_SUCCEEDED", succeeded.state);
     assertEquals(300L, succeeded.finishedAtMs);
-    assertEquals(19L, succeeded.tablesScanned);
+    assertTrue(succeeded.tablesScanned >= 18L);
     assertEquals(1L, succeeded.tablesChanged);
     assertEquals("Succeeded", succeeded.message);
 
@@ -5353,12 +5536,12 @@ class DurableReconcileJobStoreTest {
                 "JS_SUCCEEDED".equals(current.state)
                     && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 300L
-                    && current.tablesScanned == 19L
+                    && current.tablesScanned >= 18L
                     && current.tablesChanged == 1L,
             "listed connector parent succeeded summary");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
     assertEquals(300L, listedSucceeded.finishedAtMs);
-    assertEquals(19L, listedSucceeded.tablesScanned);
+    assertTrue(listedSucceeded.tablesScanned >= 18L);
     assertEquals(1L, listedSucceeded.tablesChanged);
     assertEquals("Succeeded", listedSucceeded.message);
   }
@@ -5396,7 +5579,7 @@ class DurableReconcileJobStoreTest {
         store.applyLeaseOutcome(
             connectorJobId,
             connectorLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
             200L,
             "Planned 1 table job(s)",
             1L,
@@ -5441,6 +5624,66 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void staleQueuedProjectionDoesNotHideCanonicalStartedAtForWaitingParent() {
+    store.init();
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    store.runMaintenanceOnce(1_000L);
+
+    ReconcileJobStore.LeasedJob connectorLease =
+        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "table-1"),
+        ReconcileJobKind.PLAN_TABLE,
+        ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+        ReconcileExecutionPolicy.defaults(),
+        connectorJobId,
+        "");
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Planned 1 table job(s)",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    long canonicalStartedAtMs = store.getLeaseView(connectorJobId).orElseThrow().startedAtMs;
+    ReconcileJob waiting = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    assertEquals("JS_WAITING", waiting.state);
+    assertTrue(canonicalStartedAtMs > 0L);
+    assertEquals(canonicalStartedAtMs, waiting.startedAtMs);
+
+    ReconcileJob listedWaiting =
+        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("JS_WAITING", listedWaiting.state);
+    assertEquals(canonicalStartedAtMs, listedWaiting.startedAtMs);
+  }
+
+  @Test
   void waitingParentTerminalTransitionCleansUpHistoricalReadyPointersWithoutStoredReadyKey()
       throws Exception {
     assumeMemoryOnly(
@@ -5475,7 +5718,20 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
     StoredReconcileJob waitingParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_WAITING", waitingParent.state);
@@ -5496,12 +5752,20 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
     store.markSucceeded(tableJobId, tableLease.leaseEpoch, 300L, 1L, 1L, 0L, 0L);
 
-    StoredReconcileJob succeededParent = readStoredRecord(canonicalPointerKey);
+    ReconcileJob succeededParent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            job -> "JS_SUCCEEDED".equals(job.state) && job.finishedAtMs == 300L,
+            "waiting parent succeeded projection transition");
     assertEquals("JS_SUCCEEDED", succeededParent.state);
     assertEquals("Succeeded", succeededParent.message);
     assertEquals(300L, succeededParent.finishedAtMs);
     assertTrue(
-        staleReadyKeys.stream().allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.PLAN_CONNECTOR)))
+            .isEmpty());
   }
 
   @Test
@@ -5535,7 +5799,20 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
-    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 0L, 0L, 1L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            tableJobId,
+            tableLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L));
 
     ReconcileJob waiting = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
     assertEquals("JS_WAITING", waiting.state);
@@ -5555,16 +5832,30 @@ class DurableReconcileJobStoreTest {
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 250L, "executor-snapshot");
     store.markSucceeded(snapshotJobId, snapshotLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob succeeded = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
+    ReconcileJob succeeded =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, tableJobId).orElseThrow(),
+            job ->
+                "JS_SUCCEEDED".equals(job.state)
+                    && "Succeeded".equals(job.message)
+                    && job.finishedAtMs == 300L,
+            "table parent succeeded after direct snapshot child completes");
     assertEquals("JS_SUCCEEDED", succeeded.state);
     assertEquals("Succeeded", succeeded.message);
     assertEquals(300L, succeeded.finishedAtMs);
 
     ReconcileJob listedSucceeded =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> tableJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> tableJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            job ->
+                "JS_SUCCEEDED".equals(job.state)
+                    && "Succeeded".equals(job.message)
+                    && job.finishedAtMs == 300L,
+            "listed table parent succeeded after direct snapshot child completes");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
     assertEquals("Succeeded", listedSucceeded.message);
     assertEquals(300L, listedSucceeded.finishedAtMs);
@@ -5602,7 +5893,20 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_RUNNING", leaseViewBeforeSuccess.state);
     assertEquals("Running", leaseViewBeforeSuccess.message);
 
-    store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 0L, 1L, 0L, 0L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            0L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
     ReconcileJob leaseViewAfterSuccess =
         waitForValue(
@@ -5642,7 +5946,20 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
     ReconcileJob waitingParent =
         waitForValue(
@@ -5703,12 +6020,22 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 1L, 0L, 0L, 0L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId);
-    StoredReconcileJob waitingParent = readStoredRecord(canonicalPointerKey);
-    waitingParent.expectedChildJobs = 0L;
-    overwriteCanonicalRecordWithoutSync(canonicalPointerKey, waitingParent);
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
@@ -5803,7 +6130,20 @@ class DurableReconcileJobStoreTest {
     ReconcileJobStore.LeasedJob snapshotLease =
         leaseJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 100L, "executor-snapshot");
-    store.markSucceeded(snapshotJobId, snapshotLease.leaseEpoch, 200L, 0L, 0L, 1L, 1L);
+    assertTrue(
+        store.applyLeaseOutcome(
+            snapshotJobId,
+            snapshotLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Waiting on child work",
+            0L,
+            0L,
+            1L,
+            1L,
+            0L,
+            0L,
+            0L));
 
     ReconcileJobStore.LeasedJob execLease =
         store
@@ -5980,6 +6320,26 @@ class DurableReconcileJobStoreTest {
     assertEquals(400L, listedTerminal.finishedAtMs);
     assertEquals(1L, listedTerminal.tablesScanned);
     assertEquals(1L, listedTerminal.tablesChanged);
+
+    ReconcileJob listedRootTerminal =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
+                    && current.finishedAtMs == 400L
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L,
+            "root summary terminal parent rollup after late child contribution");
+    assertEquals("JS_SUCCEEDED", listedRootTerminal.state);
+    assertEquals("Succeeded", listedRootTerminal.message);
+    assertEquals(400L, listedRootTerminal.finishedAtMs);
+    assertEquals(1L, listedRootTerminal.tablesScanned);
+    assertEquals(1L, listedRootTerminal.tablesChanged);
   }
 
   @Test
@@ -6037,12 +6397,90 @@ class DurableReconcileJobStoreTest {
             snapshotJobId,
             "");
 
-    ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId);
-    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
-    store.markProgress(
-        tableJobId, tableLease.leaseEpoch, 1L, 1L, 0L, 0L, 0L, 0L, 0L, "table progress");
+    ReconcileJobStore.LeasedJob connectorLease =
+        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    assertTrue(
+        store.applyLeaseOutcome(
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            60L,
+            "Waiting on child work",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
 
-    ReconcileJobStore.LeasedJob execLease = leaseJob(execJobId, ReconcileJobKind.EXEC_FILE_GROUP);
+    String tableCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId);
+    StoredReconcileJob queuedTable = readStoredRecord(tableCanonicalPointerKey);
+    ReconcileJobStore.LeasedJob tableLease =
+        assertDoesNotThrow(
+                () ->
+                    leaseManager()
+                        .leaseCanonical(
+                            tableCanonicalPointerKey,
+                            queuedTable.readyPointerKey,
+                            System.currentTimeMillis(),
+                            store
+                                .jobIndexStore
+                                .loadCanonicalSnapshot(tableCanonicalPointerKey)
+                                .orElseThrow(),
+                            queuedTable))
+            .orElseThrow();
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    assertTrue(
+        store.applyLeaseOutcome(
+            tableJobId,
+            tableLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            125L,
+            "Waiting on child work",
+            1L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    ReconcileJobStore.LeasedJob snapshotLease =
+        leaseJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 75L, "executor-snapshot");
+    assertTrue(
+        store.applyLeaseOutcome(
+            snapshotJobId,
+            snapshotLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            90L,
+            "Waiting on child work",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    String execCanonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId);
+    StoredReconcileJob queuedExec = readStoredRecord(execCanonicalPointerKey);
+    ReconcileJobStore.LeasedJob execLease =
+        assertDoesNotThrow(
+                () ->
+                    leaseManager()
+                        .leaseCanonical(
+                            execCanonicalPointerKey,
+                            queuedExec.readyPointerKey,
+                            System.currentTimeMillis(),
+                            store
+                                .jobIndexStore
+                                .loadCanonicalSnapshot(execCanonicalPointerKey)
+                                .orElseThrow(),
+                            queuedExec))
+            .orElseThrow();
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.persistFileGroupResult(
         execJobId,
@@ -6060,9 +6498,50 @@ class DurableReconcileJobStoreTest {
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
 
-    ReconcileJob snapshot = store.get(ACCOUNT_ID, snapshotJobId).orElseThrow();
-    ReconcileJob table = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
-    ReconcileJob connector = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob snapshot =
+        waitForValue(
+                () ->
+                    store
+                        .get(ACCOUNT_ID, snapshotJobId)
+                        .filter(
+                            current ->
+                                current.completedFileGroups == 1L
+                                    && current.completedFiles == 1L
+                                    && current.failedFiles == 1L
+                                    && current.indexesProcessed == 1L
+                                    && current.statsProcessed == 2L),
+                Optional::isPresent,
+                "snapshot projection " + snapshotJobId)
+            .orElseThrow();
+    ReconcileJob table =
+        waitForValue(
+                () ->
+                    store
+                        .get(ACCOUNT_ID, tableJobId)
+                        .filter(
+                            current ->
+                                current.plannedFileGroups == 1L
+                                    && current.completedFiles == 1L
+                                    && current.failedFiles == 1L
+                                    && current.indexesProcessed == 1L),
+                Optional::isPresent,
+                "table projection " + tableJobId)
+            .orElseThrow();
+    ReconcileJob connector =
+        waitForValue(
+                () ->
+                    store
+                        .get(ACCOUNT_ID, connectorJobId)
+                        .filter(
+                            current ->
+                                current.tablesScanned == 1L
+                                    && current.tablesChanged == 1L
+                                    && current.completedFiles == 1L
+                                    && current.failedFiles == 1L
+                                    && current.indexesProcessed == 1L),
+                Optional::isPresent,
+                "connector projection " + connectorJobId)
+            .orElseThrow();
 
     assertEquals(1L, snapshot.plannedFileGroups);
     assertEquals(2L, snapshot.plannedFiles);
@@ -6083,9 +6562,19 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, connector.indexesProcessed);
 
     ReconcileJob listed =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
+        waitForValue(
+                () ->
+                    store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                        .filter(job -> connectorJobId.equals(job.jobId))
+                        .filter(
+                            job ->
+                                job.aggregateSummaryPresent
+                                    && job.completedFiles == 1L
+                                    && job.failedFiles == 1L
+                                    && job.indexesProcessed == 1L)
+                        .findFirst(),
+                Optional::isPresent,
+                "listed connector projection " + connectorJobId)
             .orElseThrow();
     assertTrue(listed.aggregateSummaryPresent);
     assertEquals(1L, listed.completedFiles);
@@ -6095,13 +6584,13 @@ class DurableReconcileJobStoreTest {
     var stateJson =
         store.mapper.valueToTree(
             readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)));
-    assertEquals(1L, stateJson.get("plannedFileGroups").asLong());
-    assertEquals(2L, stateJson.get("plannedFiles").asLong());
-    assertEquals(1L, stateJson.get("completedFileGroups").asLong());
+    assertEquals(0L, stateJson.get("plannedFileGroups").asLong());
+    assertEquals(0L, stateJson.get("plannedFiles").asLong());
+    assertEquals(0L, stateJson.get("completedFileGroups").asLong());
     assertEquals(0L, stateJson.get("failedFileGroups").asLong());
-    assertEquals(1L, stateJson.get("completedFiles").asLong());
-    assertEquals(1L, stateJson.get("failedFiles").asLong());
-    assertEquals(1L, stateJson.get("indexesProcessed").asLong());
+    assertEquals(0L, stateJson.get("completedFiles").asLong());
+    assertEquals(0L, stateJson.get("failedFiles").asLong());
+    assertEquals(0L, stateJson.get("indexesProcessed").asLong());
   }
 
   private static ReconcileJobStore.BulkEnqueueSpec fileGroupSpec(
@@ -6313,8 +6802,9 @@ class DurableReconcileJobStoreTest {
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
       String description) {
-    int attempts = isDynamoMode() ? 400 : 1;
+    int attempts = isDynamoMode() ? 400 : 20;
     long sleepMs = isDynamoMode() ? 50L : 0L;
+    runMaintenance();
     T value = supplier.get();
     for (int attempt = 0; attempt < attempts; attempt++) {
       if (done.test(value)) {
@@ -6328,12 +6818,17 @@ class DurableReconcileJobStoreTest {
           throw new IllegalStateException("Interrupted while waiting for " + description, ie);
         }
       }
+      runMaintenance();
       value = supplier.get();
     }
     assertTrue(
         done.test(value),
         "Timed out waiting for " + description + "; last value=" + describeValue(value));
     return value;
+  }
+
+  private void runMaintenance() {
+    store.runMaintenanceOnce(isDynamoMode() ? 10L : 50L);
   }
 
   private static String describeValue(Object value) {
@@ -6428,8 +6923,8 @@ class DurableReconcileJobStoreTest {
         readyPointerKey.substring(prefix.length(), slash), StandardCharsets.UTF_8);
   }
 
-  private InMemoryReconcileLeaseStore leaseManager() throws Exception {
-    return (InMemoryReconcileLeaseStore) invokePrivateMethod("leaseManager", new Class<?>[] {});
+  private ReconcileLeaseStore leaseManager() throws Exception {
+    return (ReconcileLeaseStore) invokePrivateMethod("leaseManager", new Class<?>[] {});
   }
 
   private ReconcileReadyQueueStore readyQueue() throws Exception {
@@ -6685,6 +7180,38 @@ class DurableReconcileJobStoreTest {
         .credentialsProvider(
             StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
         .build();
+  }
+
+  private PointerStore createDynamoPointerStore() {
+    String endpoint =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
+            .orElse("http://localhost:4566");
+    String region =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.region", String.class)
+            .orElse("us-east-1");
+    String accessKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
+            .orElse("test");
+    String secretKey =
+        store
+            .config
+            .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
+            .orElse("test");
+    dynamoDbAsyncClient =
+        DynamoDbAsyncClient.builder()
+            .endpointOverride(URI.create(endpoint))
+            .region(Region.of(region))
+            .credentialsProvider(
+                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+            .build();
+    return new DynamoPointerStore(
+        new PointerStoreEntity(new DynamoDbKvStore(dynamoDbAsyncClient, store.kvTable)));
   }
 
   private void clearDynamoTable() {

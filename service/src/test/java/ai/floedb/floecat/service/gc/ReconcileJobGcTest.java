@@ -134,6 +134,25 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void accountSliceDoesNotDeleteDedupePointerRepointedToNewerJob() {
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|incr|*|*|");
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash);
+    String oldJobId = "job-terminal-old";
+    String newJobId = "job-active-new";
+
+    putInlineReconcileJob(
+        oldJobId, "JS_SUCCEEDED", System.currentTimeMillis() - 1_000L, dedupeHash, "");
+    String newCanonicalKey =
+        putInlineReconcileJob(newJobId, "JS_QUEUED", System.currentTimeMillis(), dedupeHash, "");
+    putPointer(dedupeKey, newCanonicalKey);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(0, result.dedupeDeleted());
+    assertEquals(newCanonicalKey, pointers.get(dedupeKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
   void readySliceDeletesStaleReadyPointers() {
     String jobId = "job-running";
     String canonicalKey =

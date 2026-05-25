@@ -809,6 +809,66 @@ public final class Keys {
     return "/accounts/by-id/reconcile/jobs/by-id/";
   }
 
+  public static String reconcileDirtyParentPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/dirty-parents/";
+  }
+
+  public static String reconcileDirtyParentPointer(String accountId, String parentJobId) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    return reconcileDirtyParentPointerPrefix() + encode(tid) + "/" + encode(pid);
+  }
+
+  public static String reconcileJobProjectionPointer(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/projections/by-id/" + encode(jid);
+  }
+
+  public static String reconcileJobProjectionPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/projections/by-id/";
+  }
+
+  public static String reconcileRootJobSummaryByAccountPointer(
+      String accountId, String sortableJobToken) {
+    String tid = req("account_id", accountId);
+    String token = req("sortable_job_token", sortableJobToken);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/root-summaries/by-account/"
+        + encode(token);
+  }
+
+  public static String reconcileRootJobSummaryByAccountPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/root-summaries/by-account/";
+  }
+
+  public static String reconcileRootJobSummaryByConnectorPointer(
+      String accountId, String connectorId, String sortableJobToken) {
+    String tid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    String token = req("sortable_job_token", sortableJobToken);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/root-summaries/by-connector/"
+        + encode(cid)
+        + "/"
+        + encode(token);
+  }
+
+  public static String reconcileRootJobSummaryByConnectorPointerPrefix(
+      String accountId, String connectorId) {
+    String tid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/root-summaries/by-connector/"
+        + encode(cid)
+        + "/";
+  }
+
   public static String reconcileJobByParentPointer(
       String accountId, String parentJobId, String jobId) {
     String tid = req("account_id", accountId);

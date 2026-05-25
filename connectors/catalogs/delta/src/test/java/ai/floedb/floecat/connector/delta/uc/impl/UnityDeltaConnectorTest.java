@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -79,6 +80,46 @@ class UnityDeltaConnectorTest {
     assertThatThrownBy(() -> connector.describe("mycat.myschema", "missing_table"))
         .isInstanceOf(RuntimeException.class)
         .hasMessageContaining("404");
+  }
+
+  @Test
+  void storageLocationCachesPerTable() throws Exception {
+    AtomicInteger requests = new AtomicInteger();
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> {
+          requests.incrementAndGet();
+          String body = "{\"storage_location\":\"s3://bucket/table\"}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    assertThat(connector.storageLocation("mycat.myschema", "orders"))
+        .isEqualTo("s3://bucket/table");
+    assertThat(connector.storageLocation("mycat.myschema", "orders"))
+        .isEqualTo("s3://bucket/table");
+
+    assertThat(requests.get()).isEqualTo(1);
+  }
+
+  @Test
+  void storageLocationThrowsOnNonSuccessStatus() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> {
+          String body = "{\"error_code\":\"TEMPORARY_UNAVAILABLE\",\"message\":\"retry later\"}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(503, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    assertThatThrownBy(() -> connector.storageLocation("mycat.myschema", "orders"))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("503")
+        .hasMessageContaining("mycat.myschema.orders");
   }
 
   @Test

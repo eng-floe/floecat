@@ -26,6 +26,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 
@@ -33,6 +35,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   private final UcHttp ucHttp;
   private final SqlStmtClient sql;
+  private final ConcurrentMap<String, String> storageLocationCache = new ConcurrentHashMap<>();
 
   UnityDeltaConnector(
       String connectorId,
@@ -127,20 +130,8 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
-    try {
-      String full = namespaceFq + "." + tableName;
-      var meta =
-          M.readTree(ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full)).body());
-      String loc = meta.path("storage_location").asText(null);
-      if (loc == null || loc.isBlank()) {
-        throw new IllegalStateException("Table has no storage_location: " + full);
-      }
-
-      return loc;
-    } catch (Exception e) {
-      throw new RuntimeException(
-          "Failed to resolve storage_location for " + namespaceFq + "." + tableName, e);
-    }
+    String full = namespaceFq + "." + tableName;
+    return storageLocationCache.computeIfAbsent(full, this::loadStorageLocation);
   }
 
   @Override
@@ -361,6 +352,25 @@ public final class UnityDeltaConnector extends DeltaConnector {
       if (!key.isBlank() && !value.isBlank()) {
         out.put(key, value);
       }
+    }
+  }
+
+  private String loadStorageLocation(String full) {
+    try {
+      var response = ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full));
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new RuntimeException("UC returned HTTP " + response.statusCode() + " for " + full);
+      }
+      var meta = M.readTree(response.body());
+      String loc = meta.path("storage_location").asText(null);
+      if (loc == null || loc.isBlank()) {
+        throw new IllegalStateException("Table has no storage_location: " + full);
+      }
+      return loc;
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to resolve storage_location for " + full, e);
     }
   }
 }

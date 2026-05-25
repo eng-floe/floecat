@@ -36,6 +36,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
@@ -294,6 +295,66 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     }
     return new BulkEnqueueItemResult(
         insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries");
+  }
+
+  @Override
+  public List<BulkEnqueueItemResult> commitQueuedJobInserts(
+      List<QueuedJobInsert> inserts,
+      Function<List<QueuedJobInsert>, List<CanonicalRecordMutation>> ancestorMutationsBuilder) {
+    if (inserts == null || inserts.isEmpty()) {
+      return List.of();
+    }
+    List<QueuedJobInsert> pending = new ArrayList<>(inserts);
+    List<BulkEnqueueItemResult> results = new ArrayList<>();
+    for (int attempt = 0; attempt < casMax; attempt++) {
+      if (pending.isEmpty()) {
+        return results;
+      }
+      List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
+      List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
+      for (QueuedJobInsert insert : pending) {
+        var existing = loadActiveFromDedupe(insert.dedupePointerKey());
+        if (existing.isPresent()) {
+          results.add(new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+          continue;
+        }
+        JobIndexEntrySnapshot existingDedupePointer =
+            jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
+        insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
+        nextPending.add(insert);
+      }
+      if (nextPending.isEmpty()) {
+        return results;
+      }
+      List<CanonicalRecordMutation> ancestorMutations =
+          ancestorMutationsBuilder == null
+              ? List.of()
+              : ancestorMutationsBuilder.apply(nextPending);
+      JobIndexWriteBatch batch =
+          combineWriteBatches(prependInsertBatches(insertBatches, ancestorMutations));
+      if (jobIndexBackend.compareAndSetBatch(batch)) {
+        synchronized (state) {
+          for (QueuedJobInsert insert : nextPending) {
+            state.put(insert.canonicalKey(), cloneStoredRecord(insert.record()));
+          }
+          for (CanonicalRecordMutation mutation : ancestorMutations) {
+            if (mutation == null || mutation.current() == null) {
+              continue;
+            }
+            state.put(
+                mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+          }
+        }
+        return results;
+      }
+      pending = nextPending;
+    }
+    for (QueuedJobInsert insert : pending) {
+      results.add(
+          new BulkEnqueueItemResult(
+              insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries"));
+    }
+    return results;
   }
 
   @Override
@@ -577,29 +638,6 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     copy.failedFileGroups = source.failedFileGroups;
     copy.completedFiles = source.completedFiles;
     copy.failedFiles = source.failedFiles;
-    copy.childTablesScanned = source.childTablesScanned;
-    copy.childTablesChanged = source.childTablesChanged;
-    copy.childViewsScanned = source.childViewsScanned;
-    copy.childViewsChanged = source.childViewsChanged;
-    copy.childErrors = source.childErrors;
-    copy.childSnapshotsProcessed = source.childSnapshotsProcessed;
-    copy.childStatsProcessed = source.childStatsProcessed;
-    copy.childIndexesProcessed = source.childIndexesProcessed;
-    copy.childPlannedFileGroups = source.childPlannedFileGroups;
-    copy.childPlannedFiles = source.childPlannedFiles;
-    copy.childCompletedFileGroups = source.childCompletedFileGroups;
-    copy.childFailedFileGroups = source.childFailedFileGroups;
-    copy.childCompletedFiles = source.childCompletedFiles;
-    copy.childFailedFiles = source.childFailedFiles;
-    copy.expectedChildJobs = source.expectedChildJobs;
-    copy.queuedChildJobs = source.queuedChildJobs;
-    copy.waitingChildJobs = source.waitingChildJobs;
-    copy.runningChildJobs = source.runningChildJobs;
-    copy.cancellingChildJobs = source.cancellingChildJobs;
-    copy.completedChildJobs = source.completedChildJobs;
-    copy.failedChildJobs = source.failedChildJobs;
-    copy.cancelledChildJobs = source.cancelledChildJobs;
-    copy.maxDirectChildFinishedAtMs = source.maxDirectChildFinishedAtMs;
     copy.attempt = source.attempt;
     copy.nextAttemptAtMs = source.nextAttemptAtMs;
     copy.lastError = source.lastError;
@@ -703,6 +741,31 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     List<JobIndexWriteBatch> batches =
         new ArrayList<>(1 + (ancestorMutations == null ? 0 : ancestorMutations.size()));
     batches.add(insertBatch);
+    if (ancestorMutations != null) {
+      for (CanonicalRecordMutation mutation : ancestorMutations) {
+        if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+          continue;
+        }
+        batches.add(
+            buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
+      }
+    }
+    return batches;
+  }
+
+  private List<JobIndexWriteBatch> prependInsertBatches(
+      List<JobIndexWriteBatch> insertBatches, List<CanonicalRecordMutation> ancestorMutations) {
+    List<JobIndexWriteBatch> batches =
+        new ArrayList<>(
+            (insertBatches == null ? 0 : insertBatches.size())
+                + (ancestorMutations == null ? 0 : ancestorMutations.size()));
+    if (insertBatches != null) {
+      for (JobIndexWriteBatch insertBatch : insertBatches) {
+        if (insertBatch != null) {
+          batches.add(insertBatch);
+        }
+      }
+    }
     if (ancestorMutations != null) {
       for (CanonicalRecordMutation mutation : ancestorMutations) {
         if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {

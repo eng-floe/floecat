@@ -24,6 +24,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupRe
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -42,6 +44,8 @@ public class ReconcilePayloadStore {
 
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
+  private static final String INLINE_JOB_PROJECTION_PREFIX = "inline:reconcile-job-projection:";
+  private static final String INLINE_JOB_LIST_SUMMARY_PREFIX = "inline:reconcile-job-list-summary:";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
@@ -111,6 +115,24 @@ public class ReconcilePayloadStore {
 
   public Optional<StoredJobLease> readInlineJobLease(String reference) {
     return decodeInlineJson(reference, INLINE_JOB_LEASE_PREFIX, StoredJobLease.class);
+  }
+
+  public String encodeInlineJobProjection(StoredReconcileJobProjection payload) {
+    return encodeInlineJson(INLINE_JOB_PROJECTION_PREFIX, payload);
+  }
+
+  public Optional<StoredReconcileJobProjection> readInlineJobProjection(String reference) {
+    return decodeInlineJson(
+        reference, INLINE_JOB_PROJECTION_PREFIX, StoredReconcileJobProjection.class);
+  }
+
+  public String encodeInlineJobListSummary(StoredReconcileJobListSummary payload) {
+    return encodeInlineJson(INLINE_JOB_LIST_SUMMARY_PREFIX, payload);
+  }
+
+  public Optional<StoredReconcileJobListSummary> readInlineJobListSummary(String reference) {
+    return decodeInlineJson(
+        reference, INLINE_JOB_LIST_SUMMARY_PREFIX, StoredReconcileJobListSummary.class);
   }
 
   public Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {

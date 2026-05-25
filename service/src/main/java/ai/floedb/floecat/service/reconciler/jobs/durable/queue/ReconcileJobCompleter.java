@@ -44,7 +44,6 @@ public class ReconcileJobCompleter {
 
   private ReconcileLeaseStore leaseManager;
   private JobMutator mutateByJobIdReturningRecord;
-  private BiFunction<String, String, Long> countDirectChildJobs;
   private IntToLongFunction backoffMs;
   private BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor;
   private ClearExecutionLeases clearExecutionLeasesIfOwned;
@@ -54,7 +53,6 @@ public class ReconcileJobCompleter {
   public void bind(
       ReconcileLeaseStore leaseManager,
       JobMutator mutateByJobIdReturningRecord,
-      BiFunction<String, String, Long> countDirectChildJobs,
       IntToLongFunction backoffMs,
       BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor,
       ClearExecutionLeases clearExecutionLeasesIfOwned,
@@ -62,7 +60,6 @@ public class ReconcileJobCompleter {
       long baseBackoffMs) {
     this.leaseManager = leaseManager;
     this.mutateByJobIdReturningRecord = mutateByJobIdReturningRecord;
-    this.countDirectChildJobs = countDirectChildJobs;
     this.backoffMs = backoffMs;
     this.readyPointerKeyFor = readyPointerKeyFor;
     this.clearExecutionLeasesIfOwned = clearExecutionLeasesIfOwned;
@@ -150,6 +147,7 @@ public class ReconcileJobCompleter {
               String op = operationName(completionKind);
               boolean allowExpiredWithinGrace =
                   completionKind == CompletionKind.SUCCEEDED
+                      || completionKind == CompletionKind.SUCCEEDED_WAITING
                       || completionKind == CompletionKind.FAILED_TERMINAL
                       || completionKind == CompletionKind.CANCELLED;
               if (!leaseManager.hasActiveLease(
@@ -184,7 +182,24 @@ public class ReconcileJobCompleter {
                     applySucceeded(
                         existing,
                         finishedAtMs,
-                        message,
+                        "JS_SUCCEEDED",
+                        "Succeeded",
+                        finishedAtMs,
+                        blankToEmpty(existing.executorId),
+                        tablesScanned,
+                        tablesChanged,
+                        viewsScanned,
+                        viewsChanged,
+                        snapshotsProcessed,
+                        statsProcessed);
+                case SUCCEEDED_WAITING ->
+                    applySucceeded(
+                        existing,
+                        finishedAtMs,
+                        "JS_WAITING",
+                        blank(message) ? "Waiting on child work" : message,
+                        0L,
+                        "",
                         tablesScanned,
                         tablesChanged,
                         viewsScanned,
@@ -254,7 +269,10 @@ public class ReconcileJobCompleter {
   private StoredReconcileJob applySucceeded(
       StoredReconcileJob existing,
       long finishedAtMs,
-      String message,
+      String nextState,
+      String nextMessage,
+      long nextFinishedAtMs,
+      String nextExecutorId,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -269,26 +287,10 @@ public class ReconcileJobCompleter {
     existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
     existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = "";
-    long directChildJobs = countDirectChildJobs.apply(existing.accountId, existing.jobId);
-    if (hasIncompleteDirectChildJobs(existing)
-        || (directChildJobs > 0L
-            && !directChildJobsComplete(
-                maxExpectedChildJobs(existing, directChildJobs),
-                existing.completedChildJobs,
-                existing.failedChildJobs,
-                existing.cancelledChildJobs))) {
-      if (existing.expectedChildJobs <= 0L) {
-        existing.expectedChildJobs = directChildJobs;
-      }
-      existing.state = "JS_WAITING";
-      existing.message = blank(message) ? "Waiting on child work" : message;
-      existing.finishedAtMs = 0L;
-      existing.executorId = "";
-    } else {
-      existing.state = "JS_SUCCEEDED";
-      existing.message = "Succeeded";
-      existing.finishedAtMs = finishedAtMs;
-    }
+    existing.state = nextState;
+    existing.message = nextMessage;
+    existing.finishedAtMs = nextFinishedAtMs;
+    existing.executorId = nextExecutorId;
     if (existing.startedAtMs <= 0L) {
       existing.startedAtMs = finishedAtMs;
     }
@@ -426,53 +428,12 @@ public class ReconcileJobCompleter {
   private static String operationName(CompletionKind completionKind) {
     return switch (completionKind) {
       case SUCCEEDED -> "markSucceeded";
+      case SUCCEEDED_WAITING -> "markSucceededWaiting";
       case FAILED_RETRYABLE -> "markFailed";
       case FAILED_WAITING -> "markWaiting";
       case FAILED_TERMINAL -> "markFailedTerminal";
       case CANCELLED -> "markCancelled";
     };
-  }
-
-  private static boolean hasExpectedDirectChildJobs(StoredReconcileJob stored) {
-    return stored != null && Math.max(0L, stored.expectedChildJobs) > 0L;
-  }
-
-  private static boolean hasIncompleteDirectChildJobs(StoredReconcileJob stored) {
-    return hasExpectedDirectChildJobs(stored) && !directChildJobsComplete(stored);
-  }
-
-  private static boolean directChildJobsComplete(StoredReconcileJob stored) {
-    if (stored == null) {
-      return true;
-    }
-    return directChildJobsComplete(
-        Math.max(0L, stored.expectedChildJobs),
-        stored.completedChildJobs,
-        stored.failedChildJobs,
-        stored.cancelledChildJobs);
-  }
-
-  private static boolean directChildJobsComplete(
-      long expectedChildJobs,
-      long completedChildJobs,
-      long failedChildJobs,
-      long cancelledChildJobs) {
-    long expected = Math.max(0L, expectedChildJobs);
-    if (expected <= 0L) {
-      return true;
-    }
-    long terminalChildren =
-        Math.max(0L, completedChildJobs)
-            + Math.max(0L, failedChildJobs)
-            + Math.max(0L, cancelledChildJobs);
-    return terminalChildren >= expected;
-  }
-
-  private static long maxExpectedChildJobs(StoredReconcileJob stored, long directChildJobs) {
-    if (stored == null) {
-      return Math.max(0L, directChildJobs);
-    }
-    return Math.max(Math.max(0L, stored.expectedChildJobs), Math.max(0L, directChildJobs));
   }
 
   private static boolean isTerminalState(String state) {

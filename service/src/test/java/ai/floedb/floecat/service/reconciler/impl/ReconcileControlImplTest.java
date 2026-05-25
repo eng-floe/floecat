@@ -49,6 +49,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -903,6 +904,25 @@ class ReconcileControlImplTest {
     assertEquals(1L, response.getJobs(0).getSnapshotsProcessed());
     assertEquals(1L, response.getJobs(0).getStatsProcessed());
     verify(service.jobs, never()).childJobsPage("acct", "plan-1", 200, "");
+  }
+
+  @Test
+  void getReconcileJobTreeUsesDedicatedStoreTraversal() {
+    var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
+    var child = childJob("table-1", "JS_QUEUED", 0, 0, 0, "", "plan-1");
+    when(service.jobs.jobTree("acct", "plan-1")).thenReturn(java.util.List.of(root, child));
+
+    var response =
+        service
+            .getReconcileJobTree(GetReconcileJobTreeRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(2, response.getJobsCount());
+    assertEquals("plan-1", response.getJobs(0).getJobId());
+    assertEquals("table-1", response.getJobs(1).getJobId());
+    verify(service.jobs).jobTree("acct", "plan-1");
+    verify(service.jobs, never()).list("acct", 100, "", "", java.util.Set.of());
   }
 
   @Test

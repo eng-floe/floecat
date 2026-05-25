@@ -16,7 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
@@ -31,8 +34,15 @@ public class ReconcileJobMaintenanceService {
     void accept(ReconcileLeaseStore.LeaseExpiryEntry leaseExpiryEntry, long nowMs);
   }
 
+  @FunctionalInterface
+  public interface RefreshDirtyParentProjection {
+    void accept(String accountId, String parentJobId);
+  }
+
   private ReconcileLeaseStore leaseStore;
+  private PointerStore pointerStore;
   private ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer;
+  private RefreshDirtyParentProjection refreshDirtyParentProjection;
   private int readyScanLimit;
   private long reclaimIntervalMs;
 
@@ -41,19 +51,24 @@ public class ReconcileJobMaintenanceService {
 
   public void bind(
       ReconcileLeaseStore leaseStore,
+      PointerStore pointerStore,
       ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer,
+      RefreshDirtyParentProjection refreshDirtyParentProjection,
       int readyScanLimit,
       long reclaimIntervalMs) {
     this.leaseStore = leaseStore;
+    this.pointerStore = pointerStore;
     this.reclaimExpiredLeaseFromCanonicalPointer = reclaimExpiredLeaseFromCanonicalPointer;
+    this.refreshDirtyParentProjection = refreshDirtyParentProjection;
     this.readyScanLimit = readyScanLimit;
     this.reclaimIntervalMs = reclaimIntervalMs;
   }
 
   public void runMaintenanceOnce(long maxMillis) {
     long startedAtMs = System.currentTimeMillis();
-    reclaimExpiredLeasesIfDue(
-        startedAtMs, maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis));
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    reclaimExpiredLeasesIfDue(startedAtMs, deadlineMs);
+    refreshDirtyParents(deadlineMs);
     LOG.debugf(
         "runMaintenanceOnce total_ms=%d reclaim_ms=%d",
         System.currentTimeMillis() - startedAtMs, System.currentTimeMillis() - startedAtMs);
@@ -117,4 +132,70 @@ public class ReconcileJobMaintenanceService {
       }
     }
   }
+
+  private void refreshDirtyParents(long deadlineMs) {
+    if (pointerStore == null || refreshDirtyParentProjection == null) {
+      return;
+    }
+    int pages = 0;
+    while (true) {
+      if (System.currentTimeMillis() > deadlineMs) {
+        return;
+      }
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(
+              Keys.reconcileDirtyParentPointerPrefix(), readyScanLimit, "", next);
+      if (pointers.isEmpty()) {
+        return;
+      }
+      for (Pointer pointer : pointers) {
+        if (System.currentTimeMillis() > deadlineMs) {
+          return;
+        }
+        if (pointer == null || pointer.getKey().isBlank()) {
+          continue;
+        }
+        DirtyParentMarker marker = parseDirtyParentMarker(pointer);
+        if (marker == null) {
+          pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+          continue;
+        }
+        try {
+          refreshDirtyParentProjection.accept(marker.accountId(), marker.parentJobId());
+          pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+        } catch (RuntimeException e) {
+          LOG.warnf(
+              e,
+              "Failed to refresh reconcile parent projection accountId=%s parentJobId=%s",
+              marker.accountId(),
+              marker.parentJobId());
+        }
+      }
+      pages++;
+      if (pages >= 10_000) {
+        LOG.warn("Reconcile dirty-parent refresh pagination hit safety page cap; aborting scan");
+        return;
+      }
+    }
+  }
+
+  private DirtyParentMarker parseDirtyParentMarker(Pointer pointer) {
+    String payload = pointer == null ? "" : pointer.getBlobUri();
+    if (payload == null || payload.isBlank()) {
+      return null;
+    }
+    int delimiter = payload.indexOf('\n');
+    if (delimiter <= 0 || delimiter >= payload.length() - 1) {
+      return null;
+    }
+    String accountId = payload.substring(0, delimiter).trim();
+    String parentJobId = payload.substring(delimiter + 1).trim();
+    if (accountId.isBlank() || parentJobId.isBlank()) {
+      return null;
+    }
+    return new DirtyParentMarker(accountId, parentJobId);
+  }
+
+  private record DirtyParentMarker(String accountId, String parentJobId) {}
 }

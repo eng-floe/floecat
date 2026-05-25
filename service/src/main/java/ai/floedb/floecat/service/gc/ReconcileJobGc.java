@@ -131,7 +131,8 @@ public class ReconcileJobGc {
           // Terminal jobs must never hold queue/dedupe references.
           StoredReconcileJob stored = storedJob(record);
           String dedupePointerKey = stored == null ? "" : jobIndexes.dedupePointerKey(stored);
-          if (!dedupePointerKey.isBlank() && deleteJobIndexPointerIfPresent(dedupePointerKey)) {
+          if (!dedupePointerKey.isBlank()
+              && deleteJobIndexPointerIfOwned(dedupePointerKey, canonical.pointerKey())) {
             dedupeDeleted++;
           }
           for (String readyKey : readyPointerKeysForCleanup(record)) {
@@ -351,12 +352,28 @@ public class ReconcileJobGc {
           deletes,
           jobIndexes.connectorIndexPointerKey(
               accountId, text(record, "connectorId"), longValue(record, "createdAtMs", 0L), jobId));
+      if (text(record, "parentJobId").isBlank()) {
+        appendDeleteIfPresent(
+            deletes,
+            Keys.reconcileRootJobSummaryByAccountPointer(
+                accountId,
+                rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+        String connectorId = text(record, "connectorId");
+        if (!connectorId.isBlank()) {
+          appendDeleteIfPresent(
+              deletes,
+              Keys.reconcileRootJobSummaryByConnectorPointer(
+                  accountId,
+                  connectorId,
+                  rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+        }
+      }
       for (String stateKey : jobIndexes.statePointerKeys(stored)) {
         appendDeleteIfPresent(deletes, stateKey);
       }
       String dedupeKey = jobIndexes.dedupePointerKey(stored);
       if (!dedupeKey.isBlank()) {
-        appendDeleteIfPresent(deletes, dedupeKey);
+        appendOwnedDeleteIfPresent(deletes, dedupeKey, canonical.pointerKey());
       }
     }
 
@@ -392,12 +409,51 @@ public class ReconcileJobGc {
     }
   }
 
+  private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {
+    long created = Math.max(0L, createdAtMs);
+    long reversedCreated = Long.MAX_VALUE - created;
+    return String.format("%019d-%s", reversedCreated, jobId);
+  }
+
+  private void appendOwnedDeleteIfPresent(
+      java.util.List<ReconcileJobIndexStore.JobIndexWriteOp> deletes,
+      String pointerKey,
+      String expectedReference) {
+    if (pointerKey == null || pointerKey.isBlank() || expectedReference == null) {
+      return;
+    }
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
+    if (existing != null && expectedReference.equals(existing.blobUri())) {
+      deletes.add(
+          new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
+    }
+  }
+
   private boolean deleteJobIndexPointerIfPresent(String pointerKey) {
     if (pointerKey == null || pointerKey.isBlank()) {
       return false;
     }
     var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
     if (existing == null) {
+      return false;
+    }
+    return jobIndexBackend.compareAndSetBatch(
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.of(
+                new ReconcileJobIndexStore.JobIndexDelete(
+                    existing.pointerKey(), existing.version())),
+            ReconcileJobIndexStore.ReadyQueueMutation.empty()));
+  }
+
+  private boolean deleteJobIndexPointerIfOwned(String pointerKey, String expectedReference) {
+    if (pointerKey == null
+        || pointerKey.isBlank()
+        || expectedReference == null
+        || expectedReference.isBlank()) {
+      return false;
+    }
+    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
+    if (existing == null || !expectedReference.equals(existing.blobUri())) {
       return false;
     }
     return jobIndexBackend.compareAndSetBatch(

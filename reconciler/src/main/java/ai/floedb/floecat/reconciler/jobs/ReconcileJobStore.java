@@ -334,6 +334,20 @@ public interface ReconcileJobStore {
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
+  default ReconcileJobPage listRootJobs(
+      String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
+    ReconcileJobPage page =
+        list(accountId, Math.max(200, pageSize), pageToken, connectorId, states);
+    if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+      return new ReconcileJobPage(List.of(), page == null ? "" : page.nextPageToken);
+    }
+    List<ReconcileJob> roots =
+        page.jobs.stream()
+            .filter(job -> job.parentJobId == null || job.parentJobId.isBlank())
+            .toList();
+    return new ReconcileJobPage(roots, page.nextPageToken);
+  }
+
   default ReconcileJobPage childJobsPage(
       String accountId, String parentJobId, int pageSize, String pageToken) {
     if (parentJobId == null || parentJobId.isBlank()) {
@@ -358,6 +372,36 @@ public interface ReconcileJobStore {
       nextToken = page.nextPageToken;
     } while (nextToken != null && !nextToken.isBlank());
     return new ReconcileJobPage(out, "");
+  }
+
+  default List<ReconcileJob> jobTree(String accountId, String rootJobId) {
+    if (rootJobId == null || rootJobId.isBlank()) {
+      return List.of();
+    }
+    ReconcileJob root = get(accountId, rootJobId).orElse(null);
+    if (root == null) {
+      return List.of();
+    }
+    List<ReconcileJob> out = new java.util.ArrayList<>();
+    java.util.ArrayDeque<String> pendingParents = new java.util.ArrayDeque<>();
+    out.add(root);
+    pendingParents.add(rootJobId);
+    while (!pendingParents.isEmpty()) {
+      String parentJobId = pendingParents.removeFirst();
+      String nextToken = "";
+      do {
+        ReconcileJobPage page = childJobsPage(accountId, parentJobId, 200, nextToken);
+        if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+          break;
+        }
+        for (ReconcileJob child : page.jobs) {
+          out.add(child);
+          pendingParents.addLast(child.jobId);
+        }
+        nextToken = page.nextPageToken;
+      } while (nextToken != null && !nextToken.isBlank());
+    }
+    return out;
   }
 
   QueueStats queueStats();
@@ -1554,6 +1598,7 @@ public interface ReconcileJobStore {
 
   enum CompletionKind {
     SUCCEEDED,
+    SUCCEEDED_WAITING,
     FAILED_RETRYABLE,
     FAILED_WAITING,
     FAILED_TERMINAL,

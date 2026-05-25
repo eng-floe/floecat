@@ -161,8 +161,10 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           StoredJobLease.active(current.accountId, current.jobId, nextLeaseEpoch, now + leaseMs);
 
       long mutationStartMs = System.currentTimeMillis();
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch =
+          buildLeaseJobIndexWriteBatch(currentSnapshot, baseline, current);
       if (leaseBackend.compareAndSetBatch(
-          jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, baseline, current),
+          jobIndexBatch,
           mergeLeaseWrites(
               ownerClaims,
               buildLeaseCoordinationWriteBatch(currentLeaseSnapshot, currentLease, nextLease)))) {
@@ -240,6 +242,13 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     }
 
     return Optional.empty();
+  }
+
+  private ReconcileJobIndexStore.JobIndexWriteBatch buildLeaseJobIndexWriteBatch(
+      CanonicalPointerSnapshot currentSnapshot,
+      StoredReconcileJob previous,
+      StoredReconcileJob current) {
+    return jobIndexStore.buildJobIndexWriteBatch(currentSnapshot, previous, current);
   }
 
   public void rollbackLeaseCanonicalOnHydrationFailure(
