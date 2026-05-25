@@ -5869,7 +5869,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(0L, listedWaiting.finishedAtMs);
 
     ReconcileJobStore.LeasedJob snapshotLease =
-        leaseJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
+        leaseSpecificReadyJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 250L, "executor-snapshot");
     store.markSucceeded(snapshotJobId, snapshotLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L);
 
@@ -6983,6 +6983,33 @@ class DurableReconcileJobStoreTest {
       }
     }
     throw new IllegalStateException("Unable to lease job " + jobId);
+  }
+
+  private ReconcileJobStore.LeasedJob leaseSpecificReadyJob(
+      String jobId, ReconcileJobKind jobKind) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob readyRecord =
+        waitForValue(
+            () -> readStoredRecord(canonicalPointerKey),
+            current ->
+                jobKind.equals(current.jobKind())
+                    && "JS_QUEUED".equals(current.state)
+                    && current.readyPointerKey != null
+                    && !current.readyPointerKey.isBlank(),
+            "job " + jobId + " to become ready for leasing");
+    return assertDoesNotThrow(
+            () ->
+                leaseManager()
+                    .leaseCanonical(
+                        canonicalPointerKey,
+                        readyRecord.readyPointerKey,
+                        System.currentTimeMillis(),
+                        store
+                            .jobIndexStore
+                            .loadCanonicalSnapshot(canonicalPointerKey)
+                            .orElseThrow(),
+                        readyRecord))
+        .orElseThrow();
   }
 
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {

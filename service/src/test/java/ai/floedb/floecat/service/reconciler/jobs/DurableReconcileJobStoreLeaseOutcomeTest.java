@@ -128,7 +128,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L,
             0L));
-    assertEquals("JS_SUCCEEDED", store.get(succeededJobId).orElseThrow().state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        waitForValue(
+                () -> store.get(succeededJobId).orElseThrow(),
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "succeeded lease outcome projection")
+            .state);
 
     String cancelledJobId = enqueueRoot();
     ReconcileJobStore.LeasedJob cancelledLease = store.leaseNext().orElseThrow();
@@ -147,7 +153,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L,
             0L));
-    assertEquals("JS_CANCELLED", store.get(cancelledJobId).orElseThrow().state);
+    assertEquals(
+        "JS_CANCELLED",
+        waitForValue(
+                () -> store.get(cancelledJobId).orElseThrow(),
+                current -> "JS_CANCELLED".equals(current.state),
+                "cancelled lease outcome projection")
+            .state);
   }
 
   @Test
@@ -325,6 +337,27 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   private String enqueueRoot() {
     return store.enqueue(
         ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+  }
+
+  private <T> T waitForValue(
+      java.util.function.Supplier<T> supplier,
+      java.util.function.Predicate<T> done,
+      String description) {
+    T value = supplier.get();
+    for (int attempt = 0; attempt < 100; attempt++) {
+      if (done.test(value)) {
+        return value;
+      }
+      try {
+        Thread.sleep(isDynamoMode() ? 25L : 0L);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("Interrupted while waiting for " + description, ie);
+      }
+      value = supplier.get();
+    }
+    assertTrue(done.test(value), "Timed out waiting for " + description + "; last value=" + value);
+    return value;
   }
 
   private void expireLease(String jobId) {
