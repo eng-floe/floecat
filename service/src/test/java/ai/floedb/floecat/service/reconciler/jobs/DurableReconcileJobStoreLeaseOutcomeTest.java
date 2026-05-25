@@ -37,7 +37,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.util.Map;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -52,9 +54,30 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 class DurableReconcileJobStoreLeaseOutcomeTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
+  private static DynamoDbClient sharedDynamoDbClient;
+  private static DynamoDbAsyncClient sharedDynamoDbAsyncClient;
   private DurableReconcileJobStore store;
-  private DynamoDbClient dynamoDbClient;
-  private DynamoDbAsyncClient dynamoDbAsyncClient;
+
+  @BeforeAll
+  static void setUpSharedDynamoClients() {
+    if (!isDynamoMode()) {
+      return;
+    }
+    sharedDynamoDbClient = createDynamoDbClientStatic();
+    sharedDynamoDbAsyncClient = createDynamoDbAsyncClientStatic();
+  }
+
+  @AfterAll
+  static void tearDownSharedDynamoClients() {
+    if (sharedDynamoDbClient != null) {
+      sharedDynamoDbClient.close();
+      sharedDynamoDbClient = null;
+    }
+    if (sharedDynamoDbAsyncClient != null) {
+      sharedDynamoDbAsyncClient.close();
+      sharedDynamoDbAsyncClient = null;
+    }
+  }
 
   @BeforeEach
   void setUp() {
@@ -64,7 +87,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
     if (isDynamoMode()) {
-      dynamoDbClient = createDynamoDbClient();
+      ensureSharedDynamoClients();
       clearDynamoTable();
       store.kvTable =
           store
@@ -77,18 +100,18 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
               .DynamoReconcileJobIndexBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
               store.jobIndexBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
       store.leaseBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
               store.leaseBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
       store.readyQueueBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store
               .DynamoReconcileReadyQueueBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
     } else {
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
@@ -100,14 +123,6 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @AfterEach
   void tearDown() {
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
-    if (dynamoDbClient != null) {
-      dynamoDbClient.close();
-      dynamoDbClient = null;
-    }
-    if (dynamoDbAsyncClient != null) {
-      dynamoDbAsyncClient.close();
-      dynamoDbAsyncClient = null;
-    }
   }
 
   @Test
@@ -401,31 +416,38 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         .orElseThrow();
   }
 
-  private boolean isDynamoMode() {
+  private static boolean isDynamoMode() {
     return "dynamodb"
         .equalsIgnoreCase(
-            store.config.getOptionalValue("floecat.kv", String.class).orElse("memory"));
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.kv", String.class)
+                .orElse("memory"));
   }
 
-  private DynamoDbClient createDynamoDbClient() {
+  private static void ensureSharedDynamoClients() {
+    if (sharedDynamoDbClient == null) {
+      sharedDynamoDbClient = createDynamoDbClientStatic();
+    }
+    if (sharedDynamoDbAsyncClient == null) {
+      sharedDynamoDbAsyncClient = createDynamoDbAsyncClientStatic();
+    }
+  }
+
+  private static DynamoDbClient createDynamoDbClientStatic() {
     String endpoint =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
             .orElse("http://localhost:4566");
     String region =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.region", String.class)
             .orElse("us-east-1");
     String accessKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
             .orElse("test");
     String secretKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
             .orElse("test");
     return DynamoDbClient.builder()
@@ -436,36 +458,35 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         .build();
   }
 
-  private PointerStore createDynamoPointerStore() {
+  private static DynamoDbAsyncClient createDynamoDbAsyncClientStatic() {
     String endpoint =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
             .orElse("http://localhost:4566");
     String region =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.region", String.class)
             .orElse("us-east-1");
     String accessKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
             .orElse("test");
     String secretKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
             .orElse("test");
-    dynamoDbAsyncClient =
-        DynamoDbAsyncClient.builder()
-            .endpointOverride(URI.create(endpoint))
-            .region(Region.of(region))
-            .credentialsProvider(
-                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-            .build();
+    return DynamoDbAsyncClient.builder()
+        .endpointOverride(URI.create(endpoint))
+        .region(Region.of(region))
+        .credentialsProvider(
+            StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+        .build();
+  }
+
+  private PointerStore createDynamoPointerStore() {
+    ensureSharedDynamoClients();
     return new DynamoPointerStore(
-        new PointerStoreEntity(new DynamoDbKvStore(dynamoDbAsyncClient, store.kvTable)));
+        new PointerStoreEntity(new DynamoDbKvStore(sharedDynamoDbAsyncClient, store.kvTable)));
   }
 
   private void clearDynamoTable() {
@@ -477,9 +498,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       if (startKey != null && !startKey.isEmpty()) {
         request.exclusiveStartKey(startKey);
       }
-      var response = dynamoDbClient.scan(request.build());
+      var response = sharedDynamoDbClient.scan(request.build());
       for (var item : response.items()) {
-        dynamoDbClient.deleteItem(
+        sharedDynamoDbClient.deleteItem(
             DeleteItemRequest.builder()
                 .tableName(table)
                 .key(

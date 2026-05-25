@@ -78,8 +78,10 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -96,10 +98,31 @@ class DurableReconcileJobStoreTest {
   private static final String CONNECTOR_ID = "conn-1";
   private static final String LEASE_EXPIRY_POINTER_PREFIX =
       "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  private static DynamoDbClient sharedDynamoDbClient;
+  private static DynamoDbAsyncClient sharedDynamoDbAsyncClient;
 
   private DurableReconcileJobStore store;
-  private DynamoDbClient dynamoDbClient;
-  private DynamoDbAsyncClient dynamoDbAsyncClient;
+
+  @BeforeAll
+  static void setUpSharedDynamoClients() {
+    if (!isDynamoMode()) {
+      return;
+    }
+    sharedDynamoDbClient = createDynamoDbClientStatic();
+    sharedDynamoDbAsyncClient = createDynamoDbAsyncClientStatic();
+  }
+
+  @AfterAll
+  static void tearDownSharedDynamoClients() {
+    if (sharedDynamoDbClient != null) {
+      sharedDynamoDbClient.close();
+      sharedDynamoDbClient = null;
+    }
+    if (sharedDynamoDbAsyncClient != null) {
+      sharedDynamoDbAsyncClient.close();
+      sharedDynamoDbAsyncClient = null;
+    }
+  }
 
   @BeforeEach
   void setUp() {
@@ -108,7 +131,7 @@ class DurableReconcileJobStoreTest {
     store.mapper = new ObjectMapper();
     store.config = ConfigProvider.getConfig();
     if (isDynamoMode()) {
-      dynamoDbClient = createDynamoDbClient();
+      ensureSharedDynamoClients();
       clearDynamoTable();
       store.kvTable =
           store
@@ -121,18 +144,18 @@ class DurableReconcileJobStoreTest {
               .DynamoReconcileJobIndexBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
               store.jobIndexBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
       store.leaseBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
               store.leaseBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
       store.readyQueueBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store
               .DynamoReconcileReadyQueueBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
-          .bind(dynamoDbClient, store.kvTable);
+          .bind(sharedDynamoDbClient, store.kvTable);
     } else {
       store.pointerStore = new InMemoryPointerStore();
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
@@ -150,14 +173,6 @@ class DurableReconcileJobStoreTest {
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
     System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
     System.clearProperty("floecat.reconciler.job-store.ready-scan-limit");
-    if (dynamoDbClient != null) {
-      dynamoDbClient.close();
-      dynamoDbClient = null;
-    }
-    if (dynamoDbAsyncClient != null) {
-      dynamoDbAsyncClient.close();
-      dynamoDbAsyncClient = null;
-    }
   }
 
   private void assumeMemoryOnly(String reason) {
@@ -2652,7 +2667,7 @@ class DurableReconcileJobStoreTest {
     String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
     StoredJobLease beforeRenew = readStoredLease(ACCOUNT_ID, jobId);
     String oldExpiryKey = leaseExpiryPointerKey(beforeRenew.expiresAtMs, ACCOUNT_ID, jobId);
-    Thread.sleep(650L);
+    awaitNextMillis(System.currentTimeMillis());
 
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
 
@@ -2779,7 +2794,7 @@ class DurableReconcileJobStoreTest {
     running.readyPointerKey = "";
     overwriteCanonicalRecordWithoutSync(canonicalPointerKey, running);
 
-    Thread.sleep(1150L);
+    forceLeaseExpired(jobId);
 
     assertTrue(
         store
@@ -2821,7 +2836,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "exec-1");
     pointerStore.resetListCounts();
 
-    Thread.sleep(1700L);
+    forceLeaseExpired(jobId);
 
     store.runMaintenanceOnce(1_000L);
     StoredReconcileJob reclaimed = readStoredRecord(canonicalPointerKey);
@@ -2911,8 +2926,8 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_QUEUED", retried.state);
     assertFalse(leaseOwnerEntryExists(lanePointerKey));
 
-    Thread.sleep(120L);
-    var secondLease = store.leaseNext().orElseThrow();
+    forceQueuedJobDueNow(jobId);
+    var secondLease = leaseJob(jobId);
     store.markFailed(
         jobId, secondLease.leaseEpoch, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
     ReconcileJob failed = store.get(jobId).orElseThrow();
@@ -3748,7 +3763,7 @@ class DurableReconcileJobStoreTest {
         System.currentTimeMillis(),
         "default_reconciler");
 
-    Thread.sleep(1700L);
+    forceLeaseExpired(jobId);
 
     store.runMaintenanceOnce(1_000L);
     StoredReconcileJob reclaimed =
@@ -3778,12 +3793,12 @@ class DurableReconcileJobStoreTest {
     assertTrue(firstLease.isPresent());
     assertEquals(jobId, firstLease.get().jobId);
 
-    Thread.sleep(1150L);
+    forceLeaseExpired(jobId);
 
     store.runMaintenanceOnce(1_000L);
     assertTrue(store.leaseNext().isEmpty());
 
-    Thread.sleep(1100L);
+    forceQueuedJobDueNow(jobId);
     var secondLease = store.leaseNext();
     assertTrue(secondLease.isPresent());
     assertEquals(jobId, secondLease.get().jobId);
@@ -3833,7 +3848,7 @@ class DurableReconcileJobStoreTest {
     store.cancel(ACCOUNT_ID, jobId, "stop");
     assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
 
-    Thread.sleep(1150L);
+    forceLeaseExpired(jobId);
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
@@ -3864,11 +3879,15 @@ class DurableReconcileJobStoreTest {
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(
         firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
+    long originalExpiresAtMs = readStoredLease(ACCOUNT_ID, jobId).expiresAtMs;
     store.cancel(ACCOUNT_ID, jobId, "stop");
     assertFalse(store.leaseNext().isPresent());
 
     // Cancel should poke lease expiry, allowing reclaim well before the original 5s lease.
-    Thread.sleep(1300L);
+    StoredJobLease shortenedLease = readStoredLease(ACCOUNT_ID, jobId);
+    assertTrue(shortenedLease.expiresAtMs < originalExpiresAtMs);
+    assertTrue(shortenedLease.expiresAtMs <= System.currentTimeMillis() + 1_000L);
+    forceLeaseExpired(jobId);
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
@@ -4038,16 +4057,15 @@ class DurableReconcileJobStoreTest {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     Pointer beforeRenew = store.pointerStore.get(canonicalPointerKey).orElseThrow();
 
-    Thread.sleep(500L);
+    awaitNextMillis(System.currentTimeMillis());
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
     Pointer afterRenew = store.pointerStore.get(canonicalPointerKey).orElseThrow();
     assertEquals(beforeRenew.getVersion(), afterRenew.getVersion());
     assertEquals(beforeRenew.getBlobUri(), afterRenew.getBlobUri());
 
-    Thread.sleep(700L);
     assertTrue(store.leaseNext().isEmpty());
 
-    Thread.sleep(2800L);
+    forceLeaseExpired(jobId);
     store.runMaintenanceOnce(1_000L);
     StoredReconcileJob reclaimed = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_QUEUED", reclaimed.state);
@@ -4089,9 +4107,9 @@ class DurableReconcileJobStoreTest {
     store.markRunning(jobId, firstLease.leaseEpoch, 100L, "executor-1");
     store.markFailed(jobId, firstLease.leaseEpoch, 200L, "boom", 1L, 1L, 0L, 0L, 3L, 2L, 4L);
 
-    Thread.sleep(150L);
+    forceQueuedJobDueNow(jobId);
 
-    ReconcileJobStore.LeasedJob secondLease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob secondLease = leaseJob(jobId);
     assertEquals(jobId, secondLease.jobId);
     store.markRunning(jobId, secondLease.leaseEpoch, 300L, "executor-2");
     store.markSucceeded(jobId, secondLease.leaseEpoch, 400L, 5L, 5L, 0L, 0L, 6L, 7L);
@@ -4125,7 +4143,7 @@ class DurableReconcileJobStoreTest {
     ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-1");
 
-    Thread.sleep(1100L);
+    forceLeaseExpired(jobId);
 
     assertTrue(
         store.applyLeaseOutcome(
@@ -4166,7 +4184,7 @@ class DurableReconcileJobStoreTest {
     ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-1");
 
-    Thread.sleep(1100L);
+    forceLeaseExpired(jobId);
 
     store.runMaintenanceOnce(1_000L);
 
@@ -4855,8 +4873,13 @@ class DurableReconcileJobStoreTest {
     System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
     store.init();
 
-    store.enqueue(
-        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
     // Take the first lease so the job is removed from the ready queue.
     // leaseNext() short-circuits via leaseReadyDue() here — reclaim is NOT triggered yet.
     store.leaseNext().orElseThrow();
@@ -4865,7 +4888,7 @@ class DurableReconcileJobStoreTest {
     // This simulates the S3 "not found" case reported in the bug.
     store.blobStore = new ThrowingOnGetBlobStore();
 
-    Thread.sleep(50L); // ensure lease-ms and reclaim-interval-ms have elapsed
+    forceLeaseExpired(jobId);
 
     // leaseNext() must not reclaim in the hot path any more.
     assertTrue(store.leaseNext().isEmpty());
@@ -5473,10 +5496,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
-    ReconcileJobStore.LeasedJob connectorLease =
-        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
-    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
-
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -5490,20 +5509,7 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    assertTrue(
-        store.applyLeaseOutcome(
-            connectorJobId,
-            connectorLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
-            200L,
-            "Waiting on child work",
-            19L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L));
+    forceWaitingParentState(connectorJobId, "Waiting on child work", 100L, 19L, 0L, 0L);
 
     ReconcileJob waiting =
         waitForValue(
@@ -5599,10 +5605,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
-    ReconcileJobStore.LeasedJob connectorLease =
-        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
-    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
-
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -5616,20 +5618,7 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    assertTrue(
-        store.applyLeaseOutcome(
-            connectorJobId,
-            connectorLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
-            200L,
-            "Planned 1 table job(s)",
-            1L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L));
+    forceWaitingParentState(connectorJobId, "Planned 1 table job(s)", 100L, 1L, 0L, 0L);
 
     ReconcileJob waiting =
         waitForValue(
@@ -5988,10 +5977,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
-    ReconcileJobStore.LeasedJob connectorLease =
-        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
-    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
-
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -6005,20 +5990,7 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    assertTrue(
-        store.applyLeaseOutcome(
-            connectorJobId,
-            connectorLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
-            200L,
-            "Waiting on child work",
-            1L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L));
+    forceWaitingParentState(connectorJobId, "Waiting on child work", 100L, 1L, 0L, 0L);
 
     ReconcileJob waitingParent =
         waitForValue(
@@ -6062,10 +6034,6 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
 
-    ReconcileJobStore.LeasedJob connectorLease =
-        leaseJob(connectorJobId, ReconcileJobKind.PLAN_CONNECTOR);
-    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
-
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -6079,20 +6047,7 @@ class DurableReconcileJobStoreTest {
             connectorJobId,
             "");
 
-    assertTrue(
-        store.applyLeaseOutcome(
-            connectorJobId,
-            connectorLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
-            200L,
-            "Waiting on child work",
-            1L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L));
+    forceWaitingParentState(connectorJobId, "Waiting on child work", 100L, 1L, 0L, 0L);
 
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId);
 
@@ -6498,24 +6453,6 @@ class DurableReconcileJobStoreTest {
             0L,
             0L));
 
-    ReconcileJobStore.LeasedJob snapshotLease =
-        leaseSpecificReadyJob(snapshotJobId, ReconcileJobKind.PLAN_SNAPSHOT);
-    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 75L, "executor-snapshot");
-    assertTrue(
-        store.applyLeaseOutcome(
-            snapshotJobId,
-            snapshotLease.leaseEpoch,
-            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
-            90L,
-            "Waiting on child work",
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L));
-
     ReconcileJobStore.LeasedJob execLease = leaseJob(execJobId, ReconcileJobKind.EXEC_FILE_GROUP);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.persistFileGroupResult(
@@ -6834,6 +6771,117 @@ class DurableReconcileJobStoreTest {
     return Optional.empty();
   }
 
+  private void forceWaitingParentState(
+      String jobId,
+      String message,
+      long startedAtMs,
+      long tablesScanned,
+      long tablesChanged,
+      long snapshotsProcessed) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob record = readStoredRecord(canonicalPointerKey);
+    for (String readyPointerKey : readyPointerKeysFor(record)) {
+      deletePointerIfPresent(readyPointerKey);
+    }
+    record.state = "JS_WAITING";
+    record.message = message;
+    record.startedAtMs = startedAtMs;
+    record.finishedAtMs = 0L;
+    record.tablesScanned = tablesScanned;
+    record.tablesChanged = tablesChanged;
+    record.snapshotsProcessed = snapshotsProcessed;
+    record.executorId = "";
+    record.readyPointerKey = "";
+    record.nextAttemptAtMs = 0L;
+    record.updatedAtMs = Math.max(record.updatedAtMs, startedAtMs);
+    overwriteCanonicalRecordWithoutSync(canonicalPointerKey, record);
+    runMaintenance();
+  }
+
+  private void forceQueuedJobDueNow(String jobId) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob existing = readStoredRecord(canonicalPointerKey);
+    clearLeaseArtifactsIfPresent(existing);
+    long dueAtMs = Math.max(1L, System.currentTimeMillis() - 1L);
+    StoredReconcileJob queued =
+        assertDoesNotThrow(
+                () ->
+                    store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                        canonicalPointerKey,
+                        current -> {
+                          current.state = "JS_QUEUED";
+                          current.executorId = "";
+                          current.finishedAtMs = 0L;
+                          current.nextAttemptAtMs = dueAtMs;
+                          current.updatedAtMs = Math.max(current.updatedAtMs, dueAtMs);
+                          List<String> readyPointerKeys = readyPointerKeysFor(current);
+                          current.readyPointerKey =
+                              readyPointerKeys.isEmpty() ? "" : readyPointerKeys.getFirst();
+                          return current;
+                        }))
+            .orElseThrow()
+            .record();
+    assertFalse(queued.readyPointerKey == null || queued.readyPointerKey.isBlank());
+    assertTrue(readyEntryExists(queued.readyPointerKey));
+  }
+
+  private void clearLeaseArtifactsIfPresent(StoredReconcileJob record) {
+    List<ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend.LeaseWriteOp>
+        writes = new ArrayList<>();
+    var leaseSnapshot = store.leaseBackend.loadLease(ACCOUNT_ID, record.jobId).orElse(null);
+    var decodedLease =
+        assertDoesNotThrow(() -> store.leaseStore.loadLease(ACCOUNT_ID, record.jobId));
+    if (leaseSnapshot != null) {
+      writes.add(
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend
+              .LeaseRecordDelete(ACCOUNT_ID, record.jobId, leaseSnapshot.version()));
+    }
+    if (decodedLease.isPresent()) {
+      String expiryKey =
+          leaseExpiryPointerKey(decodedLease.get().expiresAtMs, ACCOUNT_ID, record.jobId);
+      var expirySnapshot = store.leaseBackend.loadLeaseExpiry(expiryKey).orElse(null);
+      if (expirySnapshot != null) {
+        writes.add(
+            new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend
+                .LeaseExpiryDelete(expiryKey, expirySnapshot.version()));
+      }
+    }
+    String laneOwnerKey = Keys.reconcileLaneLeasePointer(ACCOUNT_ID, record.laneKey);
+    var ownerSnapshot = store.leaseBackend.loadOwner(laneOwnerKey).orElse(null);
+    if (ownerSnapshot != null) {
+      writes.add(
+          new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend
+              .LeaseOwnerDelete(laneOwnerKey, ownerSnapshot.version()));
+    }
+    if (!writes.isEmpty()) {
+      assertTrue(
+          store.leaseBackend.compareAndSetBatch(
+              ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
+                  .JobIndexWriteBatch.empty(),
+              new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend
+                  .LeaseWriteBatch(List.copyOf(writes))));
+    }
+  }
+
+  private void forceLeaseExpired(String jobId) {
+    forceLeaseExpiry(jobId, Math.max(1L, System.currentTimeMillis() - 1L));
+  }
+
+  private void forceLeaseExpiry(String jobId, long expiresAtMs) {
+    assertTrue(
+        store
+            .leaseStore
+            .mutateLease(
+                ACCOUNT_ID,
+                jobId,
+                current -> {
+                  current.expiresAtMs = expiresAtMs;
+                  return current;
+                })
+            .isPresent(),
+        () -> "expected active lease for job " + jobId);
+  }
+
   private <T> T waitForValue(
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
@@ -7016,7 +7064,10 @@ class DurableReconcileJobStoreTest {
                       && "JS_QUEUED".equals(current.state)
                       && current.readyPointerKey != null
                       && !current.readyPointerKey.isBlank()
-                      && readyEntryExists(current.readyPointerKey),
+                      && readyEntryExists(current.readyPointerKey)
+                      && !leaseEntryExists(ACCOUNT_ID, jobId)
+                      && !leaseOwnerEntryExists(
+                          Keys.reconcileLaneLeasePointer(ACCOUNT_ID, current.laneKey)),
               "job " + jobId + " to become ready for leasing");
       leased =
           assertDoesNotThrow(
@@ -7225,31 +7276,38 @@ class DurableReconcileJobStoreTest {
     return List.copyOf(out);
   }
 
-  private boolean isDynamoMode() {
+  private static boolean isDynamoMode() {
     return "dynamodb"
         .equalsIgnoreCase(
-            store.config.getOptionalValue("floecat.kv", String.class).orElse("memory"));
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.kv", String.class)
+                .orElse("memory"));
   }
 
-  private DynamoDbClient createDynamoDbClient() {
+  private static void ensureSharedDynamoClients() {
+    if (sharedDynamoDbClient == null) {
+      sharedDynamoDbClient = createDynamoDbClientStatic();
+    }
+    if (sharedDynamoDbAsyncClient == null) {
+      sharedDynamoDbAsyncClient = createDynamoDbAsyncClientStatic();
+    }
+  }
+
+  private static DynamoDbClient createDynamoDbClientStatic() {
     String endpoint =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
             .orElse("http://localhost:4566");
     String region =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.region", String.class)
             .orElse("us-east-1");
     String accessKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
             .orElse("test");
     String secretKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
             .orElse("test");
     return DynamoDbClient.builder()
@@ -7260,36 +7318,35 @@ class DurableReconcileJobStoreTest {
         .build();
   }
 
-  private PointerStore createDynamoPointerStore() {
+  private static DynamoDbAsyncClient createDynamoDbAsyncClientStatic() {
     String endpoint =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.dynamodb.endpoint-override", String.class)
             .orElse("http://localhost:4566");
     String region =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.region", String.class)
             .orElse("us-east-1");
     String accessKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.access-key-id", String.class)
             .orElse("test");
     String secretKey =
-        store
-            .config
+        ConfigProvider.getConfig()
             .getOptionalValue("floecat.storage.aws.secret-access-key", String.class)
             .orElse("test");
-    dynamoDbAsyncClient =
-        DynamoDbAsyncClient.builder()
-            .endpointOverride(URI.create(endpoint))
-            .region(Region.of(region))
-            .credentialsProvider(
-                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-            .build();
+    return DynamoDbAsyncClient.builder()
+        .endpointOverride(URI.create(endpoint))
+        .region(Region.of(region))
+        .credentialsProvider(
+            StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+        .build();
+  }
+
+  private PointerStore createDynamoPointerStore() {
+    ensureSharedDynamoClients();
     return new DynamoPointerStore(
-        new PointerStoreEntity(new DynamoDbKvStore(dynamoDbAsyncClient, store.kvTable)));
+        new PointerStoreEntity(new DynamoDbKvStore(sharedDynamoDbAsyncClient, store.kvTable)));
   }
 
   private void clearDynamoTable() {
@@ -7301,9 +7358,9 @@ class DurableReconcileJobStoreTest {
       if (startKey != null && !startKey.isEmpty()) {
         request.exclusiveStartKey(startKey);
       }
-      var response = dynamoDbClient.scan(request.build());
+      var response = sharedDynamoDbClient.scan(request.build());
       for (var item : response.items()) {
-        dynamoDbClient.deleteItem(
+        sharedDynamoDbClient.deleteItem(
             DeleteItemRequest.builder()
                 .tableName(table)
                 .key(Map.of("pk", item.get("pk"), "sk", item.get("sk")))

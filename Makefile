@@ -19,6 +19,7 @@
 #   make proto                   # generate/install protobuf stubs
 #   make test                    # unit + IT (service, REST gateway, client-cli, in-memory)
 #   make test-localstack          # unit + IT (fixtures + catalog LocalStack)
+#   make test-localstack TEST='SomeTest,OtherTest#method'
 #   make unit-test               # unit tests only (service, REST gateway, client-cli)
 #   make integration-test        # integration tests only (service, REST gateway, client-cli)
 #   make verify                  # full Maven verify lifecycle
@@ -97,6 +98,9 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+TEST ?=
+TEST_SELECTOR_ARGS := $(if $(strip $(TEST)),-Dtest="$(TEST)",)
+SUREFIRE_SELECTOR_ARGS := -Dsurefire.failIfNoSpecifiedTests=false
 TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 
 DOCKER_COMPOSE ?= docker compose
@@ -366,7 +370,7 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  $(MVN) $(MVN_TESTALL) install -N; \
 	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
 	  $(LOCALSTACK_ENV) \
-	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
+	  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
