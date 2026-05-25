@@ -5710,16 +5710,26 @@ class DurableReconcileJobStoreTest {
             0L));
 
     long canonicalStartedAtMs = store.getLeaseView(connectorJobId).orElseThrow().startedAtMs;
-    ReconcileJob waiting = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob waiting =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state) && current.startedAtMs == canonicalStartedAtMs,
+            "waiting parent preserves canonical startedAt");
     assertEquals("JS_WAITING", waiting.state);
     assertTrue(canonicalStartedAtMs > 0L);
     assertEquals(canonicalStartedAtMs, waiting.startedAtMs);
 
     ReconcileJob listedWaiting =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state) && current.startedAtMs == canonicalStartedAtMs,
+            "listed waiting parent preserves canonical startedAt");
     assertEquals("JS_WAITING", listedWaiting.state);
     assertEquals(canonicalStartedAtMs, listedWaiting.startedAtMs);
   }
@@ -5855,16 +5865,24 @@ class DurableReconcileJobStoreTest {
             1L,
             0L));
 
-    ReconcileJob waiting = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
+    ReconcileJob waiting =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, tableJobId).orElseThrow(),
+            current -> "JS_WAITING".equals(current.state) && current.finishedAtMs == 0L,
+            "table parent waiting before snapshot completion");
     assertEquals("JS_WAITING", waiting.state);
     assertEquals("Waiting on child work", waiting.message);
     assertEquals(0L, waiting.finishedAtMs);
 
     ReconcileJob listedWaiting =
-        store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> tableJobId.equals(job.jobId))
-            .findFirst()
-            .orElseThrow();
+        waitForValue(
+            () ->
+                store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> tableJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> "JS_WAITING".equals(current.state) && current.finishedAtMs == 0L,
+            "listed table parent waiting before snapshot completion");
     assertEquals("JS_WAITING", listedWaiting.state);
     assertEquals(0L, listedWaiting.finishedAtMs);
 
@@ -6303,7 +6321,14 @@ class DurableReconcileJobStoreTest {
     store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
     store.markSucceeded(connectorJobId, connectorLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob terminalBefore = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob terminalBefore =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
+                    && current.finishedAtMs == 200L,
+            "terminal parent before late child contribution");
     assertEquals("JS_SUCCEEDED", terminalBefore.state);
     assertEquals("Succeeded", terminalBefore.message);
     assertEquals(200L, terminalBefore.finishedAtMs);
@@ -6981,28 +7006,37 @@ class DurableReconcileJobStoreTest {
   private ReconcileJobStore.LeasedJob leaseSpecificReadyJob(
       String jobId, ReconcileJobKind jobKind) {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    StoredReconcileJob readyRecord =
-        waitForValue(
-            () -> readStoredRecord(canonicalPointerKey),
-            current ->
-                jobKind.equals(current.jobKind())
-                    && "JS_QUEUED".equals(current.state)
-                    && current.readyPointerKey != null
-                    && !current.readyPointerKey.isBlank(),
-            "job " + jobId + " to become ready for leasing");
-    return assertDoesNotThrow(
-            () ->
-                leaseManager()
-                    .leaseCanonical(
-                        canonicalPointerKey,
-                        readyRecord.readyPointerKey,
-                        System.currentTimeMillis(),
-                        store
-                            .jobIndexStore
-                            .loadCanonicalSnapshot(canonicalPointerKey)
-                            .orElseThrow(),
-                        readyRecord))
-        .orElseThrow();
+    Optional<ReconcileJobStore.LeasedJob> leased = Optional.empty();
+    for (int attempt = 0; attempt < 100 && leased.isEmpty(); attempt++) {
+      StoredReconcileJob readyRecord =
+          waitForValue(
+              () -> readStoredRecord(canonicalPointerKey),
+              current ->
+                  jobKind.equals(current.jobKind())
+                      && "JS_QUEUED".equals(current.state)
+                      && current.readyPointerKey != null
+                      && !current.readyPointerKey.isBlank()
+                      && readyEntryExists(current.readyPointerKey),
+              "job " + jobId + " to become ready for leasing");
+      leased =
+          assertDoesNotThrow(
+              () ->
+                  leaseManager()
+                      .leaseCanonical(
+                          canonicalPointerKey,
+                          readyRecord.readyPointerKey,
+                          System.currentTimeMillis(),
+                          store
+                              .jobIndexStore
+                              .loadCanonicalSnapshot(canonicalPointerKey)
+                              .orElseThrow(),
+                          readyRecord));
+      if (leased.isEmpty()) {
+        runMaintenance();
+      }
+    }
+    return leased.orElseThrow(
+        () -> new IllegalStateException("Unable to lease ready job " + jobId));
   }
 
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {

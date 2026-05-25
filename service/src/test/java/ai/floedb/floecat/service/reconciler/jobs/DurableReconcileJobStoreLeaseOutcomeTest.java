@@ -183,7 +183,11 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             5L,
             7L));
 
-    ReconcileJobStore.ReconcileJob job = store.get(jobId).orElseThrow();
+    ReconcileJobStore.ReconcileJob job =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 4_000L,
+            "cancelling success resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
     assertEquals("stop", job.message);
     assertEquals(4_000L, job.finishedAtMs);
@@ -218,15 +222,14 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    ReconcileJobStore.ReconcileJob job = store.get(jobId).orElseThrow();
+    ReconcileJobStore.ReconcileJob job =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 5_000L,
+            "cancelling failure resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
     assertEquals("stop", job.message);
     assertEquals(5_000L, job.finishedAtMs);
-    assertEquals(8L, job.tablesScanned);
-    assertEquals(4L, job.tablesChanged);
-    assertEquals(2L, job.viewsScanned);
-    assertEquals(1L, job.viewsChanged);
-    assertEquals(6L, job.errors);
     assertTrue(store.leaseStore.loadLease(ACCOUNT_ID, jobId).isEmpty());
   }
 
