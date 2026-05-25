@@ -26,7 +26,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -83,17 +82,10 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
           .bind(dynamoDbClient, store.kvTable);
-      store.projectionBackend =
-          new ai.floedb.floecat.service.reconciler.jobs.durable.store
-              .DynamoReconcileProjectionBackend();
-      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend)
-              store.projectionBackend)
-          .bind(dynamoDbClient, store.kvTable);
     } else {
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
       store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
-      store.projectionStore = new InMemoryReconcileProjectionStore();
     }
     store.init();
   }

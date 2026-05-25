@@ -18,26 +18,19 @@ package ai.floedb.floecat.storage.kv.dynamodb.kvobject;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
-import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbTablesBootstrap;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
-import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 
 @ApplicationScoped
 public class KvObjectKvStoreProducer {
 
-  @Inject DynamoDbTablesBootstrap ddbBootstrap;
-
   @Produces
   @ApplicationScoped
   @KvTable("floecat-test")
   KvStore coreKvStore(
-      DynamoDbAsyncClient ddb,
-      @ConfigProperty(name = "floecat.kv.table") String table,
-      @ConfigProperty(name = "floecat.kv.ttl-enabled", defaultValue = "true") boolean ttlEnabled) {
-    ddbBootstrap.ensureTableExists(table, ttlEnabled);
+      DynamoDbAsyncClient ddb, @ConfigProperty(name = "floecat.kv.table") String table) {
     return new DynamoDbKvStore(ddb, table);
   }
 }

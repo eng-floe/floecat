@@ -21,7 +21,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
@@ -46,7 +45,6 @@ public class ReconcileJobCancellationService {
   private ReconcileLeaseStore leaseManager;
   private Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount;
   private CanonicalMutator mutateByCanonicalPointerReturningRecord;
-  private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
   private GetJob getJob;
   private ClearExecutionLeases clearExecutionLeasesIfOwned;
   private long cancelPokeMaxDelayMs;
@@ -60,14 +58,12 @@ public class ReconcileJobCancellationService {
       ReconcileLeaseStore leaseManager,
       Function<String, Optional<CanonicalEnvelope>> loadByAnyAccount,
       CanonicalMutator mutateByCanonicalPointerReturningRecord,
-      BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
       GetJob getJob,
       ClearExecutionLeases clearExecutionLeasesIfOwned,
       long cancelPokeMaxDelayMs) {
     this.leaseManager = leaseManager;
     this.loadByAnyAccount = loadByAnyAccount;
     this.mutateByCanonicalPointerReturningRecord = mutateByCanonicalPointerReturningRecord;
-    this.refreshAncestorContributionRollups = refreshAncestorContributionRollups;
     this.getJob = getJob;
     this.clearExecutionLeasesIfOwned = clearExecutionLeasesIfOwned;
     this.cancelPokeMaxDelayMs = cancelPokeMaxDelayMs;
@@ -136,7 +132,6 @@ public class ReconcileJobCancellationService {
             loaded.get().record().accountId, jobId, priorLeaseEpoch);
       }
     }
-    updated.ifPresent(env -> refreshAncestorContributionRollups.accept(env.record(), false));
     var post = getJob.get(accountId, jobId);
     if (post.isPresent()
         && ("JS_CANCELLED".equals(post.get().state) || "JS_CANCELLING".equals(post.get().state))) {

@@ -23,7 +23,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionUpdater;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -52,7 +51,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   private long leaseMs;
   private long leaseRenewGraceMs;
   private ReconcileJobIndexStore jobIndexStore;
-  private ReconcileProjectionUpdater projectionUpdater;
+  private CanonicalJobMutator mutateCanonicalJob;
   private Predicate<String> isTerminalState;
   private BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved;
   private int maxAttempts;
@@ -65,7 +64,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       long leaseMs,
       long leaseRenewGraceMs,
       ReconcileJobIndexStore jobIndexStore,
-      ReconcileProjectionUpdater projectionUpdater,
+      CanonicalJobMutator mutateCanonicalJob,
       Predicate<String> isTerminalState,
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       int maxAttempts,
@@ -76,7 +75,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     this.leaseMs = leaseMs;
     this.leaseRenewGraceMs = leaseRenewGraceMs;
     this.jobIndexStore = jobIndexStore;
-    this.projectionUpdater = projectionUpdater;
+    this.mutateCanonicalJob = mutateCanonicalJob;
     this.isTerminalState = isTerminalState;
     this.assertImmutableJobIdentityPreserved = assertImmutableJobIdentityPreserved;
     this.maxAttempts = Math.max(1, maxAttempts);
@@ -251,7 +250,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
     clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
     clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
-    jobIndexStore.mutateByCanonicalPointerReturningRecord(
+    mutateCanonicalJob.apply(
         canonicalPointerKey,
         existing -> {
           if (existing == null
@@ -279,7 +278,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     }
     clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
     Optional<ReconcileJobIndexStore.CanonicalEnvelope> updated =
-        jobIndexStore.mutateByCanonicalPointerReturningRecord(
+        mutateCanonicalJob.apply(
             canonicalPointerKey,
             existing -> {
               if (existing == null
@@ -300,9 +299,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             });
     clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
     clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
-    updated
-        .map(ReconcileJobIndexStore.CanonicalEnvelope::record)
-        .ifPresent(projectionUpdater::refreshContributionChain);
   }
 
   private ReconcileLeaseBackend.LeaseWriteBatch mergeLeaseWrites(
@@ -873,8 +869,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     }
     AtomicReference<String> expiredEpoch = new AtomicReference<>("");
     boolean updated =
-        jobIndexStore
-            .mutateByCanonicalPointerReturningRecord(
+        mutateCanonicalJob
+            .apply(
                 canonicalKey,
                 record -> {
                   if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
@@ -929,11 +925,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (updated && !blank(expiredEpoch.get())) {
       clearLeaseIfEpochMatches(
           canonicalRecord.accountId, canonicalRecord.jobId, expiredEpoch.get());
-    }
-    if (updated) {
-      jobIndexStore
-          .readCanonicalRecordByKey(canonicalKey)
-          .ifPresent(projectionUpdater::refreshContributionChain);
     }
   }
 

@@ -147,9 +147,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   public boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
     if ((jobIndexBatch == null
-            || (jobIndexBatch.writes().isEmpty()
-                && jobIndexBatch.readyMutation().isEmpty()
-                && jobIndexBatch.projectionMutation().writes().isEmpty()))
+            || (jobIndexBatch.writes().isEmpty() && jobIndexBatch.readyMutation().isEmpty()))
         && (leaseBatch == null || leaseBatch.writes().isEmpty())) {
       return true;
     }
@@ -183,13 +181,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
             ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey, "");
         if (row != null) {
           tx.add(buildReadyDelete(row));
-        }
-      }
-      for (var write : jobIndexBatch.projectionMutation().writes()) {
-        if (write instanceof ReconcileProjectionBackend.ContributionUpsert upsert) {
-          tx.add(buildProjectionContributionUpsert(upsert));
-        } else if (write instanceof ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
-          tx.add(buildProjectionResultReferenceUpsert(upsert));
         }
       }
     }
@@ -433,45 +424,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         LeaseBackendSupport.ownerPartitionKey(delete.ownerKey()),
         LeaseBackendSupport.LEASE_OWNER_SORT_KEY,
         delete.expectedVersion());
-  }
-
-  private TransactWriteItem buildProjectionContributionUpsert(
-      ReconcileProjectionBackend.ContributionUpsert upsert) {
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(
-        ATTR_PARTITION_KEY,
-        AttributeValue.fromS(
-            ProjectionBackendSupport.contributionPartitionKey(
-                upsert.accountId(), upsert.parentJobId())));
-    item.put(
-        ATTR_SORT_KEY,
-        AttributeValue.fromS(ProjectionBackendSupport.contributionSortKey(upsert.childJobId())));
-    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_CONTRIBUTION));
-    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
-    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
-    item.put(
-        ProjectionBackendSupport.ATTR_PARENT_JOB_ID, AttributeValue.fromS(upsert.parentJobId()));
-    item.put(ProjectionBackendSupport.ATTR_CHILD_JOB_ID, AttributeValue.fromS(upsert.childJobId()));
-    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
-    return buildPut(item, upsert.expectedVersion());
-  }
-
-  private TransactWriteItem buildProjectionResultReferenceUpsert(
-      ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(
-        ATTR_PARTITION_KEY,
-        AttributeValue.fromS(
-            ProjectionBackendSupport.resultReferencePartitionKey(upsert.accountId())));
-    item.put(
-        ATTR_SORT_KEY,
-        AttributeValue.fromS(ProjectionBackendSupport.resultReferenceSortKey(upsert.jobId())));
-    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_RESULT_REFERENCE));
-    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
-    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
-    item.put(ProjectionBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(upsert.jobId()));
-    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
-    return buildPut(item, upsert.expectedVersion());
   }
 
   private boolean appendJobIndexUpsert(List<TransactWriteItem> tx, CasUpsert upsert) {

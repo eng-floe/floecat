@@ -31,10 +31,9 @@ import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileContributionRollupService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.JobProjection;
-import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionUpdater;
+import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileAncestorRollupService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCancellationService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCompleter;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobEnqueuer;
@@ -44,22 +43,17 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobInd
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
@@ -89,9 +83,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 // 1. Canonical job state owns all derived job-index pointers and updates them transactionally.
 // 2. Lease coordination pointers are a separate runtime ownership domain owned by
 //    ReconcileLeaseStore.
-// 3. Contribution pointers and file-group result pointers are projection/payload-reference state,
-//    not part of the canonical job-index invariant. That split is intentional and is the stop
-//    point for this refactor rather than a temporary fallback.
+// 3. File-group result pointers are payload-reference state; aggregate counters and parent state
+//    are maintained in canonical rows and updated atomically with child mutations.
 // This store expects the post-port inline canonical reconcile layout only. It does not read
 // legacy StoredJobReference indirection, lane queue/head scheduling rows, or separate lease-state
 // blobs.
@@ -121,8 +114,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileJobIndexBackend jobIndexBackend;
   @Inject ReconcileJobIndexStore jobIndexStore;
   @Inject ReconcileJobProjector projector;
-  @Inject ReconcileContributionRollupService contributionRollupService;
-  @Inject ReconcileProjectionUpdater projectionUpdater;
+  @Inject ReconcileAncestorRollupService ancestorRollupService;
   @Inject ReconcileJobLister lister;
   @Inject ReconcileLeaseStore leaseStore;
   @Inject ReconcileLeaseBackend leaseBackend;
@@ -132,9 +124,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileJobMaintenanceService maintenanceService;
   @Inject ReconcileReadyQueueStore readyQueueStore;
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
-  @Inject ReconcileProjectionStore projectionStore;
-  @Inject ReconcileProjectionBackend projectionBackend;
-
   private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
   private long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
@@ -147,11 +136,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (payloadStore == null) {
       payloadStore = new ReconcilePayloadStore();
     }
-    payloadStore.bind(
-        blobStore,
-        pointerStore,
-        mapper,
-        (accountId, jobId) -> projectionStore().loadFileGroupResultReference(accountId, jobId));
+    payloadStore.bind(blobStore, pointerStore, mapper);
     return payloadStore;
   }
 
@@ -161,32 +146,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     projector.bind(payloads());
     return projector;
-  }
-
-  private ReconcileProjectionStore projectionStore() {
-    if (projectionStore == null) {
-      projectionStore = new NativeReconcileProjectionStore();
-    }
-    if (projectionBackend == null) {
-      String kvMode = config.getOptionalValue("floecat.kv", String.class).orElse("memory");
-      if ("memory".equalsIgnoreCase(kvMode)) {
-        projectionBackend = new MemoryReconcileProjectionBackend();
-      } else if ("dynamodb".equalsIgnoreCase(kvMode)) {
-        projectionBackend = new DynamoReconcileProjectionBackend();
-      } else {
-        throw new IllegalStateException(
-            "No reconcile projection backend available for floecat.kv=" + kvMode);
-      }
-    }
-    if (projectionBackend instanceof MemoryReconcileProjectionBackend memoryBackend) {
-      memoryBackend.bind();
-    } else if (projectionBackend instanceof DynamoReconcileProjectionBackend dynamoBackend
-        && dynamoDb != null
-        && dynamoDb.isResolvable()) {
-      dynamoBackend.bind(dynamoDb.get(), kvTable);
-    }
-    projectionStore.bind(projectionBackend, payloads(), CAS_MAX);
-    return projectionStore;
   }
 
   private ReconcileJobIndexStore jobIndexStore() {
@@ -205,8 +164,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     if (jobIndexBackend instanceof MemoryReconcileJobIndexBackend memoryBackend) {
-      projectionStore();
-      memoryBackend.bind(pointerStore, projectionBackend);
+      memoryBackend.bind(pointerStore);
     } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
@@ -239,35 +197,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return lister;
   }
 
-  private ReconcileContributionRollupService contributionRollups() {
-    if (contributionRollupService == null) {
-      contributionRollupService = new ReconcileContributionRollupService();
+  private ReconcileAncestorRollupService ancestorRollups() {
+    if (ancestorRollupService == null) {
+      ancestorRollupService = new ReconcileAncestorRollupService();
     }
-    contributionRollupService.bind(
+    ancestorRollupService.bind(
+        jobIndexStore(),
         projector(),
-        this::hasLiveLeaseForProjection,
-        projectionStore(),
-        jobId ->
-            loadByAnyAccount(jobId)
-                .map(
-                    env ->
-                        new ReconcileContributionRollupService.CanonicalEnvelope(
-                            env.canonicalPointerKey, env.record)),
-        (canonicalPointerKey, mutator) ->
-            mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
-                .map(
-                    env ->
-                        new ReconcileContributionRollupService.CanonicalEnvelope(
-                            env.canonicalPointerKey, env.record)),
-        this::copyStoredJob);
-    return contributionRollupService;
-  }
-
-  private ReconcileProjectionUpdater projectionUpdater() {
-    if (projectionUpdater == null) {
-      projectionUpdater = contributionRollups();
-    }
-    return projectionUpdater;
+        this::loadSnapshotEnvelopeByJobId,
+        this::loadSnapshotEnvelopeByCanonicalKey,
+        this::hasLiveLeaseForProjection);
+    return ancestorRollupService;
   }
 
   private boolean hasLiveLeaseForProjection(
@@ -304,7 +244,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         leaseMs,
         leaseRenewGraceMs,
         jobIndexStore(),
-        projectionUpdater(),
+        (canonicalPointerKey, mutator) ->
+            jobIndexStore()
+                .loadCanonicalSnapshot(canonicalPointerKey)
+                .flatMap(
+                    ignored ->
+                        mutateByCanonicalPointerWithAncestorsReturningRecord(
+                                canonicalPointerKey, mutator)
+                            .map(
+                                env ->
+                                    new ReconcileJobIndexStore.CanonicalEnvelope(
+                                        env.canonicalPointerKey, env.record))),
         DurableReconcileJobStore::isTerminalState,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
         maxAttempts,
@@ -352,14 +302,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     completer.bind(
         leaseManager(),
         (jobId, mutator) ->
-            mutateByJobIdReturningRecord(jobId, mutator)
+            mutateByJobIdWithAncestorsReturningRecord(jobId, mutator)
                 .map(
                     env ->
                         new ReconcileJobCompleter.CanonicalEnvelope(
                             env.canonicalPointerKey, env.record)),
-        (record, includeSelfProjectionPayloads) ->
-            refreshAncestorContributionRollups(
-                record, includeSelfProjectionPayloads.booleanValue()),
         this::countDirectChildJobs,
         this::backoffMs,
         (record, dueAtMs) -> readyPointerKeyFor(record, dueAtMs.longValue()),
@@ -386,10 +333,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue,
         this::writeFileGroupResultPayloadBlobReference,
-        this::incrementExpectedChildJobs,
-        (record, includeSelfProjectionPayloads) ->
-            refreshAncestorContributionRollups(
-                record, includeSelfProjectionPayloads.booleanValue()),
+        this::buildAncestorMutationsForInsert,
         CAS_MAX);
     return enqueuer;
   }
@@ -407,12 +351,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         new ReconcileJobCancellationService.CanonicalEnvelope(
                             env.canonicalPointerKey, env.record)),
         (canonicalPointerKey, mutator) ->
-            mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
+            mutateByCanonicalPointerWithAncestorsReturningRecord(canonicalPointerKey, mutator)
                 .map(
                     env ->
                         new ReconcileJobCancellationService.CanonicalEnvelope(
                             env.canonicalPointerKey, env.record)),
-        this::refreshAncestorContributionRollups,
         this::get,
         (env, jobId, leaseEpoch) ->
             clearExecutionLeasesIfOwned(
@@ -699,7 +642,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               materializedSnapshotPlanTask(effective, effectiveManifestUri, materializedFileGroups);
           final boolean[] alreadyAdopted = {false};
           Optional<StoredEnvelope> updated =
-              mutateByJobIdReturningRecord(
+              mutateByJobIdWithAncestorsReturningRecord(
                   jobId,
                   existing -> {
                     if (!leaseManager()
@@ -748,7 +691,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           if (updated.isEmpty()) {
             return alreadyAdopted[0];
           }
-          refreshAncestorContributionRollups(updated.get().record, true);
           return true;
         });
   }
@@ -957,11 +899,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           String blobUri =
               writeFileGroupResultPayloadBlobReference(
                   loaded.get().record.accountId, loaded.get().record.jobId, effective);
-          if (!projectionStore()
-              .upsertFileGroupResultReference(
-                  loaded.get().record.accountId, loaded.get().record.jobId, blobUri)) {
+          Optional<StoredEnvelope> updated =
+              mutateByJobIdWithAncestorsReturningRecord(
+                  loaded.get().record.jobId,
+                  existing -> {
+                    if (existing == null) {
+                      return null;
+                    }
+                    existing.fileGroupResultBlobUri = blobUri;
+                    return existing;
+                  });
+          if (updated.isEmpty()) {
             blobStore.delete(blobUri);
-            throw new IllegalStateException("Failed to update reconcile job result pointer");
+            throw new IllegalStateException("Failed to update reconcile job result reference");
           }
         });
   }
@@ -1170,6 +1120,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
   }
 
+  private Optional<ReconcileAncestorRollupService.SnapshotEnvelope> loadSnapshotEnvelopeByJobId(
+      String jobId) {
+    return loadByAnyAccount(jobId)
+        .flatMap(env -> loadSnapshotEnvelopeByCanonicalKey(env.canonicalPointerKey));
+  }
+
+  private Optional<ReconcileAncestorRollupService.SnapshotEnvelope>
+      loadSnapshotEnvelopeByCanonicalKey(String canonicalPointerKey) {
+    return jobIndexStore()
+        .loadCanonicalSnapshot(canonicalPointerKey)
+        .flatMap(
+            snapshot ->
+                jobIndexStore()
+                    .readRecord(snapshot)
+                    .map(
+                        record ->
+                            new ReconcileAncestorRollupService.SnapshotEnvelope(snapshot, record)));
+  }
+
   private Optional<StoredEnvelope> mutateByJobIdReturningRecord(
       String jobId, UnaryOperator<StoredReconcileJob> mutator) {
     return jobIndexStore()
@@ -1182,6 +1151,45 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return jobIndexStore()
         .mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
+  }
+
+  private Optional<StoredEnvelope> mutateByJobIdWithAncestorsReturningRecord(
+      String jobId, UnaryOperator<StoredReconcileJob> mutator) {
+    return mutateCanonicalRecordWithAncestors(() -> loadSnapshotEnvelopeByJobId(jobId), mutator);
+  }
+
+  private Optional<StoredEnvelope> mutateByCanonicalPointerWithAncestorsReturningRecord(
+      String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator) {
+    return mutateCanonicalRecordWithAncestors(
+        () -> loadSnapshotEnvelopeByCanonicalKey(canonicalPointerKey), mutator);
+  }
+
+  private Optional<StoredEnvelope> mutateCanonicalRecordWithAncestors(
+      Supplier<Optional<ReconcileAncestorRollupService.SnapshotEnvelope>> loader,
+      UnaryOperator<StoredReconcileJob> mutator) {
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      ReconcileAncestorRollupService.SnapshotEnvelope loaded = loader.get().orElse(null);
+      if (loaded == null || loaded.record() == null) {
+        return Optional.empty();
+      }
+      StoredReconcileJob baseline = jobIndexStore().cloneStoredRecord(loaded.record());
+      StoredReconcileJob current = jobIndexStore().cloneStoredRecord(loaded.record());
+      StoredReconcileJob next = mutator.apply(current);
+      if (next == null) {
+        return Optional.empty();
+      }
+      assertImmutableJobIdentityPreserved(baseline, next);
+      next.updatedAtMs = System.currentTimeMillis();
+      next.canonicalPointerKey = loaded.snapshot().canonicalPointerKey();
+      List<ReconcileJobIndexStore.CanonicalRecordMutation> mutations = new java.util.ArrayList<>();
+      mutations.add(
+          new ReconcileJobIndexStore.CanonicalRecordMutation(loaded.snapshot(), baseline, next));
+      mutations.addAll(ancestorRollups().buildAncestorMutations(baseline, next));
+      if (jobIndexStore().compareAndSetCanonicalMutations(mutations)) {
+        return Optional.of(new StoredEnvelope(loaded.snapshot().canonicalPointerKey(), next));
+      }
+    }
+    return Optional.empty();
   }
 
   private boolean renewLeaseByJobId(String accountId, String jobId, String leaseEpoch) {
@@ -1306,8 +1314,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return Math.min(maxBackoffMs, base);
   }
 
-  // File-group result payload references are intentionally outside the canonical job-index
-  // invariant. They are payload-linkage state, not derived scheduling/index pointers.
   private String writeFileGroupResultPayloadBlobReference(
       String accountId, String jobId, ReconcileFileGroupTask fileGroupTask) {
     String nextBlobUri =
@@ -1341,39 +1347,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 
-  private void refreshAncestorContributionRollups(
-      StoredReconcileJob childJob, boolean includeSelfProjectionPayloads) {
-    contributionRollups()
-        .refreshAncestorContributionRollups(childJob, includeSelfProjectionPayloads);
-  }
-
-  private StoredReconcileJob copyStoredJob(StoredReconcileJob stored) {
-    if (stored == null) {
-      return null;
-    }
-    return mapper.convertValue(stored, StoredReconcileJob.class);
-  }
-
-  private void incrementExpectedChildJobs(String parentJobId, int delta) {
-    if (blank(parentJobId)) {
-      return;
-    }
-    int effectiveDelta = Math.max(0, delta);
-    if (effectiveDelta == 0) {
-      return;
-    }
-    mutateByJobIdReturningRecord(
-        parentJobId,
-        existing -> {
-          if (existing == null
-              || !isParentCapable(existing.jobKind())
-              || (isTerminalState(existing.state) && existing.finishedAtMs > 0L)) {
-            return null;
-          }
-          existing.expectedChildJobs =
-              Math.max(0L, existing.expectedChildJobs) + (long) effectiveDelta;
-          return existing;
-        });
+  private List<ReconcileJobIndexStore.CanonicalRecordMutation> buildAncestorMutationsForInsert(
+      StoredReconcileJob childJob) {
+    return ancestorRollups().buildAncestorMutations(null, childJob);
   }
 
   private long countDirectChildJobs(String accountId, String parentJobId) {

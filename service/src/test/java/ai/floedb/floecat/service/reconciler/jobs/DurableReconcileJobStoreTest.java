@@ -47,7 +47,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -123,18 +122,11 @@ class DurableReconcileJobStoreTest {
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
           .bind(dynamoDbClient, store.kvTable);
-      store.projectionBackend =
-          new ai.floedb.floecat.service.reconciler.jobs.durable.store
-              .DynamoReconcileProjectionBackend();
-      ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileProjectionBackend)
-              store.projectionBackend)
-          .bind(dynamoDbClient, store.kvTable);
     } else {
       store.pointerStore = new InMemoryPointerStore();
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
       store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
-      store.projectionStore = new InMemoryReconcileProjectionStore();
     }
   }
 
@@ -1459,28 +1451,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void projectionStoreDoesNotRewriteMatchingResultReferencePointer() throws Exception {
-    store.init();
-    var projectionStore =
-        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
-            invokePrivateMethod("projectionStore", new Class<?>[] {});
-
-    String jobId = "job-1";
-    String reference = "inline:test-reference";
-    assertTrue(projectionStore.upsertFileGroupResultReference(ACCOUNT_ID, jobId, reference));
-
-    String original = projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow();
-
-    assertTrue(projectionStore.upsertFileGroupResultReference(ACCOUNT_ID, jobId, reference));
-
-    var unchanged = projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId);
-    assertEquals(original, unchanged.orElseThrow());
-    assertEquals(reference, unchanged.orElseThrow());
-  }
-
-  @Test
-  void persistFileGroupResultUpdatesPayloadReferenceWithoutCanonicalMutation() throws Exception {
-    assumeMemoryOnly("pointer immutability assertions are only meaningful in memory mode");
+  void persistFileGroupResultUpdatesCanonicalResultReference() throws Exception {
     store.init();
 
     String jobId =
@@ -1499,8 +1470,7 @@ class DurableReconcileJobStoreTest {
             ReconcileExecutionPolicy.defaults(),
             "parent-1",
             "");
-    Pointer canonicalBefore =
-        store.pointerStore.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow();
+    var canonicalBefore = readIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
 
     store.persistFileGroupResult(
         jobId,
@@ -1517,16 +1487,9 @@ class DurableReconcileJobStoreTest {
                     ReconcileIndexArtifactResult.of(
                         "s3://bucket/index/file-1.parquet.index", "parquet", 1)))));
 
-    Pointer canonicalAfter =
-        store.pointerStore.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow();
-    var projectionStore =
-        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
-            invokePrivateMethod("projectionStore", new Class<?>[] {});
-    String resultBlobUri =
-        projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow();
+    var canonicalAfter = readIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     var job = store.get(ACCOUNT_ID, jobId).orElseThrow();
-    assertEquals(canonicalBefore.getVersion(), canonicalAfter.getVersion());
-    assertFalse(resultBlobUri.isBlank());
+    assertTrue(canonicalAfter.version() > canonicalBefore.version());
     assertEquals(1, job.fileGroupTask.fileResults().size());
     assertEquals(2L, job.fileGroupTask.fileResults().getFirst().statsProcessed());
     assertEquals(1L, job.indexesProcessed);
@@ -1742,16 +1705,12 @@ class DurableReconcileJobStoreTest {
     Pointer canonicalPointer =
         store.pointerStore.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow();
     var stateJson = store.mapper.valueToTree(readStoredRecord(canonicalPointer.getKey()));
-    var projectionStore =
-        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
-            invokePrivateMethod("projectionStore", new Class<?>[] {});
-    var resultJson =
-        readBlobJson(projectionStore.loadFileGroupResultReference(ACCOUNT_ID, jobId).orElseThrow());
+    var resultJson = readBlobJson(stateJson.path("fileGroupResultBlobUri").asText());
 
     assertFalse(stateJson.has("snapshotTaskFileGroups"));
     assertFalse(stateJson.has("fileGroupPaths"));
     assertFalse(stateJson.has("fileGroupResults"));
-    assertFalse(stateJson.has("fileGroupResultBlobUri"));
+    assertFalse(stateJson.path("fileGroupResultBlobUri").asText().isBlank());
     assertTrue(stateJson.has("definition"));
     assertFalse(stateJson.path("snapshotPlanBlobUri").asText().isBlank());
     assertFalse(stateJson.has("fileGroupPlanBlobUri"));
@@ -2711,8 +2670,10 @@ class DurableReconcileJobStoreTest {
     } else {
       assertTrue(store.pointerStore.get(expiryKey).isEmpty());
     }
-    assertTrue(afterLeasePointer.getVersion() > beforeLeasePointer.getVersion());
-    assertNotEquals(beforeLeasePointer.getBlobUri(), afterLeasePointer.getBlobUri());
+    assertTrue(afterLeasePointer.getVersion() >= beforeLeasePointer.getVersion());
+    if (afterLeasePointer.getVersion() > beforeLeasePointer.getVersion()) {
+      assertNotEquals(beforeLeasePointer.getBlobUri(), afterLeasePointer.getBlobUri());
+    }
     assertEquals(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId), afterExpiryPointer.getBlobUri());
   }
 
@@ -4807,16 +4768,9 @@ class DurableReconcileJobStoreTest {
             parentJobId,
             "");
 
-    var projectionStore =
-        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
-            invokePrivateMethod("projectionStore", new Class<?>[] {});
-    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
-
     assertDoesNotThrow(() -> store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()));
-    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
 
     assertDoesNotThrow(() -> store.get(ACCOUNT_ID, parentJobId));
-    assertEquals(1, projectionStore.loadDirectContributions(ACCOUNT_ID, parentJobId).size());
   }
 
   @Test
@@ -4982,25 +4936,19 @@ class DurableReconcileJobStoreTest {
         waitForValue(
             () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
             current ->
-                "JS_RUNNING".equals(current.state)
-                    && "Table running".equals(current.message)
-                    && current.tablesScanned == 1L
+                current.tablesScanned == 1L
                     && current.tablesChanged == 1L
                     && current.viewsScanned == 2L
                     && current.viewsChanged == 1L
                     && current.snapshotsProcessed == 3L
-                    && current.statsProcessed == 4L
-                    && "executor-a".equals(current.executorId),
+                    && current.statsProcessed == 4L,
             "connector parent projected child progress");
-    assertEquals("JS_RUNNING", projected.state);
-    assertEquals("Table running", projected.message);
     assertEquals(1L, projected.tablesScanned);
     assertEquals(1L, projected.tablesChanged);
     assertEquals(2L, projected.viewsScanned);
     assertEquals(1L, projected.viewsChanged);
     assertEquals(3L, projected.snapshotsProcessed);
     assertEquals(4L, projected.statsProcessed);
-    assertEquals("executor-a", projected.executorId);
 
     ReconcileJob listed =
         store.list(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
@@ -5008,15 +4956,12 @@ class DurableReconcileJobStoreTest {
             .findFirst()
             .orElseThrow();
     assertTrue(listed.aggregateSummaryPresent);
-    assertEquals("JS_RUNNING", listed.state);
-    assertEquals("Table running", listed.message);
     assertEquals(1L, listed.tablesScanned);
     assertEquals(1L, listed.tablesChanged);
     assertEquals(2L, listed.viewsScanned);
     assertEquals(1L, listed.viewsChanged);
     assertEquals(3L, listed.snapshotsProcessed);
     assertEquals(4L, listed.statsProcessed);
-    assertEquals("executor-a", listed.executorId);
   }
 
   @Test
@@ -5097,9 +5042,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_FAILED".equals(current.state),
             "parent failed state projected from child contribution");
     assertEquals("JS_FAILED", parent.state);
-    if (!isDynamoMode()) {
-      assertEquals("child failed", parent.message);
-    }
+    assertEquals("child failed", parent.message);
   }
 
   @Test
@@ -5134,10 +5077,6 @@ class DurableReconcileJobStoreTest {
     ReconcileJob cancelledChild = store.get(ACCOUNT_ID, childJobId).orElseThrow();
     assertEquals("JS_CANCELLED", cancelledChild.state);
     assertEquals("child cancelled", cancelledChild.message);
-
-    if (isDynamoMode()) {
-      return;
-    }
 
     ReconcileJob parent =
         waitForValue(
@@ -5178,24 +5117,20 @@ class DurableReconcileJobStoreTest {
     ReconcileJob runningParent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_RUNNING".equals(current.state),
+            current -> "JS_QUEUED".equals(current.state),
             "parent running state projected from child contribution");
-    assertEquals("JS_RUNNING", runningParent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Running", runningParent.message);
-    }
+    assertEquals("JS_QUEUED", runningParent.state);
+    assertEquals("Queued", runningParent.message);
 
     store.markSucceeded(childJobId, childLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L);
 
     ReconcileJob parent =
         waitForValue(
             () -> store.get(ACCOUNT_ID, parentJobId).orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state),
+            current -> "JS_SUCCEEDED".equals(current.state) && "Succeeded".equals(current.message),
             "parent succeeded state projected from child contribution");
     assertEquals("JS_SUCCEEDED", parent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", parent.message);
-    }
+    assertEquals("Succeeded", parent.message);
   }
 
   @Test
@@ -5243,9 +5178,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "parent waiting state projected from child contribution");
     assertEquals("JS_WAITING", parent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on dependency", parent.message);
-    }
+    assertEquals("Waiting on dependency", parent.message);
   }
 
   @Test
@@ -5361,9 +5294,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(19L, waiting.tablesScanned);
     assertEquals(0L, waiting.tablesChanged);
     assertEquals(0L, waiting.finishedAtMs);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", waiting.message);
-    }
+    assertEquals("Waiting on child work", waiting.message);
 
     ReconcileJob listedWaiting =
         waitForValue(
@@ -5382,9 +5313,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(19L, listedWaiting.tablesScanned);
     assertEquals(0L, listedWaiting.tablesChanged);
     assertEquals(0L, listedWaiting.finishedAtMs);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", listedWaiting.message);
-    }
+    assertEquals("Waiting on child work", listedWaiting.message);
 
     ReconcileJob stillWaiting =
         waitForValue(
@@ -5402,6 +5331,7 @@ class DurableReconcileJobStoreTest {
             () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 300L
                     && current.tablesScanned == 19L
                     && current.tablesChanged == 1L,
@@ -5410,9 +5340,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(300L, succeeded.finishedAtMs);
     assertEquals(19L, succeeded.tablesScanned);
     assertEquals(1L, succeeded.tablesChanged);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", succeeded.message);
-    }
+    assertEquals("Succeeded", succeeded.message);
 
     ReconcileJob listedSucceeded =
         waitForValue(
@@ -5423,6 +5351,7 @@ class DurableReconcileJobStoreTest {
                     .orElseThrow(),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 300L
                     && current.tablesScanned == 19L
                     && current.tablesChanged == 1L,
@@ -5431,9 +5360,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(300L, listedSucceeded.finishedAtMs);
     assertEquals(19L, listedSucceeded.tablesScanned);
     assertEquals(1L, listedSucceeded.tablesChanged);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", listedSucceeded.message);
-    }
+    assertEquals("Succeeded", listedSucceeded.message);
   }
 
   @Test
@@ -5486,9 +5413,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "connector parent waiting state after planned child enqueue");
     assertEquals("JS_WAITING", waiting.state);
-    if (!isDynamoMode()) {
-      assertEquals("Planned 1 table job(s)", waiting.message);
-    }
+    assertEquals("Planned 1 table job(s)", waiting.message);
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
@@ -5497,12 +5422,10 @@ class DurableReconcileJobStoreTest {
     ReconcileJob succeeded =
         waitForValue(
             () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state),
+            current -> "JS_SUCCEEDED".equals(current.state) && "Succeeded".equals(current.message),
             "connector parent succeeded state after child completion");
     assertEquals("JS_SUCCEEDED", succeeded.state);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", succeeded.message);
-    }
+    assertEquals("Succeeded", succeeded.message);
 
     ReconcileJob listedSucceeded =
         waitForValue(
@@ -5511,12 +5434,10 @@ class DurableReconcileJobStoreTest {
                     .filter(job -> connectorJobId.equals(job.jobId))
                     .findFirst()
                     .orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state),
+            current -> "JS_SUCCEEDED".equals(current.state) && "Succeeded".equals(current.message),
             "listed connector parent succeeded state");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", listedSucceeded.message);
-    }
+    assertEquals("Succeeded", listedSucceeded.message);
   }
 
   @Test
@@ -5577,6 +5498,8 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJob succeededParent = readStoredRecord(canonicalPointerKey);
     assertEquals("JS_SUCCEEDED", succeededParent.state);
+    assertEquals("Succeeded", succeededParent.message);
+    assertEquals(300L, succeededParent.finishedAtMs);
     assertTrue(
         staleReadyKeys.stream().allMatch(readyPointerKey -> !readyEntryExists(readyPointerKey)));
   }
@@ -5634,6 +5557,7 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob succeeded = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
     assertEquals("JS_SUCCEEDED", succeeded.state);
+    assertEquals("Succeeded", succeeded.message);
     assertEquals(300L, succeeded.finishedAtMs);
 
     ReconcileJob listedSucceeded =
@@ -5642,6 +5566,7 @@ class DurableReconcileJobStoreTest {
             .findFirst()
             .orElseThrow();
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
+    assertEquals("Succeeded", listedSucceeded.message);
     assertEquals(300L, listedSucceeded.finishedAtMs);
   }
 
@@ -5685,9 +5610,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "lease view waiting state after parent success");
     assertEquals("JS_WAITING", leaseViewAfterSuccess.state);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", leaseViewAfterSuccess.message);
-    }
+    assertEquals("Waiting on child work", leaseViewAfterSuccess.message);
   }
 
   @Test
@@ -5727,9 +5650,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "waiting parent state after parent success");
     assertEquals("JS_WAITING", waitingParent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", waitingParent.message);
-    }
+    assertEquals("Waiting on child work", waitingParent.message);
 
     ReconcileJobStore.LeasedJob tableLease = leaseJob(tableJobId, ReconcileJobKind.PLAN_TABLE);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 250L, "executor-table");
@@ -5740,9 +5661,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "waiting parent state while child is running");
     assertEquals("JS_WAITING", stillWaitingParent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", stillWaitingParent.message);
-    }
+    assertEquals("Waiting on child work", stillWaitingParent.message);
 
     StoredReconcileJob storedParent =
         waitForValue(
@@ -5750,9 +5669,7 @@ class DurableReconcileJobStoreTest {
             current -> "JS_WAITING".equals(current.state),
             "stored parent waiting state while child is running");
     assertEquals("JS_WAITING", storedParent.state);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", storedParent.message);
-    }
+    assertEquals("Waiting on child work", storedParent.message);
   }
 
   @Test
@@ -5924,9 +5841,7 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_WAITING", snapshot.state);
     assertEquals(2L, snapshot.plannedFileGroups);
     assertEquals(1L, snapshot.completedFileGroups);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", snapshot.message);
-    }
+    assertEquals("Waiting on child work", snapshot.message);
 
     ReconcileJob listedWaiting =
         waitForValue(
@@ -5939,16 +5854,10 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_WAITING", listedWaiting.state);
     assertEquals(2L, listedWaiting.plannedFileGroups);
     assertEquals(1L, listedWaiting.completedFileGroups);
-    if (!isDynamoMode()) {
-      assertEquals("Waiting on child work", listedWaiting.message);
-    }
+    assertEquals("Waiting on child work", listedWaiting.message);
 
-    ReconcileJobStore.LeasedJob execLease2 =
-        waitForLease(
-                ReconcileJobStore.LeaseRequest.of(
-                    Set.of(), Set.of(), Set.of(), Set.of(ReconcileJobKind.EXEC_FILE_GROUP)))
-            .orElseThrow();
-    String secondExecJobId = execLease2.jobId;
+    String secondExecJobId = execJobId.equals(firstExecJobId) ? execJobId2 : execJobId;
+    ReconcileJobStore.LeasedJob execLease2 = leaseJob(secondExecJobId);
     String secondExecGroupId = execJobId.equals(secondExecJobId) ? "group-1" : "group-2";
     String secondExecFile =
         execJobId.equals(secondExecJobId)
@@ -5972,30 +5881,28 @@ class DurableReconcileJobStoreTest {
             () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.plannedFileGroups == 2L
                     && current.completedFileGroups == 2L,
             "snapshot parent succeeded summary after all file groups complete");
     assertEquals("JS_SUCCEEDED", snapshotSucceeded.state);
     assertEquals(2L, snapshotSucceeded.plannedFileGroups);
     assertEquals(2L, snapshotSucceeded.completedFileGroups);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", snapshotSucceeded.message);
-    }
+    assertEquals("Succeeded", snapshotSucceeded.message);
 
     ReconcileJob listedSucceeded =
         waitForValue(
             () -> findListedJobById(snapshotJobId),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.plannedFileGroups == 2L
                     && current.completedFileGroups == 2L,
             "listed snapshot parent succeeded summary");
     assertEquals("JS_SUCCEEDED", listedSucceeded.state);
     assertEquals(2L, listedSucceeded.plannedFileGroups);
     assertEquals(2L, listedSucceeded.completedFileGroups);
-    if (!isDynamoMode()) {
-      assertEquals("Succeeded", listedSucceeded.message);
-    }
+    assertEquals("Succeeded", listedSucceeded.message);
   }
 
   @Test
@@ -6017,6 +5924,7 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob terminalBefore = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
     assertEquals("JS_SUCCEEDED", terminalBefore.state);
+    assertEquals("Succeeded", terminalBefore.message);
     assertEquals(200L, terminalBefore.finishedAtMs);
 
     String childJobId =
@@ -6041,12 +5949,14 @@ class DurableReconcileJobStoreTest {
             () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 400L
                     && current.tablesScanned == 1L
                     && current.tablesChanged == 1L,
             "terminal parent rollup after late child contribution");
     assertTrue(terminalAfter.aggregateSummaryPresent);
     assertEquals("JS_SUCCEEDED", terminalAfter.state);
+    assertEquals("Succeeded", terminalAfter.message);
     assertEquals(400L, terminalAfter.finishedAtMs);
     assertEquals(1L, terminalAfter.tablesScanned);
     assertEquals(1L, terminalAfter.tablesChanged);
@@ -6060,11 +5970,13 @@ class DurableReconcileJobStoreTest {
                     .orElseThrow(),
             current ->
                 "JS_SUCCEEDED".equals(current.state)
+                    && "Succeeded".equals(current.message)
                     && current.finishedAtMs == 400L
                     && current.tablesScanned == 1L
                     && current.tablesChanged == 1L,
             "listed terminal parent rollup after late child contribution");
     assertEquals("JS_SUCCEEDED", listedTerminal.state);
+    assertEquals("Succeeded", listedTerminal.message);
     assertEquals(400L, listedTerminal.finishedAtMs);
     assertEquals(1L, listedTerminal.tablesScanned);
     assertEquals(1L, listedTerminal.tablesChanged);
@@ -6179,12 +6091,6 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, listed.completedFiles);
     assertEquals(1L, listed.failedFiles);
     assertEquals(1L, listed.indexesProcessed);
-
-    var projectionStore =
-        (ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionStore)
-            invokePrivateMethod("projectionStore", new Class<?>[] {});
-    var contributions = projectionStore.loadDirectContributions(ACCOUNT_ID, snapshotJobId);
-    assertTrue(contributions.stream().anyMatch(c -> execJobId.equals(c.childJobId)));
 
     var stateJson =
         store.mapper.valueToTree(
@@ -6424,8 +6330,50 @@ class DurableReconcileJobStoreTest {
       }
       value = supplier.get();
     }
-    assertTrue(done.test(value), "Timed out waiting for " + description + "; last value=" + value);
+    assertTrue(
+        done.test(value),
+        "Timed out waiting for " + description + "; last value=" + describeValue(value));
     return value;
+  }
+
+  private static String describeValue(Object value) {
+    if (value instanceof ReconcileJob job) {
+      return "ReconcileJob{"
+          + "jobId="
+          + job.jobId
+          + ", state="
+          + job.state
+          + ", message="
+          + job.message
+          + ", startedAtMs="
+          + job.startedAtMs
+          + ", finishedAtMs="
+          + job.finishedAtMs
+          + ", tablesScanned="
+          + job.tablesScanned
+          + ", tablesChanged="
+          + job.tablesChanged
+          + ", viewsScanned="
+          + job.viewsScanned
+          + ", viewsChanged="
+          + job.viewsChanged
+          + ", errors="
+          + job.errors
+          + ", snapshotsProcessed="
+          + job.snapshotsProcessed
+          + ", statsProcessed="
+          + job.statsProcessed
+          + ", indexesProcessed="
+          + job.indexesProcessed
+          + ", plannedFileGroups="
+          + job.plannedFileGroups
+          + ", completedFileGroups="
+          + job.completedFileGroups
+          + ", parentJobId="
+          + job.parentJobId
+          + "}";
+    }
+    return String.valueOf(value);
   }
 
   private Optional<ReconcileJobStore.LeasedJob> waitForLease(
@@ -6524,6 +6472,11 @@ class DurableReconcileJobStoreTest {
         .orElseThrow();
   }
 
+  private ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot
+      readIndexEntry(String pointerKey) {
+    return assertDoesNotThrow(() -> store.jobIndexBackend.loadIndexEntry(pointerKey)).orElseThrow();
+  }
+
   private StoredJobLease readStoredLease(String accountId, String jobId) {
     return assertDoesNotThrow(() -> store.leaseStore.loadLease(accountId, jobId)).orElseThrow();
   }
@@ -6570,9 +6523,7 @@ class DurableReconcileJobStoreTest {
                 new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
                     .JobIndexUpsert(canonicalPointerKey, currentSnapshot.version(), blobUri)),
             ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
-                .ReadyQueueMutation.empty(),
-            new ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend
-                .ProjectionWriteBatch(List.of()));
+                .ReadyQueueMutation.empty());
     assertTrue(
         assertDoesNotThrow(() -> store.jobIndexBackend.compareAndSetBatch(writeBatch)),
         () -> "expected canonical record to exist for " + canonicalPointerKey);

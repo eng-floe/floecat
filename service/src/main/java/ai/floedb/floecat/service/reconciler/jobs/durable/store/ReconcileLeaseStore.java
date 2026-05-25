@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionUpdater;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +32,12 @@ public interface ReconcileLeaseStore {
 
   record LeaseExpiryScanPage(List<LeaseExpiryEntry> entries, String nextPageToken) {}
 
+  @FunctionalInterface
+  interface CanonicalJobMutator {
+    Optional<ReconcileJobIndexStore.CanonicalEnvelope> apply(
+        String canonicalPointerKey, UnaryOperator<StoredReconcileJob> mutator);
+  }
+
   void bind(
       ReconcileLeaseBackend leaseBackend,
       ReconcilePayloadStore payloadStore,
@@ -40,7 +45,7 @@ public interface ReconcileLeaseStore {
       long leaseMs,
       long leaseRenewGraceMs,
       ReconcileJobIndexStore jobIndexStore,
-      ReconcileProjectionUpdater projectionUpdater,
+      CanonicalJobMutator mutateCanonicalJob,
       Predicate<String> isTerminalState,
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       int maxAttempts,

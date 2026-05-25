@@ -21,7 +21,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -35,7 +34,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.BiFunction;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -44,26 +42,15 @@ public class ReconcilePayloadStore {
 
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
-  private static final String INLINE_JOB_CONTRIBUTION_PREFIX = "inline:reconcile-contribution:";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
   @Inject ObjectMapper mapper;
-  private BiFunction<String, String, Optional<String>> fileGroupResultReferenceLoader;
 
   public void bind(BlobStore blobStore, PointerStore pointerStore, ObjectMapper mapper) {
-    bind(blobStore, pointerStore, mapper, null);
-  }
-
-  public void bind(
-      BlobStore blobStore,
-      PointerStore pointerStore,
-      ObjectMapper mapper,
-      BiFunction<String, String, Optional<String>> fileGroupResultReferenceLoader) {
     this.blobStore = blobStore;
     this.pointerStore = pointerStore;
     this.mapper = mapper;
-    this.fileGroupResultReferenceLoader = fileGroupResultReferenceLoader;
   }
 
   public <T> Optional<T> readBlob(String blobUri, Class<T> type) {
@@ -126,14 +113,6 @@ public class ReconcilePayloadStore {
     return decodeInlineJson(reference, INLINE_JOB_LEASE_PREFIX, StoredJobLease.class);
   }
 
-  public String encodeInlineJobContribution(StoredJobContribution payload) {
-    return encodeInlineJson(INLINE_JOB_CONTRIBUTION_PREFIX, payload);
-  }
-
-  public Optional<StoredJobContribution> readInlineJobContribution(String reference) {
-    return decodeInlineJson(reference, INLINE_JOB_CONTRIBUTION_PREFIX, StoredJobContribution.class);
-  }
-
   public Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
     if (state == null) {
       return Optional.empty();
@@ -172,25 +151,15 @@ public class ReconcilePayloadStore {
 
   public Optional<StoredFileGroupResultPayload> loadFileGroupResultPayload(
       StoredReconcileJob state) {
-    if (state == null) {
+    if (state == null || blank(state.fileGroupResultBlobUri)) {
       return Optional.empty();
     }
-    // Result payload pointers are payload references, not canonical job-index pointers.
-    if (!blank(state.accountId) && !blank(state.jobId)) {
-      Optional<String> resultBlobUri =
-          fileGroupResultReferenceLoader == null
-              ? Optional.empty()
-              : fileGroupResultReferenceLoader.apply(state.accountId, state.jobId);
-      if (resultBlobUri.isPresent() && !blank(resultBlobUri.get())) {
-        return Optional.of(
-            requireBlob(
-                resultBlobUri.get(),
-                StoredFileGroupResultPayload.class,
-                "file-group result payload",
-                state.jobId));
-      }
-    }
-    return Optional.empty();
+    return Optional.of(
+        requireBlob(
+            state.fileGroupResultBlobUri,
+            StoredFileGroupResultPayload.class,
+            "file-group result payload",
+            state.jobId));
   }
 
   public ReconcileSnapshotTask snapshotTaskFor(StoredReconcileJob state) {

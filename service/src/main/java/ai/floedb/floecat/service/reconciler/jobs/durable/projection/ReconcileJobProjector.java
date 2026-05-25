@@ -24,7 +24,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
@@ -233,13 +232,17 @@ public class ReconcileJobProjector {
     return JobProjection.empty();
   }
 
-  public DirectChildCounts countDirectChildStates(
-      java.util.List<StoredJobContribution> contributions) {
-    DirectChildCounts counts = DirectChildCounts.empty();
-    for (StoredJobContribution contribution : contributions) {
-      counts = counts.incrementedBy(contribution == null ? "" : contribution.state);
+  public JobProjection intrinsicProjection(StoredReconcileJob stored) {
+    if (stored == null) {
+      return JobProjection.empty();
     }
-    return counts;
+    if (stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
+      return projectSnapshotPlan(payloadStore.snapshotTaskFor(stored));
+    }
+    if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
+      return projectExecFileGroup(payloadStore.fileGroupTaskFor(stored), stored.state);
+    }
+    return JobProjection.empty();
   }
 
   public JobProjection projectSnapshotPlan(ReconcileSnapshotTask snapshotTask) {

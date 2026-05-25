@@ -29,7 +29,6 @@ import java.util.Optional;
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend {
   private PointerStore pointerStore;
-  private ReconcileProjectionBackend projectionBackend;
 
   @Inject
   public MemoryReconcileJobIndexBackend(PointerStore pointerStore) {
@@ -38,9 +37,8 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   public MemoryReconcileJobIndexBackend() {}
 
-  public void bind(PointerStore pointerStore, ReconcileProjectionBackend projectionBackend) {
+  public void bind(PointerStore pointerStore) {
     this.pointerStore = pointerStore;
-    this.projectionBackend = projectionBackend;
   }
 
   @Override
@@ -71,11 +69,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!committed) {
       return false;
     }
-    if (batch.projectionMutation() == null || batch.projectionMutation().writes().isEmpty()) {
-      return true;
-    }
-    return projectionBackend != null
-        && projectionBackend.compareAndSetBatch(batch.projectionMutation());
+    return true;
   }
 
   @Override

@@ -16,13 +16,11 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
-import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.CompletionKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.IntToLongFunction;
 import java.util.function.UnaryOperator;
@@ -46,7 +44,6 @@ public class ReconcileJobCompleter {
 
   private ReconcileLeaseStore leaseManager;
   private JobMutator mutateByJobIdReturningRecord;
-  private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
   private BiFunction<String, String, Long> countDirectChildJobs;
   private IntToLongFunction backoffMs;
   private BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor;
@@ -57,7 +54,6 @@ public class ReconcileJobCompleter {
   public void bind(
       ReconcileLeaseStore leaseManager,
       JobMutator mutateByJobIdReturningRecord,
-      BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
       BiFunction<String, String, Long> countDirectChildJobs,
       IntToLongFunction backoffMs,
       BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor,
@@ -66,7 +62,6 @@ public class ReconcileJobCompleter {
       long baseBackoffMs) {
     this.leaseManager = leaseManager;
     this.mutateByJobIdReturningRecord = mutateByJobIdReturningRecord;
-    this.refreshAncestorContributionRollups = refreshAncestorContributionRollups;
     this.countDirectChildJobs = countDirectChildJobs;
     this.backoffMs = backoffMs;
     this.readyPointerKeyFor = readyPointerKeyFor;
@@ -76,26 +71,24 @@ public class ReconcileJobCompleter {
   }
 
   public void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId) {
-    mutateByJobIdReturningRecord
-        .apply(
-            jobId,
-            existing -> {
-              if (!leaseManager.hasActiveLease(
-                  jobId, leaseEpoch, existing, "markRunning", false, true, false)) {
-                return null;
-              }
-              boolean cancelling = "JS_CANCELLING".equals(existing.state);
-              if (!cancelling) {
-                existing.state = "JS_RUNNING";
-                existing.message = "Running";
-              }
-              if (existing.startedAtMs <= 0L) {
-                existing.startedAtMs = startedAtMs;
-              }
-              existing.executorId = executorId == null ? "" : executorId;
-              return existing;
-            })
-        .ifPresent(env -> refreshAncestorContributionRollups.accept(env.record(), false));
+    mutateByJobIdReturningRecord.apply(
+        jobId,
+        existing -> {
+          if (!leaseManager.hasActiveLease(
+              jobId, leaseEpoch, existing, "markRunning", false, true, false)) {
+            return null;
+          }
+          boolean cancelling = "JS_CANCELLING".equals(existing.state);
+          if (!cancelling) {
+            existing.state = "JS_RUNNING";
+            existing.message = "Running";
+          }
+          if (existing.startedAtMs <= 0L) {
+            existing.startedAtMs = startedAtMs;
+          }
+          existing.executorId = executorId == null ? "" : executorId;
+          return existing;
+        });
   }
 
   public void markProgress(
@@ -109,7 +102,6 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
-    boolean[] changedMaterially = new boolean[] {false};
     mutateByJobIdReturningRecord
         .apply(
             jobId,
@@ -121,35 +113,20 @@ public class ReconcileJobCompleter {
               if (isTerminalState(existing.state)) {
                 return null;
               }
-              changedMaterially[0] =
-                  existing.tablesScanned != tablesScanned
-                      || existing.tablesChanged != tablesChanged
-                      || existing.viewsScanned != viewsScanned
-                      || existing.viewsChanged != viewsChanged
-                      || existing.errors != errors
-                      || existing.snapshotsProcessed != snapshotsProcessed
-                      || existing.statsProcessed != statsProcessed
-                      || (message != null
-                          && !message.isBlank()
-                          && !message.equals(blankToEmpty(existing.message)));
-              existing.tablesScanned = tablesScanned;
-              existing.tablesChanged = tablesChanged;
-              existing.viewsScanned = viewsScanned;
-              existing.viewsChanged = viewsChanged;
+              existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+              existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+              existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+              existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
               existing.errors = errors;
-              existing.snapshotsProcessed = snapshotsProcessed;
-              existing.statsProcessed = statsProcessed;
+              existing.snapshotsProcessed =
+                  Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+              existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
               if (message != null && !message.isBlank()) {
                 existing.message = message;
               }
               return existing;
             })
-        .ifPresent(
-            env -> {
-              if (changedMaterially[0]) {
-                refreshAncestorContributionRollups.accept(env.record(), false);
-              }
-            });
+        .ifPresent(env -> {});
   }
 
   public boolean applyLeaseOutcome(
@@ -191,13 +168,14 @@ public class ReconcileJobCompleter {
                   existing.startedAtMs = finishedAtMs;
                 }
                 existing.finishedAtMs = finishedAtMs;
-                existing.tablesScanned = tablesScanned;
-                existing.tablesChanged = tablesChanged;
-                existing.viewsScanned = viewsScanned;
-                existing.viewsChanged = viewsChanged;
+                existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+                existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+                existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+                existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
                 existing.errors = errors;
-                existing.snapshotsProcessed = snapshotsProcessed;
-                existing.statsProcessed = statsProcessed;
+                existing.snapshotsProcessed =
+                    Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+                existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
                 existing.readyPointerKey = null;
                 return existing;
               }
@@ -266,17 +244,9 @@ public class ReconcileJobCompleter {
         env -> {
           long mutationElapsedMs = System.currentTimeMillis() - operationStartedAtMs;
           clearExecutionLeasesIfOwned.clear(env, jobId, leaseEpoch);
-          long refreshStartedAtMs = System.currentTimeMillis();
-          refreshAncestorContributionRollups.accept(
-              env.record(),
-              isTerminalState(env.record().state)
-                  || env.record().jobKind() == ReconcileJobKind.PLAN_SNAPSHOT);
           LOG.debugf(
-              "applyLeaseOutcome mutation_ms=%d contribution_refresh_ms=%d jobId=%s completionKind=%s",
-              mutationElapsedMs,
-              System.currentTimeMillis() - refreshStartedAtMs,
-              jobId,
-              completionKind);
+              "applyLeaseOutcome mutation_ms=%d jobId=%s completionKind=%s",
+              mutationElapsedMs, jobId, completionKind);
         });
     return updated.isPresent();
   }
@@ -291,13 +261,13 @@ public class ReconcileJobCompleter {
       long viewsChanged,
       long snapshotsProcessed,
       long statsProcessed) {
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = 0L;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = "";
     long directChildJobs = countDirectChildJobs.apply(existing.accountId, existing.jobId);
     if (hasIncompleteDirectChildJobs(existing)
@@ -338,13 +308,13 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed) {
     existing.attempt = Math.max(0, existing.attempt) + 1;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
 
     if (existing.attempt >= maxAttempts) {
@@ -378,13 +348,13 @@ public class ReconcileJobCompleter {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Waiting on dependency" : message;
     existing.state = "JS_QUEUED";
     existing.message = message == null ? "Waiting on dependency" : message;
@@ -407,13 +377,13 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed) {
     existing.attempt = Math.max(0, existing.attempt) + 1;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
     existing.state = "JS_FAILED";
     existing.message = message == null ? "Failed" : message;
@@ -442,13 +412,13 @@ public class ReconcileJobCompleter {
       existing.startedAtMs = finishedAtMs;
     }
     existing.finishedAtMs = finishedAtMs;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.readyPointerKey = null;
     return existing;
   }
