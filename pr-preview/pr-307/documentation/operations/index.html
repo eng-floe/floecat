@@ -1835,12 +1835,14 @@ auth resolution path, not a connector-specific feature.</p>
 <li>canonical job-index state</li>
 <li>ready-queue state</li>
 <li>lease-coordination state</li>
-<li>projection/payload-reference state</li>
+<li>canonical payload-artifact references on job rows</li>
+<li>projection/root-summary observability state</li>
 </ul>
 <p>The control plane owns canonical job-state transitions and the derived job-index plus ready-queue
 mutations that move with them transactionally. Executors participate through the separate
-lease-coordination domain when they lease, renew, cancel, and complete work. Reads and maintenance
-do not repair queue drift.</p>
+lease-coordination domain when they lease, renew, cancel, and complete work. Projection/root
+summary maintenance is best-effort observability only and does not participate in queue
+correctness.</p>
 <p>Key reconciler mode flags live in <code>service/src/main/resources/application.properties</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.worker.mode</span>
 <span class="na">reconciler.max-parallelism</span>

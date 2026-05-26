@@ -1839,8 +1839,9 @@ reconcile control RPCs:</p>
 <li><code>ReconcileControl.CaptureNow(...)</code>: uses the same split path, but waits for the aggregated
   outcome of the top-level plan job plus any child planning/execution jobs.</li>
 <li><code>ReconcileControl.GetReconcileJob(job_id)</code> / <code>ListReconcileJobs(...)</code>: expose both top-level and
-  child jobs. <code>PLAN_CONNECTOR</code> and <code>PLAN_SNAPSHOT</code> reads aggregate child counters for user-facing
-  status.</li>
+  child jobs. Parent-capable jobs (<code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_SNAPSHOT</code>) surface
+  aggregate child status through eventually consistent projection/root-summary read models rather
+  than synchronous parent-canonical rollups.</li>
 </ul>
 <p>Internally, the worker poller exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
@@ -1897,20 +1898,30 @@ reconcile control RPCs:</p>
 <li><strong>Durable queue ownership model</strong>: <code>DurableReconcileJobStore</code> is split into explicit state
   domains with native durable-store boundaries:</li>
 <li>canonical job state owns the job-index domain transactionally (<code>lookup</code>, <code>state</code>, <code>dedupe</code>,
-    parent, connector, and related canonical indexes)</li>
+    parent, connector, job-local counters, payload references, and related canonical indexes)</li>
 <li>ready-queue state is a separate due-ordered domain used for leasing eligibility and queue
     slicing</li>
 <li>lease coordination owns runtime worker-ownership state separately (<code>lease</code>, <code>lease-expiry</code>,
     lane lease, snapshot lease)</li>
-<li>projection/payload-reference state owns contribution rollups and file-group result references</li>
+<li>payload blobs are canonical task artifacts referenced from canonical rows (snapshot plans,
+    file-group results, direct stats, per-file-group stats)</li>
+<li>projection/root-summary state owns eventual-consistent observability views only (parent
+    rollups, root-job list summaries, tree/list aggregate counters)</li>
 <li><strong>Job leasing</strong>: workers lease from persisted ready pointers, mark jobs
   running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
   configured interval. Failed jobs are retried with backoff up to configured attempt limits before
   terminal failure.</li>
+<li><strong>Execution vs observability split</strong>:</li>
+<li>queue correctness depends only on canonical state plus execution payload references</li>
+<li>projection refresh is best-effort and may lag without affecting leasing, retries,
+    cancellation, reclaim, or completion</li>
+<li>detailed read APIs use best-effort payload hydration and may degrade detail when payload blobs
+    are missing</li>
 <li><strong>No queue self-healing</strong>: read paths, lease scans, and maintenance do not rebuild missing or
   stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
-  job-state transitions update them together. Lease maintenance reclaims expired leases, but it does
-  not repair unrelated queue state.</li>
+  job-state transitions update them together. Lease maintenance reclaims expired leases and
+  projection maintenance repairs dirty parent/root summaries, but neither path is part of queue
+  correctness.</li>
 <li><strong>Backend shape</strong>:</li>
 <li>in <code>floecat.kv=dynamodb</code>, the durable store hot paths use native Dynamo-style partition/sort-key
     layouts for job indexes, ready slices, and lease rows/expiry scans</li>
