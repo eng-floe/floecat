@@ -2922,7 +2922,11 @@ class DurableReconcileJobStoreTest {
 
     store.markFailed(
         jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "transient", 1, 0, 1, 2, 3);
-    ReconcileJob retried = store.get(jobId).orElseThrow();
+    ReconcileJob retried =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_QUEUED".equals(current.state) && !leaseOwnerEntryExists(lanePointerKey),
+            "retryable failure to requeue " + jobId);
     assertEquals("JS_QUEUED", retried.state);
     assertFalse(leaseOwnerEntryExists(lanePointerKey));
 
@@ -2930,7 +2934,11 @@ class DurableReconcileJobStoreTest {
     var secondLease = leaseJob(jobId);
     store.markFailed(
         jobId, secondLease.leaseEpoch, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
-    ReconcileJob failed = store.get(jobId).orElseThrow();
+    ReconcileJob failed =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_FAILED".equals(current.state),
+            "terminal failure " + jobId);
     assertEquals("JS_FAILED", failed.state);
   }
 
@@ -3846,14 +3854,24 @@ class DurableReconcileJobStoreTest {
     store.markRunning(
         firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
-    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_CANCELLING",
+        waitForValue(
+                () -> store.get(jobId).orElseThrow(),
+                current -> "JS_CANCELLING".equals(current.state),
+                "job entering cancelling state " + jobId)
+            .state);
 
     forceLeaseExpired(jobId);
 
     assertTrue(store.leaseNext().isEmpty());
     store.runMaintenanceOnce(1_000L);
 
-    var cancelled = store.get(jobId).orElseThrow();
+    var cancelled =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state),
+            "job cancellation finalization " + jobId);
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
     assertTrue(cancelled.finishedAtMs > 0L);
@@ -3914,10 +3932,20 @@ class DurableReconcileJobStoreTest {
         lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
     store.cancel(ACCOUNT_ID, jobId, "first stop");
-    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_CANCELLING",
+        waitForValue(
+                () -> store.get(jobId).orElseThrow(),
+                current -> "JS_CANCELLING".equals(current.state),
+                "job entering cancelling state " + jobId)
+            .state);
 
     store.cancel(ACCOUNT_ID, jobId, "second stop");
-    var stillCancelling = store.get(jobId).orElseThrow();
+    var stillCancelling =
+        waitForValue(
+            () -> store.get(jobId).orElseThrow(),
+            current -> "JS_CANCELLING".equals(current.state),
+            "job remaining cancelling " + jobId);
 
     assertEquals("JS_CANCELLING", stillCancelling.state);
     assertEquals("first stop", stillCancelling.message);
@@ -6058,7 +6086,13 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_WAITING", storedParent.state);
     assertEquals("Waiting on child work", storedParent.message);
 
-    ReconcileJob projectedParent = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob projectedParent =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_WAITING".equals(current.state)
+                    && "Waiting on child work".equals(current.message),
+            "projected waiting parent " + connectorJobId);
     assertEquals("JS_WAITING", projectedParent.state);
     assertEquals("Waiting on child work", projectedParent.message);
   }
@@ -6473,8 +6507,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob snapshot =
         waitForValue(
-                () ->
-                    store
+                () -> {
+                  try {
+                    return store
                         .get(ACCOUNT_ID, snapshotJobId)
                         .filter(
                             current ->
@@ -6482,9 +6517,14 @@ class DurableReconcileJobStoreTest {
                                     && current.completedFiles == 1L
                                     && current.failedFiles == 1L
                                     && current.indexesProcessed == 1L
-                                    && current.statsProcessed == 2L),
+                                    && current.statsProcessed == 2L);
+                  } catch (IllegalStateException e) {
+                    return Optional.empty();
+                  }
+                },
                 Optional::isPresent,
                 "snapshot projection " + snapshotJobId)
+            .map(ReconcileJob.class::cast)
             .orElseThrow();
     ReconcileJob table =
         waitForValue(
@@ -6889,9 +6929,9 @@ class DurableReconcileJobStoreTest {
     int attempts = isDynamoMode() ? 400 : 20;
     long sleepMs = isDynamoMode() ? 50L : 0L;
     runMaintenance();
-    T value = supplier.get();
+    T value = tryGetValue(supplier);
     for (int attempt = 0; attempt < attempts; attempt++) {
-      if (done.test(value)) {
+      if (value != null && done.test(value)) {
         return value;
       }
       if (attempt + 1 < attempts) {
@@ -6903,12 +6943,20 @@ class DurableReconcileJobStoreTest {
         }
       }
       runMaintenance();
-      value = supplier.get();
+      value = tryGetValue(supplier);
     }
     assertTrue(
-        done.test(value),
+        value != null && done.test(value),
         "Timed out waiting for " + description + "; last value=" + describeValue(value));
     return value;
+  }
+
+  private <T> T tryGetValue(java.util.function.Supplier<T> supplier) {
+    try {
+      return supplier.get();
+    } catch (IllegalStateException | java.util.NoSuchElementException e) {
+      return null;
+    }
   }
 
   private void runMaintenance() {

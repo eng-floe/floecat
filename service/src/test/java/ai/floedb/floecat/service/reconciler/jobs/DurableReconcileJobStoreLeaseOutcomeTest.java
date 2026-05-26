@@ -379,9 +379,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
       String description) {
-    T value = supplier.get();
+    T value = tryGetValue(supplier);
     for (int attempt = 0; attempt < 100; attempt++) {
-      if (done.test(value)) {
+      if (value != null && done.test(value)) {
         return value;
       }
       try {
@@ -390,10 +390,20 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         Thread.currentThread().interrupt();
         throw new IllegalStateException("Interrupted while waiting for " + description, ie);
       }
-      value = supplier.get();
+      value = tryGetValue(supplier);
     }
-    assertTrue(done.test(value), "Timed out waiting for " + description + "; last value=" + value);
+    assertTrue(
+        value != null && done.test(value),
+        "Timed out waiting for " + description + "; last value=" + value);
     return value;
+  }
+
+  private <T> T tryGetValue(java.util.function.Supplier<T> supplier) {
+    try {
+      return supplier.get();
+    } catch (IllegalStateException | java.util.NoSuchElementException e) {
+      return null;
+    }
   }
 
   private void expireLease(String jobId) {
