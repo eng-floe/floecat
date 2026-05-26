@@ -1943,7 +1943,8 @@ generic pointer-prefix queue abstraction:
 - canonical job-index domain
 - ready-queue domain
 - lease-coordination domain
-- projection/payload-reference domain</p>
+- canonical payload-artifact references on job rows
+- projection/root-summary observability domain</p>
 <p>It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
 <code>service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java</code> and
