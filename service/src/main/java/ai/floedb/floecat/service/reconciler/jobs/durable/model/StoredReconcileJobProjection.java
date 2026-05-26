@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.model;
 public record StoredReconcileJobProjection(
     String accountId,
     String jobId,
+    long appliedGeneration,
     String state,
     String message,
     long startedAtMs,

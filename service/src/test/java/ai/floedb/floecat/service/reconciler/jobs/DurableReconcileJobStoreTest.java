@@ -373,6 +373,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         0L,
         0L,
@@ -400,6 +401,78 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_SUCCEEDED", rootSummary.state);
     assertEquals(200L, rootSummary.finishedAtMs);
+    assertEquals(1L, rootSummary.tablesScanned);
+    assertEquals(1L, rootSummary.tablesChanged);
+  }
+
+  @Test
+  void rootProjectionDoesNotSucceedUntilExpectedDirectChildrenAreObserved() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.expectedDirectChildren = 2L;
+                      current.projectionRequestedGeneration =
+                          Math.max(1L, current.projectionRequestedGeneration + 1L);
+                      return current;
+                    }));
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 1L, 0L);
+
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> current.tablesScanned == 1L && current.tablesChanged == 1L,
+            "incomplete child root summary for " + connectorJobId);
+
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(rootSummary.state));
     assertEquals(1L, rootSummary.tablesScanned);
     assertEquals(1L, rootSummary.tablesChanged);
   }
@@ -463,6 +536,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -473,7 +547,16 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 125L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        125L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
@@ -593,6 +676,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -603,13 +687,23 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     projectionStore()
         .upsert(
             new StoredReconcileJobProjection(
                 ACCOUNT_ID,
                 tableJobId,
+                0L,
                 "JS_SUCCEEDED",
                 "Succeeded",
                 100L,
@@ -634,12 +728,27 @@ class DurableReconcileJobStoreTest {
     runMaintenance();
 
     StoredReconcileJobProjection tableProjection =
-        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
-    ReconcileJob rootSummary =
-        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, tableJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active table projection " + tableJobId)
             .orElseThrow();
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                        .contains(current.state)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L,
+            "active root summary " + connectorJobId);
 
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
@@ -690,6 +799,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -700,7 +810,16 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     assertDoesNotThrow(
         () ->
@@ -723,14 +842,34 @@ class DurableReconcileJobStoreTest {
     runMaintenance();
 
     StoredReconcileJobProjection tableProjection =
-        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
-    StoredReconcileJobProjection connectorProjection =
-        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
-    ReconcileJob rootSummary =
-        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, tableJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active table projection " + tableJobId)
             .orElseThrow();
+    StoredReconcileJobProjection connectorProjection =
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, connectorJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active connector projection " + connectorJobId)
+            .orElseThrow();
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                    .contains(current.state),
+            "active root summary " + connectorJobId);
 
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")

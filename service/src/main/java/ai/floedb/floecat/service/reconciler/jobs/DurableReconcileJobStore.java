@@ -520,7 +520,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (isParentCapable(spec.jobKind)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
-      markDirtyParent(spec.accountId, spec.parentJobId);
+      if (item.created) {
+        requestProjectionRefresh(spec.accountId, spec.parentJobId, 1L);
+      } else {
+        markDirtyParent(spec.accountId, spec.parentJobId);
+      }
     }
     return result;
   }
@@ -1137,6 +1141,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String jobId,
       String leaseEpoch,
       long finishedAtMs,
+      WaitingReason waitingReason,
       String message,
       long tablesScanned,
       long tablesChanged,
@@ -1148,7 +1153,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     applyLeaseOutcomeInternal(
         jobId,
         leaseEpoch,
-        CompletionKind.FAILED_WAITING,
+        waitingReason == WaitingReason.CHILD_WORK_FINALIZED
+            ? CompletionKind.SUCCEEDED_WAITING
+            : CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
         finishedAtMs,
         message,
         tablesScanned,
@@ -1326,15 +1333,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         listAllStoredChildJobs(accountId, parentJobId).stream()
             .map(this::projectedSummaryRecordForRefresh)
             .toList();
+    long requestedGeneration = Math.max(0L, parent.projectionRequestedGeneration);
+    long previousAppliedGeneration = Math.max(0L, parent.projectionAppliedGeneration);
     var nextProjection = ancestorRollups().recomputeParentProjection(parent, directChildren);
     var currentProjection = projections().load(accountId, parentJobId).orElse(null);
-    if (Objects.equals(currentProjection, nextProjection)) {
-      refreshRootSummary(parent, nextProjection);
+    if (nextProjection == null) {
       return;
     }
     projections().upsert(nextProjection);
-    refreshRootSummary(parent, nextProjection);
-    markDirtyParent(parent.accountId, parent.parentJobId);
+    advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
+    var acceptedProjection = projections().load(accountId, parentJobId).orElse(nextProjection);
+    refreshRootSummary(parent, acceptedProjection);
+    if (requestedGeneration > previousAppliedGeneration) {
+      markDirtyParent(parent.accountId, parent.parentJobId);
+    }
   }
 
   private void refreshRootSummary(
@@ -1609,23 +1621,78 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private void markDirtyParent(String accountId, String parentJobId) {
+    requestProjectionRefresh(accountId, parentJobId, 0L);
+  }
+
+  private void requestProjectionRefresh(
+      String accountId, String parentJobId, long expectedDirectChildrenDelta) {
     String effectiveAccountId = blankToEmpty(accountId);
     String effectiveParentJobId = blankToEmpty(parentJobId);
     if (effectiveAccountId.isBlank() || effectiveParentJobId.isBlank()) {
       return;
     }
+    jobIndexStore()
+        .mutateByJobIdReturningRecord(
+            effectiveParentJobId,
+            existing -> {
+              if (existing == null
+                  || !effectiveAccountId.equals(existing.accountId)
+                  || !isParentCapable(existing.jobKind())) {
+                return null;
+              }
+              existing.expectedDirectChildren =
+                  Math.max(0L, existing.expectedDirectChildren)
+                      + Math.max(0L, expectedDirectChildrenDelta);
+              existing.projectionRequestedGeneration =
+                  Math.max(0L, existing.projectionRequestedGeneration) + 1L;
+              return existing;
+            });
     String key = Keys.reconcileDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
     String payload = effectiveAccountId + "\n" + effectiveParentJobId;
-    Pointer current = pointerStore.get(key).orElse(null);
-    if (current == null) {
-      pointerStore.compareAndSet(
-          key, 0L, Pointer.newBuilder().setKey(key).setBlobUri(payload).setVersion(1L).build());
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      Pointer current = pointerStore.get(key).orElse(null);
+      long expectedVersion = current == null ? 0L : current.getVersion();
+      Pointer next =
+          current == null
+              ? Pointer.newBuilder().setKey(key).setBlobUri(payload).setVersion(1L).build()
+              : current.toBuilder()
+                  .setBlobUri(payload)
+                  .setVersion(current.getVersion() + 1L)
+                  .build();
+      if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+        return;
+      }
+    }
+    throw new IllegalStateException(
+        "Failed to mark reconcile parent dirty accountId="
+            + effectiveAccountId
+            + " parentJobId="
+            + effectiveParentJobId);
+  }
+
+  private void advanceAppliedProjectionGeneration(
+      String accountId, String parentJobId, long appliedGeneration) {
+    String effectiveAccountId = blankToEmpty(accountId);
+    String effectiveParentJobId = blankToEmpty(parentJobId);
+    if (effectiveAccountId.isBlank() || effectiveParentJobId.isBlank() || appliedGeneration <= 0L) {
       return;
     }
-    pointerStore.compareAndSet(
-        key,
-        current.getVersion(),
-        current.toBuilder().setBlobUri(payload).setVersion(current.getVersion() + 1L).build());
+    jobIndexStore()
+        .mutateByJobIdReturningRecord(
+            effectiveParentJobId,
+            existing -> {
+              if (existing == null
+                  || !effectiveAccountId.equals(existing.accountId)
+                  || !isParentCapable(existing.jobKind())) {
+                return null;
+              }
+              existing.projectionAppliedGeneration =
+                  Math.max(
+                      Math.max(0L, existing.projectionAppliedGeneration),
+                      Math.min(
+                          Math.max(0L, existing.projectionRequestedGeneration), appliedGeneration));
+              return existing;
+            });
   }
 
   private Optional<LeasedJob> leaseReadyDue(

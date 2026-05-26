@@ -69,6 +69,10 @@ public class StoredReconcileJob {
   public long failedFileGroups;
   public long completedFiles;
   public long failedFiles;
+  public long expectedDirectChildren;
+  public boolean childrenFinalized;
+  public long projectionRequestedGeneration;
+  public long projectionAppliedGeneration;
   public int attempt;
   public long nextAttemptAtMs;
   public String lastError;

@@ -244,7 +244,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               }
               switch (completionKind) {
                 case FAILED_TERMINAL, CANCELLED -> cancelChildJobs(jobId, request.getMessage());
-                case SUCCEEDED, SUCCEEDED_WAITING, FAILED_RETRYABLE, FAILED_WAITING -> {}
+                case SUCCEEDED,
+                    SUCCEEDED_WAITING,
+                    FAILED_RETRYABLE,
+                    FAILED_WAITING_ON_DEPENDENCY -> {}
               }
               return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build();
             }),
@@ -329,7 +332,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       case RCS_CANCELLED -> ReconcileJobStore.CompletionKind.CANCELLED;
       case RCS_FAILED -> {
         if (isDependencyNotReady(request)) {
-          yield ReconcileJobStore.CompletionKind.FAILED_WAITING;
+          yield ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY;
         }
         if (isTerminalFailure(request)) {
           yield ReconcileJobStore.CompletionKind.FAILED_TERMINAL;

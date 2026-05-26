@@ -705,7 +705,7 @@ public class LeasedPlannerWorkerService {
       jobs.applyLeaseOutcome(
           jobId,
           leaseEpoch,
-          ReconcileJobStore.CompletionKind.FAILED_WAITING,
+          ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
           finishedAtMs,
           message,
           0L,

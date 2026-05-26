@@ -553,6 +553,7 @@ public interface ReconcileJobStore {
       String jobId,
       String leaseEpoch,
       long finishedAtMs,
+      WaitingReason waitingReason,
       String message,
       long tablesScanned,
       long tablesChanged,
@@ -627,6 +628,7 @@ public interface ReconcileJobStore {
       String jobId,
       String leaseEpoch,
       long finishedAtMs,
+      WaitingReason waitingReason,
       String message,
       long tablesScanned,
       long tablesChanged,
@@ -637,6 +639,7 @@ public interface ReconcileJobStore {
         jobId,
         leaseEpoch,
         finishedAtMs,
+        waitingReason,
         message,
         tablesScanned,
         tablesChanged,
@@ -1600,9 +1603,14 @@ public interface ReconcileJobStore {
     SUCCEEDED,
     SUCCEEDED_WAITING,
     FAILED_RETRYABLE,
-    FAILED_WAITING,
+    FAILED_WAITING_ON_DEPENDENCY,
     FAILED_TERMINAL,
     CANCELLED
+  }
+
+  enum WaitingReason {
+    CHILD_WORK_FINALIZED,
+    EXTERNAL_DEPENDENCY
   }
 
   final class LeasedJob {

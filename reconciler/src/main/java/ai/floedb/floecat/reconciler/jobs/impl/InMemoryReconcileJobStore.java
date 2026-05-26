@@ -989,6 +989,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               jobId,
               leaseEpoch,
               finishedAtMs,
+              WaitingReason.CHILD_WORK_FINALIZED,
               message == null ? "Waiting on child work" : message,
               tablesScanned,
               tablesChanged,
@@ -997,11 +998,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               errors,
               snapshotsProcessed,
               statsProcessed);
-      case FAILED_WAITING ->
+      case FAILED_WAITING_ON_DEPENDENCY ->
           markWaiting(
               jobId,
               leaseEpoch,
               finishedAtMs,
+              WaitingReason.EXTERNAL_DEPENDENCY,
               message,
               tablesScanned,
               tablesChanged,
@@ -1205,6 +1207,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String jobId,
       String leaseEpoch,
       long finishedAtMs,
+      WaitingReason waitingReason,
       String message,
       long tablesScanned,
       long tablesChanged,

@@ -413,6 +413,10 @@ public class ReconcileJobEnqueuer {
     rec.failedFileGroups = initialProjection.failedFileGroups();
     rec.completedFiles = initialProjection.completedFiles();
     rec.failedFiles = initialProjection.failedFiles();
+    rec.expectedDirectChildren = 0L;
+    rec.childrenFinalized = false;
+    rec.projectionRequestedGeneration = 0L;
+    rec.projectionAppliedGeneration = 0L;
     rec.state = "JS_QUEUED";
     rec.message = fullRescan ? "Queued (full)" : "Queued";
     rec.nextAttemptAtMs = now;
