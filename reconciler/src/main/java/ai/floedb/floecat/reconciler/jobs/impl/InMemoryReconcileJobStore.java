@@ -984,6 +984,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               viewsChanged,
               snapshotsProcessed,
               statsProcessed);
+      case SUCCEEDED_WAITING ->
+          markWaiting(
+              jobId,
+              leaseEpoch,
+              finishedAtMs,
+              message == null ? "Waiting on child work" : message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
       case FAILED_WAITING ->
           markWaiting(
               jobId,

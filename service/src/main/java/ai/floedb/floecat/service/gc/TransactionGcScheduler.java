@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -172,7 +173,7 @@ public class TransactionGcScheduler {
 
     @Override
     public boolean test(ScheduledExecution execution) {
-      return stopping;
+      return stopping || DynamoDbBootstrapReadiness.shouldWaitForBootstrap();
     }
 
     static void signalStopping() {

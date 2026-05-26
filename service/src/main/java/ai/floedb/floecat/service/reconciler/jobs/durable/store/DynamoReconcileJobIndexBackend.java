@@ -277,13 +277,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         tx.add(buildReadyDelete(row));
       }
     }
-    for (var write : batch.projectionMutation().writes()) {
-      if (write instanceof ReconcileProjectionBackend.ContributionUpsert upsert) {
-        tx.add(buildProjectionContributionUpsert(upsert));
-      } else if (write instanceof ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
-        tx.add(buildProjectionResultReferenceUpsert(upsert));
-      }
-    }
     try {
       dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder().transactItems(tx).build());
       return true;
@@ -335,63 +328,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                         KvAttributes.ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
                 .build())
         .build();
-  }
-
-  private TransactWriteItem buildProjectionContributionUpsert(
-      ReconcileProjectionBackend.ContributionUpsert upsert) {
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(
-        ATTR_PARTITION_KEY,
-        AttributeValue.fromS(
-            ProjectionBackendSupport.contributionPartitionKey(
-                upsert.accountId(), upsert.parentJobId())));
-    item.put(
-        ATTR_SORT_KEY,
-        AttributeValue.fromS(ProjectionBackendSupport.contributionSortKey(upsert.childJobId())));
-    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_CONTRIBUTION));
-    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
-    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
-    item.put(
-        ProjectionBackendSupport.ATTR_PARENT_JOB_ID, AttributeValue.fromS(upsert.parentJobId()));
-    item.put(ProjectionBackendSupport.ATTR_CHILD_JOB_ID, AttributeValue.fromS(upsert.childJobId()));
-    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
-    return TransactWriteItem.builder()
-        .put(conditionalProjectionPut(item, upsert.expectedVersion()))
-        .build();
-  }
-
-  private TransactWriteItem buildProjectionResultReferenceUpsert(
-      ReconcileProjectionBackend.ResultReferenceUpsert upsert) {
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(
-        ATTR_PARTITION_KEY,
-        AttributeValue.fromS(
-            ProjectionBackendSupport.resultReferencePartitionKey(upsert.accountId())));
-    item.put(
-        ATTR_SORT_KEY,
-        AttributeValue.fromS(ProjectionBackendSupport.resultReferenceSortKey(upsert.jobId())));
-    item.put(ATTR_KIND, AttributeValue.fromS(ProjectionBackendSupport.KIND_RESULT_REFERENCE));
-    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
-    item.put(ProjectionBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(upsert.accountId()));
-    item.put(ProjectionBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(upsert.jobId()));
-    item.put(ProjectionBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
-    return TransactWriteItem.builder()
-        .put(conditionalProjectionPut(item, upsert.expectedVersion()))
-        .build();
-  }
-
-  private Put conditionalProjectionPut(Map<String, AttributeValue> item, long expectedVersion) {
-    Put.Builder put = Put.builder().tableName(table).item(item);
-    if (expectedVersion == 0L) {
-      put.conditionExpression("attribute_not_exists(#pk)")
-          .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY));
-    } else {
-      put.conditionExpression("#v = :expected")
-          .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
-          .expressionAttributeValues(
-              Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))));
-    }
-    return put.build();
   }
 
   private Optional<JobIndexEntrySnapshot> loadCanonicalPointer(

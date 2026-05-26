@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -166,7 +167,7 @@ public class CasBlobGcScheduler {
           ConfigProvider.getConfig()
               .getOptionalValue("floecat.gc.cas.enabled", Boolean.class)
               .orElse(true);
-      return !enabled || stopping;
+      return !enabled || stopping || DynamoDbBootstrapReadiness.shouldWaitForBootstrap();
     }
   }
 }

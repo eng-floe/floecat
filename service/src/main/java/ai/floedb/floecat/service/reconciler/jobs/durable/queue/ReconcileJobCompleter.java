@@ -16,13 +16,11 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
-import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.CompletionKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.IntToLongFunction;
 import java.util.function.UnaryOperator;
@@ -46,8 +44,6 @@ public class ReconcileJobCompleter {
 
   private ReconcileLeaseStore leaseManager;
   private JobMutator mutateByJobIdReturningRecord;
-  private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
-  private BiFunction<String, String, Long> countDirectChildJobs;
   private IntToLongFunction backoffMs;
   private BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor;
   private ClearExecutionLeases clearExecutionLeasesIfOwned;
@@ -57,8 +53,6 @@ public class ReconcileJobCompleter {
   public void bind(
       ReconcileLeaseStore leaseManager,
       JobMutator mutateByJobIdReturningRecord,
-      BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
-      BiFunction<String, String, Long> countDirectChildJobs,
       IntToLongFunction backoffMs,
       BiFunction<StoredReconcileJob, Long, String> readyPointerKeyFor,
       ClearExecutionLeases clearExecutionLeasesIfOwned,
@@ -66,8 +60,6 @@ public class ReconcileJobCompleter {
       long baseBackoffMs) {
     this.leaseManager = leaseManager;
     this.mutateByJobIdReturningRecord = mutateByJobIdReturningRecord;
-    this.refreshAncestorContributionRollups = refreshAncestorContributionRollups;
-    this.countDirectChildJobs = countDirectChildJobs;
     this.backoffMs = backoffMs;
     this.readyPointerKeyFor = readyPointerKeyFor;
     this.clearExecutionLeasesIfOwned = clearExecutionLeasesIfOwned;
@@ -76,26 +68,24 @@ public class ReconcileJobCompleter {
   }
 
   public void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId) {
-    mutateByJobIdReturningRecord
-        .apply(
-            jobId,
-            existing -> {
-              if (!leaseManager.hasActiveLease(
-                  jobId, leaseEpoch, existing, "markRunning", false, true, false)) {
-                return null;
-              }
-              boolean cancelling = "JS_CANCELLING".equals(existing.state);
-              if (!cancelling) {
-                existing.state = "JS_RUNNING";
-                existing.message = "Running";
-              }
-              if (existing.startedAtMs <= 0L) {
-                existing.startedAtMs = startedAtMs;
-              }
-              existing.executorId = executorId == null ? "" : executorId;
-              return existing;
-            })
-        .ifPresent(env -> refreshAncestorContributionRollups.accept(env.record(), false));
+    mutateByJobIdReturningRecord.apply(
+        jobId,
+        existing -> {
+          if (!leaseManager.hasActiveLease(
+              jobId, leaseEpoch, existing, "markRunning", false, true, false)) {
+            return null;
+          }
+          boolean cancelling = "JS_CANCELLING".equals(existing.state);
+          if (!cancelling) {
+            existing.state = "JS_RUNNING";
+            existing.message = "Running";
+          }
+          if (existing.startedAtMs <= 0L) {
+            existing.startedAtMs = startedAtMs;
+          }
+          existing.executorId = executorId == null ? "" : executorId;
+          return existing;
+        });
   }
 
   public void markProgress(
@@ -109,7 +99,6 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
-    boolean[] changedMaterially = new boolean[] {false};
     mutateByJobIdReturningRecord
         .apply(
             jobId,
@@ -121,35 +110,20 @@ public class ReconcileJobCompleter {
               if (isTerminalState(existing.state)) {
                 return null;
               }
-              changedMaterially[0] =
-                  existing.tablesScanned != tablesScanned
-                      || existing.tablesChanged != tablesChanged
-                      || existing.viewsScanned != viewsScanned
-                      || existing.viewsChanged != viewsChanged
-                      || existing.errors != errors
-                      || existing.snapshotsProcessed != snapshotsProcessed
-                      || existing.statsProcessed != statsProcessed
-                      || (message != null
-                          && !message.isBlank()
-                          && !message.equals(blankToEmpty(existing.message)));
-              existing.tablesScanned = tablesScanned;
-              existing.tablesChanged = tablesChanged;
-              existing.viewsScanned = viewsScanned;
-              existing.viewsChanged = viewsChanged;
+              existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+              existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+              existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+              existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
               existing.errors = errors;
-              existing.snapshotsProcessed = snapshotsProcessed;
-              existing.statsProcessed = statsProcessed;
+              existing.snapshotsProcessed =
+                  Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+              existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
               if (message != null && !message.isBlank()) {
                 existing.message = message;
               }
               return existing;
             })
-        .ifPresent(
-            env -> {
-              if (changedMaterially[0]) {
-                refreshAncestorContributionRollups.accept(env.record(), false);
-              }
-            });
+        .ifPresent(env -> {});
   }
 
   public boolean applyLeaseOutcome(
@@ -173,6 +147,7 @@ public class ReconcileJobCompleter {
               String op = operationName(completionKind);
               boolean allowExpiredWithinGrace =
                   completionKind == CompletionKind.SUCCEEDED
+                      || completionKind == CompletionKind.SUCCEEDED_WAITING
                       || completionKind == CompletionKind.FAILED_TERMINAL
                       || completionKind == CompletionKind.CANCELLED;
               if (!leaseManager.hasActiveLease(
@@ -191,13 +166,14 @@ public class ReconcileJobCompleter {
                   existing.startedAtMs = finishedAtMs;
                 }
                 existing.finishedAtMs = finishedAtMs;
-                existing.tablesScanned = tablesScanned;
-                existing.tablesChanged = tablesChanged;
-                existing.viewsScanned = viewsScanned;
-                existing.viewsChanged = viewsChanged;
+                existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+                existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+                existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+                existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
                 existing.errors = errors;
-                existing.snapshotsProcessed = snapshotsProcessed;
-                existing.statsProcessed = statsProcessed;
+                existing.snapshotsProcessed =
+                    Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+                existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
                 existing.readyPointerKey = null;
                 return existing;
               }
@@ -206,7 +182,24 @@ public class ReconcileJobCompleter {
                     applySucceeded(
                         existing,
                         finishedAtMs,
-                        message,
+                        "JS_SUCCEEDED",
+                        "Succeeded",
+                        finishedAtMs,
+                        blankToEmpty(existing.executorId),
+                        tablesScanned,
+                        tablesChanged,
+                        viewsScanned,
+                        viewsChanged,
+                        snapshotsProcessed,
+                        statsProcessed);
+                case SUCCEEDED_WAITING ->
+                    applySucceeded(
+                        existing,
+                        finishedAtMs,
+                        "JS_WAITING",
+                        blank(message) ? "Waiting on child work" : message,
+                        0L,
+                        "",
                         tablesScanned,
                         tablesChanged,
                         viewsScanned,
@@ -266,17 +259,9 @@ public class ReconcileJobCompleter {
         env -> {
           long mutationElapsedMs = System.currentTimeMillis() - operationStartedAtMs;
           clearExecutionLeasesIfOwned.clear(env, jobId, leaseEpoch);
-          long refreshStartedAtMs = System.currentTimeMillis();
-          refreshAncestorContributionRollups.accept(
-              env.record(),
-              isTerminalState(env.record().state)
-                  || env.record().jobKind() == ReconcileJobKind.PLAN_SNAPSHOT);
           LOG.debugf(
-              "applyLeaseOutcome mutation_ms=%d contribution_refresh_ms=%d jobId=%s completionKind=%s",
-              mutationElapsedMs,
-              System.currentTimeMillis() - refreshStartedAtMs,
-              jobId,
-              completionKind);
+              "applyLeaseOutcome mutation_ms=%d jobId=%s completionKind=%s",
+              mutationElapsedMs, jobId, completionKind);
         });
     return updated.isPresent();
   }
@@ -284,41 +269,28 @@ public class ReconcileJobCompleter {
   private StoredReconcileJob applySucceeded(
       StoredReconcileJob existing,
       long finishedAtMs,
-      String message,
+      String nextState,
+      String nextMessage,
+      long nextFinishedAtMs,
+      String nextExecutorId,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
       long viewsChanged,
       long snapshotsProcessed,
       long statsProcessed) {
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = 0L;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = "";
-    long directChildJobs = countDirectChildJobs.apply(existing.accountId, existing.jobId);
-    if (hasIncompleteDirectChildJobs(existing)
-        || (directChildJobs > 0L
-            && !directChildJobsComplete(
-                maxExpectedChildJobs(existing, directChildJobs),
-                existing.completedChildJobs,
-                existing.failedChildJobs,
-                existing.cancelledChildJobs))) {
-      if (existing.expectedChildJobs <= 0L) {
-        existing.expectedChildJobs = directChildJobs;
-      }
-      existing.state = "JS_WAITING";
-      existing.message = blank(message) ? "Waiting on child work" : message;
-      existing.finishedAtMs = 0L;
-      existing.executorId = "";
-    } else {
-      existing.state = "JS_SUCCEEDED";
-      existing.message = "Succeeded";
-      existing.finishedAtMs = finishedAtMs;
-    }
+    existing.state = nextState;
+    existing.message = nextMessage;
+    existing.finishedAtMs = nextFinishedAtMs;
+    existing.executorId = nextExecutorId;
     if (existing.startedAtMs <= 0L) {
       existing.startedAtMs = finishedAtMs;
     }
@@ -338,13 +310,13 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed) {
     existing.attempt = Math.max(0, existing.attempt) + 1;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
 
     if (existing.attempt >= maxAttempts) {
@@ -378,13 +350,13 @@ public class ReconcileJobCompleter {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Waiting on dependency" : message;
     existing.state = "JS_QUEUED";
     existing.message = message == null ? "Waiting on dependency" : message;
@@ -407,13 +379,13 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed) {
     existing.attempt = Math.max(0, existing.attempt) + 1;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
     existing.state = "JS_FAILED";
     existing.message = message == null ? "Failed" : message;
@@ -442,13 +414,13 @@ public class ReconcileJobCompleter {
       existing.startedAtMs = finishedAtMs;
     }
     existing.finishedAtMs = finishedAtMs;
-    existing.tablesScanned = tablesScanned;
-    existing.tablesChanged = tablesChanged;
-    existing.viewsScanned = viewsScanned;
-    existing.viewsChanged = viewsChanged;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
     existing.errors = errors;
-    existing.snapshotsProcessed = snapshotsProcessed;
-    existing.statsProcessed = statsProcessed;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.readyPointerKey = null;
     return existing;
   }
@@ -456,53 +428,12 @@ public class ReconcileJobCompleter {
   private static String operationName(CompletionKind completionKind) {
     return switch (completionKind) {
       case SUCCEEDED -> "markSucceeded";
+      case SUCCEEDED_WAITING -> "markSucceededWaiting";
       case FAILED_RETRYABLE -> "markFailed";
       case FAILED_WAITING -> "markWaiting";
       case FAILED_TERMINAL -> "markFailedTerminal";
       case CANCELLED -> "markCancelled";
     };
-  }
-
-  private static boolean hasExpectedDirectChildJobs(StoredReconcileJob stored) {
-    return stored != null && Math.max(0L, stored.expectedChildJobs) > 0L;
-  }
-
-  private static boolean hasIncompleteDirectChildJobs(StoredReconcileJob stored) {
-    return hasExpectedDirectChildJobs(stored) && !directChildJobsComplete(stored);
-  }
-
-  private static boolean directChildJobsComplete(StoredReconcileJob stored) {
-    if (stored == null) {
-      return true;
-    }
-    return directChildJobsComplete(
-        Math.max(0L, stored.expectedChildJobs),
-        stored.completedChildJobs,
-        stored.failedChildJobs,
-        stored.cancelledChildJobs);
-  }
-
-  private static boolean directChildJobsComplete(
-      long expectedChildJobs,
-      long completedChildJobs,
-      long failedChildJobs,
-      long cancelledChildJobs) {
-    long expected = Math.max(0L, expectedChildJobs);
-    if (expected <= 0L) {
-      return true;
-    }
-    long terminalChildren =
-        Math.max(0L, completedChildJobs)
-            + Math.max(0L, failedChildJobs)
-            + Math.max(0L, cancelledChildJobs);
-    return terminalChildren >= expected;
-  }
-
-  private static long maxExpectedChildJobs(StoredReconcileJob stored, long directChildJobs) {
-    if (stored == null) {
-      return Math.max(0L, directChildJobs);
-    }
-    return Math.max(Math.max(0L, stored.expectedChildJobs), Math.max(0L, directChildJobs));
   }
 
   private static boolean isTerminalState(String state) {

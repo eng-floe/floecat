@@ -24,10 +24,8 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -53,7 +51,6 @@ class ReconcileJobGcTest {
   private ReconcileJobGc gc;
   private MemoryReconcileJobIndexBackend jobIndexBackend;
   private MemoryReconcileReadyQueueBackend readyQueueBackend;
-  private MemoryReconcileProjectionBackend projectionBackend;
 
   @BeforeEach
   void setUp() {
@@ -64,10 +61,8 @@ class ReconcileJobGcTest {
     gc = new ReconcileJobGc();
     gc.blobStore = blobs;
     gc.mapper = mapper;
-    gc.projectionBackend = projectionBackend = new MemoryReconcileProjectionBackend();
-    projectionBackend.bind();
     gc.jobIndexBackend = jobIndexBackend = new MemoryReconcileJobIndexBackend();
-    jobIndexBackend.bind(pointers, projectionBackend);
+    jobIndexBackend.bind(pointers);
     gc.readyQueueBackend = readyQueueBackend = new MemoryReconcileReadyQueueBackend();
     readyQueueBackend.bind(pointers);
     gc.jobIndexes = new ReconcileJobIndexes();
@@ -102,8 +97,6 @@ class ReconcileJobGcTest {
         "application/json; charset=UTF-8");
     putPointer(dedupePointer, canonicalKey);
     putPointer(readyPointer, canonicalKey);
-    putNativeProjectionRows(jobId, "parent-expired", historyBlob);
-
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     assertTrue(result.expired() >= 1);
@@ -113,8 +106,6 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(dedupePointer).isEmpty());
     assertTrue(pointers.get(readyPointer).isEmpty());
     assertFalse(blobs.head(historyBlob).isPresent());
-    assertTrue(projectionBackend.loadResultReference(ACCOUNT_ID, jobId).isEmpty());
-    assertTrue(projectionBackend.loadContribution(ACCOUNT_ID, "parent-expired", jobId).isEmpty());
   }
 
   @Test
@@ -140,6 +131,25 @@ class ReconcileJobGcTest {
 
     assertTrue(result.dedupeDeleted() >= 1);
     assertTrue(pointers.get(dedupeKey).isEmpty());
+  }
+
+  @Test
+  void accountSliceDoesNotDeleteDedupePointerRepointedToNewerJob() {
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|incr|*|*|");
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash);
+    String oldJobId = "job-terminal-old";
+    String newJobId = "job-active-new";
+
+    putInlineReconcileJob(
+        oldJobId, "JS_SUCCEEDED", System.currentTimeMillis() - 1_000L, dedupeHash, "");
+    String newCanonicalKey =
+        putInlineReconcileJob(newJobId, "JS_QUEUED", System.currentTimeMillis(), dedupeHash, "");
+    putPointer(dedupeKey, newCanonicalKey);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(0, result.dedupeDeleted());
+    assertEquals(newCanonicalKey, pointers.get(dedupeKey).orElseThrow().getBlobUri());
   }
 
   @Test
@@ -172,9 +182,6 @@ class ReconcileJobGcTest {
     StoredReconcileJob record =
         storedJob(jobId, "JS_SUCCEEDED", now, parentJobId, dedupeHash, readyPointer);
     putNativeJobIndexRows(record);
-    putNativeProjectionRows(
-        jobId, parentJobId, Keys.reconcileJobBlobUri(ACCOUNT_ID, jobId, "result"));
-
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     assertTrue(result.expired() >= 1);
@@ -212,8 +219,6 @@ class ReconcileJobGcTest {
                 Keys.reconcileJobByConnectorStatePointer(
                     ACCOUNT_ID, CONNECTOR_ID, "JS_SUCCEEDED", now, jobId))
             .isEmpty());
-    assertTrue(projectionBackend.loadResultReference(ACCOUNT_ID, jobId).isEmpty());
-    assertTrue(projectionBackend.loadContribution(ACCOUNT_ID, parentJobId, jobId).isEmpty());
   }
 
   @Test
@@ -308,6 +313,92 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(readyKey).isPresent());
   }
 
+  @Test
+  void readySliceKeepsCurrentInlineQueuedSecondaryReadyPointers() {
+    long dueAtMs = System.currentTimeMillis();
+    String jobId = "job-inline-queued-secondary";
+    String laneKey = "lane";
+    String executionClass = "BATCH";
+    String executionLane = "connector:lane";
+    String jobKind = "PLAN_TABLE";
+    String readyKey = Keys.reconcileReadyPointerByDue(dueAtMs, ACCOUNT_ID, laneKey, jobId);
+    String executionClassReadyKey =
+        Keys.reconcileReadyByExecutionClassPointerByDue(dueAtMs, executionClass, ACCOUNT_ID, jobId);
+    String executionLaneReadyKey =
+        Keys.reconcileReadyByExecutionLanePointerByDue(dueAtMs, executionLane, ACCOUNT_ID, jobId);
+    String jobKindReadyKey =
+        Keys.reconcileReadyByJobKindPointerByDue(dueAtMs, jobKind, ACCOUNT_ID, jobId);
+    String canonicalKey =
+        putInlineReconcileJob(
+            jobId,
+            "JS_QUEUED",
+            dueAtMs,
+            "",
+            readyKey,
+            laneKey,
+            executionClass,
+            executionLane,
+            "",
+            jobKind,
+            dueAtMs);
+    putPointer(readyKey, canonicalKey);
+    putPointer(executionClassReadyKey, canonicalKey);
+    putPointer(executionLaneReadyKey, canonicalKey);
+    putPointer(jobKindReadyKey, canonicalKey);
+
+    var result = gc.runReadySlice("");
+
+    assertEquals(0, result.deleted());
+    assertTrue(pointers.get(readyKey).isPresent());
+    assertTrue(pointers.get(executionClassReadyKey).isPresent());
+    assertTrue(pointers.get(executionLaneReadyKey).isPresent());
+    assertTrue(pointers.get(jobKindReadyKey).isPresent());
+  }
+
+  @Test
+  void accountSliceDeletesHistoricalReadyPointersForTerminalInlineJobs() {
+    long finishedAtMs = System.currentTimeMillis() - 10_000L;
+    String jobId = "job-inline-terminal-ready-cleanup";
+    String laneKey = "lane";
+    String executionClass = "BATCH";
+    String executionLane = "connector:lane";
+    String jobKind = "PLAN_TABLE";
+    String readyKey = Keys.reconcileReadyPointerByDue(finishedAtMs, ACCOUNT_ID, laneKey, jobId);
+    String executionClassReadyKey =
+        Keys.reconcileReadyByExecutionClassPointerByDue(
+            finishedAtMs, executionClass, ACCOUNT_ID, jobId);
+    String executionLaneReadyKey =
+        Keys.reconcileReadyByExecutionLanePointerByDue(
+            finishedAtMs, executionLane, ACCOUNT_ID, jobId);
+    String jobKindReadyKey =
+        Keys.reconcileReadyByJobKindPointerByDue(finishedAtMs, jobKind, ACCOUNT_ID, jobId);
+    String canonicalKey =
+        putInlineReconcileJob(
+            jobId,
+            "JS_SUCCEEDED",
+            finishedAtMs,
+            "",
+            readyKey,
+            laneKey,
+            executionClass,
+            executionLane,
+            "",
+            jobKind,
+            finishedAtMs);
+    putPointer(readyKey, canonicalKey);
+    putPointer(executionClassReadyKey, canonicalKey);
+    putPointer(executionLaneReadyKey, canonicalKey);
+    putPointer(jobKindReadyKey, canonicalKey);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(result.readyDeleted() >= 4);
+    assertTrue(pointers.get(readyKey).isEmpty());
+    assertTrue(pointers.get(executionClassReadyKey).isEmpty());
+    assertTrue(pointers.get(executionLaneReadyKey).isEmpty());
+    assertTrue(pointers.get(jobKindReadyKey).isEmpty());
+  }
+
   private void putPointer(String key, String blobUri) {
     Pointer ptr = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
     pointers.compareAndSet(key, 0L, ptr);
@@ -315,6 +406,22 @@ class ReconcileJobGcTest {
 
   private String putInlineReconcileJob(
       String jobId, String state, long updatedAtMs, String dedupeKeyHash, String readyPointerKey) {
+    return putInlineReconcileJob(
+        jobId, state, updatedAtMs, dedupeKeyHash, readyPointerKey, "", "", "", "", "", 0L);
+  }
+
+  private String putInlineReconcileJob(
+      String jobId,
+      String state,
+      long updatedAtMs,
+      String dedupeKeyHash,
+      String readyPointerKey,
+      String laneKey,
+      String executionClass,
+      String executionLane,
+      String pinnedExecutorId,
+      String jobKind,
+      long nextAttemptAtMs) {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
 
@@ -327,6 +434,14 @@ class ReconcileJobGcTest {
     record.put("createdAtMs", updatedAtMs);
     record.put("dedupeKeyHash", dedupeKeyHash);
     record.put("readyPointerKey", readyPointerKey);
+    record.put("laneKey", laneKey);
+    record.put("executionClass", executionClass);
+    record.put("executionLane", executionLane);
+    record.put("pinnedExecutorId", pinnedExecutorId);
+    record.put("jobKind", jobKind);
+    if (nextAttemptAtMs > 0L) {
+      record.put("nextAttemptAtMs", nextAttemptAtMs);
+    }
 
     String inlineReference =
         INLINE_JOB_STATE_PREFIX
@@ -413,34 +528,7 @@ class ReconcileJobGcTest {
                     java.util.List.of(
                         new ReconcileJobIndexStore.ReadyQueueWrite(
                             record.readyPointerKey, canonicalKey)),
-                    java.util.List.of()),
-                new ReconcileProjectionBackend.ProjectionWriteBatch(java.util.List.of()))));
-  }
-
-  private void putNativeProjectionRows(String jobId, String parentJobId, String blobUri) {
-    assertTrue(
-        projectionBackend.compareAndSetBatch(
-            new ReconcileProjectionBackend.ProjectionWriteBatch(
-                java.util.List.of(
-                    new ReconcileProjectionBackend.ResultReferenceUpsert(
-                        ACCOUNT_ID, jobId, 0L, blobUri),
-                    new ReconcileProjectionBackend.ContributionUpsert(
-                        ACCOUNT_ID,
-                        parentJobId,
-                        jobId,
-                        0L,
-                        inlineContribution(jobId, parentJobId))))));
-  }
-
-  private String inlineContribution(String childJobId, String parentJobId) {
-    ObjectNode contribution = mapper.createObjectNode();
-    contribution.put("accountId", ACCOUNT_ID);
-    contribution.put("parentJobId", parentJobId);
-    contribution.put("childJobId", childJobId);
-    return "inline:reconcile-contribution:"
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(contribution.toString().getBytes(StandardCharsets.UTF_8));
+                    java.util.List.of()))));
   }
 
   private String serialize(StoredReconcileJob record) {

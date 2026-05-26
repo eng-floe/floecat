@@ -59,6 +59,8 @@ import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
@@ -679,34 +681,34 @@ final class ConnectorCliSupport {
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", ""));
         String stateArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--state", ""));
         var jobs =
-            listReconcileJobs(
-                pageSize,
-                connectorRef,
-                stateArg,
-                connectors,
-                reconcileControl,
-                getCurrentAccountId);
-        List<GetReconcileJobResponse> filteredJobs;
-        if (childJobId.isBlank()) {
-          filteredJobs = jobs.stream().filter(job -> job.getParentJobId().isBlank()).toList();
-        } else {
-          filteredJobs = collectDescendantJobs(jobs, childJobId);
-        }
+            childJobId.isBlank()
+                ? listReconcileJobs(
+                    pageSize,
+                    connectorRef,
+                    stateArg,
+                    true,
+                    connectors,
+                    reconcileControl,
+                    getCurrentAccountId)
+                : getReconcileJobTree(childJobId, reconcileControl);
+        List<GetReconcileJobResponse> filteredJobs = jobs;
         if (filteredJobs.isEmpty()) {
           out.println("no reconcile jobs");
           return;
         }
         if (printJson) {
           CliUtils.printJson(
-              ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse.newBuilder()
-                  .addAllJobs(filteredJobs)
-                  .build(),
+              childJobId.isBlank()
+                  ? ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse.newBuilder()
+                      .addAllJobs(filteredJobs)
+                      .build()
+                  : GetReconcileJobTreeResponse.newBuilder().addAllJobs(filteredJobs).build(),
               out);
         } else {
           if (childJobId.isBlank()) {
             printReconcileJobsTable(filteredJobs, out);
           } else {
-            printReconcileJobTree(jobs, childJobId, out);
+            printReconcileJobTree(filteredJobs, childJobId, out);
           }
         }
       }
@@ -840,6 +842,7 @@ final class ConnectorCliSupport {
       int pageSize,
       String connectorRef,
       String stateArg,
+      boolean rootsOnly,
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       Supplier<String> getCurrentAccountId) {
@@ -847,6 +850,9 @@ final class ConnectorCliSupport {
         pageSize,
         pageRequest -> {
           var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest);
+          if (rootsOnly) {
+            req.setRootsOnly(true);
+          }
           if (!connectorRef.isBlank()) {
             req.setConnectorId(
                 CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
@@ -863,29 +869,11 @@ final class ConnectorCliSupport {
         response -> response.hasPage() ? response.getPage().getNextPageToken() : "");
   }
 
-  private static List<GetReconcileJobResponse> collectDescendantJobs(
-      List<GetReconcileJobResponse> jobs, String rootJobId) {
-    Map<String, List<GetReconcileJobResponse>> byParent = new HashMap<>();
-    for (GetReconcileJobResponse job : jobs) {
-      byParent.computeIfAbsent(job.getParentJobId(), ignored -> new ArrayList<>()).add(job);
-    }
-    List<GetReconcileJobResponse> descendants = new ArrayList<>();
-    collectDescendantJobsRecursive(rootJobId, byParent, descendants);
-    return descendants;
-  }
-
-  private static void collectDescendantJobsRecursive(
-      String parentJobId,
-      Map<String, List<GetReconcileJobResponse>> byParent,
-      List<GetReconcileJobResponse> descendants) {
-    List<GetReconcileJobResponse> children =
-        byParent.getOrDefault(parentJobId, List.of()).stream()
-            .sorted((left, right) -> left.getJobId().compareTo(right.getJobId()))
-            .toList();
-    for (GetReconcileJobResponse child : children) {
-      descendants.add(child);
-      collectDescendantJobsRecursive(child.getJobId(), byParent, descendants);
-    }
+  private static List<GetReconcileJobResponse> getReconcileJobTree(
+      String rootJobId, ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl) {
+    return reconcileControl
+        .getReconcileJobTree(GetReconcileJobTreeRequest.newBuilder().setJobId(rootJobId).build())
+        .getJobsList();
   }
 
   private static ResourceId rid(

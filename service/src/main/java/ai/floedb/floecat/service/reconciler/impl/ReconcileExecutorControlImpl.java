@@ -244,7 +244,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               }
               switch (completionKind) {
                 case FAILED_TERMINAL, CANCELLED -> cancelChildJobs(jobId, request.getMessage());
-                case SUCCEEDED, FAILED_RETRYABLE, FAILED_WAITING -> {}
+                case SUCCEEDED, SUCCEEDED_WAITING, FAILED_RETRYABLE, FAILED_WAITING -> {}
               }
               return CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build();
             }),

@@ -28,6 +28,9 @@ public class FlightDevProfile implements QuarkusTestProfile {
         "floecat.interceptor.validate.account", "false",
         "floecat.interceptor.session.header", "",
         "floecat.interceptor.authorization.header", "",
+        "floecat.reconciler.authorization.header", "",
+        "floecat.reconciler.worker.mode", "local",
+        "reconciler.max-parallelism", "0",
         "quarkus.profile", "test");
   }
 }

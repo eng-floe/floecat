@@ -24,6 +24,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
 public interface ReconcileJobIndexStore {
@@ -50,17 +52,14 @@ public interface ReconcileJobIndexStore {
 
   record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}
 
-  record JobIndexWriteBatch(
-      List<JobIndexWriteOp> writes,
-      ReadyQueueMutation readyMutation,
-      ReconcileProjectionBackend.ProjectionWriteBatch projectionMutation) {
+  record JobIndexWriteBatch(List<JobIndexWriteOp> writes, ReadyQueueMutation readyMutation) {
     public static JobIndexWriteBatch empty() {
-      return new JobIndexWriteBatch(
-          List.of(),
-          ReadyQueueMutation.empty(),
-          new ReconcileProjectionBackend.ProjectionWriteBatch(List.of()));
+      return new JobIndexWriteBatch(List.of(), ReadyQueueMutation.empty());
     }
   }
+
+  record CanonicalRecordMutation(
+      CanonicalPointerSnapshot snapshot, StoredReconcileJob previous, StoredReconcileJob current) {}
 
   record QueuedJobInsert(
       int index,
@@ -105,6 +104,13 @@ public interface ReconcileJobIndexStore {
 
   BulkEnqueueItemResult commitQueuedJobInsert(QueuedJobInsert insert);
 
+  BulkEnqueueItemResult commitQueuedJobInsert(
+      QueuedJobInsert insert, Supplier<List<CanonicalRecordMutation>> ancestorMutationsSupplier);
+
+  List<BulkEnqueueItemResult> commitQueuedJobInserts(
+      List<QueuedJobInsert> inserts,
+      Function<List<QueuedJobInsert>, List<CanonicalRecordMutation>> ancestorMutationsBuilder);
+
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
@@ -123,6 +129,10 @@ public interface ReconcileJobIndexStore {
       CanonicalPointerSnapshot currentSnapshot,
       StoredReconcileJob previous,
       StoredReconcileJob current);
+
+  JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
+
+  boolean compareAndSetCanonicalMutations(List<CanonicalRecordMutation> mutations);
 
   StoredReconcileJob cloneStoredRecord(StoredReconcileJob source);
 }

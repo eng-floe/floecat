@@ -300,3 +300,4 @@ jobs:
             CONTAINER_TAG=${{ steps.vars.outputs.primary_tag }} \
             CONTAINER_EXTRA_TAGS=${{ steps.vars.outputs.sha_tag }} \
             JIB_IMAGE_PLATFORMS=linux/amd64,linux/arm64
+

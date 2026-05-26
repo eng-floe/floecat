@@ -261,6 +261,7 @@ public class RemoteReconcileExecutorPoller {
     AtomicBoolean leaseInvalid = new AtomicBoolean(false);
     AtomicBoolean leaseStateUncertain = new AtomicBoolean(false);
     AtomicBoolean cancellationRequested = new AtomicBoolean(false);
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(false);
     AtomicLong lastLeaseConfirmedAtMs = new AtomicLong(started);
     ProgressSnapshot progress = new ProgressSnapshot();
@@ -273,15 +274,17 @@ public class RemoteReconcileExecutorPoller {
             });
     Runnable heartbeatTask =
         () -> {
-          if (leaseInvalid.get()) {
+          if (leaseInvalid.get() || completionStarted.get()) {
             return;
           }
           try {
             RemoteReconcileExecutorClient.LeaseHeartbeat response = client.renew(remoteLease);
             if (!response.leaseValid()) {
-              LOG.warnf(
-                  "Remote reconcile lease heartbeat rejected for job %s executor=%s cancellationRequested=%s",
-                  lease.jobId, executor.id(), response.cancellationRequested());
+              if (!completionStarted.get()) {
+                LOG.warnf(
+                    "Remote reconcile lease heartbeat rejected for job %s executor=%s cancellationRequested=%s",
+                    lease.jobId, executor.id(), response.cancellationRequested());
+              }
               leaseInvalid.set(true);
             } else {
               lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
@@ -407,7 +410,9 @@ public class RemoteReconcileExecutorPoller {
             0,
             0,
             0,
-            "Cancelled");
+            "Cancelled",
+            completionStarted,
+            heartbeatExecutor);
         return;
       }
       if (leaseInvalid.get() || interrupted.get()) {
@@ -526,7 +531,9 @@ public class RemoteReconcileExecutorPoller {
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
-          result.message);
+          result.message,
+          completionStarted,
+          heartbeatExecutor);
     } catch (Exception e) {
       boolean stateUncertain =
           retryClassOf(e) == ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN;
@@ -566,7 +573,9 @@ public class RemoteReconcileExecutorPoller {
             errorCount,
             progress.snapshotsProcessed,
             progress.statsProcessed,
-            describeFailure(e));
+            describeFailure(e),
+            completionStarted,
+            heartbeatExecutor);
       }
       if (stateUncertain) {
         return;
@@ -647,7 +656,9 @@ public class RemoteReconcileExecutorPoller {
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
-      String message) {
+      String message,
+      AtomicBoolean completionStarted,
+      ScheduledExecutorService heartbeatExecutor) {
     switch (outcome) {
       case SUCCESS -> {
         boolean accepted =
@@ -663,7 +674,9 @@ public class RemoteReconcileExecutorPoller {
                 errors,
                 snapshotsProcessed,
                 statsProcessed,
-                message);
+                message,
+                completionStarted,
+                heartbeatExecutor);
         if (accepted) {
           LOG.infof(
               "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
@@ -686,7 +699,9 @@ public class RemoteReconcileExecutorPoller {
               errors,
               snapshotsProcessed,
               statsProcessed,
-              message);
+              message,
+              completionStarted,
+              heartbeatExecutor);
       case RETRYABLE_FAILURE, TERMINAL_FAILURE ->
           completeIfPossible(
               remoteLease,
@@ -700,7 +715,9 @@ public class RemoteReconcileExecutorPoller {
               errors,
               snapshotsProcessed,
               statsProcessed,
-              message);
+              message,
+              completionStarted,
+              heartbeatExecutor);
     }
   }
 
@@ -716,7 +733,11 @@ public class RemoteReconcileExecutorPoller {
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
-      String message) {
+      String message,
+      AtomicBoolean completionStarted,
+      ScheduledExecutorService heartbeatExecutor) {
+    completionStarted.set(true);
+    heartbeatExecutor.shutdownNow();
     RemoteReconcileExecutorClient.CompletionResult result;
     try {
       result =

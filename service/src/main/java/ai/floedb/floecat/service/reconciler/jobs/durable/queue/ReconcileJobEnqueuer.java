@@ -47,7 +47,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
 import org.jboss.logging.Logger;
 
@@ -58,11 +57,6 @@ public class ReconcileJobEnqueuer {
   @FunctionalInterface
   public interface ResultPayloadWriter {
     String write(String accountId, String jobId, ReconcileFileGroupTask fileGroupTask);
-  }
-
-  @FunctionalInterface
-  public interface ChildCounterIncrementer {
-    void increment(String parentJobId, int delta);
   }
 
   private BlobStore blobStore;
@@ -76,9 +70,6 @@ public class ReconcileJobEnqueuer {
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
   private ResultPayloadWriter writeFileGroupResultPayload;
-  private ChildCounterIncrementer incrementExpectedChildJobs;
-  private BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups;
-  private int casMax;
 
   @FunctionalInterface
   public interface ReadyPointerKeyForDue {
@@ -96,10 +87,7 @@ public class ReconcileJobEnqueuer {
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
       ReadyPointerKeyForDue readyPointerKeyForDue,
-      ResultPayloadWriter writeFileGroupResultPayload,
-      ChildCounterIncrementer incrementExpectedChildJobs,
-      BiConsumer<StoredReconcileJob, Boolean> refreshAncestorContributionRollups,
-      int casMax) {
+      ResultPayloadWriter writeFileGroupResultPayload) {
     this.blobStore = blobStore;
     this.payloadStore = payloadStore;
     this.projector = projector;
@@ -110,9 +98,6 @@ public class ReconcileJobEnqueuer {
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
     this.writeFileGroupResultPayload = writeFileGroupResultPayload;
-    this.incrementExpectedChildJobs = incrementExpectedChildJobs;
-    this.refreshAncestorContributionRollups = refreshAncestorContributionRollups;
-    this.casMax = casMax;
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
@@ -137,9 +122,6 @@ public class ReconcileJobEnqueuer {
     }
 
     java.util.Map<String, BulkEnqueueItemResult> batchDedupe = new java.util.HashMap<>();
-    java.util.Map<String, PendingBulkEnqueue> representativeByParent =
-        new java.util.LinkedHashMap<>();
-    java.util.Map<String, Integer> createdChildrenByParent = new java.util.LinkedHashMap<>();
     for (PendingBulkEnqueue entry : preparedEntries) {
       if (results.get(entry.index) != null) {
         continue;
@@ -147,44 +129,38 @@ public class ReconcileJobEnqueuer {
 
       BulkEnqueueItemResult batchExisting = batchDedupe.get(entry.dedupePointerKey);
       if (batchExisting != null && batchExisting.succeeded()) {
-        results.set(
-            entry.index, new BulkEnqueueItemResult(entry.index, batchExisting.jobId, false, ""));
+        BulkEnqueueItemResult deduped =
+            new BulkEnqueueItemResult(entry.index, batchExisting.jobId, false, "");
+        results.set(entry.index, deduped);
+        logEnqueueDeduped(entry, deduped.jobId, "batch");
         continue;
       }
 
       try {
         persistBulkPayloads(entry);
-        BulkEnqueueItemResult existingResult = commitBulkEntry(entry);
-        if (existingResult != null) {
-          rollbackFailedBulkEnqueue(entry);
-          results.set(entry.index, existingResult);
-          if (existingResult.succeeded()) {
-            batchDedupe.put(entry.dedupePointerKey, existingResult);
-          }
-          continue;
-        }
       } catch (RuntimeException e) {
         rollbackFailedBulkEnqueue(entry);
-        results.set(entry.index, failedBulkEnqueue(entry.index, e));
+        BulkEnqueueItemResult failed = failedBulkEnqueue(entry.index, e);
+        results.set(entry.index, failed);
+        logEnqueueFailed(entry, failed.error);
         continue;
       }
-
+      BulkEnqueueItemResult existingResult = commitBulkEntry(entry);
+      if (existingResult != null) {
+        rollbackFailedBulkEnqueue(entry);
+        results.set(entry.index, existingResult);
+        if (existingResult.succeeded()) {
+          logEnqueueDeduped(entry, existingResult.jobId, "store");
+        } else {
+          logEnqueueFailed(entry, existingResult.error);
+        }
+        continue;
+      }
       BulkEnqueueItemResult created =
           new BulkEnqueueItemResult(entry.index, entry.record.jobId, true, "");
       results.set(entry.index, created);
       batchDedupe.put(entry.dedupePointerKey, created);
-      if (!blank(entry.record.parentJobId)) {
-        representativeByParent.putIfAbsent(entry.record.parentJobId, entry);
-        createdChildrenByParent.merge(entry.record.parentJobId, 1, Integer::sum);
-      }
-    }
-
-    for (var parentEntry : createdChildrenByParent.entrySet()) {
-      incrementExpectedChildJobs.increment(parentEntry.getKey(), parentEntry.getValue());
-      PendingBulkEnqueue representative = representativeByParent.get(parentEntry.getKey());
-      if (representative != null) {
-        refreshAncestorContributionRollups.accept(representative.record, false);
-      }
+      logEnqueueCreated(entry, created.jobId);
     }
 
     return new BulkEnqueueResult(results);
@@ -203,6 +179,37 @@ public class ReconcileJobEnqueuer {
             entry.connectorIndexKey,
             entry.resultBlobUri,
             entry.record));
+  }
+
+  private void logEnqueueCreated(PendingBulkEnqueue entry, String jobId) {
+    LOG.infof(
+        "enqueue committed jobId=%s parentJobId=%s kind=%s laneKey=%s dedupe=%s",
+        blankToEmpty(jobId),
+        blankToEmpty(entry.record.parentJobId),
+        entry.record.jobKind,
+        blankToEmpty(entry.record.laneKey),
+        blankToEmpty(entry.dedupePointerKey));
+  }
+
+  private void logEnqueueDeduped(PendingBulkEnqueue entry, String existingJobId, String source) {
+    LOG.infof(
+        "enqueue deduped source=%s existingJobId=%s parentJobId=%s kind=%s laneKey=%s dedupe=%s",
+        source,
+        blankToEmpty(existingJobId),
+        blankToEmpty(entry.record.parentJobId),
+        entry.record.jobKind,
+        blankToEmpty(entry.record.laneKey),
+        blankToEmpty(entry.dedupePointerKey));
+  }
+
+  private void logEnqueueFailed(PendingBulkEnqueue entry, String failureReason) {
+    LOG.warnf(
+        "enqueue failed parentJobId=%s kind=%s laneKey=%s dedupe=%s reason=%s",
+        blankToEmpty(entry.record.parentJobId),
+        entry.record.jobKind,
+        blankToEmpty(entry.record.laneKey),
+        blankToEmpty(entry.dedupePointerKey),
+        blankToEmpty(failureReason));
   }
 
   private PendingBulkEnqueue prepareBulkEnqueue(int index, BulkEnqueueSpec spec, long now) {
@@ -431,6 +438,7 @@ public class ReconcileJobEnqueuer {
       entry.resultBlobUri =
           writeFileGroupResultPayload.write(
               entry.record.accountId, entry.record.jobId, entry.resultPayloadTask);
+      entry.record.fileGroupResultBlobUri = entry.resultBlobUri;
     }
   }
 

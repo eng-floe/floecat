@@ -178,6 +178,7 @@ public class LeasedPlannerWorkerService {
                 + plannedTableJobs
                 + " table job(s)"
                 + (plannedViewJobs == 0L ? "" : " and " + plannedViewJobs + " view job(s)"),
+            !childSpecs.isEmpty(),
             plannedTableJobs,
             0L,
             plannedViewJobs,
@@ -259,6 +260,7 @@ public class LeasedPlannerWorkerService {
             jobId,
             leaseEpoch,
             "Planned " + plannedSnapshotJobs + " snapshot job(s)",
+            plannedSnapshotJobs > 0L,
             tablesScanned,
             tablesChanged,
             0L,
@@ -331,7 +333,7 @@ public class LeasedPlannerWorkerService {
                 .changed();
     boolean accepted =
         completePlanSuccess(
-            jobId, leaseEpoch, "Planned view", 0L, 0L, 1L, changed ? 1L : 0L, 0L, 0L, 0L);
+            jobId, leaseEpoch, "Planned view", false, 0L, 0L, 1L, changed ? 1L : 0L, 0L, 0L, 0L);
     return new PlanViewPersistResult(accepted, changed ? 1L : 0L);
   }
 
@@ -481,6 +483,7 @@ public class LeasedPlannerWorkerService {
                 + " with "
                 + plannedFileGroupJobs
                 + " file group(s)",
+            !childSpecs.isEmpty(),
             0L,
             0L,
             0L,
@@ -664,7 +667,8 @@ public class LeasedPlannerWorkerService {
       String jobId, ReconcileSnapshotTask durableSnapshotTask) {
     return jobs.getLeaseView(jobId)
         .filter(current -> current.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
-        .filter(current -> "JS_SUCCEEDED".equals(current.state))
+        .filter(
+            current -> "JS_SUCCEEDED".equals(current.state) || "JS_WAITING".equals(current.state))
         .map(current -> durableSnapshotTask.equals(current.snapshotTask))
         .orElse(false);
   }
@@ -732,6 +736,7 @@ public class LeasedPlannerWorkerService {
       String jobId,
       String leaseEpoch,
       String message,
+      boolean handedOffChildWork,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -742,7 +747,9 @@ public class LeasedPlannerWorkerService {
     return jobs.applyLeaseOutcome(
         jobId,
         leaseEpoch,
-        ReconcileJobStore.CompletionKind.SUCCEEDED,
+        handedOffChildWork
+            ? ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING
+            : ReconcileJobStore.CompletionKind.SUCCEEDED,
         System.currentTimeMillis(),
         message,
         tablesScanned,

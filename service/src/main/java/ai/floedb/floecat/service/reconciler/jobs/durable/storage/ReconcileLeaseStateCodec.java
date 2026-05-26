@@ -13,24 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.kv.dynamodb.kvobject;
 
-import ai.floedb.floecat.storage.kv.KvStore;
-import ai.floedb.floecat.storage.kv.cdi.KvTable;
-import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
+package ai.floedb.floecat.service.reconciler.jobs.durable.storage;
+
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Produces;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import java.util.Optional;
 
 @ApplicationScoped
-public class KvObjectKvStoreProducer {
+public class ReconcileLeaseStateCodec {
+  private ReconcilePayloadStore payloadStore;
 
-  @Produces
-  @ApplicationScoped
-  @KvTable("floecat-test")
-  KvStore coreKvStore(
-      DynamoDbAsyncClient ddb, @ConfigProperty(name = "floecat.kv.table") String table) {
-    return new DynamoDbKvStore(ddb, table);
+  public void bind(ReconcilePayloadStore payloadStore) {
+    this.payloadStore = payloadStore;
+  }
+
+  public String encode(StoredJobLease lease) {
+    return payloadStore.encodeInlineJobLease(lease);
+  }
+
+  public Optional<StoredJobLease> decode(String reference) {
+    return payloadStore.readInlineJobLease(reference);
   }
 }

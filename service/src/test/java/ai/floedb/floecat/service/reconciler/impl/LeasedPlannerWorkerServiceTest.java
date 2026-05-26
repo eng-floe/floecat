@@ -249,7 +249,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -297,7 +297,7 @@ class LeasedPlannerWorkerServiceTest {
         .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -461,7 +461,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             eq("Snapshot plan recorded for db.events with 0 file group(s)"),
             eq(0L),
@@ -481,7 +481,7 @@ class LeasedPlannerWorkerServiceTest {
         .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             eq("Snapshot plan recorded for db.events with 0 file group(s)"),
             eq(0L),
@@ -649,7 +649,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -690,7 +690,7 @@ class LeasedPlannerWorkerServiceTest {
         .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -746,7 +746,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -809,7 +809,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -1005,7 +1005,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -1034,7 +1034,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             any(),
             anyLong(),
@@ -1071,7 +1071,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
             anyLong(),
             eq("Planned 1 table job(s) and 1 view job(s)"),
             eq(1L),
@@ -1120,6 +1120,20 @@ class LeasedPlannerWorkerServiceTest {
                                         && spec.viewTask
                                             .destinationViewId()
                                             .equals("orders_view"))));
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
+            anyLong(),
+            eq("Planned 1 table job(s) and 1 view job(s)"),
+            eq(1L),
+            eq(0L),
+            eq(1L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
     verify(jobs, never())
         .enqueueTablePlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
     verify(jobs, never())

@@ -26,7 +26,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerS
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileProjectionBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +36,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.jboss.logging.Logger;
 
@@ -257,6 +258,12 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
 
   @Override
   public BulkEnqueueItemResult commitQueuedJobInsert(QueuedJobInsert insert) {
+    return commitQueuedJobInsert(insert, List::of);
+  }
+
+  @Override
+  public BulkEnqueueItemResult commitQueuedJobInsert(
+      QueuedJobInsert insert, Supplier<List<CanonicalRecordMutation>> ancestorMutationsSupplier) {
     for (int attempt = 0; attempt < casMax; attempt++) {
       JobIndexEntrySnapshot existingDedupePointer =
           jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
@@ -264,15 +271,139 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       if (existing.isPresent()) {
         return new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, "");
       }
-      if (jobIndexBackend.compareAndSetBatch(queuedJobInsertOps(insert, existingDedupePointer))) {
+      List<CanonicalRecordMutation> ancestorMutations =
+          ancestorMutationsSupplier == null ? List.of() : ancestorMutationsSupplier.get();
+      JobIndexWriteBatch batch =
+          combineWriteBatches(
+              prependInsertBatch(
+                  queuedJobInsertOps(insert, existingDedupePointer), ancestorMutations));
+      if (jobIndexBackend.compareAndSetBatch(batch)) {
         synchronized (state) {
           state.put(insert.canonicalKey(), cloneStoredRecord(insert.record()));
+        }
+        if (ancestorMutations != null) {
+          for (CanonicalRecordMutation mutation : ancestorMutations) {
+            if (mutation == null || mutation.current() == null) {
+              continue;
+            }
+            state.put(
+                mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+          }
         }
         return null;
       }
     }
     return new BulkEnqueueItemResult(
         insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries");
+  }
+
+  @Override
+  public List<BulkEnqueueItemResult> commitQueuedJobInserts(
+      List<QueuedJobInsert> inserts,
+      Function<List<QueuedJobInsert>, List<CanonicalRecordMutation>> ancestorMutationsBuilder) {
+    if (inserts == null || inserts.isEmpty()) {
+      return List.of();
+    }
+    List<QueuedJobInsert> pending = new ArrayList<>(inserts);
+    List<BulkEnqueueItemResult> results = new ArrayList<>();
+    for (int attempt = 0; attempt < casMax; attempt++) {
+      if (pending.isEmpty()) {
+        return results;
+      }
+      List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
+      List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
+      for (QueuedJobInsert insert : pending) {
+        var existing = loadActiveFromDedupe(insert.dedupePointerKey());
+        if (existing.isPresent()) {
+          results.add(new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+          continue;
+        }
+        JobIndexEntrySnapshot existingDedupePointer =
+            jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
+        insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
+        nextPending.add(insert);
+      }
+      if (nextPending.isEmpty()) {
+        return results;
+      }
+      List<CanonicalRecordMutation> ancestorMutations =
+          ancestorMutationsBuilder == null
+              ? List.of()
+              : ancestorMutationsBuilder.apply(nextPending);
+      JobIndexWriteBatch batch =
+          combineWriteBatches(prependInsertBatches(insertBatches, ancestorMutations));
+      if (jobIndexBackend.compareAndSetBatch(batch)) {
+        synchronized (state) {
+          for (QueuedJobInsert insert : nextPending) {
+            state.put(insert.canonicalKey(), cloneStoredRecord(insert.record()));
+          }
+          for (CanonicalRecordMutation mutation : ancestorMutations) {
+            if (mutation == null || mutation.current() == null) {
+              continue;
+            }
+            state.put(
+                mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+          }
+        }
+        return results;
+      }
+      pending = nextPending;
+    }
+    for (QueuedJobInsert insert : pending) {
+      results.add(
+          new BulkEnqueueItemResult(
+              insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries"));
+    }
+    return results;
+  }
+
+  @Override
+  public JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches) {
+    if (batches == null || batches.isEmpty()) {
+      return JobIndexWriteBatch.empty();
+    }
+    List<JobIndexWriteOp> writes = new ArrayList<>();
+    List<ReadyQueueWrite> readyUpserts = new ArrayList<>();
+    List<String> readyDeletes = new ArrayList<>();
+    for (JobIndexWriteBatch batch : batches) {
+      if (batch == null) {
+        continue;
+      }
+      writes.addAll(batch.writes());
+      readyUpserts.addAll(batch.readyMutation().upserts());
+      readyDeletes.addAll(batch.readyMutation().deletes());
+    }
+    return new JobIndexWriteBatch(
+        List.copyOf(writes),
+        new ReadyQueueMutation(List.copyOf(readyUpserts), List.copyOf(readyDeletes)));
+  }
+
+  @Override
+  public boolean compareAndSetCanonicalMutations(List<CanonicalRecordMutation> mutations) {
+    if (mutations == null || mutations.isEmpty()) {
+      return true;
+    }
+    List<JobIndexWriteBatch> batches = new ArrayList<>(mutations.size());
+    for (CanonicalRecordMutation mutation : mutations) {
+      if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+        continue;
+      }
+      batches.add(
+          buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
+    }
+    boolean applied = jobIndexBackend.compareAndSetBatch(combineWriteBatches(batches));
+    if (applied) {
+      synchronized (state) {
+        for (CanonicalRecordMutation mutation : mutations) {
+          if (mutation == null || mutation.current() == null) {
+            continue;
+          }
+          state.put(
+              mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+        }
+      }
+    }
+    return applied;
   }
 
   @Override
@@ -449,9 +580,7 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       }
     }
     return new JobIndexWriteBatch(
-        ops,
-        buildReadyQueueMutation(previous, current, canonicalPointerKey),
-        new ReconcileProjectionBackend.ProjectionWriteBatch(List.of()));
+        ops, buildReadyQueueMutation(previous, current, canonicalPointerKey));
   }
 
   @Override
@@ -488,6 +617,7 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     copy.fileGroupTableId = source.fileGroupTableId;
     copy.fileGroupSnapshotId = source.fileGroupSnapshotId;
     copy.fileGroupFileCount = source.fileGroupFileCount;
+    copy.fileGroupResultBlobUri = source.fileGroupResultBlobUri;
     copy.definition = cloneDefinition(source.definition);
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
     copy.state = source.state;
@@ -508,10 +638,6 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     copy.failedFileGroups = source.failedFileGroups;
     copy.completedFiles = source.completedFiles;
     copy.failedFiles = source.failedFiles;
-    copy.expectedChildJobs = source.expectedChildJobs;
-    copy.completedChildJobs = source.completedChildJobs;
-    copy.failedChildJobs = source.failedChildJobs;
-    copy.cancelledChildJobs = source.cancelledChildJobs;
     copy.attempt = source.attempt;
     copy.nextAttemptAtMs = source.nextAttemptAtMs;
     copy.lastError = source.lastError;
@@ -607,16 +733,49 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
             insert.readyKeys().stream()
                 .map(readyKey -> new ReadyQueueWrite(readyKey, insert.canonicalKey()))
                 .toList(),
-            List.of()),
-        blank(insert.resultBlobUri())
-            ? new ReconcileProjectionBackend.ProjectionWriteBatch(List.of())
-            : new ReconcileProjectionBackend.ProjectionWriteBatch(
-                List.of(
-                    new ReconcileProjectionBackend.ResultReferenceUpsert(
-                        insert.record().accountId,
-                        insert.record().jobId,
-                        0L,
-                        insert.resultBlobUri()))));
+            List.of()));
+  }
+
+  private List<JobIndexWriteBatch> prependInsertBatch(
+      JobIndexWriteBatch insertBatch, List<CanonicalRecordMutation> ancestorMutations) {
+    List<JobIndexWriteBatch> batches =
+        new ArrayList<>(1 + (ancestorMutations == null ? 0 : ancestorMutations.size()));
+    batches.add(insertBatch);
+    if (ancestorMutations != null) {
+      for (CanonicalRecordMutation mutation : ancestorMutations) {
+        if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+          continue;
+        }
+        batches.add(
+            buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
+      }
+    }
+    return batches;
+  }
+
+  private List<JobIndexWriteBatch> prependInsertBatches(
+      List<JobIndexWriteBatch> insertBatches, List<CanonicalRecordMutation> ancestorMutations) {
+    List<JobIndexWriteBatch> batches =
+        new ArrayList<>(
+            (insertBatches == null ? 0 : insertBatches.size())
+                + (ancestorMutations == null ? 0 : ancestorMutations.size()));
+    if (insertBatches != null) {
+      for (JobIndexWriteBatch insertBatch : insertBatches) {
+        if (insertBatch != null) {
+          batches.add(insertBatch);
+        }
+      }
+    }
+    if (ancestorMutations != null) {
+      for (CanonicalRecordMutation mutation : ancestorMutations) {
+        if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+          continue;
+        }
+        batches.add(
+            buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
+      }
+    }
+    return batches;
   }
 
   private void appendReferenceUpsert(

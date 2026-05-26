@@ -21,10 +21,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobContribution;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -35,7 +36,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.BiFunction;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -44,26 +44,17 @@ public class ReconcilePayloadStore {
 
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
-  private static final String INLINE_JOB_CONTRIBUTION_PREFIX = "inline:reconcile-contribution:";
+  private static final String INLINE_JOB_PROJECTION_PREFIX = "inline:reconcile-job-projection:";
+  private static final String INLINE_JOB_LIST_SUMMARY_PREFIX = "inline:reconcile-job-list-summary:";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
   @Inject ObjectMapper mapper;
-  private BiFunction<String, String, Optional<String>> fileGroupResultReferenceLoader;
 
   public void bind(BlobStore blobStore, PointerStore pointerStore, ObjectMapper mapper) {
-    bind(blobStore, pointerStore, mapper, null);
-  }
-
-  public void bind(
-      BlobStore blobStore,
-      PointerStore pointerStore,
-      ObjectMapper mapper,
-      BiFunction<String, String, Optional<String>> fileGroupResultReferenceLoader) {
     this.blobStore = blobStore;
     this.pointerStore = pointerStore;
     this.mapper = mapper;
-    this.fileGroupResultReferenceLoader = fileGroupResultReferenceLoader;
   }
 
   public <T> Optional<T> readBlob(String blobUri, Class<T> type) {
@@ -126,22 +117,32 @@ public class ReconcilePayloadStore {
     return decodeInlineJson(reference, INLINE_JOB_LEASE_PREFIX, StoredJobLease.class);
   }
 
-  public String encodeInlineJobContribution(StoredJobContribution payload) {
-    return encodeInlineJson(INLINE_JOB_CONTRIBUTION_PREFIX, payload);
+  public String encodeInlineJobProjection(StoredReconcileJobProjection payload) {
+    return encodeInlineJson(INLINE_JOB_PROJECTION_PREFIX, payload);
   }
 
-  public Optional<StoredJobContribution> readInlineJobContribution(String reference) {
-    return decodeInlineJson(reference, INLINE_JOB_CONTRIBUTION_PREFIX, StoredJobContribution.class);
+  public Optional<StoredReconcileJobProjection> readInlineJobProjection(String reference) {
+    return decodeInlineJson(
+        reference, INLINE_JOB_PROJECTION_PREFIX, StoredReconcileJobProjection.class);
   }
 
-  public Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
+  public String encodeInlineJobListSummary(StoredReconcileJobListSummary payload) {
+    return encodeInlineJson(INLINE_JOB_LIST_SUMMARY_PREFIX, payload);
+  }
+
+  public Optional<StoredReconcileJobListSummary> readInlineJobListSummary(String reference) {
+    return decodeInlineJson(
+        reference, INLINE_JOB_LIST_SUMMARY_PREFIX, StoredReconcileJobListSummary.class);
+  }
+
+  Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
     if (state == null) {
       return Optional.empty();
     }
     return Optional.ofNullable(state.definition);
   }
 
-  public StoredJobDefinition requireDefinition(StoredReconcileJob state) {
+  StoredJobDefinition requireDefinition(StoredReconcileJob state) {
     StoredJobDefinition definition = state == null ? null : state.definition;
     if (definition == null) {
       throw new IllegalStateException(
@@ -152,7 +153,16 @@ public class ReconcilePayloadStore {
     return definition;
   }
 
-  public List<ReconcileFileGroupTask> loadSnapshotFileGroups(StoredReconcileJob state) {
+  List<ReconcileFileGroupTask> loadSnapshotFileGroupsForDetail(StoredReconcileJob state) {
+    if (state == null || blank(state.snapshotPlanBlobUri)) {
+      return List.of();
+    }
+    return readBlob(state.snapshotPlanBlobUri, SnapshotPlanBlob.class)
+        .map(SnapshotPlanBlob::fileGroups)
+        .orElse(List.of());
+  }
+
+  List<ReconcileFileGroupTask> loadSnapshotFileGroupsForExecution(StoredReconcileJob state) {
     if (state == null || blank(state.snapshotPlanBlobUri)) {
       return List.of();
     }
@@ -161,43 +171,74 @@ public class ReconcilePayloadStore {
         .fileGroups();
   }
 
-  public List<ReconcileFileResult> loadFileGroupResults(StoredReconcileJob state) {
+  List<ReconcileFileResult> loadFileGroupResultsForDetail(StoredReconcileJob state) {
     if (state == null) {
       return List.of();
     }
-    return loadFileGroupResultPayload(state)
+    return loadFileGroupResultPayloadForDetail(state)
         .map(StoredFileGroupResultPayload::fileResults)
         .orElse(List.of());
   }
 
-  public Optional<StoredFileGroupResultPayload> loadFileGroupResultPayload(
+  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForDetail(
       StoredReconcileJob state) {
-    if (state == null) {
+    if (state == null || blank(state.fileGroupResultBlobUri)) {
       return Optional.empty();
     }
-    // Result payload pointers are payload references, not canonical job-index pointers.
-    if (!blank(state.accountId) && !blank(state.jobId)) {
-      Optional<String> resultBlobUri =
-          fileGroupResultReferenceLoader == null
-              ? Optional.empty()
-              : fileGroupResultReferenceLoader.apply(state.accountId, state.jobId);
-      if (resultBlobUri.isPresent() && !blank(resultBlobUri.get())) {
-        return Optional.of(
-            requireBlob(
-                resultBlobUri.get(),
-                StoredFileGroupResultPayload.class,
-                "file-group result payload",
-                state.jobId));
-      }
-    }
-    return Optional.empty();
+    return readBlob(state.fileGroupResultBlobUri, StoredFileGroupResultPayload.class);
   }
 
-  public ReconcileSnapshotTask snapshotTaskFor(StoredReconcileJob state) {
+  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForExecution(
+      StoredReconcileJob state) {
+    if (state == null || blank(state.fileGroupResultBlobUri)) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        requireBlob(
+            state.fileGroupResultBlobUri,
+            StoredFileGroupResultPayload.class,
+            "file-group result payload",
+            state.jobId));
+  }
+
+  ReconcileSnapshotTask snapshotTaskForDetail(StoredReconcileJob state) {
     if (state == null) {
       return ReconcileSnapshotTask.empty();
     }
-    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroups(state);
+    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroupsForDetail(state);
+    return buildSnapshotTask(state, fileGroups);
+  }
+
+  ReconcileSnapshotTask snapshotTaskForExecution(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileSnapshotTask.empty();
+    }
+    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroupsForExecution(state);
+    return buildSnapshotTask(state, fileGroups);
+  }
+
+  ReconcileFileGroupTask fileGroupTaskForDetail(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    StoredFileGroupResultPayload resultPayload =
+        loadFileGroupResultPayloadForDetail(state).orElse(null);
+    return buildFileGroupTask(state, resultPayload);
+  }
+
+  ReconcileFileGroupTask fileGroupTaskForExecution(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    StoredFileGroupResultPayload resultPayload =
+        loadFileGroupResultPayloadForExecution(state).orElse(null);
+    return buildFileGroupTask(state, resultPayload);
+  }
+
+  private ReconcileSnapshotTask buildSnapshotTask(
+      StoredReconcileJob state, List<ReconcileFileGroupTask> fileGroups) {
+    int fileGroupCount =
+        fileGroups.isEmpty() ? (int) Math.max(0L, state.plannedFileGroups) : fileGroups.size();
     return ReconcileSnapshotTask.of(
         state.snapshotTaskTableId,
         state.snapshotTaskSnapshotId,
@@ -207,16 +248,13 @@ public class ReconcilePayloadStore {
         state.snapshotTaskFileGroupPlanRecorded,
         ReconcileSnapshotTask.CompletionMode.fromString(state.snapshotTaskCompletionMode),
         blankToEmpty(state.snapshotPlanBlobUri),
-        fileGroups.size(),
+        fileGroupCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
         state.snapshotTaskDirectStatsRecordCount);
   }
 
-  public ReconcileFileGroupTask fileGroupTaskFor(StoredReconcileJob state) {
-    if (state == null) {
-      return ReconcileFileGroupTask.empty();
-    }
-    StoredFileGroupResultPayload resultPayload = loadFileGroupResultPayload(state).orElse(null);
+  private ReconcileFileGroupTask buildFileGroupTask(
+      StoredReconcileJob state, StoredFileGroupResultPayload resultPayload) {
     return ReconcileFileGroupTask.of(
         state.fileGroupPlanId,
         state.fileGroupGroupId,
@@ -226,7 +264,7 @@ public class ReconcilePayloadStore {
         resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
         resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
         resultPayload == null ? List.of() : resultPayload.filePaths(),
-        resultPayload == null ? loadFileGroupResults(state) : resultPayload.fileResults());
+        resultPayload == null ? List.of() : resultPayload.fileResults());
   }
 
   private <T> String encodeInlineJson(String prefix, T payload) {

@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJobPage;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -30,17 +32,27 @@ import java.util.Set;
 public class ReconcileJobLister {
   private ReconcileJobIndexStore jobIndexStore;
   private ReconcileJobProjector projector;
+  private ReconcileJobProjectionStore projectionStore;
 
-  public void bind(ReconcileJobIndexStore jobIndexStore, ReconcileJobProjector projector) {
+  public void bind(
+      ReconcileJobIndexStore jobIndexStore,
+      ReconcileJobProjector projector,
+      ReconcileJobProjectionStore projectionStore) {
     this.jobIndexStore = jobIndexStore;
     this.projector = projector;
+    this.projectionStore = projectionStore;
   }
 
   public ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
-    var page = jobIndexStore.listStoredJobs(accountId, pageSize, pageToken, connectorId, states);
+    Set<String> effectiveStates = states == null ? Set.of() : states;
+    var page =
+        jobIndexStore.listStoredJobs(accountId, pageSize, pageToken, connectorId, effectiveStates);
     return new ReconcileJobPage(
-        page.records().stream().map(projector::toPublicJobSummary).toList(), page.nextPageToken());
+        page.records().stream()
+            .map(stored -> projector.toPublicJobSummary(stored, projectionFor(stored)))
+            .toList(),
+        page.nextPageToken());
   }
 
   public ReconcileJobPage childJobsPage(
@@ -48,8 +60,15 @@ public class ReconcileJobLister {
     var page = jobIndexStore.listStoredChildJobs(accountId, parentJobId, pageSize, pageToken);
     List<ReconcileJob> out = new ArrayList<>(page.records().size());
     for (StoredReconcileJob stored : page.records()) {
-      out.add(projector.toPublicJob(stored, true));
+      out.add(projector.toPublicJob(stored, projectionFor(stored), true));
     }
     return new ReconcileJobPage(out, page.nextPageToken());
+  }
+
+  private StoredReconcileJobProjection projectionFor(StoredReconcileJob stored) {
+    if (stored == null || !projector.isParentCapable(stored.jobKind())) {
+      return null;
+    }
+    return projectionStore.load(stored.accountId, stored.jobId).orElse(null);
   }
 }

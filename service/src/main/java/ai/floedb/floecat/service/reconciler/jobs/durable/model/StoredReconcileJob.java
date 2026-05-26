@@ -48,6 +48,7 @@ public class StoredReconcileJob {
   public String fileGroupTableId;
   public long fileGroupSnapshotId;
   public int fileGroupFileCount;
+  public String fileGroupResultBlobUri;
   public StoredJobDefinition definition = new StoredJobDefinition();
   public String snapshotPlanBlobUri;
   public String state;
@@ -68,10 +69,6 @@ public class StoredReconcileJob {
   public long failedFileGroups;
   public long completedFiles;
   public long failedFiles;
-  public long expectedChildJobs;
-  public long completedChildJobs;
-  public long failedChildJobs;
-  public long cancelledChildJobs;
   public int attempt;
   public long nextAttemptAtMs;
   public String lastError;
