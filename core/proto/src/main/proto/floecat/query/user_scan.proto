@@ -58,6 +58,7 @@ message TableInfo {
   ai.floedb.floecat.catalog.PartitionSpecInfo partition_specs = 3;
   map<string,string> properties = 4;
   string metadata_location = 5;
+  int64 snapshot_id = 6;
 }
 
 message FetchScanBundleResponse {
