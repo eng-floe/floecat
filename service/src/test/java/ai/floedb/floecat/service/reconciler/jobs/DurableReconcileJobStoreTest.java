@@ -44,6 +44,8 @@ import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
@@ -3839,7 +3841,7 @@ class DurableReconcileJobStoreTest {
   void cancellingLeaseExpiryFinalizesCancellation() throws Exception {
     assumeMemoryOnly("legacy lease-expiry pointer assertions are only meaningful in memory mode");
     System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
-    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "0");
     System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
     store.init();
 
@@ -6505,26 +6507,11 @@ class DurableReconcileJobStoreTest {
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
 
-    ReconcileJob snapshot =
+    StoredReconcileJobProjection snapshot =
         waitForValue(
-                () -> {
-                  try {
-                    return store
-                        .get(ACCOUNT_ID, snapshotJobId)
-                        .filter(
-                            current ->
-                                current.completedFileGroups == 1L
-                                    && current.completedFiles == 1L
-                                    && current.failedFiles == 1L
-                                    && current.indexesProcessed == 1L
-                                    && current.statsProcessed == 2L);
-                  } catch (IllegalStateException e) {
-                    return Optional.empty();
-                  }
-                },
+                () -> projectionStore().load(ACCOUNT_ID, snapshotJobId),
                 Optional::isPresent,
                 "snapshot projection " + snapshotJobId)
-            .map(ReconcileJob.class::cast)
             .orElseThrow();
     ReconcileJob table =
         waitForValue(
@@ -6556,13 +6543,13 @@ class DurableReconcileJobStoreTest {
                 "connector projection " + connectorJobId)
             .orElseThrow();
 
-    assertEquals(1L, snapshot.plannedFileGroups);
-    assertEquals(2L, snapshot.plannedFiles);
-    assertEquals(1L, snapshot.completedFileGroups);
-    assertEquals(1L, snapshot.completedFiles);
-    assertEquals(1L, snapshot.failedFiles);
-    assertEquals(1L, snapshot.indexesProcessed);
-    assertEquals(2L, snapshot.statsProcessed);
+    assertEquals(1L, snapshot.plannedFileGroups());
+    assertEquals(2L, snapshot.plannedFiles());
+    assertEquals(1L, snapshot.completedFileGroups());
+    assertEquals(1L, snapshot.completedFiles());
+    assertEquals(1L, snapshot.failedFiles());
+    assertEquals(1L, snapshot.indexesProcessed());
+    assertEquals(2L, snapshot.statsProcessed());
 
     assertEquals(1L, table.plannedFileGroups);
     assertEquals(1L, table.completedFiles);
@@ -7074,6 +7061,11 @@ class DurableReconcileJobStoreTest {
 
   private ReconcileReadyQueueStore readyQueue() throws Exception {
     return (ReconcileReadyQueueStore) invokePrivateMethod("readyQueue", new Class<?>[] {});
+  }
+
+  private ReconcileJobProjectionStore projectionStore() {
+    return (ReconcileJobProjectionStore)
+        assertDoesNotThrow(() -> invokePrivateMethod("projections", new Class<?>[] {}));
   }
 
   private Optional<Pointer> firstPointerWithPrefix(String prefix) {
