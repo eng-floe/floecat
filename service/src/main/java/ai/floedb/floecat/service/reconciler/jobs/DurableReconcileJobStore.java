@@ -571,7 +571,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     var page = rootSummaries().listSummaries(accountId, pageSize, pageToken, connectorId, states);
     List<ReconcileJob> jobs = new java.util.ArrayList<>(page.summaries().size());
     for (StoredReconcileJobListSummary summary : page.summaries()) {
-      jobs.add(repairingRootSummaryToPublicJob(summary));
+      jobs.add(ReconcileJobRootSummaryStore.toPublicJob(summary));
     }
     return new ReconcileJobPage(jobs, page.nextPageToken());
   }
@@ -1324,7 +1324,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     List<StoredReconcileJob> directChildren =
         listAllStoredChildJobs(accountId, parentJobId).stream()
-            .map(this::projectedSummaryRecord)
+            .map(this::projectedSummaryRecordForRefresh)
             .toList();
     var nextProjection = ancestorRollups().recomputeParentProjection(parent, directChildren);
     var currentProjection = projections().load(accountId, parentJobId).orElse(null);
@@ -1345,28 +1345,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return;
     }
     rootSummaries().upsert(toRootListSummary(parent, projection));
-  }
-
-  private ReconcileJob repairingRootSummaryToPublicJob(StoredReconcileJobListSummary summary) {
-    if (!invalidTerminalSummary(summary)) {
-      return ReconcileJobRootSummaryStore.toPublicJob(summary);
-    }
-    StoredReconcileJob repairedRecord =
-        loadByAnyAccount(summary.jobId())
-            .map(env -> env.record)
-            .filter(record -> summary.accountId().equals(record.accountId))
-            .filter(record -> blankToEmpty(record.parentJobId).isBlank())
-            .orElse(null);
-    if (repairedRecord == null) {
-      return ReconcileJobRootSummaryStore.toPublicJob(summary);
-    }
-    StoredReconcileJobListSummary repaired =
-        toRootListSummary(repairedRecord, projectionFor(repairedRecord).orElse(null));
-    if (invalidTerminalSummary(repaired)) {
-      return ReconcileJobRootSummaryStore.toPublicJob(summary);
-    }
-    rootSummaries().upsert(repaired);
-    return ReconcileJobRootSummaryStore.toPublicJob(repaired);
   }
 
   private List<StoredReconcileJob> listAllStoredChildJobs(String accountId, String parentJobId) {
@@ -1403,45 +1381,39 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private StoredReconcileJob projectedSummaryRecord(StoredReconcileJob record) {
+    return projectedSummaryRecord(record, false);
+  }
+
+  private StoredReconcileJob projectedSummaryRecordForRefresh(StoredReconcileJob record) {
+    return projectedSummaryRecord(record, true);
+  }
+
+  private StoredReconcileJob projectedSummaryRecord(
+      StoredReconcileJob record, boolean refreshStaleProjection) {
     if (record == null || !isParentCapable(record.jobKind())) {
       return record;
     }
     var projection = projections().load(record.accountId, record.jobId).orElse(null);
-    if (projection == null || !shouldUseProjectedSummaryRecord(record, projection)) {
+    if (projection == null) {
       return record;
     }
-    StoredReconcileJob copy = jobIndexStore().cloneStoredRecord(record);
-    copy.state = projection.state();
-    copy.message = projection.message();
-    copy.startedAtMs = projectedStartedAtMs(record, projection);
-    copy.finishedAtMs = projectedFinishedAtMs(record, projection);
-    copy.tablesScanned = projection.tablesScanned();
-    copy.tablesChanged = projection.tablesChanged();
-    copy.viewsScanned = projection.viewsScanned();
-    copy.viewsChanged = projection.viewsChanged();
-    copy.errors = projection.errors();
-    copy.snapshotsProcessed = projection.snapshotsProcessed();
-    copy.statsProcessed = projection.statsProcessed();
-    copy.indexesProcessed = projection.indexesProcessed();
-    copy.plannedFileGroups = projection.plannedFileGroups();
-    copy.plannedFiles = projection.plannedFiles();
-    copy.completedFileGroups = projection.completedFileGroups();
-    copy.failedFileGroups = projection.failedFileGroups();
-    copy.completedFiles = projection.completedFiles();
-    copy.failedFiles = projection.failedFiles();
-    copy.executorId = projection.executorId();
-    return copy;
-  }
-
-  private static boolean invalidTerminalSummary(StoredReconcileJobListSummary summary) {
-    if (summary == null) {
-      return false;
+    if (refreshStaleProjection
+        && shouldKeepCanonicalStateForTerminalProjection(record, projection)) {
+      var refreshedProjection = recomputeSummaryProjection(record, true);
+      if (refreshedProjection != null) {
+        if (!Objects.equals(projection, refreshedProjection)) {
+          projections().upsert(refreshedProjection);
+        }
+        projection = refreshedProjection;
+      }
     }
-    String state = blankToEmpty(summary.state());
-    return ("JS_SUCCEEDED".equals(state)
-            || "JS_FAILED".equals(state)
-            || "JS_CANCELLED".equals(state))
-        && summary.finishedAtMs() <= 0L;
+    if (shouldKeepCanonicalStateForTerminalProjection(record, projection)) {
+      return copyProjectedAggregateSummaryRecord(record, projection);
+    }
+    if (!shouldUseProjectedSummaryRecord(record, projection)) {
+      return record;
+    }
+    return copyProjectedSummaryRecord(record, projection);
   }
 
   private boolean shouldUseProjectedSummaryRecord(
@@ -1460,6 +1432,96 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return true;
     }
     return projectionHasAggregateSignal(projection);
+  }
+
+  private boolean shouldKeepCanonicalStateForTerminalProjection(
+      StoredReconcileJob record,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+          projection) {
+    String canonicalState = blankToEmpty(record == null ? "" : record.state);
+    String projectionState = blankToEmpty(projection == null ? "" : projection.state());
+    return !isTerminalState(canonicalState)
+        && isTerminalState(projectionState)
+        && hasActiveCanonicalSubtree(record);
+  }
+
+  private boolean hasActiveCanonicalSubtree(StoredReconcileJob record) {
+    if (record == null) {
+      return false;
+    }
+    String state = blankToEmpty(record.state);
+    if (isTerminalState(state)) {
+      return false;
+    }
+    if (!isParentCapable(record.jobKind())) {
+      return true;
+    }
+    List<StoredReconcileJob> children = listAllStoredChildJobs(record.accountId, record.jobId);
+    if (children.isEmpty()) {
+      return true;
+    }
+    for (StoredReconcileJob child : children) {
+      if (hasActiveCanonicalSubtree(child)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private StoredReconcileJob copyProjectedSummaryRecord(
+      StoredReconcileJob record,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+          projection) {
+    StoredReconcileJob copy = copyProjectedAggregateSummaryRecord(record, projection);
+    copy.state = projection.state();
+    copy.message = projection.message();
+    copy.finishedAtMs = projectedFinishedAtMs(record, projection);
+    return copy;
+  }
+
+  private StoredReconcileJob copyProjectedAggregateSummaryRecord(
+      StoredReconcileJob record,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+          projection) {
+    StoredReconcileJob copy = jobIndexStore().cloneStoredRecord(record);
+    copy.startedAtMs = projectedStartedAtMs(record, projection);
+    copy.tablesScanned = projection.tablesScanned();
+    copy.tablesChanged = projection.tablesChanged();
+    copy.viewsScanned = projection.viewsScanned();
+    copy.viewsChanged = projection.viewsChanged();
+    copy.errors = projection.errors();
+    copy.snapshotsProcessed = projection.snapshotsProcessed();
+    copy.statsProcessed = projection.statsProcessed();
+    copy.indexesProcessed = projection.indexesProcessed();
+    copy.plannedFileGroups = projection.plannedFileGroups();
+    copy.plannedFiles = projection.plannedFiles();
+    copy.completedFileGroups = projection.completedFileGroups();
+    copy.failedFileGroups = projection.failedFileGroups();
+    copy.completedFiles = projection.completedFiles();
+    copy.failedFiles = projection.failedFiles();
+    copy.executorId = projection.executorId();
+    return copy;
+  }
+
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      recomputeSummaryProjection(StoredReconcileJob record) {
+    return recomputeSummaryProjection(record, false);
+  }
+
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      recomputeSummaryProjection(StoredReconcileJob record, boolean refreshStaleDescendants) {
+    if (record == null || !isParentCapable(record.jobKind())) {
+      return projectionFor(record).orElse(null);
+    }
+    List<StoredReconcileJob> directChildren =
+        listAllStoredChildJobs(record.accountId, record.jobId).stream()
+            .map(
+                child ->
+                    refreshStaleDescendants
+                        ? projectedSummaryRecordForRefresh(child)
+                        : projectedSummaryRecord(child))
+            .toList();
+    return ancestorRollups().recomputeParentProjection(record, directChildren);
   }
 
   private long projectedStartedAtMs(

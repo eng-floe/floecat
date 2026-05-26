@@ -179,7 +179,7 @@ public class ReconcileAncestorRollupService {
 
   private int childStatePriority(StoredReconcileJob child) {
     ProjectedPublicJob projected = projector.projectSelfPublicJobForRollup(child);
-    return switch (effectiveProjectedState(projected)) {
+    return switch (blankToEmpty(projected.state())) {
       case "JS_CANCELLING" -> 7;
       case "JS_RUNNING" -> 6;
       case "JS_FAILED" -> 5;
@@ -216,7 +216,7 @@ public class ReconcileAncestorRollupService {
         representativeChild == null
             ? ProjectedPublicJob.empty()
             : projector.projectSelfPublicJobForRollup(representativeChild);
-    String currentChildState = effectiveProjectedState(currentProjected);
+    String currentChildState = blankToEmpty(currentProjected.state());
     String currentChildMessage = blankToEmpty(currentProjected.message());
     String currentChildExecutorId = blankToEmpty(currentProjected.executorId());
     boolean leaseOwnsCanonicalState =
@@ -294,9 +294,6 @@ public class ReconcileAncestorRollupService {
         executorId = "";
       } else if (allSucceeded
           && directChildJobsComplete(aggregate.directChildObserved(), directChildCounts)) {
-        state = "JS_SUCCEEDED";
-        message = ReconcileJobProjector.normalizeSucceededMessage(message);
-      } else if (isLogicalSucceededParent(aggregate, message)) {
         state = "JS_SUCCEEDED";
         message = ReconcileJobProjector.normalizeSucceededMessage(message);
       } else if (allSucceeded && aggregate.directChildObserved() > 0L) {
@@ -408,7 +405,7 @@ public class ReconcileAncestorRollupService {
     if (parent.jobKind() == ReconcileJobKind.PLAN_CONNECTOR) {
       tablesScanned = Math.max(tablesScanned, 1L);
     }
-    String childState = effectiveProjectedState(projected);
+    String childState = blankToEmpty(projected.state());
     long childFinishedAtMs = logicalFinishedAtMs(childRecord, projected.finishedAtMs());
     return new ChildContribution(
         tablesScanned,
@@ -435,42 +432,6 @@ public class ReconcileAncestorRollupService {
         "JS_SUCCEEDED".equals(childState) ? 1L : 0L,
         "JS_FAILED".equals(childState) ? 1L : 0L,
         "JS_CANCELLED".equals(childState) ? 1L : 0L);
-  }
-
-  private String effectiveProjectedState(ProjectedPublicJob projected) {
-    String projectedState = blankToEmpty(projected == null ? "" : projected.state());
-    if ("JS_WAITING".equals(projectedState)
-        && isLogicalSucceededState(projected == null ? "" : projected.message())) {
-      return "JS_SUCCEEDED";
-    }
-    return projectedState;
-  }
-
-  private boolean isLogicalSucceededParent(ChildAggregate aggregate, String message) {
-    long expectedChildJobs = Math.max(0L, aggregate.directChildObserved());
-    long completedChildJobs = Math.max(0L, aggregate.completedChildJobs());
-    DirectChildCounts directChildCounts =
-        new DirectChildCounts(
-            completedChildJobs,
-            Math.max(0L, aggregate.failedChildJobs()),
-            Math.max(0L, aggregate.cancelledChildJobs()),
-            expectedChildJobs);
-    boolean childCompletionSatisfied =
-        (expectedChildJobs > 0L && directChildJobsComplete(expectedChildJobs, directChildCounts))
-            || (expectedChildJobs <= 0L && completedChildJobs > 0L);
-    return childCompletionSatisfied
-        && Math.max(0L, aggregate.failedChildJobs()) == 0L
-        && Math.max(0L, aggregate.cancelledChildJobs()) == 0L
-        && Math.max(0L, aggregate.queuedChildJobs()) == 0L
-        && Math.max(0L, aggregate.waitingChildJobs()) == 0L
-        && Math.max(0L, aggregate.runningChildJobs()) == 0L
-        && Math.max(0L, aggregate.cancellingChildJobs()) == 0L
-        && isLogicalSucceededState(message);
-  }
-
-  private boolean isLogicalSucceededState(String message) {
-    return "Succeeded"
-        .equals(ReconcileJobProjector.normalizeSucceededMessage(blankToEmpty(message)));
   }
 
   private long logicalFinishedAtMs(StoredReconcileJob record, long projectedFinishedAtMs) {

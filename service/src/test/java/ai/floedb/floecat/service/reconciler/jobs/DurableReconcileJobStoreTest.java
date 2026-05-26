@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
@@ -554,6 +555,181 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void rootSummaryDoesNotPromoteWaitingRootToSucceededWhileDescendantsRemainActive() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "table-1"),
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true),
+        ReconcileExecutionPolicy.defaults(),
+        tableJobId,
+        "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markWaiting(
+        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                "JS_SUCCEEDED",
+                "Succeeded",
+                100L,
+                200L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                true));
+    markDirtyParent(ACCOUNT_ID, connectorJobId);
+    runMaintenance();
+
+    StoredReconcileJobProjection tableProjection =
+        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
+    ReconcileJob rootSummary =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(tableProjection.state()));
+    assertEquals("JS_WAITING", rootSummary.state);
+    assertEquals(1L, rootSummary.tablesScanned);
+    assertEquals(1L, rootSummary.tablesChanged);
+  }
+
+  @Test
+  void waitingSnapshotWithSucceededMessageDoesNotPromoteAncestorsToSucceeded() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markWaiting(
+        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 120L, "executor-snapshot");
+    store.markWaiting(
+        snapshotJobId, snapshotLease.leaseEpoch, 130L, "Succeeded", 1L, 1L, 0L, 0L, 0L);
+
+    markDirtyParent(ACCOUNT_ID, tableJobId);
+    markDirtyParent(ACCOUNT_ID, connectorJobId);
+    runMaintenance();
+
+    StoredReconcileJobProjection tableProjection =
+        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
+    StoredReconcileJobProjection connectorProjection =
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob rootSummary =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(tableProjection.state()));
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(connectorProjection.state()));
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(rootSummary.state));
+  }
+
+  @Test
   void detailReadsDegradeGracefullyWhenPayloadBlobsAreMissing() {
     String snapshotJobId =
         store.enqueueSnapshotPlan(
@@ -683,6 +859,22 @@ class DurableReconcileJobStoreTest {
         assertDoesNotThrow(() -> invokePrivateMethod(store, "projections", new Class<?>[] {}));
   }
 
+  private ReconcileJobRootSummaryStore rootSummaryStore() {
+    return (ReconcileJobRootSummaryStore)
+        assertDoesNotThrow(() -> invokePrivateMethod(store, "rootSummaries", new Class<?>[] {}));
+  }
+
+  private void markDirtyParent(String accountId, String parentJobId) {
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "markDirtyParent",
+                new Class<?>[] {String.class, String.class},
+                accountId,
+                parentJobId));
+  }
+
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
     return assertDoesNotThrow(
             () -> store.jobIndexStore.readCanonicalRecordByKey(canonicalPointerKey))
@@ -729,9 +921,14 @@ class DurableReconcileJobStoreTest {
 
   private Object invokePrivateMethod(Object target, String name, Class<?>[] parameterTypes)
       throws Exception {
+    return invokePrivateMethod(target, name, parameterTypes, new Object[] {});
+  }
+
+  private Object invokePrivateMethod(
+      Object target, String name, Class<?>[] parameterTypes, Object... args) throws Exception {
     Method method = target.getClass().getDeclaredMethod(name, parameterTypes);
     method.setAccessible(true);
-    return method.invoke(target);
+    return method.invoke(target, args);
   }
 
   private static boolean isDynamoMode() {
