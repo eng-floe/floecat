@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -472,15 +471,7 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId,
-        tableLease.leaseEpoch,
-        125L,
-        "Waiting on child work",
-        1L,
-        1L,
-        0L,
-        0L,
-        0L);
+        tableJobId, tableLease.leaseEpoch, 125L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
@@ -576,7 +567,10 @@ class DurableReconcileJobStoreTest {
                           canonicalPointerKey,
                           readyRecord.readyPointerKey,
                           System.currentTimeMillis(),
-                          store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElseThrow(),
+                          store
+                              .jobIndexStore
+                              .loadCanonicalSnapshot(canonicalPointerKey)
+                              .orElseThrow(),
                           readyRecord));
       if (leased.isEmpty()) {
         runMaintenance();
