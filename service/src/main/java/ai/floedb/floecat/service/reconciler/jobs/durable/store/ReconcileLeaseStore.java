@@ -19,7 +19,8 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -40,7 +41,8 @@ public interface ReconcileLeaseStore {
 
   void bind(
       ReconcileLeaseBackend leaseBackend,
-      ReconcilePayloadStore payloadStore,
+      ReconcileJobExecutionLoader executionLoader,
+      ReconcileLeaseStateCodec leaseStateCodec,
       int casMax,
       long leaseMs,
       long leaseRenewGraceMs,

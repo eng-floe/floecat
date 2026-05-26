@@ -21,7 +21,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
@@ -49,7 +50,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   private final InMemoryReconcileLeaseState state = new InMemoryReconcileLeaseState();
 
   private ReconcileLeaseBackend leaseBackend;
-  private ReconcilePayloadStore payloadStore;
+  private ReconcileJobExecutionLoader executionLoader;
+  private ReconcileLeaseStateCodec leaseStateCodec;
   private int casMax;
   private long leaseMs;
   private long leaseRenewGraceMs;
@@ -63,7 +65,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   @Override
   public void bind(
       ReconcileLeaseBackend leaseBackend,
-      ReconcilePayloadStore payloadStore,
+      ReconcileJobExecutionLoader executionLoader,
+      ReconcileLeaseStateCodec leaseStateCodec,
       int casMax,
       long leaseMs,
       long leaseRenewGraceMs,
@@ -74,7 +77,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       int maxAttempts,
       IntToLongFunction backoffMs) {
     this.leaseBackend = leaseBackend;
-    this.payloadStore = payloadStore;
+    this.executionLoader = executionLoader;
+    this.leaseStateCodec = leaseStateCodec;
     this.casMax = casMax;
     this.leaseMs = leaseMs;
     this.leaseRenewGraceMs = leaseRenewGraceMs;
@@ -155,7 +159,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
               jobStateKey(current.accountId, current.jobId), cloneLease(nextLease));
         }
         try {
-          StoredJobDefinition definition = payloadStore.requireDefinition(current);
+          StoredJobDefinition definition = executionLoader.requireDefinition(current);
           return Optional.of(
               new LeasedJob(
                   current.jobId,
@@ -171,8 +175,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
                   current.jobKind(),
                   definition.tableTask(),
                   definition.viewTask(),
-                  payloadStore.snapshotTaskFor(current),
-                  payloadStore.fileGroupTaskFor(current),
+                  executionLoader.snapshotTask(current),
+                  executionLoader.fileGroupTask(current),
                   current.parentJobId()));
         } catch (RuntimeException e) {
           if (isMissingRequiredJobDefinition(e)) {
@@ -886,7 +890,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
             nextLease.accountId,
             nextLease.jobId,
             expectedVersion,
-            payloadStore.encodeInlineJobLease(nextLease)));
+            leaseStateCodec.encode(nextLease)));
 
     String canonicalPointerKey =
         Keys.reconcileJobStateRowById(nextLease.accountId, nextLease.jobId);

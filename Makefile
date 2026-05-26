@@ -101,6 +101,9 @@ MVN_TESTALL := --no-transfer-progress
 TEST ?=
 TEST_SELECTOR_ARGS := $(if $(strip $(TEST)),-Dtest="$(TEST)",)
 SUREFIRE_SELECTOR_ARGS := -Dsurefire.failIfNoSpecifiedTests=false
+LOCALSTACK_TEST_GOAL := $(if $(strip $(TEST)),test,verify)
+LOCALSTACK_TEST_SKIP_ITS := $(if $(strip $(TEST)),-DskipITs=true,)
+LOCALSTACK_TEST_PROJECTS := $(if $(strip $(TEST)),service,service,protocol-gateway/iceberg-rest,client-cli)
 TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 
 DOCKER_COMPOSE ?= docker compose
@@ -368,11 +371,11 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
-	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
+	  echo "==> [TEST] LocalStack suite goal=$(LOCALSTACK_TEST_GOAL) projects=$(LOCALSTACK_TEST_PROJECTS) test=$(TEST)"; \
 	  $(LOCALSTACK_ENV) \
-	  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
-	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
-	    verify'
+	  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(LOCALSTACK_TEST_SKIP_ITS) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
+	    -pl $(LOCALSTACK_TEST_PROJECTS) -am \
+	    $(LOCALSTACK_TEST_GOAL)'
 
 .PHONY: localstack-restart
 localstack-restart: localstack-down localstack-up

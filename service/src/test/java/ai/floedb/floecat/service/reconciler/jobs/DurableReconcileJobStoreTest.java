@@ -489,6 +489,12 @@ class DurableReconcileJobStoreTest {
                     2L,
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
+    StoredReconcileJob execCanonicalAfterResult =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
+    if (execCanonicalAfterResult.fileGroupResultBlobUri != null
+        && !execCanonicalAfterResult.fileGroupResultBlobUri.isBlank()) {
+      store.blobStore.delete(execCanonicalAfterResult.fileGroupResultBlobUri);
+    }
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
 
     StoredReconcileJobProjection snapshot =
@@ -545,6 +551,93 @@ class DurableReconcileJobStoreTest {
     assertEquals(0L, snapshotCanonical.completedFileGroups);
     assertEquals(0L, snapshotCanonical.completedFiles);
     assertEquals(0L, snapshotCanonical.failedFiles);
+  }
+
+  @Test
+  void detailReadsDegradeGracefullyWhenPayloadBlobsAreMissing() {
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of(
+                "table-1",
+                55L,
+                "db",
+                "orders",
+                List.of(
+                    ReconcileFileGroupTask.of(
+                        "plan-1",
+                        "group-1",
+                        "table-1",
+                        55L,
+                        List.of("s3://bucket/data/file-1.parquet"))),
+                true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1",
+                "group-1",
+                "table-1",
+                55L,
+                List.of("s3://bucket/data/file-1.parquet", "s3://bucket/data/file-2.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    store.persistFileGroupResult(
+        execJobId,
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            List.of("s3://bucket/data/file-1.parquet", "s3://bucket/data/file-2.parquet"),
+            List.of(
+                ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 2L),
+                ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
+
+    StoredReconcileJob snapshotCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
+    StoredReconcileJob execCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
+    store.blobStore.delete(snapshotCanonical.snapshotPlanBlobUri);
+    store.blobStore.delete(execCanonical.fileGroupResultBlobUri);
+
+    ReconcileJob snapshotJob =
+        assertDoesNotThrow(() -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow());
+    ReconcileJob execJob = assertDoesNotThrow(() -> store.get(ACCOUNT_ID, execJobId).orElseThrow());
+    ReconcileJob execLeaseView =
+        assertDoesNotThrow(() -> store.getLeaseView(execJobId).orElseThrow());
+
+    assertEquals(
+        snapshotCanonical.snapshotPlanBlobUri, snapshotJob.snapshotTask.fileGroupPlanBlobUri());
+    assertEquals(1, snapshotJob.snapshotTask.fileGroupCount());
+    assertTrue(snapshotJob.snapshotTask.fileGroups().isEmpty());
+
+    assertEquals("plan-1", execJob.fileGroupTask.planId());
+    assertEquals(2, execJob.fileGroupTask.fileCount());
+    assertTrue(execJob.fileGroupTask.filePaths().isEmpty());
+    assertTrue(execJob.fileGroupTask.fileResults().isEmpty());
+
+    assertEquals("plan-1", execLeaseView.fileGroupTask.planId());
+    assertEquals(2, execLeaseView.fileGroupTask.fileCount());
+    assertTrue(execLeaseView.fileGroupTask.filePaths().isEmpty());
+    assertTrue(execLeaseView.fileGroupTask.fileResults().isEmpty());
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {

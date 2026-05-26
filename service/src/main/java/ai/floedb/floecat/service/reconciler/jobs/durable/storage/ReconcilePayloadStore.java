@@ -135,14 +135,14 @@ public class ReconcilePayloadStore {
         reference, INLINE_JOB_LIST_SUMMARY_PREFIX, StoredReconcileJobListSummary.class);
   }
 
-  public Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
+  Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {
     if (state == null) {
       return Optional.empty();
     }
     return Optional.ofNullable(state.definition);
   }
 
-  public StoredJobDefinition requireDefinition(StoredReconcileJob state) {
+  StoredJobDefinition requireDefinition(StoredReconcileJob state) {
     StoredJobDefinition definition = state == null ? null : state.definition;
     if (definition == null) {
       throw new IllegalStateException(
@@ -153,7 +153,16 @@ public class ReconcilePayloadStore {
     return definition;
   }
 
-  public List<ReconcileFileGroupTask> loadSnapshotFileGroups(StoredReconcileJob state) {
+  List<ReconcileFileGroupTask> loadSnapshotFileGroupsForDetail(StoredReconcileJob state) {
+    if (state == null || blank(state.snapshotPlanBlobUri)) {
+      return List.of();
+    }
+    return readBlob(state.snapshotPlanBlobUri, SnapshotPlanBlob.class)
+        .map(SnapshotPlanBlob::fileGroups)
+        .orElse(List.of());
+  }
+
+  List<ReconcileFileGroupTask> loadSnapshotFileGroupsForExecution(StoredReconcileJob state) {
     if (state == null || blank(state.snapshotPlanBlobUri)) {
       return List.of();
     }
@@ -162,16 +171,24 @@ public class ReconcilePayloadStore {
         .fileGroups();
   }
 
-  public List<ReconcileFileResult> loadFileGroupResults(StoredReconcileJob state) {
+  List<ReconcileFileResult> loadFileGroupResultsForDetail(StoredReconcileJob state) {
     if (state == null) {
       return List.of();
     }
-    return loadFileGroupResultPayload(state)
+    return loadFileGroupResultPayloadForDetail(state)
         .map(StoredFileGroupResultPayload::fileResults)
         .orElse(List.of());
   }
 
-  public Optional<StoredFileGroupResultPayload> loadFileGroupResultPayload(
+  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForDetail(
+      StoredReconcileJob state) {
+    if (state == null || blank(state.fileGroupResultBlobUri)) {
+      return Optional.empty();
+    }
+    return readBlob(state.fileGroupResultBlobUri, StoredFileGroupResultPayload.class);
+  }
+
+  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForExecution(
       StoredReconcileJob state) {
     if (state == null || blank(state.fileGroupResultBlobUri)) {
       return Optional.empty();
@@ -184,11 +201,44 @@ public class ReconcilePayloadStore {
             state.jobId));
   }
 
-  public ReconcileSnapshotTask snapshotTaskFor(StoredReconcileJob state) {
+  ReconcileSnapshotTask snapshotTaskForDetail(StoredReconcileJob state) {
     if (state == null) {
       return ReconcileSnapshotTask.empty();
     }
-    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroups(state);
+    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroupsForDetail(state);
+    return buildSnapshotTask(state, fileGroups);
+  }
+
+  ReconcileSnapshotTask snapshotTaskForExecution(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileSnapshotTask.empty();
+    }
+    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroupsForExecution(state);
+    return buildSnapshotTask(state, fileGroups);
+  }
+
+  ReconcileFileGroupTask fileGroupTaskForDetail(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    StoredFileGroupResultPayload resultPayload =
+        loadFileGroupResultPayloadForDetail(state).orElse(null);
+    return buildFileGroupTask(state, resultPayload);
+  }
+
+  ReconcileFileGroupTask fileGroupTaskForExecution(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    StoredFileGroupResultPayload resultPayload =
+        loadFileGroupResultPayloadForExecution(state).orElse(null);
+    return buildFileGroupTask(state, resultPayload);
+  }
+
+  private ReconcileSnapshotTask buildSnapshotTask(
+      StoredReconcileJob state, List<ReconcileFileGroupTask> fileGroups) {
+    int fileGroupCount =
+        fileGroups.isEmpty() ? (int) Math.max(0L, state.plannedFileGroups) : fileGroups.size();
     return ReconcileSnapshotTask.of(
         state.snapshotTaskTableId,
         state.snapshotTaskSnapshotId,
@@ -198,16 +248,13 @@ public class ReconcilePayloadStore {
         state.snapshotTaskFileGroupPlanRecorded,
         ReconcileSnapshotTask.CompletionMode.fromString(state.snapshotTaskCompletionMode),
         blankToEmpty(state.snapshotPlanBlobUri),
-        fileGroups.size(),
+        fileGroupCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
         state.snapshotTaskDirectStatsRecordCount);
   }
 
-  public ReconcileFileGroupTask fileGroupTaskFor(StoredReconcileJob state) {
-    if (state == null) {
-      return ReconcileFileGroupTask.empty();
-    }
-    StoredFileGroupResultPayload resultPayload = loadFileGroupResultPayload(state).orElse(null);
+  private ReconcileFileGroupTask buildFileGroupTask(
+      StoredReconcileJob state, StoredFileGroupResultPayload resultPayload) {
     return ReconcileFileGroupTask.of(
         state.fileGroupPlanId,
         state.fileGroupGroupId,
@@ -217,7 +264,7 @@ public class ReconcilePayloadStore {
         resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
         resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
         resultPayload == null ? List.of() : resultPayload.filePaths(),
-        resultPayload == null ? loadFileGroupResults(state) : resultPayload.fileResults());
+        resultPayload == null ? List.of() : resultPayload.fileResults());
   }
 
   private <T> String encodeInlineJson(String prefix, T payload) {

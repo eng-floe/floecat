@@ -23,7 +23,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.repo.model.Keys;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
@@ -46,7 +47,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
 
   private ReconcileLeaseBackend leaseBackend;
-  private ReconcilePayloadStore payloadStore;
+  private ReconcileJobExecutionLoader executionLoader;
+  private ReconcileLeaseStateCodec leaseStateCodec;
   private int casMax;
   private long leaseMs;
   private long leaseRenewGraceMs;
@@ -59,7 +61,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   public void bind(
       ReconcileLeaseBackend leaseBackend,
-      ReconcilePayloadStore payloadStore,
+      ReconcileJobExecutionLoader executionLoader,
+      ReconcileLeaseStateCodec leaseStateCodec,
       int casMax,
       long leaseMs,
       long leaseRenewGraceMs,
@@ -70,7 +73,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       int maxAttempts,
       IntToLongFunction backoffMs) {
     this.leaseBackend = leaseBackend;
-    this.payloadStore = payloadStore;
+    this.executionLoader = executionLoader;
+    this.leaseStateCodec = leaseStateCodec;
     this.casMax = casMax;
     this.leaseMs = leaseMs;
     this.leaseRenewGraceMs = leaseRenewGraceMs;
@@ -145,8 +149,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       StoredJobLease currentLease =
           currentLeaseSnapshot == null
               ? StoredJobLease.empty(current.accountId, current.jobId)
-              : payloadStore
-                  .readInlineJobLease(currentLeaseSnapshot.encodedLease())
+              : leaseStateCodec
+                  .decode(currentLeaseSnapshot.encodedLease())
                   .orElse(StoredJobLease.empty(current.accountId, current.jobId));
       if (currentLease.epoch != null
           && !currentLease.epoch.isBlank()
@@ -171,21 +175,21 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
         try {
           long mutationElapsedMs = System.currentTimeMillis() - mutationStartMs;
           long definitionStartMs = System.currentTimeMillis();
-          StoredJobDefinition definition = payloadStore.requireDefinition(current);
+          StoredJobDefinition definition = executionLoader.requireDefinition(current);
           long definitionElapsedMs = System.currentTimeMillis() - definitionStartMs;
           long snapshotTaskElapsedMs = 0L;
           ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.empty();
           if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
               || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
             long snapshotTaskStartMs = System.currentTimeMillis();
-            snapshotTask = payloadStore.snapshotTaskFor(current);
+            snapshotTask = executionLoader.snapshotTask(current);
             snapshotTaskElapsedMs = System.currentTimeMillis() - snapshotTaskStartMs;
           }
           long fileGroupTaskElapsedMs = 0L;
           ReconcileFileGroupTask fileGroupTask = ReconcileFileGroupTask.empty();
           if (current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
             long fileGroupTaskStartMs = System.currentTimeMillis();
-            fileGroupTask = payloadStore.fileGroupTaskFor(current);
+            fileGroupTask = executionLoader.fileGroupTask(current);
             fileGroupTaskElapsedMs = System.currentTimeMillis() - fileGroupTaskStartMs;
           }
           LOG.debugf(
@@ -514,7 +518,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     }
     return leaseBackend
         .loadLease(accountId, jobId)
-        .flatMap(snapshot -> payloadStore.readInlineJobLease(snapshot.encodedLease()));
+        .flatMap(snapshot -> leaseStateCodec.decode(snapshot.encodedLease()));
   }
 
   public Optional<StoredJobLease> loadLease(StoredReconcileJob state) {
@@ -597,8 +601,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
         return false;
       }
       StoredJobLease current =
-          payloadStore
-              .readInlineJobLease(currentSnapshot.encodedLease())
+          leaseStateCodec
+              .decode(currentSnapshot.encodedLease())
               .orElse(StoredJobLease.empty(accountId, jobId));
       if (blank(leaseEpoch) || !leaseEpoch.equals(current.epoch)) {
         return false;
@@ -971,8 +975,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       StoredJobLease current =
           currentSnapshot == null
               ? StoredJobLease.empty(accountId, jobId)
-              : payloadStore
-                  .readInlineJobLease(currentSnapshot.encodedLease())
+              : leaseStateCodec
+                  .decode(currentSnapshot.encodedLease())
                   .orElse(StoredJobLease.empty(accountId, jobId));
       StoredJobLease next = mutator.apply(cloneLease(current));
       if (next == null) {
@@ -1034,7 +1038,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             previousLease.accountId,
             previousLease.jobId,
             leaseExpectedVersion,
-            payloadStore.encodeInlineJobLease(nextLease)));
+            leaseStateCodec.encode(nextLease)));
 
     String previousExpiryKey = leaseExpiryPointerKey(previousLease);
     String nextExpiryKey = leaseExpiryPointerKey(nextLease);

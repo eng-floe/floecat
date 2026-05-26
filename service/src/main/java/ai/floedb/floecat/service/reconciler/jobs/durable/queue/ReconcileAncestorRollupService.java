@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.DirectChildCounts;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.JobProjection;
@@ -46,13 +47,12 @@ public class ReconcileAncestorRollupService {
     this.leaseLiveness = leaseLiveness;
   }
 
-  public StoredReconcileJob recomputeParentSummary(
+  public StoredReconcileJobProjection recomputeParentProjection(
       StoredReconcileJob parent, List<StoredReconcileJob> directChildren) {
     if (parent == null || !projector.isParentCapable(parent.jobKind())) {
-      return parent;
+      return null;
     }
-    StoredReconcileJob next = jobIndexStore.cloneStoredRecord(parent);
-    JobProjection intrinsicProjection = projector.intrinsicProjection(parent);
+    JobProjection intrinsicProjection = projector.intrinsicProjectionForRollup(parent);
     long selfTablesScanned = Math.max(0L, parent.tablesScanned);
     long selfTablesChanged = Math.max(0L, parent.tablesChanged);
     long selfViewsScanned = Math.max(0L, parent.viewsScanned);
@@ -84,7 +84,7 @@ public class ReconcileAncestorRollupService {
     ChildAggregate aggregate = ChildAggregate.empty();
     StoredReconcileJob representativeChild = null;
 
-    next.startedAtMs = Math.max(0L, parent.startedAtMs);
+    long startedAtMs = Math.max(0L, parent.startedAtMs);
     for (StoredReconcileJob child :
         directChildren == null ? List.<StoredReconcileJob>of() : directChildren) {
       if (child == null) {
@@ -93,77 +93,69 @@ public class ReconcileAncestorRollupService {
       ChildContribution contribution = contributionForParent(parent, child);
       aggregate = aggregate.add(contribution);
       if (contribution.startedAtMs() > 0L) {
-        next.startedAtMs = earliestPositive(next.startedAtMs, contribution.startedAtMs());
+        startedAtMs = earliestPositive(startedAtMs, contribution.startedAtMs());
       }
       representativeChild = chooseRepresentativeChild(representativeChild, child);
     }
 
-    next.tablesScanned = selfTablesScanned + aggregate.tablesScanned();
-    next.tablesChanged = selfTablesChanged + aggregate.tablesChanged();
-    next.viewsScanned = selfViewsScanned + aggregate.viewsScanned();
-    next.viewsChanged = selfViewsChanged + aggregate.viewsChanged();
-    next.errors = selfErrors + aggregate.errors();
-    next.snapshotsProcessed = selfSnapshotsProcessed + aggregate.snapshotsProcessed();
-    next.statsProcessed = selfStatsProcessed + aggregate.statsProcessed();
-    next.indexesProcessed = selfIndexesProcessed + aggregate.indexesProcessed();
-    next.plannedFileGroups =
+    long tablesScanned = selfTablesScanned + aggregate.tablesScanned();
+    long tablesChanged = selfTablesChanged + aggregate.tablesChanged();
+    long viewsScanned = selfViewsScanned + aggregate.viewsScanned();
+    long viewsChanged = selfViewsChanged + aggregate.viewsChanged();
+    long errors = selfErrors + aggregate.errors();
+    long snapshotsProcessed = selfSnapshotsProcessed + aggregate.snapshotsProcessed();
+    long statsProcessed = selfStatsProcessed + aggregate.statsProcessed();
+    long indexesProcessed = selfIndexesProcessed + aggregate.indexesProcessed();
+    long plannedFileGroups =
         Math.max(
             Math.max(intrinsicProjection.plannedFileGroups(), selfPlannedFileGroups),
             aggregate.plannedFileGroups());
-    next.plannedFiles =
+    long plannedFiles =
         Math.max(
             Math.max(intrinsicProjection.plannedFiles(), selfPlannedFiles),
             aggregate.plannedFiles());
-    next.completedFileGroups = selfCompletedFileGroups + aggregate.completedFileGroups();
-    next.failedFileGroups = selfFailedFileGroups + aggregate.failedFileGroups();
-    next.completedFiles = selfCompletedFiles + aggregate.completedFiles();
-    next.failedFiles = selfFailedFiles + aggregate.failedFiles();
+    long completedFileGroups = selfCompletedFileGroups + aggregate.completedFileGroups();
+    long failedFileGroups = selfFailedFileGroups + aggregate.failedFileGroups();
+    long completedFiles = selfCompletedFiles + aggregate.completedFiles();
+    long failedFiles = selfFailedFiles + aggregate.failedFiles();
 
     if (parent.jobKind() == ReconcileJobKind.PLAN_TABLE) {
-      next.tablesScanned = Math.max(selfTablesScanned, aggregate.tablesScanned());
-      next.tablesChanged = Math.max(selfTablesChanged, aggregate.tablesChanged());
+      tablesScanned = Math.max(selfTablesScanned, aggregate.tablesScanned());
+      tablesChanged = Math.max(selfTablesChanged, aggregate.tablesChanged());
     }
     if (parent.jobKind() == ReconcileJobKind.PLAN_CONNECTOR) {
-      next.tablesScanned =
+      tablesScanned =
           Math.max(
               Math.max(selfTablesScanned, Math.max(0L, aggregate.tablesScanned())),
               Math.max(0L, aggregate.directChildObserved()));
-      next.tablesChanged = Math.max(selfTablesChanged, aggregate.tablesChanged());
+      tablesChanged = Math.max(selfTablesChanged, aggregate.tablesChanged());
     }
 
-    applyProjectedParentState(parent, next, representativeChild, aggregate);
-    next.updatedAtMs = System.currentTimeMillis();
-    next.canonicalPointerKey = parent.canonicalPointerKey;
-    return next;
-  }
-
-  public boolean sameParentSummary(StoredReconcileJob previous, StoredReconcileJob current) {
-    if (previous == current) {
-      return true;
-    }
-    if (previous == null || current == null) {
-      return false;
-    }
-    return previous.tablesScanned == current.tablesScanned
-        && previous.tablesChanged == current.tablesChanged
-        && previous.viewsScanned == current.viewsScanned
-        && previous.viewsChanged == current.viewsChanged
-        && previous.errors == current.errors
-        && previous.snapshotsProcessed == current.snapshotsProcessed
-        && previous.statsProcessed == current.statsProcessed
-        && previous.indexesProcessed == current.indexesProcessed
-        && previous.plannedFileGroups == current.plannedFileGroups
-        && previous.plannedFiles == current.plannedFiles
-        && previous.completedFileGroups == current.completedFileGroups
-        && previous.failedFileGroups == current.failedFileGroups
-        && previous.completedFiles == current.completedFiles
-        && previous.failedFiles == current.failedFiles
-        && previous.startedAtMs == current.startedAtMs
-        && previous.finishedAtMs == current.finishedAtMs
-        && blankToEmpty(previous.state).equals(blankToEmpty(current.state))
-        && blankToEmpty(previous.message).equals(blankToEmpty(current.message))
-        && blankToEmpty(previous.executorId).equals(blankToEmpty(current.executorId))
-        && blankToEmpty(previous.readyPointerKey).equals(blankToEmpty(current.readyPointerKey));
+    ProjectedParentState parentState =
+        projectedParentState(parent, representativeChild, aggregate, startedAtMs);
+    return new StoredReconcileJobProjection(
+        blankToEmpty(parent.accountId),
+        blankToEmpty(parent.jobId),
+        parentState.state(),
+        parentState.message(),
+        parentState.startedAtMs(),
+        parentState.finishedAtMs(),
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed,
+        indexesProcessed,
+        plannedFileGroups,
+        plannedFiles,
+        completedFileGroups,
+        failedFileGroups,
+        completedFiles,
+        failedFiles,
+        parentState.executorId(),
+        true);
   }
 
   private StoredReconcileJob chooseRepresentativeChild(
@@ -186,7 +178,7 @@ public class ReconcileAncestorRollupService {
   }
 
   private int childStatePriority(StoredReconcileJob child) {
-    ProjectedPublicJob projected = projector.projectSelfPublicJob(child, true);
+    ProjectedPublicJob projected = projector.projectSelfPublicJobForRollup(child);
     return switch (effectiveProjectedState(projected)) {
       case "JS_CANCELLING" -> 7;
       case "JS_RUNNING" -> 6;
@@ -199,11 +191,11 @@ public class ReconcileAncestorRollupService {
     };
   }
 
-  private void applyProjectedParentState(
+  private ProjectedParentState projectedParentState(
       StoredReconcileJob parent,
-      StoredReconcileJob next,
       StoredReconcileJob representativeChild,
-      ChildAggregate aggregate) {
+      ChildAggregate aggregate,
+      long startedAtMs) {
     DirectChildCounts directChildCounts =
         new DirectChildCounts(
             aggregate.completedChildJobs(),
@@ -223,7 +215,7 @@ public class ReconcileAncestorRollupService {
     ProjectedPublicJob currentProjected =
         representativeChild == null
             ? ProjectedPublicJob.empty()
-            : projector.projectSelfPublicJob(representativeChild, true);
+            : projector.projectSelfPublicJobForRollup(representativeChild);
     String currentChildState = effectiveProjectedState(currentProjected);
     String currentChildMessage = blankToEmpty(currentProjected.message());
     String currentChildExecutorId = blankToEmpty(currentProjected.executorId());
@@ -324,13 +316,12 @@ public class ReconcileAncestorRollupService {
     if (isTerminalState(parent.state) && !blank(parent.executorId)) {
       executorId = parent.executorId;
     }
-    next.finishedAtMs = finishedAtMs;
-    next.state = state;
-    next.message = message;
-    next.executorId = executorId;
-    if (isTerminalState(state)) {
-      next.readyPointerKey = null;
-    }
+    return new ProjectedParentState(
+        blankToEmpty(state),
+        blankToEmpty(message),
+        Math.max(0L, startedAtMs),
+        Math.max(0L, finishedAtMs),
+        blankToEmpty(executorId));
   }
 
   private static boolean directChildJobsComplete(
@@ -402,7 +393,7 @@ public class ReconcileAncestorRollupService {
     if (parent == null || childRecord == null) {
       return ChildContribution.empty();
     }
-    ProjectedPublicJob projected = projector.projectSelfPublicJob(childRecord, true);
+    ProjectedPublicJob projected = projector.projectSelfPublicJobForRollup(childRecord);
     JobProjection projection = projected.projection();
     boolean planTableScanned = planTableContributionScanned(projected, projection);
     boolean planTableChanged = planTableContributionChanged(projected, projection);
@@ -602,4 +593,7 @@ public class ReconcileAncestorRollupService {
           Math.max(maxDirectChildFinishedAtMs, contribution.finishedAtMs()));
     }
   }
+
+  private record ProjectedParentState(
+      String state, String message, long startedAtMs, long finishedAtMs, String executorId) {}
 }

@@ -43,7 +43,10 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCompl
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobEnqueuer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobLister;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobMaintenanceService;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobDetailLoader;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend;
@@ -123,6 +126,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileAncestorRollupService ancestorRollupService;
   @Inject ReconcileJobLister lister;
   @Inject ReconcileLeaseStore leaseStore;
+  @Inject ReconcileJobDetailLoader detailLoader;
+  @Inject ReconcileJobExecutionLoader executionLoader;
+  @Inject ReconcileLeaseStateCodec leaseStateCodec;
   @Inject ReconcileLeaseBackend leaseBackend;
   @Inject ReconcileJobEnqueuer enqueuer;
   @Inject ReconcileJobCancellationService cancellationService;
@@ -150,8 +156,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (projector == null) {
       projector = new ReconcileJobProjector();
     }
-    projector.bind(payloads());
+    projector.bind(detailReader());
     return projector;
+  }
+
+  private ReconcileJobDetailLoader detailReader() {
+    if (detailLoader == null) {
+      detailLoader = new ReconcileJobDetailLoader();
+    }
+    detailLoader.bind(payloads());
+    return detailLoader;
+  }
+
+  private ReconcileJobExecutionLoader executionLoader() {
+    if (executionLoader == null) {
+      executionLoader = new ReconcileJobExecutionLoader();
+    }
+    executionLoader.bind(payloads());
+    return executionLoader;
+  }
+
+  private ReconcileLeaseStateCodec leaseStateCodec() {
+    if (leaseStateCodec == null) {
+      leaseStateCodec = new ReconcileLeaseStateCodec();
+    }
+    leaseStateCodec.bind(payloads());
+    return leaseStateCodec;
   }
 
   private ReconcileJobIndexStore jobIndexStore() {
@@ -256,7 +286,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     leaseStore.bind(
         leaseBackend,
-        payloads(),
+        executionLoader(),
+        leaseStateCodec(),
         CAS_MAX,
         leaseMs,
         leaseRenewGraceMs,
@@ -996,7 +1027,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     if (existing == null) {
                       return null;
                     }
+                    var projection = projector().projectExecFileGroup(effective, existing.state);
                     existing.fileGroupResultBlobUri = blobUri;
+                    existing.indexesProcessed = projection.indexesProcessed();
+                    existing.plannedFileGroups = projection.plannedFileGroups();
+                    existing.plannedFiles = projection.plannedFiles();
+                    existing.completedFileGroups = projection.completedFileGroups();
+                    existing.failedFileGroups = projection.failedFileGroups();
+                    existing.completedFiles = projection.completedFiles();
+                    existing.failedFiles = projection.failedFiles();
                     return existing;
                   });
           if (updated.isEmpty()) {
@@ -1287,9 +1326,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         listAllStoredChildJobs(accountId, parentJobId).stream()
             .map(this::projectedSummaryRecord)
             .toList();
-    StoredReconcileJob recomputed =
-        ancestorRollups().recomputeParentSummary(parent, directChildren);
-    var nextProjection = projector().toStoredProjection(recomputed);
+    var nextProjection = ancestorRollups().recomputeParentProjection(parent, directChildren);
     var currentProjection = projections().load(accountId, parentJobId).orElse(null);
     if (Objects.equals(currentProjection, nextProjection)) {
       refreshRootSummary(parent, nextProjection);

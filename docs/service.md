@@ -11,7 +11,8 @@ generic pointer-prefix queue abstraction:
 - canonical job-index domain
 - ready-queue domain
 - lease-coordination domain
-- projection/payload-reference domain
+- canonical payload-artifact references on job rows
+- projection/root-summary observability domain
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as

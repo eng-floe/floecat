@@ -92,12 +92,14 @@ The durable queue is intentionally split into domains:
 - canonical job-index state
 - ready-queue state
 - lease-coordination state
-- projection/payload-reference state
+- canonical payload-artifact references on job rows
+- projection/root-summary observability state
 
 The control plane owns canonical job-state transitions and the derived job-index plus ready-queue
 mutations that move with them transactionally. Executors participate through the separate
-lease-coordination domain when they lease, renew, cancel, and complete work. Reads and maintenance
-do not repair queue drift.
+lease-coordination domain when they lease, renew, cancel, and complete work. Projection/root
+summary maintenance is best-effort observability only and does not participate in queue
+correctness.
 
 Key reconciler mode flags live in `service/src/main/resources/application.properties`:
 

@@ -27,15 +27,15 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
-import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobDetailLoader;
 import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped
 public class ReconcileJobProjector {
-  private ReconcilePayloadStore payloadStore;
+  private ReconcileJobDetailLoader detailLoader;
 
-  public void bind(ReconcilePayloadStore payloadStore) {
-    this.payloadStore = payloadStore;
+  public void bind(ReconcileJobDetailLoader detailLoader) {
+    this.detailLoader = detailLoader;
   }
 
   public ReconcileJob toPublicJob(StoredReconcileJob stored, boolean includeDetails) {
@@ -49,7 +49,7 @@ public class ReconcileJobProjector {
         isParentCapable(stored.jobKind())
             ? projectedParentJob(stored, projection)
             : projectSelfPublicJob(stored, false);
-    StoredJobDefinition definition = payloadStore.requireDefinition(stored);
+    StoredJobDefinition definition = detailLoader.requireDefinition(stored);
     return new ReconcileJob(
         stored.jobId,
         stored.accountId,
@@ -94,11 +94,11 @@ public class ReconcileJobProjector {
         isParentCapable(stored.jobKind())
             ? projectedParentJob(stored, projection)
             : projectSelfPublicJob(stored, includeDetails);
-    StoredJobDefinition definition = includeDetails ? payloadStore.requireDefinition(stored) : null;
+    StoredJobDefinition definition = includeDetails ? detailLoader.requireDefinition(stored) : null;
     ReconcileSnapshotTask snapshotTask =
-        includeDetails ? payloadStore.snapshotTaskFor(stored) : ReconcileSnapshotTask.empty();
+        includeDetails ? detailLoader.snapshotTask(stored) : ReconcileSnapshotTask.empty();
     ReconcileFileGroupTask fileGroupTask =
-        includeDetails ? payloadStore.fileGroupTaskFor(stored) : ReconcileFileGroupTask.empty();
+        includeDetails ? detailLoader.fileGroupTask(stored) : ReconcileFileGroupTask.empty();
     return new ReconcileJob(
         stored.jobId,
         stored.accountId,
@@ -235,9 +235,9 @@ public class ReconcileJobProjector {
   }
 
   public ReconcileJob toCanonicalLeaseView(StoredReconcileJob stored) {
-    StoredJobDefinition definition = payloadStore.requireDefinition(stored);
-    ReconcileSnapshotTask snapshotTask = payloadStore.snapshotTaskFor(stored);
-    ReconcileFileGroupTask fileGroupTask = payloadStore.fileGroupTaskFor(stored);
+    StoredJobDefinition definition = detailLoader.requireDefinition(stored);
+    ReconcileSnapshotTask snapshotTask = detailLoader.snapshotTask(stored);
+    ReconcileFileGroupTask fileGroupTask = detailLoader.fileGroupTask(stored);
     JobProjection projection = inlineSummaryProjection(stored);
     String state = blankToEmpty(stored.state);
     return new ReconcileJob(
@@ -282,18 +282,32 @@ public class ReconcileJobProjector {
     if (stored == null) {
       return ProjectedPublicJob.empty();
     }
+    boolean parentCapable = isParentCapable(stored.jobKind());
     ReconcileSnapshotTask snapshotTask =
-        includeSelfProjectionPayloads && stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
-            ? payloadStore.snapshotTaskFor(stored)
+        includeSelfProjectionPayloads
+                && !parentCapable
+                && stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+            ? detailLoader.snapshotTask(stored)
             : ReconcileSnapshotTask.empty();
     ReconcileFileGroupTask fileGroupTask =
         includeSelfProjectionPayloads && stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP
-            ? payloadStore.fileGroupTaskFor(stored)
+            ? detailLoader.fileGroupTask(stored)
             : ReconcileFileGroupTask.empty();
+    JobProjection selfProjection =
+        parentCapable
+            ? inlineSummaryProjection(stored)
+            : projectJob(stored, snapshotTask, fileGroupTask);
+    return ProjectedPublicJob.self(stored, selfProjection);
+  }
+
+  public ProjectedPublicJob projectSelfPublicJobForRollup(StoredReconcileJob stored) {
+    if (stored == null) {
+      return ProjectedPublicJob.empty();
+    }
     JobProjection selfProjection =
         isParentCapable(stored.jobKind())
             ? inlineSummaryProjection(stored)
-            : projectJob(stored, snapshotTask, fileGroupTask);
+            : intrinsicProjectionForRollup(stored);
     return ProjectedPublicJob.self(stored, selfProjection);
   }
 
@@ -329,28 +343,50 @@ public class ReconcileJobProjector {
     }
     if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
       long plannedFiles = Math.max(0L, stored.fileGroupFileCount);
-      long completedFileGroups = "JS_SUCCEEDED".equals(stored.state) ? 1L : 0L;
-      long failedFileGroups =
-          ("JS_FAILED".equals(stored.state) || "JS_CANCELLED".equals(stored.state)) ? 1L : 0L;
-      long completedFiles = completedFileGroups > 0L ? plannedFiles : 0L;
-      long failedFiles = failedFileGroups > 0L ? plannedFiles : 0L;
+      long completedFileGroups = Math.max(0L, stored.completedFileGroups);
+      long failedFileGroups = Math.max(0L, stored.failedFileGroups);
+      long completedFiles = Math.max(0L, stored.completedFiles);
+      long failedFiles = Math.max(0L, stored.failedFiles);
+      long indexesProcessed = Math.max(0L, stored.indexesProcessed);
+      if (completedFileGroups == 0L && failedFileGroups == 0L) {
+        completedFileGroups = "JS_SUCCEEDED".equals(stored.state) ? 1L : 0L;
+        failedFileGroups =
+            ("JS_FAILED".equals(stored.state) || "JS_CANCELLED".equals(stored.state)) ? 1L : 0L;
+      }
+      if (completedFiles == 0L && failedFiles == 0L) {
+        completedFiles = completedFileGroups > 0L ? plannedFiles : 0L;
+        failedFiles = failedFileGroups > 0L ? plannedFiles : 0L;
+      }
       return new JobProjection(
-          0L, 1L, plannedFiles, completedFileGroups, failedFileGroups, completedFiles, failedFiles);
+          indexesProcessed,
+          Math.max(1L, Math.max(0L, stored.plannedFileGroups)),
+          Math.max(plannedFiles, Math.max(0L, stored.plannedFiles)),
+          completedFileGroups,
+          failedFileGroups,
+          completedFiles,
+          failedFiles);
     }
     return JobProjection.empty();
   }
 
-  public JobProjection intrinsicProjection(StoredReconcileJob stored) {
+  public JobProjection intrinsicProjectionForDetail(StoredReconcileJob stored) {
     if (stored == null) {
       return JobProjection.empty();
     }
     if (stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
-      return projectSnapshotPlan(payloadStore.snapshotTaskFor(stored));
+      return projectSnapshotPlan(detailLoader.snapshotTask(stored));
     }
     if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
-      return projectExecFileGroup(payloadStore.fileGroupTaskFor(stored), stored.state);
+      return projectExecFileGroup(detailLoader.fileGroupTask(stored), stored.state);
     }
     return JobProjection.empty();
+  }
+
+  public JobProjection intrinsicProjectionForRollup(StoredReconcileJob stored) {
+    if (stored == null) {
+      return JobProjection.empty();
+    }
+    return inlineSummaryProjection(stored);
   }
 
   public StoredReconcileJobProjection toStoredProjection(StoredReconcileJob stored) {
