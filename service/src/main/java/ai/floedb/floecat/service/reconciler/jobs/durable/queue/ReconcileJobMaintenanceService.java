@@ -137,6 +137,7 @@ public class ReconcileJobMaintenanceService {
     if (pointerStore == null || refreshDirtyParentProjection == null) {
       return;
     }
+    String token = "";
     int pages = 0;
     while (true) {
       if (System.currentTimeMillis() > deadlineMs) {
@@ -145,7 +146,7 @@ public class ReconcileJobMaintenanceService {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
           pointerStore.listPointersByPrefix(
-              Keys.reconcileDirtyParentPointerPrefix(), readyScanLimit, "", next);
+              Keys.reconcileDirtyParentPointerPrefix(), readyScanLimit, token, next);
       if (pointers.isEmpty()) {
         return;
       }
@@ -172,6 +173,17 @@ public class ReconcileJobMaintenanceService {
               marker.parentJobId());
         }
       }
+      String nextToken = next.toString();
+      if (nextToken.isBlank()) {
+        return;
+      }
+      if (nextToken.equals(token)) {
+        LOG.warn(
+            "Reconcile dirty-parent refresh pagination token did not advance; aborting scan to"
+                + " avoid livelock");
+        return;
+      }
+      token = nextToken;
       pages++;
       if (pages >= 10_000) {
         LOG.warn("Reconcile dirty-parent refresh pagination hit safety page cap; aborting scan");
