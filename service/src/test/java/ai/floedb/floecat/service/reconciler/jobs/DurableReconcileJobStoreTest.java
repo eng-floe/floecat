@@ -3871,7 +3871,10 @@ class DurableReconcileJobStoreTest {
 
     var cancelled =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> {
+              store.runMaintenanceOnce(10_000L);
+              return store.get(jobId).orElseThrow();
+            },
             current -> "JS_CANCELLED".equals(current.state),
             "job cancellation finalization " + jobId);
     assertEquals("JS_CANCELLED", cancelled.state);
@@ -6510,7 +6513,15 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJobProjection snapshot =
         waitForValue(
                 () -> projectionStore().load(ACCOUNT_ID, snapshotJobId),
-                Optional::isPresent,
+                current ->
+                    current.isPresent()
+                        && current.get().plannedFileGroups() == 1L
+                        && current.get().plannedFiles() == 2L
+                        && current.get().completedFileGroups() == 1L
+                        && current.get().completedFiles() == 1L
+                        && current.get().failedFiles() == 1L
+                        && current.get().indexesProcessed() == 1L
+                        && current.get().statsProcessed() == 2L,
                 "snapshot projection " + snapshotJobId)
             .orElseThrow();
     ReconcileJob table =
