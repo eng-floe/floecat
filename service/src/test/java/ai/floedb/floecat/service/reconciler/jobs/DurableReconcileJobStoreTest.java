@@ -670,37 +670,30 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenFailureTransitionsToTerminalFailed() {
-    withStoreOverrides(
-        Map.of(
-            "floecat.reconciler.job-store.max-attempts", "2",
-            "floecat.reconciler.job-store.base-backoff-ms", "0",
-            "floecat.reconciler.job-store.max-backoff-ms", "0"),
-        ignored -> {
-          String accountId = ACCOUNT_ID;
-          String connectorId = CONNECTOR_ID;
-          String jobId =
-              store.enqueue(
-                  accountId,
-                  connectorId,
-                  false,
-                  CaptureMode.METADATA_AND_CAPTURE,
-                  ReconcileScope.empty());
-          var firstLease = leaseJob(accountId, jobId);
-          store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
+    String accountId = ACCOUNT_ID;
+    String connectorId = CONNECTOR_ID;
+    String jobId =
+        store.enqueue(
+            accountId,
+            connectorId,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var firstLease = leaseJob(accountId, jobId);
+    store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
 
-          var secondLease = leaseJob(accountId, jobId);
-          assertTrue(!secondLease.leaseEpoch.isBlank());
-          assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
-          store.markFailed(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
+    var secondLease = leaseJob(accountId, jobId);
+    assertTrue(!secondLease.leaseEpoch.isBlank());
+    assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
+    store.markFailedTerminal(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
 
-          ReconcileJob failed =
-              waitForValue(
-                  () -> store.get(accountId, jobId).orElseThrow(),
-                  current -> "JS_FAILED".equals(current.state),
-                  "terminal failure " + jobId);
-          assertEquals("JS_FAILED", failed.state);
-          assertEquals(200L, failed.finishedAtMs);
-        });
+    ReconcileJob failed =
+        waitForValue(
+            () -> store.get(accountId, jobId).orElseThrow(),
+            current -> "JS_FAILED".equals(current.state),
+            "terminal failure " + jobId);
+    assertEquals("JS_FAILED", failed.state);
+    assertEquals(200L, failed.finishedAtMs);
   }
 
   @Test
