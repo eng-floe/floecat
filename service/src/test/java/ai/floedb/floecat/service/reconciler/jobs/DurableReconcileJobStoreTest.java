@@ -464,6 +464,128 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void nestedWaitingParentsPromoteCanonicalStateBottomUp() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("sales", "trino_types", "table-1", "trino_types"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "sales", "trino_types", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markWaiting(
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 120L, "executor-snapshot");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        130L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Snapshot plan recorded for sales.trino_types with 1 file group(s)",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var execLease = leaseJob(execJobId);
+    store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
+    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    StoredReconcileJob snapshotCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical snapshot promotion " + snapshotJobId);
+    StoredReconcileJob tableCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical table promotion " + tableJobId);
+    StoredReconcileJob connectorCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical connector promotion " + connectorJobId);
+
+    assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
+    assertEquals("JS_SUCCEEDED", tableCanonical.state);
+    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
+  }
+
+  @Test
   void rootProjectionDoesNotSucceedUntilExpectedDirectChildrenAreObserved() {
     String connectorJobId =
         store.enqueue(

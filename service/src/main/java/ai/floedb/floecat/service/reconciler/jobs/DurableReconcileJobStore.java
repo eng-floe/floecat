@@ -1329,6 +1329,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (!accountId.equals(parent.accountId) || !isParentCapable(parent.jobKind())) {
       return;
     }
+    parent = canonicalizeWaitingParentFromCanonicalChildren(parent);
     List<StoredReconcileJob> directChildren =
         listAllStoredChildJobs(accountId, parentJobId).stream()
             .map(this::projectedSummaryRecordForRefresh)
@@ -1336,11 +1337,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long requestedGeneration = Math.max(0L, parent.projectionRequestedGeneration);
     long previousAppliedGeneration = Math.max(0L, parent.projectionAppliedGeneration);
     var nextProjection = ancestorRollups().recomputeParentProjection(parent, directChildren);
-    var currentProjection = projections().load(accountId, parentJobId).orElse(null);
     if (nextProjection == null) {
       return;
     }
-    parent = applyTerminalParentProjectionToCanonical(parent, nextProjection);
     projections().upsert(nextProjection);
     advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
     var acceptedProjection = projections().load(accountId, parentJobId).orElse(nextProjection);
@@ -1348,6 +1347,53 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (requestedGeneration > previousAppliedGeneration) {
       markDirtyParent(parent.accountId, parent.parentJobId);
     }
+  }
+
+  private StoredReconcileJob canonicalizeWaitingParentFromCanonicalChildren(
+      StoredReconcileJob parent) {
+    if (parent == null
+        || !isParentCapable(parent.jobKind())
+        || isTerminalState(parent.state)
+        || !"JS_WAITING".equals(blankToEmpty(parent.state))) {
+      return parent;
+    }
+    List<StoredReconcileJob> directChildren =
+        listAllStoredChildJobs(parent.accountId, parent.jobId).stream()
+            .map(this::canonicalizeParentForMaintenance)
+            .toList();
+    var rollup = ancestorRollups().recomputeParentProjection(parent, directChildren);
+    if (rollup == null
+        || !isTerminalState(rollup.state())
+        || leaseManager().hasLiveLease(parent, true, System.currentTimeMillis())) {
+      return parent;
+    }
+    return jobIndexStore()
+        .mutateByJobIdReturningRecord(
+            parent.jobId,
+            existing -> {
+              if (existing == null
+                  || !parent.accountId.equals(existing.accountId)
+                  || !"JS_WAITING".equals(blankToEmpty(existing.state))
+                  || leaseManager().hasLiveLease(existing, true, System.currentTimeMillis())) {
+                return existing;
+              }
+              existing.state = rollup.state();
+              existing.message = rollup.message();
+              existing.startedAtMs = projectedStartedAtMs(existing, rollup);
+              existing.finishedAtMs = projectedFinishedAtMs(existing, rollup);
+              existing.executorId = rollup.executorId();
+              existing.childrenFinalized = true;
+              return existing;
+            })
+        .map(ReconcileJobIndexStore.CanonicalEnvelope::record)
+        .orElse(parent);
+  }
+
+  private StoredReconcileJob canonicalizeParentForMaintenance(StoredReconcileJob record) {
+    if (record == null || !isParentCapable(record.jobKind())) {
+      return record;
+    }
+    return canonicalizeWaitingParentFromCanonicalChildren(record);
   }
 
   private void refreshRootSummary(
@@ -1358,45 +1404,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return;
     }
     rootSummaries().upsert(toRootListSummary(parent, projection));
-  }
-
-  private StoredReconcileJob applyTerminalParentProjectionToCanonical(
-      StoredReconcileJob parent,
-      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
-          projection) {
-    if (parent == null || projection == null) {
-      return parent;
-    }
-    String canonicalState = blankToEmpty(parent.state);
-    String projectionState = blankToEmpty(projection.state());
-    if (isTerminalState(canonicalState)
-        || !isTerminalState(projectionState)
-        || hasActiveCanonicalSubtree(parent)) {
-      return parent;
-    }
-    return jobIndexStore()
-        .mutateByJobIdReturningRecord(
-            parent.jobId,
-            existing -> {
-              if (existing == null || !parent.accountId.equals(existing.accountId)) {
-                return null;
-              }
-              String existingState = blankToEmpty(existing.state);
-              if (isTerminalState(existingState)
-                  || !projectionState.equals(blankToEmpty(projection.state()))
-                  || hasActiveCanonicalSubtree(existing)) {
-                return existing;
-              }
-              existing.state = projection.state();
-              existing.message = projection.message();
-              existing.startedAtMs = projectedStartedAtMs(existing, projection);
-              existing.finishedAtMs = projectedFinishedAtMs(existing, projection);
-              existing.executorId = projection.executorId();
-              existing.childrenFinalized = true;
-              return existing;
-            })
-        .map(ReconcileJobIndexStore.CanonicalEnvelope::record)
-        .orElse(parent);
   }
 
   private List<StoredReconcileJob> listAllStoredChildJobs(String accountId, String parentJobId) {
@@ -1446,6 +1453,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return record;
     }
     var projection = projections().load(record.accountId, record.jobId).orElse(null);
+    if (refreshStaleProjection && projection == null) {
+      var refreshedProjection = recomputeSummaryProjection(record, true);
+      if (refreshedProjection != null) {
+        projections().upsert(refreshedProjection);
+        projection = refreshedProjection;
+      }
+    }
     if (projection == null) {
       return record;
     }
