@@ -258,7 +258,6 @@ class DurableReconcileJobStoreTest {
 
           assertTrue(projectionStore().load(ACCOUNT_ID, connectorJobId).isEmpty());
           assertNotNull(projectionRefreshCursor(connectorJobId));
-          assertTrue(dirtyParentPointer(connectorJobId).isPresent());
           assertEquals(0L, store.get(ACCOUNT_ID, connectorJobId).orElseThrow().tablesScanned);
           assertEquals(
               0L,
@@ -301,7 +300,6 @@ class DurableReconcileJobStoreTest {
           assertEquals(
               canonical.projectionRequestedGeneration, canonical.projectionAppliedGeneration);
           assertTrue(projectionRefreshCursor(tableJobId) == null);
-          assertTrue(dirtyParentPointer(tableJobId).isEmpty());
         });
   }
 
@@ -492,13 +490,26 @@ class DurableReconcileJobStoreTest {
           markChildSucceededWithoutMaintenance(accountId, snapshotTwo, 200L);
           finishProjectionRefresh(accountId, snapshotOne, 2);
           finishProjectionRefresh(accountId, snapshotTwo, 2);
-          clearDirtyParentPointer(accountId, connectorJobId);
 
           assertFalse(refreshProjectedParent(accountId, tableJobId));
-          assertTrue(dirtyParentPointer(accountId, connectorJobId).isEmpty());
+          assertTrue(projectionStore().load(accountId, connectorJobId).isEmpty());
+          assertEquals(
+              0L,
+              store.listRootJobs(accountId, 20, "", connectorId, Set.of()).jobs.stream()
+                  .filter(job -> connectorJobId.equals(job.jobId))
+                  .findFirst()
+                  .map(job -> job.tablesScanned)
+                  .orElse(0L));
 
           finishProjectionRefresh(accountId, tableJobId, 5);
-          assertTrue(dirtyParentPointer(accountId, connectorJobId).isPresent());
+          assertTrue(projectionStore().load(accountId, connectorJobId).isEmpty());
+          assertEquals(
+              0L,
+              store.listRootJobs(accountId, 20, "", connectorId, Set.of()).jobs.stream()
+                  .filter(job -> connectorJobId.equals(job.jobId))
+                  .findFirst()
+                  .map(job -> job.tablesScanned)
+                  .orElse(0L));
           finishProjectionRefresh(accountId, connectorJobId, 5);
           assertEquals(
               1L, waitForProjectionTablesScanned(accountId, connectorJobId, 1L).tablesScanned());
