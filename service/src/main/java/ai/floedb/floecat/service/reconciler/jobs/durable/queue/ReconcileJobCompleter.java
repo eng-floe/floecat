@@ -80,6 +80,7 @@ public class ReconcileJobCompleter {
             existing.state = "JS_RUNNING";
             existing.message = "Running";
           }
+          existing.childrenFinalized = false;
           if (existing.startedAtMs <= 0L) {
             existing.startedAtMs = startedAtMs;
           }
@@ -174,6 +175,7 @@ public class ReconcileJobCompleter {
                 existing.snapshotsProcessed =
                     Math.max(existing.snapshotsProcessed, snapshotsProcessed);
                 existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+                existing.childrenFinalized = false;
                 existing.readyPointerKey = null;
                 return existing;
               }
@@ -186,6 +188,7 @@ public class ReconcileJobCompleter {
                         "Succeeded",
                         finishedAtMs,
                         blankToEmpty(existing.executorId),
+                        false,
                         tablesScanned,
                         tablesChanged,
                         viewsScanned,
@@ -200,6 +203,7 @@ public class ReconcileJobCompleter {
                         blank(message) ? "Waiting on child work" : message,
                         0L,
                         "",
+                        true,
                         tablesScanned,
                         tablesChanged,
                         viewsScanned,
@@ -218,9 +222,10 @@ public class ReconcileJobCompleter {
                         errors,
                         snapshotsProcessed,
                         statsProcessed);
-                case FAILED_WAITING ->
+                case FAILED_WAITING_ON_DEPENDENCY ->
                     applyFailedWaiting(
                         existing,
+                        false,
                         message,
                         tablesScanned,
                         tablesChanged,
@@ -273,6 +278,7 @@ public class ReconcileJobCompleter {
       String nextMessage,
       long nextFinishedAtMs,
       String nextExecutorId,
+      boolean childrenFinalized,
       long tablesScanned,
       long tablesChanged,
       long viewsScanned,
@@ -289,6 +295,7 @@ public class ReconcileJobCompleter {
     existing.lastError = "";
     existing.state = nextState;
     existing.message = nextMessage;
+    existing.childrenFinalized = childrenFinalized;
     existing.finishedAtMs = nextFinishedAtMs;
     existing.executorId = nextExecutorId;
     if (existing.startedAtMs <= 0L) {
@@ -318,6 +325,7 @@ public class ReconcileJobCompleter {
     existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
     existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
+    existing.childrenFinalized = false;
 
     if (existing.attempt >= maxAttempts) {
       existing.state = "JS_FAILED";
@@ -342,6 +350,7 @@ public class ReconcileJobCompleter {
 
   private StoredReconcileJob applyFailedWaiting(
       StoredReconcileJob existing,
+      boolean childrenFinalized,
       String message,
       long tablesScanned,
       long tablesChanged,
@@ -360,6 +369,7 @@ public class ReconcileJobCompleter {
     existing.lastError = message == null ? "Waiting on dependency" : message;
     existing.state = "JS_QUEUED";
     existing.message = message == null ? "Waiting on dependency" : message;
+    existing.childrenFinalized = childrenFinalized;
     existing.executorId = "";
     existing.nextAttemptAtMs = System.currentTimeMillis() + baseBackoffMs;
     existing.finishedAtMs = 0L;
@@ -387,6 +397,7 @@ public class ReconcileJobCompleter {
     existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
     existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
     existing.lastError = message == null ? "Failed" : message;
+    existing.childrenFinalized = false;
     existing.state = "JS_FAILED";
     existing.message = message == null ? "Failed" : message;
     if (existing.startedAtMs <= 0L) {
@@ -421,6 +432,7 @@ public class ReconcileJobCompleter {
     existing.errors = errors;
     existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
     existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.childrenFinalized = false;
     existing.readyPointerKey = null;
     return existing;
   }
@@ -430,7 +442,7 @@ public class ReconcileJobCompleter {
       case SUCCEEDED -> "markSucceeded";
       case SUCCEEDED_WAITING -> "markSucceededWaiting";
       case FAILED_RETRYABLE -> "markFailed";
-      case FAILED_WAITING -> "markWaiting";
+      case FAILED_WAITING_ON_DEPENDENCY -> "markWaitingOnDependency";
       case FAILED_TERMINAL -> "markFailedTerminal";
       case CANCELLED -> "markCancelled";
     };

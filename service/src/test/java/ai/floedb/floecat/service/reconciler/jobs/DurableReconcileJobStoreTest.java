@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -56,6 +57,8 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -72,6 +75,8 @@ import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 class DurableReconcileJobStoreTest {
+  private static final Pattern JOB_ID_PATTERN =
+      Pattern.compile("([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})");
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
 
@@ -267,14 +272,9 @@ class DurableReconcileJobStoreTest {
     var firstLease = leaseJob(jobId);
     store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
 
-    ReconcileJob requeued =
-        waitForValue(
-            () -> store.get(jobId).orElseThrow(),
-            current -> "JS_QUEUED".equals(current.state),
-            "retried job " + jobId);
-    assertEquals("JS_QUEUED", requeued.state);
-
     var secondLease = leaseJob(jobId);
+    assertTrue(!secondLease.leaseEpoch.isBlank());
+    assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
     store.markSucceeded(jobId, secondLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
     ReconcileJob terminal =
@@ -304,12 +304,9 @@ class DurableReconcileJobStoreTest {
     var firstLease = leaseJob(jobId);
     store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
 
-    waitForValue(
-        () -> store.get(jobId).orElseThrow(),
-        current -> "JS_QUEUED".equals(current.state),
-        "retried job " + jobId);
-
     var secondLease = leaseJob(jobId);
+    assertTrue(!secondLease.leaseEpoch.isBlank());
+    assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
     store.markFailed(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
 
     ReconcileJob failed =
@@ -373,6 +370,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         0L,
         0L,
@@ -400,6 +398,78 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_SUCCEEDED", rootSummary.state);
     assertEquals(200L, rootSummary.finishedAtMs);
+    assertEquals(1L, rootSummary.tablesScanned);
+    assertEquals(1L, rootSummary.tablesChanged);
+  }
+
+  @Test
+  void rootProjectionDoesNotSucceedUntilExpectedDirectChildrenAreObserved() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.expectedDirectChildren = 2L;
+                      current.projectionRequestedGeneration =
+                          Math.max(1L, current.projectionRequestedGeneration + 1L);
+                      return current;
+                    }));
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 1L, 0L);
+
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> current.tablesScanned == 1L && current.tablesChanged == 1L,
+            "incomplete child root summary for " + connectorJobId);
+
+    assertTrue(
+        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+            .contains(rootSummary.state));
     assertEquals(1L, rootSummary.tablesScanned);
     assertEquals(1L, rootSummary.tablesChanged);
   }
@@ -463,6 +533,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -473,7 +544,16 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 125L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        125L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
@@ -593,6 +673,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -603,13 +684,23 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     projectionStore()
         .upsert(
             new StoredReconcileJobProjection(
                 ACCOUNT_ID,
                 tableJobId,
+                0L,
                 "JS_SUCCEEDED",
                 "Succeeded",
                 100L,
@@ -634,12 +725,27 @@ class DurableReconcileJobStoreTest {
     runMaintenance();
 
     StoredReconcileJobProjection tableProjection =
-        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
-    ReconcileJob rootSummary =
-        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, tableJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active table projection " + tableJobId)
             .orElseThrow();
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                        .contains(current.state)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L,
+            "active root summary " + connectorJobId);
 
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
@@ -690,6 +796,7 @@ class DurableReconcileJobStoreTest {
         connectorJobId,
         connectorLease.leaseEpoch,
         60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
         "Waiting on child work",
         1L,
         0L,
@@ -700,7 +807,16 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markWaiting(
-        tableJobId, tableLease.leaseEpoch, 110L, "Waiting on child work", 1L, 1L, 0L, 0L, 0L);
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
 
     assertDoesNotThrow(
         () ->
@@ -723,14 +839,34 @@ class DurableReconcileJobStoreTest {
     runMaintenance();
 
     StoredReconcileJobProjection tableProjection =
-        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
-    StoredReconcileJobProjection connectorProjection =
-        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
-    ReconcileJob rootSummary =
-        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
-            .findFirst()
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, tableJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active table projection " + tableJobId)
             .orElseThrow();
+    StoredReconcileJobProjection connectorProjection =
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, connectorJobId),
+                current ->
+                    current.isPresent()
+                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                            .contains(current.get().state()),
+                "active connector projection " + connectorJobId)
+            .orElseThrow();
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
+                    .contains(current.state),
+            "active root summary " + connectorJobId);
 
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
@@ -917,7 +1053,11 @@ class DurableReconcileJobStoreTest {
     }
     assertTrue(
         value != null && done.test(value),
-        "Timed out waiting for " + description + "; last value=" + value);
+        "Timed out waiting for "
+            + description
+            + "; last value="
+            + value
+            + timeoutDiagnostics(description, value));
     return value;
   }
 
@@ -932,6 +1072,119 @@ class DurableReconcileJobStoreTest {
   private void runMaintenance() {
     store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
+
+  private String timeoutDiagnostics(String description, Object value) {
+    StringBuilder out = new StringBuilder();
+    out.append("\nTimeout diagnostics:");
+    DebugContext context = debugContext(description, value);
+    out.append("\n  context=").append(context);
+    if (!context.accountId().isBlank() && !context.jobId().isBlank()) {
+      String canonicalKey = Keys.reconcileJobPointerById(context.accountId(), context.jobId());
+      out.append("\n  canonical=");
+      try {
+        out.append(store.jobIndexStore.readCanonicalRecordByKey(canonicalKey).orElse(null));
+      } catch (Exception e) {
+        out.append("<error ").append(e.getMessage()).append(">");
+      }
+      out.append("\n  projection=");
+      try {
+        out.append(projectionStore().load(context.accountId(), context.jobId()).orElse(null));
+      } catch (Exception e) {
+        out.append("<error ").append(e.getMessage()).append(">");
+      }
+      out.append("\n  dirtyMarker=");
+      try {
+        out.append(
+            store
+                .pointerStore
+                .get(Keys.reconcileDirtyParentPointer(context.accountId(), context.jobId()))
+                .orElse(null));
+      } catch (Exception e) {
+        out.append("<error ").append(e.getMessage()).append(">");
+      }
+      out.append("\n  rootSummary=");
+      try {
+        out.append(
+            rootSummaryStore()
+                .listSummaries(context.accountId(), 50, "", "", Set.of())
+                .summaries()
+                .stream()
+                .filter(summary -> context.jobId().equals(summary.jobId()))
+                .findFirst()
+                .orElse(null));
+      } catch (Exception e) {
+        out.append("<error ").append(e.getMessage()).append(">");
+      }
+    }
+    if (!context.accountId().isBlank()) {
+      out.append("\n  accountCanonicalJobs=").append(listCanonicalJobs(context.accountId(), 20));
+      out.append("\n  accountProjections=")
+          .append(
+              listPointersForPrefix(
+                  Keys.reconcileJobProjectionPointerPrefix(context.accountId()), 20));
+      out.append("\n  accountDirtyMarkers=")
+          .append(listPointersForPrefix(Keys.reconcileDirtyParentPointerPrefix(), 20));
+      out.append("\n  accountRootSummaries=");
+      try {
+        out.append(
+            rootSummaryStore()
+                .listSummaries(context.accountId(), 20, "", "", Set.of())
+                .summaries());
+      } catch (Exception e) {
+        out.append("<error ").append(e.getMessage()).append(">");
+      }
+    }
+    return out.toString();
+  }
+
+  private List<StoredReconcileJob> listCanonicalJobs(String accountId, int limit) {
+    StringBuilder next = new StringBuilder();
+    return store
+        .pointerStore
+        .listPointersByPrefix(Keys.reconcileJobPointerByIdPrefix(accountId), limit, "", next)
+        .stream()
+        .map(pointer -> readStoredRecord(pointer.getKey()))
+        .toList();
+  }
+
+  private List<Pointer> listPointersForPrefix(String prefix, int limit) {
+    StringBuilder next = new StringBuilder();
+    return store.pointerStore.listPointersByPrefix(prefix, limit, "", next);
+  }
+
+  private DebugContext debugContext(String description, Object value) {
+    String accountId = ACCOUNT_ID;
+    String jobId = "";
+    if (value instanceof ReconcileJob job) {
+      accountId = blankToDefault(job.accountId, ACCOUNT_ID);
+      jobId = blankToEmpty(job.jobId);
+    } else if (value instanceof StoredReconcileJob job) {
+      accountId = blankToDefault(job.accountId, ACCOUNT_ID);
+      jobId = blankToEmpty(job.jobId);
+    } else if (value instanceof Optional<?> optional && optional.isPresent()) {
+      return debugContext(description, optional.get());
+    } else if (value instanceof StoredReconcileJobProjection projection) {
+      accountId = blankToDefault(projection.accountId(), ACCOUNT_ID);
+      jobId = blankToEmpty(projection.jobId());
+    }
+    if (jobId.isBlank()) {
+      Matcher matcher = JOB_ID_PATTERN.matcher(description == null ? "" : description);
+      if (matcher.find()) {
+        jobId = matcher.group(1);
+      }
+    }
+    return new DebugContext(accountId, jobId);
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
+  }
+
+  private static String blankToDefault(String value, String fallback) {
+    return value == null || value.isBlank() ? fallback : value;
+  }
+
+  private record DebugContext(String accountId, String jobId) {}
 
   private Object invokePrivateMethod(Object target, String name, Class<?>[] parameterTypes)
       throws Exception {

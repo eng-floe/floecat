@@ -501,7 +501,7 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.applyLeaseOutcome(
             eq("job-2"),
             eq("lease-2"),
-            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY),
             anyLong(),
             any(),
             anyLong(),
@@ -531,7 +531,7 @@ class LeasedPlannerWorkerServiceTest {
         .applyLeaseOutcome(
             eq("job-2"),
             eq("lease-2"),
-            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY),
             anyLong(),
             eq("waiting"),
             eq(0L),

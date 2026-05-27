@@ -54,6 +54,20 @@ public class ReconcileJobProjectionStore {
     for (int i = 0; i < CAS_MAX; i++) {
       Pointer current = pointerStore.get(key).orElse(null);
       long expectedVersion = current == null ? 0L : current.getVersion();
+      StoredReconcileJobProjection currentProjection =
+          current == null
+              ? null
+              : payloadStore.readInlineJobProjection(current.getBlobUri()).orElse(null);
+      if (currentProjection != null
+          && currentProjection.appliedGeneration() > projection.appliedGeneration()) {
+        return;
+      }
+      if (currentProjection != null
+          && currentProjection.appliedGeneration() == projection.appliedGeneration()
+          && current != null
+          && !blobUri.equals(current.getBlobUri())) {
+        return;
+      }
       if (current != null && blobUri.equals(current.getBlobUri())) {
         return;
       }

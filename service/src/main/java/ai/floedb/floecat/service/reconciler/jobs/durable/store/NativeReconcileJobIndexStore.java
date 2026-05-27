@@ -517,6 +517,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.failedFileGroups = source.failedFileGroups;
     copy.completedFiles = source.completedFiles;
     copy.failedFiles = source.failedFiles;
+    copy.expectedDirectChildren = source.expectedDirectChildren;
+    copy.childrenFinalized = source.childrenFinalized;
+    copy.projectionRequestedGeneration = source.projectionRequestedGeneration;
+    copy.projectionAppliedGeneration = source.projectionAppliedGeneration;
     copy.attempt = source.attempt;
     copy.nextAttemptAtMs = source.nextAttemptAtMs;
     copy.lastError = source.lastError;

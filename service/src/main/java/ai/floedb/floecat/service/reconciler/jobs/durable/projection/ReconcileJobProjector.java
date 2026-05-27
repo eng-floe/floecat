@@ -401,6 +401,7 @@ public class ReconcileJobProjector {
     return new StoredReconcileJobProjection(
         blankToEmpty(stored.accountId),
         blankToEmpty(stored.jobId),
+        Math.max(0L, stored.projectionAppliedGeneration),
         state,
         normalizeWaitingStateMessage(state, stored.message),
         stored.startedAtMs,
@@ -628,6 +629,9 @@ public class ReconcileJobProjector {
     return new StoredReconcileJobProjection(
         blankToEmpty(stored.accountId),
         blankToEmpty(stored.jobId),
+        Math.max(
+            Math.max(0L, stored.projectionAppliedGeneration),
+            Math.max(0L, storedProjection.appliedGeneration())),
         effectiveState,
         effectiveMessage,
         effectiveStartedAtMs,
@@ -657,6 +661,7 @@ public class ReconcileJobProjector {
     return new StoredReconcileJobProjection(
         blankToEmpty(stored.accountId),
         blankToEmpty(stored.jobId),
+        Math.max(0L, stored.projectionAppliedGeneration),
         state,
         normalizeWaitingStateMessage(state, stored.message),
         stored.startedAtMs,
@@ -736,7 +741,7 @@ public class ReconcileJobProjector {
     if (!hasAggregateMetrics(storedProjection)) {
       return false;
     }
-    return !"JS_QUEUED".equals(projectionState);
+    return true;
   }
 
   private static boolean hasAggregateMetrics(StoredReconcileJobProjection projection) {

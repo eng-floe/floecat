@@ -475,7 +475,7 @@ class ReconcileExecutorControlImplTest {
     when(service.jobs.applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY),
             anyLong(),
             eq("waiting on file-group children"),
             eq(0L),
@@ -506,7 +506,7 @@ class ReconcileExecutorControlImplTest {
         .applyLeaseOutcome(
             eq("job-1"),
             eq("lease-1"),
-            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING),
+            eq(ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY),
             anyLong(),
             eq("waiting on file-group children"),
             eq(0L),

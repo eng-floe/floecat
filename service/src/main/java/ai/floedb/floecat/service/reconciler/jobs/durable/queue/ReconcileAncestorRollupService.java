@@ -136,6 +136,7 @@ public class ReconcileAncestorRollupService {
     return new StoredReconcileJobProjection(
         blankToEmpty(parent.accountId),
         blankToEmpty(parent.jobId),
+        Math.max(0L, parent.projectionRequestedGeneration),
         parentState.state(),
         parentState.message(),
         parentState.startedAtMs(),
@@ -202,10 +203,15 @@ public class ReconcileAncestorRollupService {
             aggregate.failedChildJobs(),
             aggregate.cancelledChildJobs(),
             aggregate.directChildObserved());
-    long directChildJobs = Math.max(0L, aggregate.directChildObserved());
+    long expectedDirectChildJobs =
+        Math.max(
+            Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
+            Math.max(0L, aggregate.directChildObserved()));
+    boolean childSetFinalized = childSetFinalized(parent);
     boolean allSucceeded =
-        directChildJobs > 0L
-            && aggregate.completedChildJobs() >= directChildJobs
+        childSetFinalized
+            && expectedDirectChildJobs > 0L
+            && aggregate.completedChildJobs() >= expectedDirectChildJobs
             && aggregate.failedChildJobs() == 0L
             && aggregate.cancelledChildJobs() == 0L
             && aggregate.queuedChildJobs() == 0L
@@ -276,7 +282,18 @@ public class ReconcileAncestorRollupService {
                 "JS_WAITING", firstNonBlank(currentChildMessage, message, "Waiting on child work"));
         executorId = "";
       } else if ("JS_WAITING".equals(parent.state)
-          && !directChildJobsComplete(aggregate.directChildObserved(), directChildCounts)) {
+          && !directChildJobsComplete(expectedDirectChildJobs, directChildCounts)) {
+        state = "JS_WAITING";
+        message =
+            ReconcileJobProjector.normalizeWaitingStateMessage(
+                "JS_WAITING", firstNonBlank(parent.message, "Waiting on child work"));
+        executorId = "";
+      } else if (childSetFinalized
+          && expectedDirectChildJobs > directChildCounts.totalTerminal()
+          && aggregate.queuedChildJobs() == 0L
+          && aggregate.waitingChildJobs() == 0L
+          && aggregate.runningChildJobs() == 0L
+          && aggregate.cancellingChildJobs() == 0L) {
         state = "JS_WAITING";
         message =
             ReconcileJobProjector.normalizeWaitingStateMessage(
@@ -293,10 +310,10 @@ public class ReconcileAncestorRollupService {
                 "JS_WAITING", firstNonBlank(currentChildMessage, message, "Waiting on child work"));
         executorId = "";
       } else if (allSucceeded
-          && directChildJobsComplete(aggregate.directChildObserved(), directChildCounts)) {
+          && directChildJobsComplete(expectedDirectChildJobs, directChildCounts)) {
         state = "JS_SUCCEEDED";
         message = ReconcileJobProjector.normalizeSucceededMessage(message);
-      } else if (allSucceeded && aggregate.directChildObserved() > 0L) {
+      } else if (allSucceeded && expectedDirectChildJobs > 0L) {
         state = "JS_WAITING";
         message = "Waiting on child work";
         executorId = "";
@@ -325,6 +342,10 @@ public class ReconcileAncestorRollupService {
       long expectedChildJobs, DirectChildCounts directChildCounts) {
     long expected = Math.max(0L, expectedChildJobs);
     return expected <= 0L || directChildCounts.totalTerminal() >= expected;
+  }
+
+  private static boolean childSetFinalized(StoredReconcileJob parent) {
+    return parent != null && parent.childrenFinalized;
   }
 
   private static boolean isDependencyWaitingQueuedChild(ProjectedPublicJob projected) {
