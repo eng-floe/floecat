@@ -59,6 +59,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
@@ -353,6 +354,33 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        columnSelectorPolicy,
+        () -> false,
+        () -> {});
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -373,10 +401,13 @@ abstract class DeltaConnector implements FloecatConnector {
             includeTargetKinds == null || includeTargetKinds.isEmpty()
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
-            plannedFilePaths);
+            plannedFilePaths,
+            shouldStop,
+            progressHeartbeat);
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
-            ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
+            ? new ParquetPageIndexReader(parquetInput, shouldStop, progressHeartbeat)
+                .readEntries(plannedFilePaths)
             : List.of();
     return FileGroupCaptureResult.of(stats, pageIndexEntries);
   }
@@ -528,7 +559,9 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<String> includeNames,
       Set<String> plannedFilePaths,
       Map<String, LogicalType> nameToType,
-      boolean allowFooterFallback) {
+      boolean allowFooterFallback,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
 
     NdvProvider bootstrap = null;
 
@@ -554,13 +587,22 @@ abstract class DeltaConnector implements FloecatConnector {
             nameToType,
             ndvProvider,
             true,
-            allowFooterFallback)) {
+            allowFooterFallback,
+            shouldStop,
+            progressHeartbeat)) {
 
       var columnNames = planner.columnNamesByKey();
       var logicalTypes = planner.logicalTypesByKey();
 
       var engine =
-          new GenericStatsEngine<>(planner, ndvProvider, bootstrap, columnNames, logicalTypes);
+          new GenericStatsEngine<>(
+              planner,
+              ndvProvider,
+              bootstrap,
+              columnNames,
+              logicalTypes,
+              shouldStop,
+              progressHeartbeat);
 
       var result = engine.compute();
       return new EngineOut(
@@ -664,7 +706,8 @@ abstract class DeltaConnector implements FloecatConnector {
         snapshot,
         includeTargetKinds,
         plannedFilePaths,
-        true);
+        () -> false,
+        () -> {});
   }
 
   private List<TargetStatsRecord> buildTargetStats(
@@ -677,6 +720,57 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths,
       boolean allowFooterFallback) {
+    return buildTargetStats(
+        tableRoot,
+        destinationTableId,
+        includeColumns,
+        columnSelectorPolicy,
+        version,
+        snapshot,
+        includeTargetKinds,
+        plannedFilePaths,
+        allowFooterFallback,
+        () -> false,
+        () -> {});
+  }
+
+  private List<TargetStatsRecord> buildTargetStats(
+      String tableRoot,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      long version,
+      Snapshot snapshot,
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
+    return buildTargetStats(
+        tableRoot,
+        destinationTableId,
+        includeColumns,
+        columnSelectorPolicy,
+        version,
+        snapshot,
+        includeTargetKinds,
+        plannedFilePaths,
+        true,
+        shouldStop,
+        progressHeartbeat);
+  }
+
+  private List<TargetStatsRecord> buildTargetStats(
+      String tableRoot,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      long version,
+      Snapshot snapshot,
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths,
+      boolean allowFooterFallback,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -693,7 +787,14 @@ abstract class DeltaConnector implements FloecatConnector {
 
     EngineOut engineOut =
         runEngine(
-            tableRoot, version, includeNames, plannedFilePaths, nameToType, allowFooterFallback);
+            tableRoot,
+            version,
+            includeNames,
+            plannedFilePaths,
+            nameToType,
+            allowFooterFallback,
+            shouldStop,
+            progressHeartbeat);
     if (engineOut.hasInlineDeletionVectors()) {
       throw new UnsupportedOperationException(
           "Delta table uses inline deletion vectors; not supported for snapshot " + version);

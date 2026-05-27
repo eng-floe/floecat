@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 @ApplicationScoped
 public class StandaloneJavaFileGroupExecutionRunner {
@@ -31,6 +32,13 @@ public class StandaloneJavaFileGroupExecutionRunner {
   @Inject ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
 
   public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
+    return execute(payload, () -> false, () -> {});
+  }
+
+  public CaptureEngineResult execute(
+      StandaloneFileGroupExecutionPayload payload,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     if (payload == null
         || payload.tableId() == null
         || payload.sourceConnector() == null
@@ -55,7 +63,9 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
                 FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
                 payload.capturePageIndex(),
-                reconcileWorkerAuthProvider.authorizationHeader()));
+                reconcileWorkerAuthProvider.authorizationHeader(),
+                shouldStop,
+                progressHeartbeat));
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }

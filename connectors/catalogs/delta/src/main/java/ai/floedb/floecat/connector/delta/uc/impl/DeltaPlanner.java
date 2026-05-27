@@ -74,6 +74,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.parquet.io.InputFile;
@@ -101,6 +103,8 @@ final class DeltaPlanner implements Planner<String> {
   private final List<String> missingLogStatsSamplePaths = new ArrayList<>();
   private final List<String> checkpointStructRecoverySamplePaths = new ArrayList<>();
   private final List<String> deletionVectorSamplePaths = new ArrayList<>();
+  private final BooleanSupplier shouldStop;
+  private final Runnable progressHeartbeat;
   private boolean hasInlineDeletionVectors = false;
   private boolean missingLogStats = false;
   private int missingLogStatsFileCount = 0;
@@ -121,10 +125,40 @@ final class DeltaPlanner implements Planner<String> {
       NdvProvider ndvProvider,
       boolean includeStats,
       boolean allowFooterFallback) {
+    this(
+        engine,
+        parquetInput,
+        tableRoot,
+        version,
+        includeColumns,
+        plannedFilePaths,
+        nameToType,
+        ndvProvider,
+        includeStats,
+        allowFooterFallback,
+        () -> false,
+        () -> {});
+  }
+
+  DeltaPlanner(
+      Engine engine,
+      Function<String, InputFile> parquetInput,
+      String tableRoot,
+      long version,
+      Set<String> includeColumns,
+      Set<String> plannedFilePaths,
+      Map<String, LogicalType> nameToType,
+      NdvProvider ndvProvider,
+      boolean includeStats,
+      boolean allowFooterFallback,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
 
     this.engine = engine;
     this.ndvProvider = ndvProvider;
     this.allowFooterFallback = allowFooterFallback;
+    this.shouldStop = shouldStop == null ? () -> false : shouldStop;
+    this.progressHeartbeat = progressHeartbeat == null ? () -> {} : progressHeartbeat;
     this.tableRoot = Objects.requireNonNull(tableRoot);
     this.plannedFilePaths =
         plannedFilePaths == null || plannedFilePaths.isEmpty()
@@ -158,9 +192,11 @@ final class DeltaPlanner implements Planner<String> {
 
     try (CloseableIterator<FilteredColumnarBatch> it = scan.getScanFiles(engine)) {
       while (it.hasNext()) {
+        ensureNotStopped();
         FilteredColumnarBatch batch = it.next();
         try (var rows = batch.getRows()) {
           while (rows.hasNext()) {
+            ensureNotStopped();
             Row scanFileRow = rows.next();
 
             FileStatus fs = InternalScanFileUtils.getAddFileStatus(scanFileRow);
@@ -277,6 +313,7 @@ final class DeltaPlanner implements Planner<String> {
                 valueCounts = new LinkedHashMap<>();
 
                 for (var e : bfs.cols.entrySet()) {
+                  ensureNotStopped();
                   String name = e.getKey();
                   var c = e.getValue();
                   nullCounts.put(name, c.nulls);
@@ -308,6 +345,7 @@ final class DeltaPlanner implements Planner<String> {
                     partitionJson,
                     0,
                     null));
+            this.progressHeartbeat.run();
           }
         }
       }
@@ -318,6 +356,12 @@ final class DeltaPlanner implements Planner<String> {
 
   boolean hasDeletionVectors() {
     return !diskDeletionVectors.isEmpty() || hasInlineDeletionVectors;
+  }
+
+  private void ensureNotStopped() {
+    if (shouldStop.getAsBoolean()) {
+      throw new CancellationException("capture stopped");
+    }
   }
 
   boolean missingLogStats() {

@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -650,6 +651,7 @@ class QueuedReconcileWorkerSupport {
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
+              active,
               connectorId,
               connector,
               fullRescan,
@@ -833,6 +835,7 @@ class QueuedReconcileWorkerSupport {
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
+              active,
               connectorId,
               connector,
               fullRescan,
@@ -930,6 +933,7 @@ class QueuedReconcileWorkerSupport {
 
   private TableExecutionOutcome executeResolvedTable(
       ReconcileContext ctx,
+      ActiveConnector active,
       ResourceId connectorId,
       FloecatConnector connector,
       boolean fullRescan,
@@ -981,6 +985,8 @@ class QueuedReconcileWorkerSupport {
     if (!scope.acceptsTable(table.destinationNamespaceId().getId(), tableId.getId())) {
       return TableExecutionOutcome.skipped();
     }
+    ConnectorConfig tableScopedConfig =
+        reconcilerService.tableScopedResolvedConfig(ctx, active, tableId);
 
     Map<String, Map<Long, List<ReconcileScope.ScopedCaptureRequest>>> scopedCaptureRequestsByTable =
         ReconcilerService.indexScopedCaptureRequestsByTableScope(
@@ -1032,26 +1038,53 @@ class QueuedReconcileWorkerSupport {
             tableScopedCaptureRequestsBySnapshot,
             defaultColumnSelectors);
 
-    MetadataPassOutcome outcome =
-        processMetadataPass(
-            ctx,
-            scope,
-            tableId,
-            connector,
-            table.sourceNamespace(),
-            table.sourceTable(),
-            fullRescan,
-            includeCoreMetadata,
-            knownSnapshotIds,
-            enumerationKnownSnapshotIds,
-            targetSnapshotIds,
-            cancelRequested,
-            progress,
-            tablesScannedBase + tablesScanned,
-            tablesChangedBase,
-            errors,
-            snapshotsProcessedBase,
-            statsProcessedBase);
+    MetadataPassOutcome outcome;
+    if (tableScopedConfig != null && !tableScopedConfig.equals(active.resolvedConfig())) {
+      try (FloecatConnector tableScopedConnector =
+          reconcilerService.connectorOpener.open(tableScopedConfig)) {
+        outcome =
+            processMetadataPass(
+                ctx,
+                scope,
+                tableId,
+                tableScopedConnector,
+                table.sourceNamespace(),
+                table.sourceTable(),
+                fullRescan,
+                includeCoreMetadata,
+                knownSnapshotIds,
+                enumerationKnownSnapshotIds,
+                targetSnapshotIds,
+                cancelRequested,
+                progress,
+                tablesScannedBase + tablesScanned,
+                tablesChangedBase,
+                errors,
+                snapshotsProcessedBase,
+                statsProcessedBase);
+      }
+    } else {
+      outcome =
+          processMetadataPass(
+              ctx,
+              scope,
+              tableId,
+              connector,
+              table.sourceNamespace(),
+              table.sourceTable(),
+              fullRescan,
+              includeCoreMetadata,
+              knownSnapshotIds,
+              enumerationKnownSnapshotIds,
+              targetSnapshotIds,
+              cancelRequested,
+              progress,
+              tablesScannedBase + tablesScanned,
+              tablesChangedBase,
+              errors,
+              snapshotsProcessedBase,
+              statsProcessedBase);
+    }
     long snapshotsProcessed = outcome.ingestCounts().snapshotsProcessed;
     long statsProcessed = 0L;
     long tablesChanged =

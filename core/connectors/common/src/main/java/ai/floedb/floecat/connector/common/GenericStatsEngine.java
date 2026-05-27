@@ -30,7 +30,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 
 public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
@@ -39,6 +41,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
   private final NdvProvider bootstrapNdv;
   private final Map<K, String> columnNames;
   private final Map<K, LogicalType> logicalTypes;
+  private final BooleanSupplier shouldStop;
+  private final Runnable progressHeartbeat;
 
   public GenericStatsEngine(
       Planner<K> planner,
@@ -46,11 +50,24 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       NdvProvider bootstrapNdv,
       Map<K, String> columnNames,
       Map<K, LogicalType> logicalTypes) {
+    this(planner, ndvProvider, bootstrapNdv, columnNames, logicalTypes, () -> false, () -> {});
+  }
+
+  public GenericStatsEngine(
+      Planner<K> planner,
+      NdvProvider ndvProvider,
+      NdvProvider bootstrapNdv,
+      Map<K, String> columnNames,
+      Map<K, LogicalType> logicalTypes,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     this.planner = Objects.requireNonNull(planner);
     this.ndvProvider = ndvProvider;
     this.bootstrapNdv = bootstrapNdv;
     this.columnNames = columnNames == null ? Map.of() : Map.copyOf(columnNames);
     this.logicalTypes = logicalTypes == null ? Map.of() : Map.copyOf(logicalTypes);
+    this.shouldStop = shouldStop == null ? () -> false : shouldStop;
+    this.progressHeartbeat = progressHeartbeat == null ? () -> {} : progressHeartbeat;
   }
 
   @Override
@@ -102,6 +119,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     final List<FileAgg<K>> fileAggs = new ArrayList<>();
 
     for (PlannedFile<K> file : planner) {
+      ensureNotStopped();
       files++;
       rows += file.rowCount();
       bytes += file.sizeBytes();
@@ -131,6 +149,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
               file.partitionDataJson(),
               file.partitionSpecId(),
               file.sequenceNumber()));
+      progressHeartbeat.run();
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -148,6 +167,12 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         files,
         Collections.unmodifiableMap(out),
         Collections.unmodifiableList(fileAggs));
+  }
+
+  private void ensureNotStopped() {
+    if (shouldStop.getAsBoolean()) {
+      throw new CancellationException("capture stopped");
+    }
   }
 
   private static final class Acc<K> {

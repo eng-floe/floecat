@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /** Source-aware capture request used by pluggable capture engines. */
 public record CaptureEngineRequest(
@@ -39,7 +40,43 @@ public record CaptureEngineRequest(
     FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
     boolean capturePageIndex,
-    Optional<String> authorizationToken) {
+    Optional<String> authorizationToken,
+    BooleanSupplier shouldStop,
+    Runnable progressHeartbeat) {
+  public CaptureEngineRequest(
+      Connector sourceConnector,
+      String sourceNamespace,
+      String sourceTable,
+      ResourceId tableId,
+      long snapshotId,
+      String planId,
+      String groupId,
+      List<String> plannedFilePaths,
+      Set<String> statsColumns,
+      Set<String> indexColumns,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
+      Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
+      boolean capturePageIndex,
+      Optional<String> authorizationToken) {
+    this(
+        sourceConnector,
+        sourceNamespace,
+        sourceTable,
+        tableId,
+        snapshotId,
+        planId,
+        groupId,
+        plannedFilePaths,
+        statsColumns,
+        indexColumns,
+        columnSelectorPolicy,
+        requestedStatsTargetKinds,
+        capturePageIndex,
+        authorizationToken,
+        () -> false,
+        () -> {});
+  }
+
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -66,6 +103,8 @@ public record CaptureEngineRequest(
         authorizationToken == null
             ? Optional.empty()
             : authorizationToken.map(String::trim).filter(token -> !token.isBlank());
+    shouldStop = shouldStop == null ? () -> false : shouldStop;
+    progressHeartbeat = progressHeartbeat == null ? () -> {} : progressHeartbeat;
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {

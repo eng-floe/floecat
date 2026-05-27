@@ -45,6 +45,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class RemoteFileGroupReconcileExecutorTest {
@@ -111,7 +112,7 @@ class RemoteFileGroupReconcileExecutorTest {
             new IllegalArgumentException("Unsupported parquet page type DICTIONARY_PAGE"));
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenThrow(failure);
+    when(runner.execute(eq(payload), any(), any())).thenThrow(failure);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -168,7 +169,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -205,7 +206,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -246,7 +247,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any(), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(
             eq(remoteLease),
             eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success"))))
@@ -265,6 +266,44 @@ class RemoteFileGroupReconcileExecutorTest {
   }
 
   @Test
+  void inBandHeartbeatReportsProgressDuringCapture() {
+    RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
+    StandaloneJavaFileGroupExecutionRunner runner =
+        mock(StandaloneJavaFileGroupExecutionRunner.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteFileGroupReconcileExecutor executor =
+        new RemoteFileGroupReconcileExecutor(
+            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+
+    ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    StandaloneFileGroupExecutionPayload payload = payload();
+    AtomicInteger progressCalls = new AtomicInteger();
+
+    when(workerClient.getExecution(remoteLease)).thenReturn(payload);
+    when(runner.execute(eq(payload), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Runnable heartbeat = invocation.getArgument(2);
+              heartbeat.run();
+              return CaptureEngineResult.empty();
+            });
+    when(workerClient.submitSuccess(
+            eq(remoteLease),
+            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success"))))
+        .thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> progressCalls.incrementAndGet()));
+
+    assertTrue(result.ok());
+    assertTrue(progressCalls.get() >= 1);
+  }
+
+  @Test
   void successSubmissionTransportFailureDoesNotSubmitFailure() {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
@@ -280,7 +319,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any(), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(
             eq(remoteLease),
             eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success"))))
@@ -315,7 +354,7 @@ class RemoteFileGroupReconcileExecutorTest {
     ReconcilerBackend.StagedIndexArtifact artifact = stagedArtifact();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any(), any()))
         .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
     when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
 
@@ -364,7 +403,7 @@ class RemoteFileGroupReconcileExecutorTest {
     ReconcilerBackend.StagedIndexArtifact artifact = stagedArtifact();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any(), any()))
         .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
     org.mockito.Mockito.doThrow(new IllegalStateException("blob write failed"))
         .when(blobStore)
@@ -422,7 +461,7 @@ class RemoteFileGroupReconcileExecutorTest {
             null);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any(), any()))
         .thenReturn(CaptureEngineResult.of(List.of(fileStat), List.of(), List.of()));
     when(snapshotPlanBlobStore.persistFileGroupStats(
             "acct", "job-1", "job-1:plan-1:group-1:success", List.of(fileStat)))

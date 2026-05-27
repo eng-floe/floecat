@@ -91,6 +91,7 @@ class GrpcRemoteReconcileExecutorClient
   private final int workerControlPort;
   private final boolean workerControlPlainText;
   private final int workerControlMaxInboundMessageSize;
+  private final long workerControlLeaseRpcDeadlineMs;
   private final Object workerControlLock = new Object();
   private volatile ManagedChannel workerControlChannel;
   private volatile ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub
@@ -116,6 +117,10 @@ class GrpcRemoteReconcileExecutorClient
               name = "floecat.reconciler.worker-control.grpc.max-inbound-message-size",
               defaultValue = "0")
           int workerControlMaxInboundMessageSize,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.lease-rpc-deadline-ms",
+              defaultValue = "5000")
+          long workerControlLeaseRpcDeadlineMs,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
     this(
         sessionHeaderName,
@@ -125,6 +130,7 @@ class GrpcRemoteReconcileExecutorClient
         workerControlPort,
         workerControlPlainText,
         workerControlMaxInboundMessageSize,
+        workerControlLeaseRpcDeadlineMs,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -139,6 +145,7 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
+        5_000L,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -155,6 +162,7 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
+        5_000L,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -167,6 +175,7 @@ class GrpcRemoteReconcileExecutorClient
       int workerControlPort,
       boolean workerControlPlainText,
       int workerControlMaxInboundMessageSize,
+      long workerControlLeaseRpcDeadlineMs,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       boolean ignored) {
     this.workerAuthHeaderName =
@@ -177,6 +186,7 @@ class GrpcRemoteReconcileExecutorClient
     this.workerControlPort = workerControlPort;
     this.workerControlPlainText = workerControlPlainText;
     this.workerControlMaxInboundMessageSize = Math.max(0, workerControlMaxInboundMessageSize);
+    this.workerControlLeaseRpcDeadlineMs = Math.max(0L, workerControlLeaseRpcDeadlineMs);
   }
 
   @GrpcClient("floecat")
@@ -244,11 +254,12 @@ class GrpcRemoteReconcileExecutorClient
             "renewReconcileLease",
             correlationId(lease),
             stub ->
-                stub.renewReconcileLease(
-                    RenewReconcileLeaseRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .build()));
+                withLeaseRpcDeadline(stub)
+                    .renewReconcileLease(
+                        RenewReconcileLeaseRequest.newBuilder()
+                            .setJobId(lease.lease().jobId)
+                            .setLeaseEpoch(lease.lease().leaseEpoch)
+                            .build()));
     return new LeaseHeartbeat(response.getRenewed(), response.getCancellationRequested());
   }
 
@@ -268,19 +279,20 @@ class GrpcRemoteReconcileExecutorClient
             "reportReconcileProgress",
             correlationId(lease),
             stub ->
-                stub.reportReconcileProgress(
-                    ReportReconcileProgressRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setTablesScanned(tablesScanned)
-                        .setTablesChanged(tablesChanged)
-                        .setViewsScanned(viewsScanned)
-                        .setViewsChanged(viewsChanged)
-                        .setErrors(errors)
-                        .setSnapshotsProcessed(snapshotsProcessed)
-                        .setStatsProcessed(statsProcessed)
-                        .setMessage(message == null ? "" : message)
-                        .build()));
+                withLeaseRpcDeadline(stub)
+                    .reportReconcileProgress(
+                        ReportReconcileProgressRequest.newBuilder()
+                            .setJobId(lease.lease().jobId)
+                            .setLeaseEpoch(lease.lease().leaseEpoch)
+                            .setTablesScanned(tablesScanned)
+                            .setTablesChanged(tablesChanged)
+                            .setViewsScanned(viewsScanned)
+                            .setViewsChanged(viewsChanged)
+                            .setErrors(errors)
+                            .setSnapshotsProcessed(snapshotsProcessed)
+                            .setStatsProcessed(statsProcessed)
+                            .setMessage(message == null ? "" : message)
+                            .build()));
     return new LeaseHeartbeat(response.getLeaseValid(), response.getCancellationRequested());
   }
 
@@ -328,7 +340,8 @@ class GrpcRemoteReconcileExecutorClient
         "getReconcileCancellation",
         correlationId(lease),
         stub ->
-            stub.getReconcileCancellation(
+            withLeaseRpcDeadline(stub)
+                .getReconcileCancellation(
                     GetReconcileCancellationRequest.newBuilder()
                         .setJobId(lease.lease().jobId)
                         .build())
@@ -1441,6 +1454,14 @@ class GrpcRemoteReconcileExecutorClient
   private <T extends AbstractStub<T>> T withHeaders(T stub, String correlationId) {
     return stub.withInterceptors(
         MetadataUtils.newAttachHeadersInterceptor(metadata(correlationId)));
+  }
+
+  private ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub withLeaseRpcDeadline(
+      ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub) {
+    if (workerControlLeaseRpcDeadlineMs <= 0L) {
+      return stub;
+    }
+    return stub.withDeadlineAfter(workerControlLeaseRpcDeadlineMs, TimeUnit.MILLISECONDS);
   }
 
   Metadata metadata(String correlationId) {

@@ -64,6 +64,7 @@ class ReconcileJobMaintenanceServiceTest {
             String nextParentId = "a" + String.format("%03d", churnCount.get());
             putDirtyMarker(pointerStore, accountId, nextParentId);
           }
+          return true;
         },
         1,
         5_000L);

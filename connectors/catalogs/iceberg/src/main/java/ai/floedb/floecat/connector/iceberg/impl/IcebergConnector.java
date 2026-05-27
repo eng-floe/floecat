@@ -59,6 +59,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileScanTask;
@@ -402,6 +403,33 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        columnSelectorPolicy,
+        () -> false,
+        () -> {});
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -420,10 +448,13 @@ public abstract class IcebergConnector implements FloecatConnector {
             includeTargetKinds == null || includeTargetKinds.isEmpty()
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
-            plannedFilePaths);
+            plannedFilePaths,
+            shouldStop,
+            progressHeartbeat);
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
-            ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
+            ? ParquetPageIndexReader.forIcebergIO(
+                    path -> table.io().newInputFile(path), shouldStop, progressHeartbeat)
                 .readEntries(plannedFilePaths)
             : List.of();
     return FileGroupCaptureResult.of(stats, pageIndexEntries);
@@ -460,6 +491,28 @@ public abstract class IcebergConnector implements FloecatConnector {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths) {
+    return buildTargetStats(
+        table,
+        destinationTableId,
+        snapshot,
+        includeColumns,
+        columnSelectorPolicy,
+        includeTargetKinds,
+        plannedFilePaths,
+        () -> false,
+        () -> {});
+  }
+
+  private List<TargetStatsRecord> buildTargetStats(
+      Table table,
+      ResourceId destinationTableId,
+      Snapshot snapshot,
+      Set<String> includeColumns,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<StatsTargetKind> includeTargetKinds,
+      Set<String> plannedFilePaths,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
     boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
     boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
@@ -473,7 +526,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     final Set<Integer> includeIds =
         resolveIncludedFieldIds(schema, includeColumns, columnSelectorPolicy);
 
-    EngineOut engineOutput = runEngine(table, snapshotId, includeIds, plannedFilePaths);
+    EngineOut engineOutput =
+        runEngine(table, snapshotId, includeIds, plannedFilePaths, shouldStop, progressHeartbeat);
     var columnNames = engineOutput.columnNames();
     var logicalTypes = engineOutput.logicalTypes();
     var tStats =
@@ -1090,9 +1144,22 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private EngineOut runEngine(
-      Table table, long snapshotId, Set<Integer> colIds, Set<String> plannedFilePaths) {
+      Table table,
+      long snapshotId,
+      Set<Integer> colIds,
+      Set<String> plannedFilePaths,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     try (var planner =
-        new IcebergPlanner(table, snapshotId, colIds, plannedFilePaths, null, true)) {
+        new IcebergPlanner(
+            table,
+            snapshotId,
+            colIds,
+            plannedFilePaths,
+            null,
+            true,
+            shouldStop,
+            progressHeartbeat)) {
 
       Map<Integer, String> colNames = planner.columnNamesByKey();
       Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();
@@ -1100,7 +1167,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       if (!ndvEnabled) {
         NdvProvider none = null;
         StatsEngine<Integer> engine =
-            new GenericStatsEngine<>(planner, none, null, colNames, logicalTypes);
+            new GenericStatsEngine<>(
+                planner, none, null, colNames, logicalTypes, shouldStop, progressHeartbeat);
         var result = engine.compute();
         return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
       }
@@ -1147,7 +1215,15 @@ public abstract class IcebergConnector implements FloecatConnector {
         perFileNdv = base;
       }
 
-      var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
+      var engine =
+          new GenericStatsEngine<>(
+              planner,
+              perFileNdv,
+              bootstrap,
+              colNames,
+              logicalTypes,
+              shouldStop,
+              progressHeartbeat);
 
       var result = engine.compute();
       return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());

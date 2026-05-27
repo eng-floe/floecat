@@ -18,7 +18,9 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -37,8 +39,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileProjectionRefreshCursor;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileProjectionRefreshCursorStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
@@ -50,10 +54,12 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -152,6 +158,8 @@ class DurableReconcileJobStoreTest {
     System.clearProperty("floecat.reconciler.job-store.lease-ms");
     System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
     System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
+    System.clearProperty("floecat.reconciler.projection-refresh.child-page-size");
+    System.clearProperty("floecat.reconciler.projection-refresh.max-pages-per-maintenance");
   }
 
   @Test
@@ -223,6 +231,282 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void partialProjectionRefreshDoesNotPublishProjectionOrRootSummary() {
+    configureProjectionRefresh(1, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childOne = enqueueTableChild(connectorJobId, "orders-1");
+    String childTwo = enqueueTableChild(connectorJobId, "orders-2");
+    markChildSucceeded(childOne, 100L);
+    markChildSucceeded(childTwo, 200L);
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+
+    assertTrue(projectionStore().load(ACCOUNT_ID, connectorJobId).isEmpty());
+    assertNotNull(projectionRefreshCursor(connectorJobId));
+    assertTrue(dirtyParentPointer(connectorJobId).isPresent());
+    assertEquals(0L, store.get(ACCOUNT_ID, connectorJobId).orElseThrow().tablesScanned);
+    assertEquals(
+        0L,
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .map(job -> job.tablesScanned)
+            .orElse(0L));
+  }
+
+  @Test
+  void finalProjectionRefreshPublishesProjectionAndAdvancesAppliedGeneration() {
+    configureProjectionRefresh(1, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId = enqueueTableChild(connectorJobId, "orders");
+    String snapshotOne = enqueueSnapshotChild(tableJobId, "orders", 1L);
+    String snapshotTwo = enqueueSnapshotChild(tableJobId, "orders", 2L);
+    markChildSucceeded(snapshotOne, 100L);
+    markChildSucceeded(snapshotTwo, 200L);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotOne, 2);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotTwo, 2);
+
+    finishProjectionRefresh(ACCOUNT_ID, tableJobId, 5);
+
+    StoredReconcileJobProjection projection = waitForProjectionPresent(tableJobId);
+    StoredReconcileJob canonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+
+    assertTrue(projection.appliedGeneration() > 0L);
+    assertEquals(canonical.projectionRequestedGeneration, canonical.projectionAppliedGeneration);
+    assertTrue(projectionRefreshCursor(tableJobId) == null);
+    assertTrue(dirtyParentPointer(tableJobId).isEmpty());
+  }
+
+  @Test
+  void generationAdvanceDuringPartialRefreshRestartsCursorAtNewGeneration() {
+    configureProjectionRefresh(1, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childOne = enqueueTableChild(connectorJobId, "orders-1");
+    String childTwo = enqueueTableChild(connectorJobId, "orders-2");
+    markChildSucceeded(childOne, 100L);
+    markChildSucceeded(childTwo, 200L);
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+    StoredReconcileProjectionRefreshCursor firstCursor = projectionRefreshCursor(connectorJobId);
+    assertNotNull(firstCursor);
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, childTwo),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.message = "mutated";
+                      current.updatedAtMs = Math.max(current.updatedAtMs, 250L);
+                      return current;
+                    }));
+    markDirtyParent(ACCOUNT_ID, connectorJobId);
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+
+    StoredReconcileProjectionRefreshCursor restartedCursor =
+        projectionRefreshCursor(connectorJobId);
+    assertNotNull(restartedCursor);
+    assertTrue(restartedCursor.targetGeneration() > firstCursor.targetGeneration());
+    assertEquals(1L, restartedCursor.childrenScanned());
+    assertEquals(1L, restartedCursor.pageCount());
+  }
+
+  @Test
+  void staleSameGenerationCursorUpsertDoesNotRegressProgress() {
+    withStoreOverrides(
+        Map.of(
+            "floecat.reconciler.projection-refresh.child-page-size", "1",
+            "floecat.reconciler.projection-refresh.max-pages-per-maintenance", "1"),
+        ignored -> {
+          String connectorJobId =
+              store.enqueue(
+                  ACCOUNT_ID,
+                  CONNECTOR_ID,
+                  false,
+                  CaptureMode.METADATA_AND_CAPTURE,
+                  ReconcileScope.empty());
+          String childOne = enqueueTableChild(connectorJobId, "orders-1");
+          String childTwo = enqueueTableChild(connectorJobId, "orders-2");
+          String childThree = enqueueTableChild(connectorJobId, "orders-3");
+          markChildSucceeded(childOne, 100L);
+          markChildSucceeded(childTwo, 200L);
+          markChildSucceeded(childThree, 300L);
+
+          assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+          assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+
+          StoredReconcileProjectionRefreshCursor currentCursor =
+              waitForValueWithoutMaintenance(
+                      () -> Optional.ofNullable(projectionRefreshCursor(connectorJobId)),
+                      current ->
+                          current.isPresent()
+                              && current.get().pageCount() == 2L
+                              && current.get().childrenScanned() == 2L,
+                      "projection refresh cursor " + connectorJobId)
+                  .orElseThrow();
+          assertEquals(2L, currentCursor.pageCount());
+          assertEquals(2L, currentCursor.childrenScanned());
+
+          projectionRefreshCursorStore()
+              .upsert(
+                  new StoredReconcileProjectionRefreshCursor(
+                      currentCursor.accountId(),
+                      currentCursor.parentJobId(),
+                      currentCursor.targetGeneration(),
+                      currentCursor.continuationPointerKey(),
+                      currentCursor.accumulator(),
+                      1L,
+                      1L,
+                      currentCursor.startedAtMs(),
+                      currentCursor.updatedAtMs()));
+
+          StoredReconcileProjectionRefreshCursor retainedCursor =
+              waitForValueWithoutMaintenance(
+                      () -> Optional.ofNullable(projectionRefreshCursor(connectorJobId)),
+                      current ->
+                          current.isPresent()
+                              && current.get().pageCount() == 2L
+                              && current.get().childrenScanned() == 2L,
+                      "retained projection refresh cursor " + connectorJobId)
+                  .orElseThrow();
+          assertEquals(2L, retainedCursor.pageCount());
+          assertEquals(2L, retainedCursor.childrenScanned());
+        });
+  }
+
+  @Test
+  void projectionRefreshCursorSurvivesStoreRestart() {
+    configureProjectionRefresh(1, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId = enqueueTableChild(connectorJobId, "orders");
+    String snapshotOne = enqueueSnapshotChild(tableJobId, "orders", 1L);
+    String snapshotTwo = enqueueSnapshotChild(tableJobId, "orders", 2L);
+    markChildSucceeded(snapshotOne, 100L);
+    markChildSucceeded(snapshotTwo, 200L);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotOne, 2);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotTwo, 2);
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
+    StoredReconcileProjectionRefreshCursor partialCursor = projectionRefreshCursor(tableJobId);
+    assertNotNull(partialCursor);
+
+    recreateStorePreservingState();
+    finishProjectionRefresh(ACCOUNT_ID, tableJobId, 5);
+
+    StoredReconcileJobProjection projection = waitForProjectionPresent(tableJobId);
+    assertTrue(projection.appliedGeneration() > 0L);
+    assertTrue(projectionRefreshCursor(tableJobId) == null);
+  }
+
+  @Test
+  void ancestorPropagationWaitsForFinalProjectionPublication() {
+    configureProjectionRefresh(1, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId = enqueueTableChild(connectorJobId, "orders");
+    String snapshotOne =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders"),
+            ReconcileSnapshotTask.of("orders", 1L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    String snapshotTwo =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders"),
+            ReconcileSnapshotTask.of("orders", 2L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    markChildSucceeded(snapshotOne, 100L);
+    markChildSucceeded(snapshotTwo, 200L);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotOne, 2);
+    finishProjectionRefresh(ACCOUNT_ID, snapshotTwo, 2);
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
+
+    assertTrue(projectionStore().load(ACCOUNT_ID, tableJobId).isEmpty());
+    assertTrue(dirtyParentPointer(connectorJobId).isEmpty());
+
+    finishProjectionRefresh(ACCOUNT_ID, tableJobId, 5);
+    assertTrue(dirtyParentPointer(connectorJobId).isPresent());
+    finishProjectionRefresh(ACCOUNT_ID, connectorJobId, 5);
+    assertEquals(1L, waitForProjectionTablesScanned(connectorJobId, 1L).tablesScanned());
+  }
+
+  @Test
+  void wideParentRefreshProcessesBoundedPagesPerMaintenancePass() {
+    configureProjectionRefresh(2, 1);
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId = enqueueTableChild(connectorJobId, "orders");
+    for (int i = 0; i < 5; i++) {
+      String childJobId = enqueueSnapshotChild(tableJobId, "orders", i + 1L);
+      markChildSucceeded(childJobId, 100L + i);
+      finishProjectionRefresh(ACCOUNT_ID, childJobId, 2);
+    }
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
+    StoredReconcileProjectionRefreshCursor firstCursor = projectionRefreshCursor(tableJobId);
+    assertNotNull(firstCursor);
+    assertEquals(2L, firstCursor.childrenScanned());
+    assertEquals(1L, firstCursor.pageCount());
+
+    assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
+    StoredReconcileProjectionRefreshCursor secondCursor = projectionRefreshCursor(tableJobId);
+    assertNotNull(secondCursor);
+    assertEquals(4L, secondCursor.childrenScanned());
+    assertEquals(2L, secondCursor.pageCount());
+  }
+
+  @Test
   void leaseNextRespectsPinnedExecutorAndExecutionClass() {
     String jobId =
         store.enqueue(
@@ -257,65 +541,69 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenSuccessClearsPriorFailureState() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    withStoreOverrides(
+        Map.of(
+            "floecat.reconciler.job-store.max-attempts", "2",
+            "floecat.reconciler.job-store.base-backoff-ms", "0",
+            "floecat.reconciler.job-store.max-backoff-ms", "0"),
+        ignored -> {
+          String jobId =
+              store.enqueue(
+                  ACCOUNT_ID,
+                  CONNECTOR_ID,
+                  false,
+                  CaptureMode.METADATA_AND_CAPTURE,
+                  ReconcileScope.empty());
+          var firstLease = leaseJob(jobId);
+          store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
 
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-    var firstLease = leaseJob(jobId);
-    store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
+          var secondLease = leaseJob(jobId);
+          assertTrue(!secondLease.leaseEpoch.isBlank());
+          assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
+          store.markSucceeded(jobId, secondLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
-    var secondLease = leaseJob(jobId);
-    assertTrue(!secondLease.leaseEpoch.isBlank());
-    assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
-    store.markSucceeded(jobId, secondLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
-
-    ReconcileJob terminal =
-        waitForValue(
-            () -> store.get(jobId).orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state) && current.errors == 0L,
-            "successful retry " + jobId);
-    assertEquals("JS_SUCCEEDED", terminal.state);
-    assertEquals(0L, terminal.errors);
-    assertEquals(200L, terminal.finishedAtMs);
+          ReconcileJob terminal =
+              waitForValue(
+                  () -> store.get(jobId).orElseThrow(),
+                  current -> "JS_SUCCEEDED".equals(current.state) && current.errors == 0L,
+                  "successful retry " + jobId);
+          assertEquals("JS_SUCCEEDED", terminal.state);
+          assertEquals(0L, terminal.errors);
+          assertEquals(200L, terminal.finishedAtMs);
+        });
   }
 
   @Test
   void retryThenFailureTransitionsToTerminalFailed() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    withStoreOverrides(
+        Map.of(
+            "floecat.reconciler.job-store.max-attempts", "2",
+            "floecat.reconciler.job-store.base-backoff-ms", "0",
+            "floecat.reconciler.job-store.max-backoff-ms", "0"),
+        ignored -> {
+          String jobId =
+              store.enqueue(
+                  ACCOUNT_ID,
+                  CONNECTOR_ID,
+                  false,
+                  CaptureMode.METADATA_AND_CAPTURE,
+                  ReconcileScope.empty());
+          var firstLease = leaseJob(jobId);
+          store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
 
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-    var firstLease = leaseJob(jobId);
-    store.markFailed(jobId, firstLease.leaseEpoch, 100L, "transient", 1L, 0L, 3L, 0L, 2L);
+          var secondLease = leaseJob(jobId);
+          assertTrue(!secondLease.leaseEpoch.isBlank());
+          assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
+          store.markFailed(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
 
-    var secondLease = leaseJob(jobId);
-    assertTrue(!secondLease.leaseEpoch.isBlank());
-    assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
-    store.markFailed(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
-
-    ReconcileJob failed =
-        waitForValue(
-            () -> store.get(jobId).orElseThrow(),
-            current -> "JS_FAILED".equals(current.state),
-            "terminal failure " + jobId);
-    assertEquals("JS_FAILED", failed.state);
-    assertEquals(200L, failed.finishedAtMs);
+          ReconcileJob failed =
+              waitForValue(
+                  () -> store.get(jobId).orElseThrow(),
+                  current -> "JS_FAILED".equals(current.state),
+                  "terminal failure " + jobId);
+          assertEquals("JS_FAILED", failed.state);
+          assertEquals(200L, failed.finishedAtMs);
+        });
   }
 
   @Test
@@ -1014,6 +1302,16 @@ class DurableReconcileJobStoreTest {
         assertDoesNotThrow(() -> invokePrivateMethod(store, "rootSummaries", new Class<?>[] {}));
   }
 
+  private ReconcileProjectionRefreshCursorStore projectionRefreshCursorStore() {
+    return (ReconcileProjectionRefreshCursorStore)
+        assertDoesNotThrow(
+            () -> invokePrivateMethod(store, "projectionRefreshCursors", new Class<?>[] {}));
+  }
+
+  private StoredReconcileProjectionRefreshCursor projectionRefreshCursor(String parentJobId) {
+    return projectionRefreshCursorStore().load(ACCOUNT_ID, parentJobId).orElse(null);
+  }
+
   private void markDirtyParent(String accountId, String parentJobId) {
     assertDoesNotThrow(
         () ->
@@ -1023,6 +1321,18 @@ class DurableReconcileJobStoreTest {
                 new Class<?>[] {String.class, String.class},
                 accountId,
                 parentJobId));
+  }
+
+  private boolean refreshProjectedParent(String accountId, String parentJobId) {
+    return (boolean)
+        assertDoesNotThrow(
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "refreshProjectedParent",
+                    new Class<?>[] {String.class, String.class},
+                    accountId,
+                    parentJobId));
   }
 
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
@@ -1061,6 +1371,35 @@ class DurableReconcileJobStoreTest {
     return value;
   }
 
+  private <T> T waitForValueWithoutMaintenance(
+      Supplier<T> supplier, Predicate<T> done, String description) {
+    int attempts = isDynamoMode() ? 400 : 40;
+    long sleepMs = isDynamoMode() ? 50L : 0L;
+    T value = tryGetValue(supplier);
+    for (int attempt = 0; attempt < attempts; attempt++) {
+      if (value != null && done.test(value)) {
+        return value;
+      }
+      if (attempt + 1 < attempts && sleepMs > 0L) {
+        try {
+          Thread.sleep(sleepMs);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while waiting for " + description, ie);
+        }
+      }
+      value = tryGetValue(supplier);
+    }
+    assertTrue(
+        value != null && done.test(value),
+        "Timed out waiting for "
+            + description
+            + "; last value="
+            + value
+            + timeoutDiagnostics(description, value));
+    return value;
+  }
+
   private <T> T tryGetValue(Supplier<T> supplier) {
     try {
       return supplier.get();
@@ -1071,6 +1410,125 @@ class DurableReconcileJobStoreTest {
 
   private void runMaintenance() {
     store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void finishProjectionRefresh(String accountId, String parentJobId, int maxPasses) {
+    for (int pass = 0; pass < maxPasses; pass++) {
+      if (refreshProjectedParent(accountId, parentJobId)) {
+        return;
+      }
+    }
+    throw new IllegalStateException("Projection refresh did not complete for " + parentJobId);
+  }
+
+  private StoredReconcileJobProjection waitForProjectionTablesScanned(
+      String jobId, long expectedTablesScanned) {
+    return waitForValue(
+            () -> projectionStore().load(ACCOUNT_ID, jobId),
+            current ->
+                current.isPresent() && current.get().tablesScanned() == expectedTablesScanned,
+            "projection " + jobId)
+        .orElseThrow();
+  }
+
+  private StoredReconcileJobProjection waitForProjectionPresent(String jobId) {
+    return waitForValue(
+            () -> projectionStore().load(ACCOUNT_ID, jobId),
+            Optional::isPresent,
+            "projection " + jobId)
+        .orElseThrow();
+  }
+
+  private Optional<Pointer> dirtyParentPointer(String parentJobId) {
+    return store.pointerStore.get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId));
+  }
+
+  private void configureProjectionRefresh(int childPageSize, int maxPagesPerMaintenance) {
+    applyStoreOverrides(
+        Map.of(
+            "floecat.reconciler.projection-refresh.child-page-size",
+            Integer.toString(Math.max(1, childPageSize)),
+            "floecat.reconciler.projection-refresh.max-pages-per-maintenance",
+            Integer.toString(Math.max(1, maxPagesPerMaintenance))));
+  }
+
+  private String enqueueTableChild(String parentJobId, String tableId) {
+    return store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), tableId),
+        ReconcileJobKind.PLAN_TABLE,
+        ReconcileTableTask.of("db", tableId, tableId, tableId),
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+  }
+
+  private String enqueueSnapshotChild(String parentJobId, String tableId, long snapshotId) {
+    return store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), tableId),
+        ReconcileSnapshotTask.of(tableId, snapshotId, "db", tableId, List.of(), true),
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+  }
+
+  private void markChildSucceeded(String jobId, long finishedAtMs) {
+    var lease = leaseJob(jobId);
+    store.markSucceeded(jobId, lease.leaseEpoch, finishedAtMs, 1L, 1L, 0L, 0L, 0L, 0L);
+  }
+
+  private void recreateStorePreservingState() {
+    PointerStore existingPointerStore = store.pointerStore;
+    var existingBlobStore = store.blobStore;
+    var existingJobIndexBackend = store.jobIndexBackend;
+    var existingLeaseBackend = store.leaseBackend;
+    var existingReadyQueueBackend = store.readyQueueBackend;
+
+    DurableReconcileJobStore replacement = new DurableReconcileJobStore();
+    replacement.pointerStore = existingPointerStore;
+    replacement.blobStore = existingBlobStore;
+    replacement.mapper = new ObjectMapper();
+    replacement.config = ConfigProvider.getConfig();
+    replacement.kvTable = store.kvTable;
+    replacement.jobIndexBackend = existingJobIndexBackend;
+    replacement.leaseBackend = existingLeaseBackend;
+    replacement.readyQueueBackend = existingReadyQueueBackend;
+    store = replacement;
+    store.init();
+  }
+
+  private void applyStoreOverrides(Map<String, String> overrides) {
+    Map<String, String> effectiveOverrides = overrides == null ? Map.of() : overrides;
+    for (Map.Entry<String, String> entry : effectiveOverrides.entrySet()) {
+      if (entry.getValue() == null) {
+        System.clearProperty(entry.getKey());
+      } else {
+        System.setProperty(entry.getKey(), entry.getValue());
+      }
+    }
+    recreateStorePreservingState();
+  }
+
+  private void withStoreOverrides(
+      Map<String, String> overrides, Consumer<DurableReconcileJobStore> body) {
+    Map<String, String> previous = new HashMap<>();
+    Map<String, String> effectiveOverrides = overrides == null ? Map.of() : overrides;
+    try {
+      for (Map.Entry<String, String> entry : effectiveOverrides.entrySet()) {
+        previous.put(entry.getKey(), System.getProperty(entry.getKey()));
+      }
+      applyStoreOverrides(effectiveOverrides);
+      body.accept(store);
+    } finally {
+      applyStoreOverrides(previous);
+    }
   }
 
   private String timeoutDiagnostics(String description, Object value) {
@@ -1274,21 +1732,81 @@ class DurableReconcileJobStoreTest {
   private void clearDynamoTable() {
     String table =
         store.config.getOptionalValue("floecat.kv.table", String.class).orElse("floecat_pointers");
+    waitForDynamoReady(table);
     Map<String, AttributeValue> startKey = null;
     do {
-      var request = ScanRequest.builder().tableName(table);
-      if (startKey != null && !startKey.isEmpty()) {
-        request.exclusiveStartKey(startKey);
-      }
-      var response = sharedDynamoDbClient.scan(request.build());
+      final Map<String, AttributeValue> exclusiveStartKey = startKey;
+      var response =
+          withDynamoRetry(
+              () -> {
+                var request = ScanRequest.builder().tableName(table);
+                if (exclusiveStartKey != null && !exclusiveStartKey.isEmpty()) {
+                  request.exclusiveStartKey(exclusiveStartKey);
+                }
+                return sharedDynamoDbClient.scan(request.build());
+              });
       for (var item : response.items()) {
-        sharedDynamoDbClient.deleteItem(
-            DeleteItemRequest.builder()
-                .tableName(table)
-                .key(Map.of("pk", item.get("pk"), "sk", item.get("sk")))
-                .build());
+        withDynamoRetry(
+            () -> {
+              sharedDynamoDbClient.deleteItem(
+                  DeleteItemRequest.builder()
+                      .tableName(table)
+                      .key(Map.of("pk", item.get("pk"), "sk", item.get("sk")))
+                      .build());
+              return null;
+            });
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private void waitForDynamoReady(String table) {
+    withDynamoRetry(
+        () -> {
+          sharedDynamoDbClient.describeTable(request -> request.tableName(table));
+          return null;
+        });
+  }
+
+  private <T> T withDynamoRetry(Supplier<T> supplier) {
+    int attempts = 20;
+    RuntimeException last = null;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+      try {
+        return supplier.get();
+      } catch (RuntimeException e) {
+        last = e;
+        if (attempt + 1 == attempts || !isRetryableDynamoTestFailure(e)) {
+          throw e;
+        }
+        try {
+          Thread.sleep(250L);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while waiting for Dynamo test fixture", ie);
+        }
+      }
+    }
+    throw last == null ? new IllegalStateException("Dynamo retry unexpectedly exhausted") : last;
+  }
+
+  private boolean isRetryableDynamoTestFailure(Throwable throwable) {
+    Throwable current = throwable;
+    while (current != null) {
+      String message = current.getMessage();
+      if (current instanceof java.net.ConnectException
+          || current instanceof java.net.SocketException
+          || current instanceof software.amazon.awssdk.core.exception.SdkClientException
+          || current
+              instanceof software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
+          || (message != null
+              && (message.contains("Connection refused")
+                  || message.contains("Operation not permitted")
+                  || message.contains("Unable to execute HTTP request")))) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 }

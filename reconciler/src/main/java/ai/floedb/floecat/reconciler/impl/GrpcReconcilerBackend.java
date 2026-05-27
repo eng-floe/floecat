@@ -74,7 +74,9 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
@@ -312,7 +314,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               resolved.getDisplayName(),
               sourceNamespace(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceName(resolved.hasUpstream() ? resolved.getUpstream() : null),
-              sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null)));
+              sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null),
+              resolved.getPropertiesMap().getOrDefault("storage_location", "")));
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -1495,7 +1498,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         || sourceTable.isBlank()) {
       return Optional.empty();
     }
-    return Optional.of(new SourceConnectorContext(connectorId, sourceNamespace, sourceTable));
+    String storageLocation = tableRecord.getPropertiesMap().getOrDefault("storage_location", "");
+    return Optional.of(
+        new SourceConnectorContext(connectorId, sourceNamespace, sourceTable, storageLocation));
   }
 
   private <T> T withSourceConnector(
@@ -1513,8 +1518,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         resolveServerSideStorage(
             ctx,
             connector,
-            resolveCredentials(
-                ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId));
+            withDeltaTableStorageLocationHint(
+                connector,
+                resolveCredentials(
+                    ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId),
+                sourceContext.get()));
     try (FloecatConnector source = connectorOpener.open(config)) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
@@ -1561,6 +1569,27 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
   }
 
+  private static ConnectorConfig withDeltaTableStorageLocationHint(
+      Connector connector, ConnectorConfig config, SourceConnectorContext sourceContext) {
+    if (connector == null
+        || connector.getKind() != ConnectorKind.CK_DELTA
+        || config == null
+        || sourceContext == null
+        || sourceContext.storageLocation().isBlank()
+        || sourceContext.sourceNamespace().isBlank()
+        || sourceContext.sourceTable().isBlank()) {
+      return config;
+    }
+    LinkedHashMap<String, String> options = new LinkedHashMap<>(config.options());
+    options.put(
+        UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION,
+        sourceContext.sourceNamespace() + "." + sourceContext.sourceTable());
+    options.put(
+        UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, sourceContext.storageLocation());
+    return new ConnectorConfig(
+        config.kind(), config.displayName(), config.uri(), Map.copyOf(options), config.auth());
+  }
+
   private static boolean isMissingObjectFailure(Throwable t) {
     if (t == null) {
       return false;
@@ -1589,7 +1618,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   private record SourceConnectorContext(
-      ResourceId connectorId, String sourceNamespace, String sourceTable) {}
+      ResourceId connectorId, String sourceNamespace, String sourceTable, String storageLocation) {}
 
   @FunctionalInterface
   private interface SourceConnectorOperation<T> {

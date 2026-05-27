@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -243,6 +244,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
+    when(client.executorControl.withDeadlineAfter(anyLong(), any()))
+        .thenReturn(client.executorControl);
     when(client.executorControl.renewReconcileLease(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE))
         .thenReturn(
@@ -256,6 +259,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(heartbeat.leaseValid()).isTrue();
     assertThat(heartbeat.cancellationRequested()).isFalse();
     verify(client.executorControl, org.mockito.Mockito.times(2)).renewReconcileLease(any());
+    verify(client.executorControl, org.mockito.Mockito.times(2))
+        .withDeadlineAfter(anyLong(), any());
     assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease#1");
   }
 

@@ -114,6 +114,8 @@ public interface ReconcileJobIndexStore {
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
+  // For child listings the page token is the last-seen parent index pointer key. Backends
+  // translate that pointer key back into the stable parent-index sort key on resume.
   StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken);
 

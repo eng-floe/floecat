@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileProjectionRefreshCursor;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -46,6 +47,8 @@ public class ReconcilePayloadStore {
   private static final String INLINE_JOB_LEASE_PREFIX = "inline:reconcile-lease:";
   private static final String INLINE_JOB_PROJECTION_PREFIX = "inline:reconcile-job-projection:";
   private static final String INLINE_JOB_LIST_SUMMARY_PREFIX = "inline:reconcile-job-list-summary:";
+  private static final String INLINE_JOB_PROJECTION_REFRESH_PREFIX =
+      "inline:reconcile-job-projection-refresh:";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
@@ -133,6 +136,19 @@ public class ReconcilePayloadStore {
   public Optional<StoredReconcileJobListSummary> readInlineJobListSummary(String reference) {
     return decodeInlineJson(
         reference, INLINE_JOB_LIST_SUMMARY_PREFIX, StoredReconcileJobListSummary.class);
+  }
+
+  public String encodeInlineProjectionRefreshCursor(
+      StoredReconcileProjectionRefreshCursor payload) {
+    return encodeInlineJson(INLINE_JOB_PROJECTION_REFRESH_PREFIX, payload);
+  }
+
+  public Optional<StoredReconcileProjectionRefreshCursor> readInlineProjectionRefreshCursor(
+      String reference) {
+    return decodeInlineJson(
+        reference,
+        INLINE_JOB_PROJECTION_REFRESH_PREFIX,
+        StoredReconcileProjectionRefreshCursor.class);
   }
 
   Optional<StoredJobDefinition> loadDefinition(StoredReconcileJob state) {

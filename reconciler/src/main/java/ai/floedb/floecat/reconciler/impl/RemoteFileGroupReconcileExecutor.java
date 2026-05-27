@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -36,6 +37,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteFileGroupReconcileExecutor.class);
+  private static final long IN_BAND_PROGRESS_HEARTBEAT_MS = 5_000L;
 
   private final BlobStore blobStore;
   private final SnapshotPlanBlobStore snapshotPlanBlobStore;
@@ -133,7 +135,11 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
       var captured =
-          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
+          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(
+              runner.execute(
+                  payload,
+                  context.shouldStop(),
+                  new InBandProgressHeartbeat(context, payload).asRunnable()));
       String successResultId = successResultId(lease, payload);
       List<TargetStatsRecord> fileStats =
           captured.statsRecords().stream()
@@ -334,6 +340,49 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
         groupId == null || groupId.isBlank()
             ? "Stopped during file-group execution"
             : "Stopped during file-group execution for " + groupId);
+  }
+
+  private static final class InBandProgressHeartbeat {
+    private final ReconcileExecutor.ExecutionContext context;
+    private final StandaloneFileGroupExecutionPayload payload;
+    private final AtomicLong lastReportedAtMs = new AtomicLong(0L);
+
+    private InBandProgressHeartbeat(
+        ReconcileExecutor.ExecutionContext context, StandaloneFileGroupExecutionPayload payload) {
+      this.context = context;
+      this.payload = payload;
+    }
+
+    private Runnable asRunnable() {
+      return () -> {
+        long now = System.currentTimeMillis();
+        long last = lastReportedAtMs.get();
+        if (last > 0L && now - last < IN_BAND_PROGRESS_HEARTBEAT_MS) {
+          return;
+        }
+        if (!lastReportedAtMs.compareAndSet(last, now)) {
+          return;
+        }
+        if (context.shouldStop().getAsBoolean()) {
+          return;
+        }
+        context
+            .progressListener()
+            .onProgress(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                "Executing file group "
+                    + (payload == null ? "" : payload.groupId())
+                    + " with "
+                    + (payload == null ? 0 : payload.plannedFilePaths().size())
+                    + " planned handles");
+      };
+    }
   }
 
   private static String failureDetail(Throwable error) {

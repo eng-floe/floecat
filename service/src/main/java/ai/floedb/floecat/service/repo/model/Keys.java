@@ -830,6 +830,17 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/projections/by-id/";
   }
 
+  public static String reconcileProjectionRefreshPointer(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/projection-refresh/by-id/" + encode(jid);
+  }
+
+  public static String reconcileProjectionRefreshPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/projection-refresh/by-id/";
+  }
+
   public static String reconcileRootJobSummaryByAccountPointer(
       String accountId, String sortableJobToken) {
     String tid = req("account_id", accountId);

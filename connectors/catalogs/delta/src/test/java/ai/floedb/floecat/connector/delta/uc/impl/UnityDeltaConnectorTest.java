@@ -57,7 +57,8 @@ class UnityDeltaConnectorTest {
     server.start();
     int port = server.getAddress().getPort();
     UcHttp http = new UcHttp("http://localhost:" + port, 1000, 5000, NO_AUTH);
-    connector = new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0);
+    connector =
+        new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0, null, null);
   }
 
   @AfterEach
@@ -83,7 +84,25 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
-  void storageLocationCachesPerTable() throws Exception {
+  void storageLocationUsesTableHintWithoutUcLookup() {
+    UnityDeltaConnector hinted =
+        new UnityDeltaConnector(
+            "test-id",
+            new UcHttp("http://127.0.0.1:1", 1000, 5000, NO_AUTH),
+            null,
+            null,
+            null,
+            false,
+            0.0,
+            0,
+            "mycat.myschema.orders",
+            "s3://bucket/table");
+
+    assertThat(hinted.storageLocation("mycat.myschema", "orders")).isEqualTo("s3://bucket/table");
+  }
+
+  @Test
+  void storageLocationLoadsFromUcWhenHintMissing() throws Exception {
     AtomicInteger requests = new AtomicInteger();
     server.createContext(
         "/api/2.1/unity-catalog/tables/",
@@ -101,7 +120,7 @@ class UnityDeltaConnectorTest {
     assertThat(connector.storageLocation("mycat.myschema", "orders"))
         .isEqualTo("s3://bucket/table");
 
-    assertThat(requests.get()).isEqualTo(1);
+    assertThat(requests.get()).isEqualTo(2);
   }
 
   @Test

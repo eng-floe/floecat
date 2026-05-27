@@ -30,6 +30,8 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import org.apache.parquet.VersionParser;
 import org.apache.parquet.column.ColumnDescriptor;
@@ -60,15 +62,35 @@ public final class ParquetPageIndexReader {
           PrimitiveType.PrimitiveTypeName.FLOAT,
           PrimitiveType.PrimitiveTypeName.DOUBLE);
   private final Function<String, org.apache.parquet.io.InputFile> parquetLookup;
+  private final BooleanSupplier shouldStop;
+  private final Runnable progressHeartbeat;
 
   public ParquetPageIndexReader(Function<String, org.apache.parquet.io.InputFile> parquetLookup) {
+    this(parquetLookup, () -> false, () -> {});
+  }
+
+  public ParquetPageIndexReader(
+      Function<String, org.apache.parquet.io.InputFile> parquetLookup,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     this.parquetLookup = Objects.requireNonNull(parquetLookup, "parquetLookup");
+    this.shouldStop = shouldStop == null ? () -> false : shouldStop;
+    this.progressHeartbeat = progressHeartbeat == null ? () -> {} : progressHeartbeat;
   }
 
   public static ParquetPageIndexReader forIcebergIO(
       Function<String, org.apache.iceberg.io.InputFile> icebergLookup) {
+    return forIcebergIO(icebergLookup, () -> false, () -> {});
+  }
+
+  public static ParquetPageIndexReader forIcebergIO(
+      Function<String, org.apache.iceberg.io.InputFile> icebergLookup,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     return new ParquetPageIndexReader(
-        path -> new IcebergParquetInputFileAdapter(icebergLookup.apply(path)));
+        path -> new IcebergParquetInputFileAdapter(icebergLookup.apply(path)),
+        shouldStop,
+        progressHeartbeat);
   }
 
   public List<FloecatConnector.ParquetPageIndexEntry> readEntries(Set<String> plannedFilePaths) {
@@ -77,10 +99,12 @@ public final class ParquetPageIndexReader {
     }
     List<FloecatConnector.ParquetPageIndexEntry> out = new ArrayList<>();
     for (String filePath : plannedFilePaths) {
+      ensureNotStopped();
       if (!isParquetPath(filePath)) {
         continue;
       }
       out.addAll(readEntries(filePath));
+      progressHeartbeat.run();
     }
     return List.copyOf(out);
   }
@@ -97,9 +121,11 @@ public final class ParquetPageIndexReader {
       List<FloecatConnector.ParquetPageIndexEntry> out = new ArrayList<>();
       var blocks = footer.getBlocks();
       for (int rowGroupOrdinal = 0; rowGroupOrdinal < blocks.size(); rowGroupOrdinal++) {
+        ensureNotStopped();
         var block = blocks.get(rowGroupOrdinal);
         try (PageReadStore pageStore = reader.readRowGroup(rowGroupOrdinal)) {
           for (var column : block.getColumns()) {
+            ensureNotStopped();
             String[] path = column.getPath().toArray();
             ColumnDescriptor descriptor = schema.getColumnDescription(path);
             if (!supportsPageIndexDecoding(descriptor, column.getPrimitiveType())) {
@@ -121,9 +147,13 @@ public final class ParquetPageIndexReader {
                     descriptor,
                     decimal,
                     pageReader,
-                    parsedVersion));
+                    parsedVersion,
+                    shouldStop,
+                    progressHeartbeat));
+            progressHeartbeat.run();
           }
         }
+        progressHeartbeat.run();
       }
       return List.copyOf(out);
     } catch (IOException e) {
@@ -141,7 +171,9 @@ public final class ParquetPageIndexReader {
       ColumnDescriptor descriptor,
       DecimalMetadata decimal,
       PageReader pageReader,
-      VersionParser.ParsedVersion parsedVersion)
+      VersionParser.ParsedVersion parsedVersion,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat)
       throws IOException {
     byte[] chunkBytes = readChunkBytes(inputFile, column);
     DictionaryPage dictionaryPage = pageReader == null ? null : pageReader.readDictionaryPage();
@@ -195,6 +227,7 @@ public final class ParquetPageIndexReader {
     long firstRowIndex = 0L;
     int pageOrdinal = 0;
     while (pageReader != null) {
+      ensureNotStopped(shouldStop);
       DataPage dataPage = pageReader.readPage();
       if (dataPage == null) {
         break;
@@ -256,6 +289,9 @@ public final class ParquetPageIndexReader {
               typedStats.maxDecimal256Unscaled()));
       firstRowIndex += rowCount;
       pageOrdinal += 1;
+      if (progressHeartbeat != null) {
+        progressHeartbeat.run();
+      }
     }
 
     if (pageOrdinal != pageEnvelopes.size()) {
@@ -266,6 +302,16 @@ public final class ParquetPageIndexReader {
               + columnName);
     }
     return List.copyOf(out);
+  }
+
+  private void ensureNotStopped() {
+    ensureNotStopped(shouldStop);
+  }
+
+  private static void ensureNotStopped(BooleanSupplier shouldStop) {
+    if (shouldStop != null && shouldStop.getAsBoolean()) {
+      throw new CancellationException("capture stopped");
+    }
   }
 
   private static byte[] readChunkBytes(

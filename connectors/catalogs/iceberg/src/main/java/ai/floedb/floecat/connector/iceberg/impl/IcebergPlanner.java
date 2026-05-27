@@ -39,6 +39,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
@@ -73,6 +75,8 @@ final class IcebergPlanner implements Planner<Integer> {
   private final Schema schema;
   private final Map<Integer, PartitionSpec> specsById;
   private final PartitionSpec defaultSpec;
+  private final BooleanSupplier shouldStop;
+  private final Runnable progressHeartbeat;
 
   IcebergPlanner(
       Table table,
@@ -81,7 +85,22 @@ final class IcebergPlanner implements Planner<Integer> {
       Set<String> plannedFilePaths,
       NdvProvider ndvProvider,
       boolean planFiles) {
+    this(
+        table, snapshotId, colIds, plannedFilePaths, ndvProvider, planFiles, () -> false, () -> {});
+  }
+
+  IcebergPlanner(
+      Table table,
+      long snapshotId,
+      Set<Integer> colIds,
+      Set<String> plannedFilePaths,
+      NdvProvider ndvProvider,
+      boolean planFiles,
+      BooleanSupplier shouldStop,
+      Runnable progressHeartbeat) {
     this.ndvProvider = ndvProvider;
+    this.shouldStop = shouldStop == null ? () -> false : shouldStop;
+    this.progressHeartbeat = progressHeartbeat == null ? () -> {} : progressHeartbeat;
     this.plannedFilePaths =
         plannedFilePaths == null || plannedFilePaths.isEmpty()
             ? Set.of()
@@ -108,11 +127,14 @@ final class IcebergPlanner implements Planner<Integer> {
       TableScan scan = table.newScan().useSnapshot(snapshotId).includeColumnStats();
       try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
         for (FileScanTask task : tasks) {
+          ensureNotStopped();
           String dataPath = task.file().location().toString();
           if (this.plannedFilePaths.isEmpty() || this.plannedFilePaths.contains(dataPath)) {
             files.add(toPlanned(task.file()));
+            this.progressHeartbeat.run();
           }
           for (var deleteFile : task.deletes()) {
+            ensureNotStopped();
             String deletePath = deleteFile.location().toString();
             if (!this.plannedFilePaths.isEmpty() && !this.plannedFilePaths.contains(deletePath)) {
               continue;
@@ -129,6 +151,7 @@ final class IcebergPlanner implements Planner<Integer> {
                     deleteFile.content(),
                     deleteFile.fileSequenceNumber(),
                     equalityFieldIds));
+            this.progressHeartbeat.run();
           }
         }
       } catch (Exception e) {
@@ -138,7 +161,7 @@ final class IcebergPlanner implements Planner<Integer> {
   }
 
   IcebergPlanner(Table table, long snapshotId, Set<Integer> colIds, NdvProvider ndvProvider) {
-    this(table, snapshotId, colIds, Set.of(), ndvProvider, true);
+    this(table, snapshotId, colIds, Set.of(), ndvProvider, true, () -> false, () -> {});
   }
 
   @Override
@@ -244,6 +267,12 @@ final class IcebergPlanner implements Planner<Integer> {
         partJson,
         spec == null ? 0 : spec.specId(),
         sequenceNumber);
+  }
+
+  private void ensureNotStopped() {
+    if (shouldStop.getAsBoolean()) {
+      throw new CancellationException("capture stopped");
+    }
   }
 
   private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {

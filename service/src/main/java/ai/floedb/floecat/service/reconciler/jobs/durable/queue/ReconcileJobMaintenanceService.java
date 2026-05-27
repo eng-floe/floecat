@@ -36,7 +36,7 @@ public class ReconcileJobMaintenanceService {
 
   @FunctionalInterface
   public interface RefreshDirtyParentProjection {
-    void accept(String accountId, String parentJobId);
+    boolean accept(String accountId, String parentJobId);
   }
 
   private ReconcileLeaseStore leaseStore;
@@ -163,8 +163,11 @@ public class ReconcileJobMaintenanceService {
           continue;
         }
         try {
-          refreshDirtyParentProjection.accept(marker.accountId(), marker.parentJobId());
-          pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+          boolean completed =
+              refreshDirtyParentProjection.accept(marker.accountId(), marker.parentJobId());
+          if (completed) {
+            pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+          }
         } catch (RuntimeException e) {
           LOG.warnf(
               e,
