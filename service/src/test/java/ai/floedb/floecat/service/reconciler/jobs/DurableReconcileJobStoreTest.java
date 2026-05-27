@@ -525,15 +525,13 @@ class DurableReconcileJobStoreTest {
           }
 
           assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
-          StoredReconcileProjectionRefreshCursor firstCursor =
-              projectionRefreshCursor(tableJobId);
+          StoredReconcileProjectionRefreshCursor firstCursor = projectionRefreshCursor(tableJobId);
           assertNotNull(firstCursor);
           assertEquals(2L, firstCursor.childrenScanned());
           assertEquals(1L, firstCursor.pageCount());
 
           assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
-          StoredReconcileProjectionRefreshCursor secondCursor =
-              projectionRefreshCursor(tableJobId);
+          StoredReconcileProjectionRefreshCursor secondCursor = projectionRefreshCursor(tableJobId);
           assertNotNull(secondCursor);
           assertEquals(4L, secondCursor.childrenScanned());
           assertEquals(2L, secondCursor.pageCount());
@@ -1541,7 +1539,8 @@ class DurableReconcileJobStoreTest {
 
   private Optional<Pointer> dirtyParentPointer(String accountId, String parentJobId) {
     String effectiveAccountId = accountId == null || accountId.isBlank() ? ACCOUNT_ID : accountId;
-    return store.pointerStore.get(Keys.reconcileDirtyParentPointer(effectiveAccountId, parentJobId));
+    return store.pointerStore.get(
+        Keys.reconcileDirtyParentPointer(effectiveAccountId, parentJobId));
   }
 
   private void clearDirtyParentPointer(String parentJobId) {
