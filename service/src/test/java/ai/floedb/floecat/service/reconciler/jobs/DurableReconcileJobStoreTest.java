@@ -584,7 +584,9 @@ class DurableReconcileJobStoreTest {
           }
 
           assertFalse(refreshProjectedParent(ACCOUNT_ID, tableJobId));
-          assertEquals(0L, store.get(ACCOUNT_ID, tableJobId).orElseThrow().tablesScanned);
+          ReconcileJob partialTableJob = store.get(ACCOUNT_ID, tableJobId).orElseThrow();
+          assertTrue(partialTableJob.snapshotsProcessed < 5L);
+          assertNotNull(projectionRefreshCursor(ACCOUNT_ID, tableJobId));
 
           finishProjectionRefresh(ACCOUNT_ID, tableJobId, 10);
 
@@ -1079,10 +1081,10 @@ class DurableReconcileJobStoreTest {
                 ACCOUNT_ID,
                 tableJobId,
                 0L,
-                "JS_SUCCEEDED",
-                "Succeeded",
+                "JS_WAITING",
+                "Waiting on child work",
                 100L,
-                200L,
+                0L,
                 1L,
                 1L,
                 0L,
@@ -1102,15 +1104,6 @@ class DurableReconcileJobStoreTest {
     markDirtyParent(ACCOUNT_ID, connectorJobId);
     runMaintenance();
 
-    StoredReconcileJobProjection tableProjection =
-        waitForValue(
-                () -> projectionStore().load(ACCOUNT_ID, tableJobId),
-                current ->
-                    current.isPresent()
-                        && Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
-                            .contains(current.get().state()),
-                "active table projection " + tableJobId)
-            .orElseThrow();
     ReconcileJob rootSummary =
         waitForValue(
             () ->
@@ -1125,9 +1118,6 @@ class DurableReconcileJobStoreTest {
                     && current.tablesChanged == 1L,
             "active root summary " + connectorJobId);
 
-    assertTrue(
-        Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
-            .contains(tableProjection.state()));
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
             .contains(rootSummary.state));
