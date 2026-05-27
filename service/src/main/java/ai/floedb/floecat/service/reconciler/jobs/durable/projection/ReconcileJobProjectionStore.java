@@ -45,9 +45,9 @@ public class ReconcileJobProjectionStore {
         .flatMap(pointer -> payloadStore.readInlineJobProjection(pointer.getBlobUri()));
   }
 
-  public void upsert(StoredReconcileJobProjection projection) {
+  public StoredReconcileJobProjection upsert(StoredReconcileJobProjection projection) {
     if (projection == null || blank(projection.accountId()) || blank(projection.jobId())) {
-      return;
+      return null;
     }
     String key = Keys.reconcileJobProjectionPointer(projection.accountId(), projection.jobId());
     String blobUri = payloadStore.encodeInlineJobProjection(projection);
@@ -60,16 +60,10 @@ public class ReconcileJobProjectionStore {
               : payloadStore.readInlineJobProjection(current.getBlobUri()).orElse(null);
       if (currentProjection != null
           && currentProjection.appliedGeneration() > projection.appliedGeneration()) {
-        return;
-      }
-      if (currentProjection != null
-          && currentProjection.appliedGeneration() == projection.appliedGeneration()
-          && current != null
-          && !blobUri.equals(current.getBlobUri())) {
-        return;
+        return currentProjection;
       }
       if (current != null && blobUri.equals(current.getBlobUri())) {
-        return;
+        return currentProjection == null ? projection : currentProjection;
       }
       Pointer next =
           Pointer.newBuilder()
@@ -78,7 +72,7 @@ public class ReconcileJobProjectionStore {
               .setVersion(expectedVersion + 1L)
               .build();
       if (pointerStore.compareAndSet(key, expectedVersion, next)) {
-        return;
+        return projection;
       }
     }
     throw new IllegalStateException(

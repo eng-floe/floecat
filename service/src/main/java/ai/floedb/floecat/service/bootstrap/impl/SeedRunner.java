@@ -38,12 +38,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
-import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
@@ -114,6 +113,7 @@ public class SeedRunner {
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject ConnectorRepository connectorRepo;
+  @Inject ReconcileJobStore reconcileJobs;
 
   @GrpcClient("floecat")
   ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
@@ -751,11 +751,11 @@ public class SeedRunner {
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
-        GetReconcileJobResponse result = startAndAwaitSeedCapture(connectorId, scope);
+        ReconcileJobStore.ReconcileJob result = startAndAwaitSeedCapture(connectorId, scope);
         if (result != null) {
           LOG.infov(
               "Populated fixture table {0} (jobId={1}, scanned={2}, changed={3})",
-              tableName, result.getJobId(), result.getTablesScanned(), result.getTablesChanged());
+              tableName, result.jobId, result.tablesScanned, result.tablesChanged);
           return;
         }
       } catch (RuntimeException e) {
@@ -809,10 +809,10 @@ public class SeedRunner {
     return false;
   }
 
-  private GetReconcileJobResponse startAndAwaitSeedCapture(
+  private ReconcileJobStore.ReconcileJob startAndAwaitSeedCapture(
       ResourceId connectorId, ReconcileScope scope) {
     StartCaptureResponse submitted = startCaptureWithSeedAuth(connectorId, scope);
-    return awaitSeedCaptureJob(connectorId, submitted.getJobId());
+    return awaitSeedCaptureJob(submitted.getJobId());
   }
 
   private StartCaptureResponse startCaptureWithSeedAuth(
@@ -826,7 +826,7 @@ public class SeedRunner {
                 .build());
   }
 
-  private GetReconcileJobResponse awaitSeedCaptureJob(ResourceId connectorId, String jobId) {
+  private ReconcileJobStore.ReconcileJob awaitSeedCaptureJob(String jobId) {
     if (seedSyncTimeout.isZero() || seedSyncTimeout.isNegative()) {
       throw new IllegalStateException("floecat.seed.sync.timeout must be greater than 0");
     }
@@ -836,22 +836,34 @@ public class SeedRunner {
 
     long deadlineNanos = System.nanoTime() + seedSyncTimeout.toNanos();
     while (true) {
-      GetReconcileJobResponse response =
-          reconcileControlWithSeedAuth(connectorId)
-              .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId(jobId).build());
-      switch (response.getState()) {
-        case JS_SUCCEEDED:
+      ReconcileJobStore.ReconcileJob response = reconcileJobs.getLeaseView(jobId).orElse(null);
+      if (response == null) {
+        if (System.nanoTime() >= deadlineNanos) {
+          throw Status.DEADLINE_EXCEEDED
+              .withDescription(
+                  "seed capture job "
+                      + jobId
+                      + " did not complete within "
+                      + seedSyncTimeout.toSeconds()
+                      + "s")
+              .asRuntimeException();
+        }
+        LockSupport.parkNanos(seedSyncPollInterval.toNanos());
+        continue;
+      }
+      switch (response.state) {
+        case "JS_SUCCEEDED":
           return response;
-        case JS_FAILED:
+        case "JS_FAILED":
           throw new IllegalStateException(formatSeedJobFailure("failed", response));
-        case JS_CANCELLED:
-        case JS_CANCELLING:
+        case "JS_CANCELLED":
+        case "JS_CANCELLING":
           throw new IllegalStateException(formatSeedJobFailure("cancelled", response));
-        case JS_QUEUED:
-        case JS_WAITING:
-        case JS_RUNNING:
-        case JS_UNSPECIFIED:
-        case UNRECOGNIZED:
+        case "JS_QUEUED":
+        case "JS_WAITING":
+        case "JS_RUNNING":
+        case "":
+        case "JS_UNSPECIFIED":
           if (System.nanoTime() >= deadlineNanos) {
             throw Status.DEADLINE_EXCEEDED
                 .withDescription(
@@ -864,14 +876,30 @@ public class SeedRunner {
           }
           LockSupport.parkNanos(seedSyncPollInterval.toNanos());
           break;
+        default:
+          if (System.nanoTime() >= deadlineNanos) {
+            throw Status.DEADLINE_EXCEEDED
+                .withDescription(
+                    "seed capture job "
+                        + jobId
+                        + " remained in unexpected state "
+                        + response.state
+                        + " for "
+                        + seedSyncTimeout.toSeconds()
+                        + "s")
+                .asRuntimeException();
+          }
+          LockSupport.parkNanos(seedSyncPollInterval.toNanos());
+          break;
       }
     }
   }
 
-  private static String formatSeedJobFailure(String outcome, GetReconcileJobResponse response) {
-    String message = response.getMessage();
+  private static String formatSeedJobFailure(
+      String outcome, ReconcileJobStore.ReconcileJob response) {
+    String message = response.message;
     return "seed capture job "
-        + response.getJobId()
+        + response.jobId
         + " "
         + outcome
         + (message == null || message.isBlank() ? "" : ": " + message);

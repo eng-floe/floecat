@@ -651,9 +651,14 @@ run_mode() {
     wait_for_url "http://localhost:${iceberg_rest_host_port}/v1/config" 180 "Iceberg REST health"
   fi
 
+  local service_seed_timeout_seconds="${COMPOSE_SMOKE_SERVICE_SEED_TIMEOUT_SECONDS:-180}"
+  if [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; then
+    service_seed_timeout_seconds="${COMPOSE_SMOKE_REMOTE_SERVICE_SEED_TIMEOUT_SECONDS:-${COMPOSE_SMOKE_SERVICE_SEED_TIMEOUT_SECONDS:-360}}"
+  fi
+
   local i
   local service_logs
-  for i in $(seq 1 180); do
+  for i in $(seq 1 "$service_seed_timeout_seconds"); do
     service_logs=$(eval "$compose_cmd logs service 2>&1" || true)
     if [[ "$service_logs" == *"Startup seeding completed successfully"* ]]; then
       break
@@ -662,8 +667,8 @@ run_mode() {
       eval "$compose_cmd logs --no-color"
       return 1
     fi
-    if [ "$i" -eq 180 ]; then
-      echo "Service seed completion timed out" >&2
+    if [ "$i" -eq "$service_seed_timeout_seconds" ]; then
+      echo "Service seed completion timed out after ${service_seed_timeout_seconds}s" >&2
       eval "$compose_cmd logs --no-color"
       return 1
     fi
