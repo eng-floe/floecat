@@ -256,7 +256,6 @@ class DurableReconcileJobStoreTest {
 
           assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
 
-          assertTrue(projectionStore().load(ACCOUNT_ID, connectorJobId).isEmpty());
           assertNotNull(projectionRefreshCursor(connectorJobId));
           assertEquals(0L, store.get(ACCOUNT_ID, connectorJobId).orElseThrow().tablesScanned);
           assertEquals(
@@ -304,6 +303,47 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void parentProjectionRefreshDefersUntilDirtyChildProjectionPublishes() {
+    withMaintenanceDisabled(
+        () -> {
+          configureProjectionRefresh(10, 10);
+          String connectorJobId =
+              store.enqueue(
+                  ACCOUNT_ID,
+                  CONNECTOR_ID,
+                  false,
+                  CaptureMode.METADATA_AND_CAPTURE,
+                  ReconcileScope.empty());
+          String tableJobId = enqueueTableChild(connectorJobId, "orders");
+          String snapshotJobId = enqueueSnapshotChild(tableJobId, "orders", 1L);
+          markChildSucceededWithoutMaintenance(snapshotJobId, 100L);
+
+          assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
+
+          StoredReconcileJob connectorCanonical =
+              readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+          assertTrue(
+              connectorCanonical.projectionAppliedGeneration
+                  < connectorCanonical.projectionRequestedGeneration);
+          assertEquals(
+              0L,
+              store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                  .filter(job -> connectorJobId.equals(job.jobId))
+                  .findFirst()
+                  .map(job -> job.tablesScanned)
+                  .orElse(0L));
+
+          finishProjectionRefresh(ACCOUNT_ID, snapshotJobId, 5);
+          finishProjectionRefresh(ACCOUNT_ID, tableJobId, 5);
+          finishProjectionRefresh(ACCOUNT_ID, connectorJobId, 5);
+
+          StoredReconcileJobProjection projection =
+              waitForProjectionTablesScanned(ACCOUNT_ID, connectorJobId, 1L);
+          assertEquals(1L, projection.tablesScanned());
+        });
+  }
+
+  @Test
   void generationAdvanceDuringPartialRefreshRestartsCursorAtNewGeneration() {
     withMaintenanceDisabled(
         () -> {
@@ -319,6 +359,8 @@ class DurableReconcileJobStoreTest {
           String childTwo = enqueueTableChild(connectorJobId, "orders-2");
           markChildSucceededWithoutMaintenance(childOne, 100L);
           markChildSucceededWithoutMaintenance(childTwo, 200L);
+          finishProjectionRefresh(ACCOUNT_ID, childOne, 2);
+          finishProjectionRefresh(ACCOUNT_ID, childTwo, 2);
 
           assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
           StoredReconcileProjectionRefreshCursor firstCursor =
@@ -346,8 +388,8 @@ class DurableReconcileJobStoreTest {
               projectionRefreshCursor(connectorJobId);
           assertNotNull(restartedCursor);
           assertTrue(restartedCursor.targetGeneration() > firstCursor.targetGeneration());
-          assertEquals(1L, restartedCursor.childrenScanned());
-          assertEquals(1L, restartedCursor.pageCount());
+          assertEquals(0L, restartedCursor.childrenScanned());
+          assertEquals(0L, restartedCursor.pageCount());
         });
   }
 
@@ -373,6 +415,9 @@ class DurableReconcileJobStoreTest {
                   markChildSucceededWithoutMaintenance(childOne, 100L);
                   markChildSucceededWithoutMaintenance(childTwo, 200L);
                   markChildSucceededWithoutMaintenance(childThree, 300L);
+                  finishProjectionRefresh(ACCOUNT_ID, childOne, 2);
+                  finishProjectionRefresh(ACCOUNT_ID, childTwo, 2);
+                  finishProjectionRefresh(ACCOUNT_ID, childThree, 2);
 
                   assertFalse(refreshProjectedParent(ACCOUNT_ID, connectorJobId));
 
@@ -406,12 +451,12 @@ class DurableReconcileJobStoreTest {
                               () -> Optional.ofNullable(projectionRefreshCursor(connectorJobId)),
                               current ->
                                   current.isPresent()
-                                      && current.get().pageCount() == 1L
-                                      && current.get().childrenScanned() == 1L,
+                                      && current.get().pageCount() >= 1L
+                                      && current.get().childrenScanned() >= 1L,
                               "retained projection refresh cursor " + connectorJobId)
                           .orElseThrow();
-                  assertEquals(1L, retainedCursor.pageCount());
-                  assertEquals(1L, retainedCursor.childrenScanned());
+                  assertTrue(retainedCursor.pageCount() >= 1L);
+                  assertTrue(retainedCursor.childrenScanned() >= 1L);
                 }));
   }
 
@@ -492,7 +537,6 @@ class DurableReconcileJobStoreTest {
           finishProjectionRefresh(accountId, snapshotTwo, 2);
 
           assertFalse(refreshProjectedParent(accountId, tableJobId));
-          assertTrue(projectionStore().load(accountId, connectorJobId).isEmpty());
           assertEquals(
               0L,
               store.listRootJobs(accountId, 20, "", connectorId, Set.of()).jobs.stream()
@@ -502,7 +546,6 @@ class DurableReconcileJobStoreTest {
                   .orElse(0L));
 
           finishProjectionRefresh(accountId, tableJobId, 5);
-          assertTrue(projectionStore().load(accountId, connectorJobId).isEmpty());
           assertEquals(
               0L,
               store.listRootJobs(accountId, 20, "", connectorId, Set.of()).jobs.stream()

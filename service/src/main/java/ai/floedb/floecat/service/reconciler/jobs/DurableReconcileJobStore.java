@@ -110,8 +110,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
-  private static final int DEFAULT_PROJECTION_REFRESH_CHILD_PAGE_SIZE = 100;
-  private static final int DEFAULT_PROJECTION_REFRESH_MAX_PAGES_PER_MAINTENANCE = 1;
+  private static final int DEFAULT_PROJECTION_REFRESH_CHILD_PAGE_SIZE = 250;
+  private static final int DEFAULT_PROJECTION_REFRESH_MAX_PAGES_PER_MAINTENANCE = 8;
   private static final int CAS_MAX = 16;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -1389,6 +1389,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           jobIndexStore()
               .listStoredChildJobs(
                   accountId, parentJobId, projectionRefreshChildPageSize, continuationPointerKey);
+      StoredReconcileJob dirtyDescendant =
+          page.records().stream()
+              .filter(this::hasDirtyDescendantProjection)
+              .findFirst()
+              .orElse(null);
+      if (dirtyDescendant != null) {
+        ensureProjectionRefreshScheduled(dirtyDescendant.accountId, dirtyDescendant.jobId);
+        ensureProjectionRefreshScheduled(accountId, parentJobId);
+        if (cursorRestarted) {
+          projectionRefreshCursors().upsert(cursor);
+        }
+        LOG.infof(
+            "projection_refresh parentJobId=%s targetGeneration=%d continuation=%s"
+                + " childrenScanned=%d pageCount=%d hasMore=%s durationMs=%d cursorRestarted=%s"
+                + " projectionPublished=false blockedOnChild=%s",
+            parentJobId,
+            requestedGeneration,
+            cursor.continuationPointerKey(),
+            cursor.childrenScanned(),
+            cursor.pageCount(),
+            true,
+            System.currentTimeMillis() - refreshStartedAtMs,
+            cursorRestarted,
+            dirtyDescendant.jobId);
+        return false;
+      }
       var accumulator = cursor.accumulator();
       for (StoredReconcileJob child : page.records()) {
         accumulator =
@@ -1554,6 +1580,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private StoredReconcileJob projectedSummaryRecord(StoredReconcileJob record) {
     if (record == null || !isParentCapable(record.jobKind())) {
+      return record;
+    }
+    if (hasDirtyDescendantProjection(record)) {
       return record;
     }
     var projection = projections().load(record.accountId, record.jobId).orElse(null);
@@ -1722,6 +1751,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     requestProjectionRefresh(accountId, parentJobId, 0L);
   }
 
+  private void ensureProjectionRefreshScheduled(String accountId, String parentJobId) {
+    String effectiveAccountId = blankToEmpty(accountId);
+    String effectiveParentJobId = blankToEmpty(parentJobId);
+    if (effectiveAccountId.isBlank() || effectiveParentJobId.isBlank()) {
+      return;
+    }
+    upsertDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
+  }
+
   private void requestProjectionRefresh(
       String accountId, String parentJobId, long expectedDirectChildrenDelta) {
     String effectiveAccountId = blankToEmpty(accountId);
@@ -1745,6 +1783,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   Math.max(0L, existing.projectionRequestedGeneration) + 1L;
               return existing;
             });
+    upsertDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
+  }
+
+  private void upsertDirtyParentPointer(String effectiveAccountId, String effectiveParentJobId) {
     String key = Keys.reconcileDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
     String payload = effectiveAccountId + "\n" + effectiveParentJobId;
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
@@ -1766,6 +1808,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             + effectiveAccountId
             + " parentJobId="
             + effectiveParentJobId);
+  }
+
+  private boolean hasDirtyDescendantProjection(StoredReconcileJob record) {
+    return record != null
+        && isParentCapable(record.jobKind())
+        && Math.max(0L, record.projectionRequestedGeneration)
+            > Math.max(0L, record.projectionAppliedGeneration);
   }
 
   private void advanceAppliedProjectionGeneration(
