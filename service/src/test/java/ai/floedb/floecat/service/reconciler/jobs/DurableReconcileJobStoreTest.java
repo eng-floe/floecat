@@ -544,21 +544,25 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
-    var snapshotLease = leaseJob(snapshotJobId);
-    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 120L, "executor-snapshot");
-    store.markWaiting(
-        snapshotJobId,
-        snapshotLease.leaseEpoch,
-        130L,
-        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
-        "Snapshot plan recorded for sales.trino_types with 1 file group(s)",
-        0L,
-        0L,
-        0L,
-        0L,
-        0L,
-        0L,
-        0L);
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_WAITING";
+                      current.message =
+                          "Snapshot plan recorded for sales.trino_types with 1 file group(s)";
+                      current.startedAtMs = Math.max(current.startedAtMs, 120L);
+                      current.finishedAtMs = 0L;
+                      current.childrenFinalized = true;
+                      current.readyPointerKey = null;
+                      current.updatedAtMs = Math.max(current.updatedAtMs, 130L);
+                      return current;
+                    }));
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
