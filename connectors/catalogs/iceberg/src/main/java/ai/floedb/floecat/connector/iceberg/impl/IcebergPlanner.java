@@ -217,7 +217,7 @@ final class IcebergPlanner implements Planner<Integer> {
   }
 
   private PlannedFile<Integer> toPlanned(DataFile dataFile) {
-    Map<Integer, Long> valueCounts = dataFile.valueCounts();
+    Map<Integer, Long> rowCounts = dataFile.valueCounts();
     Map<Integer, Long> nullCounts = dataFile.nullValueCounts();
     Map<Integer, Long> nanCounts = dataFile.nanValueCounts();
 
@@ -236,7 +236,7 @@ final class IcebergPlanner implements Planner<Integer> {
         dataFile.format().name(),
         dataFile.recordCount(),
         dataFile.fileSizeInBytes(),
-        valueCounts,
+        rowCounts,
         nullCounts,
         nanCounts,
         lowers,

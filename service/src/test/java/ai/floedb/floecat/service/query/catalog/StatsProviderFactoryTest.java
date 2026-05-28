@@ -162,7 +162,7 @@ class StatsProviderFactoryTest {
     ScalarStats stats =
         ScalarStats.newBuilder()
             .setDisplayName("col")
-            .setValueCount(77)
+            .setRowCount(77)
             .setNullCount(2)
             .setNanCount(3)
             .setLogicalType("int64")
@@ -185,7 +185,7 @@ class StatsProviderFactoryTest {
     assertEquals(TABLE, view.tableId());
     assertEquals(columnId, view.columnId());
     assertEquals("col", view.columnName());
-    assertEquals(77, view.valueCount());
+    assertEquals(77, view.rowCount());
     assertEquals(2, view.nullCountValue().orElseThrow());
     assertEquals(3, view.nanCountValue().orElseThrow());
     assertEquals("int64", view.logicalType());

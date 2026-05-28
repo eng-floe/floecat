@@ -68,7 +68,7 @@ final class StatsCanonicalizer {
             var scalar = record.getScalar();
             g.scalar("logical_type", scalar.getLogicalType());
             canonicalUpstream(g, "upstream", scalar.hasUpstream() ? scalar.getUpstream() : null);
-            g.scalar("value_count", scalar.getValueCount());
+            g.scalar("row_count", scalar.getRowCount());
             g.scalar("null_count", scalar.getNullCount());
             g.scalar("nan_count", scalar.getNanCount());
             canonicalNdv(g, "ndv", scalar.hasNdv() ? scalar.getNdv() : null);
@@ -99,7 +99,7 @@ final class StatsCanonicalizer {
     c.scalar("display_name", stats.getDisplayName());
     c.scalar("logical_type", stats.getLogicalType());
     canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
-    c.scalar("value_count", stats.getValueCount());
+    c.scalar("row_count", stats.getRowCount());
     c.scalar("null_count", stats.getNullCount());
     c.scalar("nan_count", stats.getNanCount());
     canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);

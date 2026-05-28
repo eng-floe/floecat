@@ -477,7 +477,7 @@ final class StatsCliSupport {
   private static void printColumnStats(List<TargetStatsRecord> cols, PrintStream out) {
     out.printf(
         "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
-        "CID", "NAME", "TYPE", "VALUES", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
+        "CID", "NAME", "TYPE", "ROWS", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
     for (var c : cols) {
       ScalarStats scalar = c.getScalar();
       long nullCount = scalar.hasNullCount() ? scalar.getNullCount() : 0L;
@@ -487,7 +487,7 @@ final class StatsCliSupport {
           c.getTarget().getColumn().getColumnId(),
           CliUtils.trunc(scalar.getDisplayName(), 28),
           CliUtils.trunc(scalar.getLogicalType(), 12),
-          Long.toString(scalar.getValueCount()),
+          Long.toString(scalar.getRowCount()),
           Long.toString(nullCount),
           Long.toString(nanCount),
           CliUtils.trunc(scalar.getMin(), 24),
@@ -520,12 +520,12 @@ final class StatsCliSupport {
           String columnName =
               !scalar.getDisplayName().isBlank() ? scalar.getDisplayName() : "#" + c.getColumnId();
           out.printf(
-              "      %-8s %-24s %-10s values=%-8d nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
+              "      %-8s %-24s %-10s rows=%-8s nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
                   + " ndv=%s%n",
               c.getColumnId(),
               CliUtils.trunc(columnName, 24),
               CliUtils.trunc(scalar.getLogicalType(), 10),
-              scalar.getValueCount(),
+              Long.toString(scalar.getRowCount()),
               nullCount,
               nanCount,
               CliUtils.trunc(scalar.getMin(), 20),

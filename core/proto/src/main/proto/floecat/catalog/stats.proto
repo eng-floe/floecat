@@ -198,7 +198,7 @@ message ScalarStats {
   string display_name = 1;
   string logical_type = 2;
   UpstreamStamp upstream = 3;
-  int64 value_count = 4;
+  int64 row_count = 4;
   optional int64 null_count = 5;
   optional int64 nan_count = 6;
   Ndv ndv = 7;

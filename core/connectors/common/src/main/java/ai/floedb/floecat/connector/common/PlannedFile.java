@@ -23,7 +23,7 @@ public record PlannedFile<K>(
     String format,
     long rowCount,
     long sizeBytes,
-    Map<K, Long> valueCounts,
+    Map<K, Long> rowCounts,
     Map<K, Long> nullCounts,
     Map<K, Long> nanCounts,
     Map<K, Object> lowerBounds,

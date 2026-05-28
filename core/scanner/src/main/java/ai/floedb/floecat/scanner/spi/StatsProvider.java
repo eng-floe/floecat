@@ -70,8 +70,8 @@ public interface StatsProvider {
       return "";
     }
 
-    /** Value count when explicitly reported. */
-    long valueCount();
+    /** Row count reported for this column stats record. */
+    long rowCount();
 
     /** Null count when explicitly reported. */
     OptionalLong nullCountValue();

@@ -65,7 +65,7 @@ class StatsRepositoryTargetStorageTest {
             ScalarStats.newBuilder()
                 .setDisplayName("c7")
                 .setLogicalType("BIGINT")
-                .setValueCount(5L)
+                .setRowCount(5L)
                 .build(),
             null));
 
@@ -77,7 +77,7 @@ class StatsRepositoryTargetStorageTest {
     ScalarStats expressionStats =
         ScalarStats.newBuilder()
             .setLogicalType("BIGINT")
-            .setValueCount(100L)
+            .setRowCount(100L)
             .setNullCount(5L)
             .build();
     repository.putTargetStats(
@@ -146,7 +146,7 @@ class StatsRepositoryTargetStorageTest {
                 .setEngineKind("duckdb")
                 .setEngineExpressionKey(ByteString.copyFromUtf8("expr:1"))
                 .build(),
-            ScalarStats.newBuilder().setLogicalType("VARCHAR").setValueCount(1L).build()));
+            ScalarStats.newBuilder().setLogicalType("VARCHAR").setRowCount(1L).build()));
     repository.putTargetStats(
         TargetStatsRecords.fileRecord(
             TABLE_ID,
@@ -217,7 +217,7 @@ class StatsRepositoryTargetStorageTest {
             TABLE_ID,
             snapshotId,
             expressionTarget,
-            ScalarStats.newBuilder().setLogicalType("BIGINT").setValueCount(5L).build()));
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(5L).build()));
     repository.putTargetStats(
         TargetStatsRecords.fileRecord(
             TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(filePath).build()));
@@ -249,7 +249,7 @@ class StatsRepositoryTargetStorageTest {
             .setTableId(TABLE_ID)
             .setSnapshotId(snapshotId)
             .setTarget(StatsTargetIdentity.tableTarget())
-            .setScalar(ScalarStats.newBuilder().setLogicalType("BIGINT").setValueCount(1L).build())
+            .setScalar(ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build())
             .build();
 
     assertThatThrownBy(() -> repository.putTargetStats(tableTargetWithScalar))
@@ -291,7 +291,7 @@ class StatsRepositoryTargetStorageTest {
             ScalarStats.newBuilder()
                 .setDisplayName("c9")
                 .setLogicalType("BIGINT")
-                .setValueCount(100L)
+                .setRowCount(100L)
                 .build(),
             metadata);
     repository.putTargetStats(scalarRecord);

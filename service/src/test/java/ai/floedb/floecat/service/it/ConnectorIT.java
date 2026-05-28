@@ -309,7 +309,7 @@ public class ConnectorIT {
       assertTrue(byName.containsKey("id"), "per-file stats should include id column");
       var idCol = byName.get("id");
       assertEquals(0L, idCol.getScalar().getNullCount());
-      assertTrue(idCol.getScalar().getValueCount() > 0, "value_count should be > 0 for id");
+      assertTrue(idCol.getScalar().getRowCount() > 0, "row_count should be > 0 for id");
     }
   }
 

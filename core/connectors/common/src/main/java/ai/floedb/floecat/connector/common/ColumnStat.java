@@ -22,7 +22,7 @@ public record ColumnStat(
     int fieldId,
     String name,
     LogicalType type,
-    Long valueCount,
+    Long rowCount,
     Long nullCount,
     Long nanCount,
     Object min,

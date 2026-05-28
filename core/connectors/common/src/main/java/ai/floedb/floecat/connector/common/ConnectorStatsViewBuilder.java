@@ -142,11 +142,13 @@ public final class ConnectorStatsViewBuilder {
         if (hasPayload) ndv = ndvBuilder.build();
       }
 
+      long rowCount = agg.rowCount() != null ? agg.rowCount() : Math.max(0L, tableTotalRows);
+
       out.add(
           new FloecatConnector.ColumnStatsView(
               ref,
               logicalTypeStr,
-              agg.valueCount(),
+              rowCount,
               agg.nullCount(),
               agg.nanCount(),
               min,

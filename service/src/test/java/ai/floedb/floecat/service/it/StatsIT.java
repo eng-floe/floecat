@@ -305,7 +305,7 @@ class StatsIT {
         ScalarStats.newBuilder()
             .setDisplayName("sum(id)")
             .setLogicalType("int64")
-            .setValueCount(10)
+            .setRowCount(10)
             .setNullCount(0)
             .setNdv(Ndv.newBuilder().setExact(1).build())
             .setMin("55")
@@ -869,7 +869,7 @@ class StatsIT {
         ScalarStats.newBuilder()
             .setDisplayName(columnStats.getDisplayName())
             .setLogicalType(columnStats.getLogicalType())
-            .setValueCount(columnStats.getValueCount())
+            .setRowCount(columnStats.getRowCount())
             .setHistogram(columnStats.getHistogram())
             .setTdigest(columnStats.getTdigest())
             .putAllProperties(columnStats.getPropertiesMap());

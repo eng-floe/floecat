@@ -847,7 +847,7 @@ public class DeltaManifestMaterializer {
       } else {
         continue;
       }
-      valueCounts.put(fieldId, Math.max(0L, column.getValueCount()));
+      valueCounts.put(fieldId, Math.max(0L, column.getRowCount()));
       if (column.hasNullCount()) {
         nullValueCounts.put(fieldId, Math.max(0L, column.getNullCount()));
       }

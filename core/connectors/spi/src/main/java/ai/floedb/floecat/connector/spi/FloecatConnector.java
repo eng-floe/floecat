@@ -557,7 +557,7 @@ public interface FloecatConnector extends Closeable {
   record ColumnStatsView(
       ColumnRef ref,
       String logicalType,
-      Long valueCount,
+      Long rowCount,
       Long nullCount,
       Long nanCount,
       String min,
