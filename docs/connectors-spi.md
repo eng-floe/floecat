@@ -59,7 +59,7 @@ field was populated (even when the string itself is empty). In brief:
     * UUID → lowercase 8-4-4-4-12 hex.
     * String → literal UTF-8 content.
     * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).
-  * Null/NAN counts are optional (`null_count`, `nan_count`); set them only when the connector can
+  * Row/null/NAN counts are optional (`row_count`, `null_count`, `nan_count`); set them only when the connector can
     report a value so downstream planners can distinguish “unknown” from zero.
   * Non-orderable types (`INTERVAL`, `JSON`, `ARRAY`, `MAP`, `STRUCT`, `VARIANT`) should leave
     `min`/`max` unset. Floecat treats `INTERVAL` as non‑stats‑orderable; if you still emit bounds,

@@ -64,9 +64,9 @@ public class StatsProtoEmitterTest {
   }
 
   private static FloecatConnector.ColumnStatsView view(
-      FloecatConnector.ColumnRef ref, Long valueCount) {
+      FloecatConnector.ColumnRef ref, Long rowCount) {
     return new FloecatConnector.ColumnStatsView(
-        ref, "int", valueCount, null, null, null, null, null, Map.of());
+        ref, "int", rowCount, null, null, null, null, null, Map.of());
   }
 
   @Test
@@ -103,11 +103,11 @@ public class StatsProtoEmitterTest {
 
     assertTrue(s0.getTarget().getColumn().getColumnId() > 0L);
     assertEquals("b", s0.getScalar().getDisplayName());
-    assertEquals(123L, s0.getScalar().getValueCount());
+    assertEquals(123L, s0.getScalar().getRowCount());
 
     assertTrue(s1.getTarget().getColumn().getColumnId() > 0L);
     assertEquals("b", s1.getScalar().getDisplayName());
-    assertEquals(456L, s1.getScalar().getValueCount());
+    assertEquals(456L, s1.getScalar().getRowCount());
 
     // Both refer to the *same schema column*, so the computed id must be the same.
     assertEquals(
@@ -139,7 +139,7 @@ public class StatsProtoEmitterTest {
 
     assertEquals(1, out.size(), "unresolvable column must be skipped safely");
     assertEquals("id", out.get(0).getScalar().getDisplayName());
-    assertEquals(10L, out.get(0).getScalar().getValueCount());
+    assertEquals(10L, out.get(0).getScalar().getRowCount());
   }
 
   @Test
@@ -170,10 +170,10 @@ public class StatsProtoEmitterTest {
 
     assertEquals(2, out.size());
     assertEquals(123L, out.get(0).getTarget().getColumn().getColumnId());
-    assertEquals(42L, out.get(0).getScalar().getValueCount());
+    assertEquals(42L, out.get(0).getScalar().getRowCount());
 
     assertEquals(999L, out.get(1).getTarget().getColumn().getColumnId());
-    assertEquals(99L, out.get(1).getScalar().getValueCount());
+    assertEquals(99L, out.get(1).getScalar().getRowCount());
   }
 
   @Test
@@ -383,23 +383,20 @@ public class StatsProtoEmitterTest {
   }
 
   /**
-   * Verifies that a column with all-null stats (no valueCount, no min/max) is still emitted as a
-   * valid scalar stats entry with target identity and column_name set. This is the new code path
-   * exercised when GenericStatsEngine densifies per-file stats with planner.columns() — columns
-   * without Iceberg metrics produce all-null ColumnStatsView entries that must not be silently
-   * dropped.
+   * Verifies that a column with only required rowCount and otherwise-null optional stats is still
+   * emitted as a valid scalar stats entry with target identity and column_name set.
    */
   @Test
-  public void toColumnStats_fieldId_emitsEntryForColumnWithNullStats() {
+  public void toColumnStats_fieldId_emitsEntryForColumnWithSparseStats() {
     var schema = schemaWithColumns(schemaCol("ts_col", "ts_col", 1, 42, true));
 
     var in =
         List.of(
-            // All stats are null — simulates a date/timestamp column with no Iceberg metrics
+            // Optional stats are null — simulates a sparse metric column with known row count
             new FloecatConnector.ColumnStatsView(
                 ref("ts_col", "ts_col", 1, 42),
                 "timestamp",
-                null, // valueCount
+                100L, // rowCount
                 null, // nullCount
                 null, // nanCount
                 null, // min
@@ -422,6 +419,7 @@ public class StatsProtoEmitterTest {
     assertEquals(
         42L, cs.getTarget().getColumn().getColumnId(), "column_id must be resolved from fieldId");
     assertEquals("ts_col", cs.getScalar().getDisplayName(), "column_name must be preserved");
+    assertEquals(100L, cs.getScalar().getRowCount());
     assertFalse(cs.getScalar().hasNullCount(), "null nullCount must not produce a set proto field");
     assertFalse(cs.getScalar().hasMin(), "null min must not produce a set proto field");
     assertFalse(cs.getScalar().hasMax(), "null max must not produce a set proto field");

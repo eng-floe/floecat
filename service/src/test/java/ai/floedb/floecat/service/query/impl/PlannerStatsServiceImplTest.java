@@ -401,7 +401,7 @@ class PlannerStatsServiceImplTest {
   private static ScalarStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
     return ScalarStats.newBuilder()
         .setDisplayName("col" + columnId)
-        .setValueCount(columnId * 10)
+        .setRowCount(columnId * 10)
         .setNullCount(columnId)
         .build();
   }

@@ -413,7 +413,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     ScalarStats stats =
         ScalarStats.newBuilder()
             .setDisplayName("optionable")
-            .setValueCount(99L)
+            .setRowCount(99L)
             .setNullCount(7L)
             .setNanCount(3L)
             .setMin("foo")
@@ -453,7 +453,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     ScalarStats stats =
         ScalarStats.newBuilder()
             .setDisplayName("bare")
-            .setValueCount(12L)
+            .setRowCount(12L)
             .putProperties("column_id", "43")
             .build();
     repository.putTargetStats(TargetStatsRecords.columnRecord(TABLE, snapshotId, 43L, stats, null));
@@ -468,18 +468,16 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertFalse(info.hasMin());
     assertFalse(info.hasMax());
     assertFalse(info.hasNdv());
-    assertEquals(12L, info.getValueCount());
+    assertEquals(12L, info.getRowCount());
   }
 
   /**
-   * A ScalarStats row that exists in storage but has no metrics (no value_count, no null_count, no
-   * min/max) must still be returned as FOUND — not NOT_FOUND. This is exactly the shape that
-   * GenericStatsEngine.compute() emits for columns whose format (e.g. Iceberg) doesn't provide
-   * per-column metrics; the planner must receive a FOUND result and apply its own default estimates
-   * rather than treating the column as if stats were never ingested.
+   * A ScalarStats row that exists in storage with only required row_count must still be returned as
+   * FOUND — not NOT_FOUND. Sparse connectors may omit optional metrics while still reporting the
+   * enclosing row count.
    */
   @Test
-  void columnWithNoMetricsIsFoundWithEmptyStats() {
+  void columnWithOnlyRequiredRowCountIsFound() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
@@ -488,14 +486,16 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
     long snapshotId = 420L;
 
-    // Simulate a row produced by compute() for a column with no Iceberg metrics:
-    // only column_id and column_name are set; all stat fields are absent.
     ScalarStats emptyStats =
-        ScalarStats.newBuilder().setDisplayName("ts_col").putProperties("column_id", "99").build();
+        ScalarStats.newBuilder()
+            .setDisplayName("ts_col")
+            .setRowCount(420L)
+            .putProperties("column_id", "99")
+            .build();
     repository.putTargetStats(
         TargetStatsRecords.columnRecord(TABLE, snapshotId, 99L, emptyStats, null));
 
-    QueryContext ctx = queryContextWithPin("query-empty-metrics", snapshotId);
+    QueryContext ctx = queryContextWithPin("query-required-row-count", snapshotId);
     store.seed(ctx);
     FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(99L));
     List<TargetStatsBundleChunk> chunks =
@@ -508,7 +508,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(99L, results.get(0).getTarget().getColumn().getColumnId());
 
     ScalarStats info = results.get(0).getStats().getScalar();
-    // No metrics were stored — all optional fields must be absent
+    assertEquals(420L, info.getRowCount());
     assertFalse(info.hasNullCount(), "null_count must not be set when no metrics");
     assertFalse(info.hasNanCount(), "nan_count must not be set when no metrics");
     assertFalse(info.hasMin(), "min must not be set when no metrics");

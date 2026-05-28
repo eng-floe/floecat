@@ -171,7 +171,7 @@ final class DeltaPlanner implements Planner<String> {
             long sizeBytes = fs.getSize();
 
             long rowCount = 0L;
-            Map<String, Long> valueCounts = null;
+            Map<String, Long> rowCounts = null;
             Map<String, Long> nullCounts = null;
             Map<String, Long> nanCounts = null;
             Map<String, Object> mins = null;
@@ -223,10 +223,9 @@ final class DeltaPlanner implements Planner<String> {
                 }
 
                 if (rowCount > 0 && nullCounts != null && !nullCounts.isEmpty()) {
-                  valueCounts = new LinkedHashMap<>(nullCounts.size());
+                  rowCounts = new LinkedHashMap<>(nullCounts.size());
                   for (var e : nullCounts.entrySet()) {
-                    long ncVal = e.getValue() == null ? 0L : e.getValue();
-                    valueCounts.put(e.getKey(), Math.max(0L, rowCount - ncVal));
+                    rowCounts.put(e.getKey(), rowCount);
                   }
                 }
 
@@ -274,13 +273,13 @@ final class DeltaPlanner implements Planner<String> {
                 nullCounts = new LinkedHashMap<>();
                 mins = new LinkedHashMap<>();
                 maxs = new LinkedHashMap<>();
-                valueCounts = new LinkedHashMap<>();
+                rowCounts = new LinkedHashMap<>();
 
                 for (var e : bfs.cols.entrySet()) {
                   String name = e.getKey();
                   var c = e.getValue();
                   nullCounts.put(name, c.nulls);
-                  if (rowCount > 0) valueCounts.put(name, Math.max(0L, rowCount - c.nulls));
+                  if (rowCount > 0) rowCounts.put(name, rowCount);
                   var lt = nameToLogical.get(name);
                   if (lt != null) {
                     if (c.min != null) {
@@ -300,7 +299,7 @@ final class DeltaPlanner implements Planner<String> {
                     PARQUET_FORMAT,
                     rowCount,
                     sizeBytes,
-                    valueCounts,
+                    rowCounts,
                     nullCounts,
                     nanCounts,
                     mins,

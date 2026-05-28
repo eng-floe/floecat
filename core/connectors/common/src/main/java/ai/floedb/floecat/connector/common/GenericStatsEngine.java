@@ -106,7 +106,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       rows += file.rowCount();
       bytes += file.sizeBytes();
 
-      mergeCounts(acc.columns, file.valueCounts(), ColAcc::addValueCount);
+      mergeCounts(acc.columns, file.rowCounts(), ColAcc::addRowCount);
       mergeCounts(acc.columns, file.nullCounts(), ColAcc::addNullCount);
       mergeCounts(acc.columns, file.nanCounts(), ColAcc::addNanCount);
       mergeBounds(acc.columns, file.lowerBounds(), true);
@@ -158,7 +158,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     final LogicalType type;
     final String name;
 
-    Long valueCount;
+    Long rowCount;
     Long nullCount;
     Long nanCount;
     Object min;
@@ -171,8 +171,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       this.name = name;
     }
 
-    void addValueCount(long value) {
-      valueCount = sum(valueCount, value);
+    void addRowCount(long value) {
+      rowCount = sum(rowCount, value);
     }
 
     void addNullCount(long value) {
@@ -264,7 +264,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     ColumnAgg freeze() {
       final Long fExact = ndvExact;
       final ColumnNdv fNdv = ndv;
-      final Long fVal = valueCount;
+      final Long fRow = rowCount;
       final Long fNull = nullCount;
       final Long fNan = nanCount;
       final Object fMin = min;
@@ -282,8 +282,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         }
 
         @Override
-        public Long valueCount() {
-          return fVal;
+        public Long rowCount() {
+          return fRow;
         }
 
         @Override
@@ -382,7 +382,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
   private Map<K, ColumnAgg> buildFileColumnAggs(PlannedFile<K> file) {
     Map<K, ColumnAgg> out = new LinkedHashMap<>();
 
-    Map<K, Long> valueCounts = file.valueCounts();
+    Map<K, Long> rowCounts = file.rowCounts();
     Map<K, Long> nullCounts = file.nullCounts();
     Map<K, Long> nanCounts = file.nanCounts();
     Map<K, Object> lowers = file.lowerBounds();
@@ -390,20 +390,20 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     Set<K> keys = new LinkedHashSet<>();
     keys.addAll(planner.columns()); // ensure ALL schema columns present, even without metrics
-    if (valueCounts != null) keys.addAll(valueCounts.keySet());
+    if (rowCounts != null) keys.addAll(rowCounts.keySet());
     if (nullCounts != null) keys.addAll(nullCounts.keySet());
     if (nanCounts != null) keys.addAll(nanCounts.keySet());
     if (lowers != null) keys.addAll(lowers.keySet());
     if (uppers != null) keys.addAll(uppers.keySet());
 
     for (K key : keys) {
-      Long vc = valueCounts != null ? valueCounts.get(key) : null;
+      Long rc = rowCounts != null ? rowCounts.get(key) : null;
       Long nc = nullCounts != null ? nullCounts.get(key) : null;
       Long nn = nanCounts != null ? nanCounts.get(key) : null;
       Object lo = lowers != null ? lowers.get(key) : null;
       Object hi = uppers != null ? uppers.get(key) : null;
 
-      final Long fVc = vc;
+      final Long fRc = rc;
       final Long fNc = nc;
       final Long fNn = nn;
       final Object fLo = lo;
@@ -422,8 +422,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
             }
 
             @Override
-            public Long valueCount() {
-              return fVc;
+            public Long rowCount() {
+              return fRc;
             }
 
             @Override

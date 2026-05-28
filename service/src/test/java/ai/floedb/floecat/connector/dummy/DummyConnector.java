@@ -190,7 +190,7 @@ public final class DummyConnector implements FloecatConnector {
               c.colId // fieldId for Iceberg-style schemas
               );
 
-      cstats.add(new ColumnStatsView(ref, c.logical, null, 0L, null, null, null, null, Map.of()));
+      cstats.add(new ColumnStatsView(ref, c.logical, 60L, 0L, null, null, null, null, Map.of()));
     }
 
     String basePath =
@@ -200,7 +200,7 @@ public final class DummyConnector implements FloecatConnector {
         fileIndex -> {
           List<ColumnStatsView> cols = new ArrayList<>();
           for (Col c : selected) {
-            long valueCount =
+            long rowCount =
                 switch (fileIndex) {
                   case 0 -> 10L;
                   case 1 -> 20L;
@@ -219,7 +219,7 @@ public final class DummyConnector implements FloecatConnector {
                 new ColumnStatsView(
                     ref,
                     c.logical,
-                    valueCount,
+                    rowCount,
                     0L,
                     null,
                     "f" + fileIndex + "_min_" + c.colId,

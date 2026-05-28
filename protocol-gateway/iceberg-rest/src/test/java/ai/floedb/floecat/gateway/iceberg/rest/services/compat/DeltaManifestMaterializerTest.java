@@ -248,7 +248,7 @@ class DeltaManifestMaterializerTest {
                     .setScalar(
                         ScalarStats.newBuilder()
                             .setLogicalType("INT")
-                            .setValueCount(50)
+                            .setRowCount(50)
                             .setNullCount(2)
                             .setMin("10")
                             .setMax("200")
@@ -260,7 +260,7 @@ class DeltaManifestMaterializerTest {
                     .setScalar(
                         ScalarStats.newBuilder()
                             .setLogicalType("STRING")
-                            .setValueCount(50)
+                            .setRowCount(50)
                             .setMin("alpha")
                             .setMax("omega")
                             .build())

@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 class ConnectorStatsViewBuilderTest {
 
   private static final class Agg implements StatsEngine.ColumnAgg {
-    private final Long valueCount;
+    private final Long rowCount;
     private final Long nullCount;
     private final Long nanCount;
     private final Object min;
@@ -41,14 +41,14 @@ class ConnectorStatsViewBuilderTest {
     private final ColumnNdv ndv;
 
     Agg(
-        Long valueCount,
+        Long rowCount,
         Long nullCount,
         Long nanCount,
         Object min,
         Object max,
         Long ndvExact,
         ColumnNdv ndv) {
-      this.valueCount = valueCount;
+      this.rowCount = rowCount;
       this.nullCount = nullCount;
       this.nanCount = nanCount;
       this.min = min;
@@ -68,8 +68,8 @@ class ConnectorStatsViewBuilderTest {
     }
 
     @Override
-    public Long valueCount() {
-      return valueCount;
+    public Long rowCount() {
+      return rowCount;
     }
 
     @Override
@@ -116,7 +116,7 @@ class ConnectorStatsViewBuilderTest {
     assertEquals(3, v.ref().ordinal());
     assertEquals(10, v.ref().fieldId());
 
-    assertEquals(100L, v.valueCount());
+    assertEquals(100L, v.rowCount());
     assertEquals(2L, v.nullCount());
     assertEquals(0L, v.nanCount());
     assertNotNull(v.ndv());

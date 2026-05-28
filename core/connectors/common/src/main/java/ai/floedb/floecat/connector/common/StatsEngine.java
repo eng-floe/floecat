@@ -53,7 +53,7 @@ public interface StatsEngine<K> {
 
     ColumnNdv ndv();
 
-    Long valueCount();
+    Long rowCount();
 
     Long nullCount();
 
