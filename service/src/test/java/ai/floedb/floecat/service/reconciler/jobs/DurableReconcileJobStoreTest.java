@@ -323,10 +323,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenSuccessClearsPriorFailureState() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    configureRetryPolicy(2, 0L, 0L);
 
     String jobId =
         store.enqueue(
@@ -355,10 +352,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenFailureTransitionsToTerminalFailed() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    configureRetryPolicy(2, 0L, 0L);
 
     String jobId =
         store.enqueue(
@@ -1196,6 +1190,13 @@ class DurableReconcileJobStoreTest {
         assertDoesNotThrow(() -> invokePrivateMethod(store, "leaseManager", new Class<?>[] {}));
   }
 
+  private void configureRetryPolicy(int maxAttempts, long baseBackoffMs, long maxBackoffMs) {
+    assertDoesNotThrow(() -> setPrivateField(store, "maxAttempts", Math.max(1, maxAttempts)));
+    assertDoesNotThrow(
+        () -> setPrivateField(store, "baseBackoffMs", Math.max(100L, baseBackoffMs)));
+    assertDoesNotThrow(() -> setPrivateField(store, "maxBackoffMs", Math.max(100L, maxBackoffMs)));
+  }
+
   private ReconcileJobProjectionStore projectionStore() {
     return (ReconcileJobProjectionStore)
         assertDoesNotThrow(() -> invokePrivateMethod(store, "projections", new Class<?>[] {}));
@@ -1388,6 +1389,12 @@ class DurableReconcileJobStoreTest {
     Method method = target.getClass().getDeclaredMethod(name, parameterTypes);
     method.setAccessible(true);
     return method.invoke(target, args);
+  }
+
+  private void setPrivateField(Object target, String name, Object value) throws Exception {
+    java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    field.set(target, value);
   }
 
   private static boolean isDynamoMode() {
