@@ -198,14 +198,13 @@ message ScalarStats {
   string display_name = 1;
   string logical_type = 2;
   UpstreamStamp upstream = 3;
-  int64 value_count = 4;
-  optional int64 null_count = 5;
-  optional int64 nan_count = 6;
-  Ndv ndv = 7;
-  optional string min = 8;
-  optional string max = 9;
-  bytes histogram = 10;
-  bytes tdigest = 11;
+  optional int64 null_count = 4;
+  optional int64 nan_count = 5;
+  Ndv ndv = 6;
+  optional string min = 7;
+  optional string max = 8;
+  bytes histogram = 9;
+  bytes tdigest = 10;
   map<string, string> properties = 99;
 }
 

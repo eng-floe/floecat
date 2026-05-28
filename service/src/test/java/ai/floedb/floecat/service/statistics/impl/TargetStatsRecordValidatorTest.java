@@ -134,7 +134,7 @@ class TargetStatsRecordValidatorTest {
                         EngineExpressionStatsTarget.newBuilder()
                             .setEngineKind(" DuckDB ")
                             .setEngineExpressionKey(ByteString.copyFromUtf8("sum(id)"))))
-            .setScalar(ScalarStats.newBuilder().setLogicalType("BIGINT").setValueCount(1L))
+            .setScalar(ScalarStats.newBuilder().setLogicalType("BIGINT"))
             .build();
 
     TargetStatsRecord normalized =

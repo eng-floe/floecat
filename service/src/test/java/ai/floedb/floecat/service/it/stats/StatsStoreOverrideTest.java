@@ -66,7 +66,6 @@ class StatsStoreOverrideTest {
             ScalarStats.newBuilder()
                 .setDisplayName("c1")
                 .setLogicalType("BIGINT")
-                .setValueCount(5L)
                 .build(),
             null);
     statsStore.putTargetStats(columnRecord);

@@ -413,7 +413,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     ScalarStats stats =
         ScalarStats.newBuilder()
             .setDisplayName("optionable")
-            .setValueCount(99L)
             .setNullCount(7L)
             .setNanCount(3L)
             .setMin("foo")
@@ -453,7 +452,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     ScalarStats stats =
         ScalarStats.newBuilder()
             .setDisplayName("bare")
-            .setValueCount(12L)
             .putProperties("column_id", "43")
             .build();
     repository.putTargetStats(TargetStatsRecords.columnRecord(TABLE, snapshotId, 43L, stats, null));
@@ -468,7 +466,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertFalse(info.hasMin());
     assertFalse(info.hasMax());
     assertFalse(info.hasNdv());
-    assertEquals(12L, info.getValueCount());
   }
 
   /**

@@ -242,7 +242,6 @@ class JavaConnectorCaptureEngineTest {
                                 ScalarStats.newBuilder()
                                     .setDisplayName("id")
                                     .setLogicalType("BIGINT")
-                                    .setValueCount(100L)
                                     .setNullCount(0L))
                             .build())
                     .build())
@@ -301,11 +300,6 @@ class JavaConnectorCaptureEngineTest {
         .singleElement()
         .extracting(record -> record.getTable().getDataFileCount())
         .isEqualTo(1L);
-    assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
-        .singleElement()
-        .extracting(record -> record.getScalar().getValueCount())
-        .isEqualTo(100L);
 
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
@@ -619,7 +613,6 @@ class JavaConnectorCaptureEngineTest {
                             ScalarStats.newBuilder()
                                 .setDisplayName("id")
                                 .setLogicalType("BIGINT")
-                                .setValueCount(10L)
                                 .setNdv(ndv))
                         .build())
                 .build())
@@ -695,8 +688,7 @@ class JavaConnectorCaptureEngineTest {
                                 ScalarStats.newBuilder()
                                     .setDisplayName("id")
                                     .setLogicalType("INT")
-                                    .setValueCount(10L)
-                                    .setNullCount(0L)
+                                    .setNullCount(2L)
                                     .setMin("f1_min_1")
                                     .setMax("f1_max_1"))
                             .build())
@@ -724,8 +716,7 @@ class JavaConnectorCaptureEngineTest {
                                 ScalarStats.newBuilder()
                                     .setDisplayName("id")
                                     .setLogicalType("INT")
-                                    .setValueCount(20L)
-                                    .setNullCount(0L)
+                                    .setNullCount(5L)
                                     .setMin("f2_min_1")
                                     .setMax("f2_max_1"))
                             .build())
@@ -774,7 +765,7 @@ class JavaConnectorCaptureEngineTest {
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
         .singleElement()
-        .extracting(record -> record.getScalar().getValueCount())
-        .isEqualTo(30L);
+        .extracting(record -> record.getScalar().getNullCount())
+        .isEqualTo(7L);
   }
 }

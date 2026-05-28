@@ -70,9 +70,6 @@ public interface StatsProvider {
       return "";
     }
 
-    /** Value count when explicitly reported. */
-    long valueCount();
-
     /** Null count when explicitly reported. */
     OptionalLong nullCountValue();
 

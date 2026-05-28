@@ -109,20 +109,17 @@ class GenericStatsEngineTest {
 
     // int column has real stats
     var intAgg = fileAgg.columns().get(1);
-    assertEquals(100L, intAgg.valueCount());
     assertEquals(5L, intAgg.nullCount());
     assertEquals(0, intAgg.min());
     assertEquals(99, intAgg.max());
 
     // date and timestamp have null stats (no metrics in source)
     var dateAgg = fileAgg.columns().get(2);
-    assertNull(dateAgg.valueCount(), "date valueCount should be null when no metrics");
     assertNull(dateAgg.nullCount(), "date nullCount should be null when no metrics");
     assertNull(dateAgg.min(), "date min should be null when no metrics");
     assertNull(dateAgg.max(), "date max should be null when no metrics");
 
     var tsAgg = fileAgg.columns().get(3);
-    assertNull(tsAgg.valueCount(), "timestamp valueCount should be null when no metrics");
     assertNull(tsAgg.nullCount(), "timestamp nullCount should be null when no metrics");
     assertNull(tsAgg.min(), "timestamp min should be null when no metrics");
     assertNull(tsAgg.max(), "timestamp max should be null when no metrics");
@@ -157,7 +154,5 @@ class GenericStatsEngineTest {
 
     var fileAgg = result.files().get(0);
     assertEquals(2, fileAgg.columns().size());
-    assertEquals(40L, fileAgg.columns().get(1).valueCount());
-    assertEquals(50L, fileAgg.columns().get(2).valueCount());
   }
 }

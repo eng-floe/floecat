@@ -75,9 +75,9 @@ public class DeltaNestedColumnStatsTest {
   }
 
   private static FloecatConnector.ColumnStatsView view(
-      FloecatConnector.ColumnRef ref, Long valueCount) {
+      FloecatConnector.ColumnRef ref) {
     return new FloecatConnector.ColumnStatsView(
-        ref, "int", valueCount, null, null, null, null, null, Map.of());
+        ref, "int", null, null, null, null, null, Map.of());
   }
 
   @Test
@@ -98,11 +98,11 @@ public class DeltaNestedColumnStatsTest {
     var in =
         List.of(
             // Top-level column: ordinal=1 from schema
-            view(ref("id", "id", 1, 0), 100L),
+            view(ref("id", "id", 1, 0)),
             // Nested column: ordinal=1 (within parent "info")
-            view(ref("info.city", "info.city", 1, 0), 100L),
+            view(ref("info.city", "info.city", 1, 0)),
             // Another nested column: ordinal=2
-            view(ref("info.zip", "info.zip", 2, 0), 100L));
+            view(ref("info.zip", "info.zip", 2, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -163,8 +163,8 @@ public class DeltaNestedColumnStatsTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 1, 0), 100L),
-            view(ref("unknown", "unknown", 0, 0), 50L) // ordinal=0 should be skipped
+            view(ref("id", "id", 1, 0)),
+            view(ref("unknown", "unknown", 0, 0)) // ordinal=0 should be skipped
             );
 
     List<TargetStatsRecord> out =
@@ -197,8 +197,8 @@ public class DeltaNestedColumnStatsTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 1, 0), 1000L),
-            view(ref("profile.address.city", "profile.address.city", 1, 0), 800L));
+            view(ref("id", "id", 1, 0)),
+            view(ref("profile.address.city", "profile.address.city", 1, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -239,9 +239,9 @@ public class DeltaNestedColumnStatsTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 1, 0), 100L),
-            view(ref("config.key", "config.key", 1, 0), 100L),
-            view(ref("config.value", "config.value", 2, 0), 100L));
+            view(ref("id", "id", 1, 0)),
+            view(ref("config.key", "config.key", 1, 0)),
+            view(ref("config.value", "config.value", 2, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -288,8 +288,8 @@ public class DeltaNestedColumnStatsTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 1, 0), 100L),
-            view(ref("tags[]", "tags[]", 1, 0), 75L)); // 75 array elements total
+            view(ref("id", "id", 1, 0)),
+            view(ref("tags[]", "tags[]", 1, 0))); // 75 array elements total
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -330,9 +330,9 @@ public class DeltaNestedColumnStatsTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 1, 0), 100L),
-            view(ref("items[].id", "items[].id", 1, 0), 150L), // 150 items in total
-            view(ref("items[].name", "items[].name", 2, 0), 140L)); // 140 have names
+            view(ref("id", "id", 1, 0)),
+            view(ref("items[].id", "items[].id", 1, 0)), // 150 items in total
+            view(ref("items[].name", "items[].name", 2, 0))); // 140 have names
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -383,7 +383,7 @@ public class DeltaNestedColumnStatsTest {
     var tableId = rid("t1");
 
     // Even if paths come in non-canonical form, should still resolve
-    var in = List.of(view(ref("addresses[].zip", "addresses[].zip", 1, 0), 1000L));
+    var in = List.of(view(ref("addresses[].zip", "addresses[].zip", 1, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -425,8 +425,8 @@ public class DeltaNestedColumnStatsTest {
     var statsInput =
         List.of(
             // Only these appear in Delta/Parquet stats engine output
-            view(ref("id", "id", 1, 0), 1000L),
-            view(ref("user", "user", 2, 0), 800L) // struct container, not leaf
+            view(ref("id", "id", 1, 0)),
+            view(ref("user", "user", 2, 0)) // struct container, not leaf
             );
 
     List<TargetStatsRecord> out =
@@ -519,7 +519,7 @@ public class DeltaNestedColumnStatsTest {
 
     // Scenario 1: TODAY - only top-level columns in stats (Parquet limitation)
     var todayStatsInput =
-        List.of(view(ref("id", "id", 1, 0), 1000L), view(ref("user", "user", 2, 0), 800L));
+        List.of(view(ref("id", "id", 1, 0)), view(ref("user", "user", 2, 0)));
 
     List<TargetStatsRecord> todayOut =
         StatsProtoEmitter.toTargetColumnStats(
@@ -543,10 +543,10 @@ public class DeltaNestedColumnStatsTest {
     // Scenario 2: FUTURE - Delta adds nested column stats
     var futureStatsInput =
         List.of(
-            view(ref("id", "id", 1, 0), 1000L),
-            view(ref("user", "user", 2, 0), 800L),
-            view(ref("user.name", "user.name", 1, 0), 750L), // NEW: nested stat
-            view(ref("user.age", "user.age", 2, 0), 650L) // NEW: nested stat
+            view(ref("id", "id", 1, 0)),
+            view(ref("user", "user", 2, 0)),
+            view(ref("user.name", "user.name", 1, 0)), // NEW: nested stat
+            view(ref("user.age", "user.age", 2, 0)) // NEW: nested stat
             );
 
     List<TargetStatsRecord> futureOut =

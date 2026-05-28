@@ -1965,8 +1965,6 @@ class IcebergRestFixtureIT {
                     + col.getDisplayName()
                     + "', logicalType='"
                     + col.getLogicalType()
-                    + "', valueCount="
-                    + col.getValueCount()
                     + ", nullCount="
                     + (col.hasNullCount() ? col.getNullCount() : "<unset>")
                     + ", nanCount="
@@ -2835,7 +2833,6 @@ class IcebergRestFixtureIT {
           ai.floedb.floecat.catalog.rpc.ScalarStats.newBuilder()
               .setDisplayName(scalar.getDisplayName())
               .setLogicalType(scalar.getLogicalType())
-              .setValueCount(scalar.getValueCount())
               .setHistogram(scalar.getHistogram())
               .setTdigest(scalar.getTdigest())
               .putAllProperties(scalar.getPropertiesMap());

@@ -146,7 +146,6 @@ public final class ConnectorStatsViewBuilder {
           new FloecatConnector.ColumnStatsView(
               ref,
               logicalTypeStr,
-              agg.valueCount(),
               agg.nullCount(),
               agg.nanCount(),
               min,

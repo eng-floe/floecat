@@ -64,9 +64,9 @@ public class StatsProtoEmitterTest {
   }
 
   private static FloecatConnector.ColumnStatsView view(
-      FloecatConnector.ColumnRef ref, Long valueCount) {
+      FloecatConnector.ColumnRef ref) {
     return new FloecatConnector.ColumnStatsView(
-        ref, "int", valueCount, null, null, null, null, null, Map.of());
+        ref, "int", null, null, null, null, null, Map.of());
   }
 
   @Test
@@ -82,9 +82,9 @@ public class StatsProtoEmitterTest {
     // Incoming stats uses Iceberg-style element path a.element.b
     var in =
         List.of(
-            view(ref("b", "a.element.b", 0, 0), 123L),
+            view(ref("b", "a.element.b", 0, 0)),
             // and also exact canonical already
-            view(ref("b", "a[].b", 0, 0), 456L));
+            view(ref("b", "a[].b", 0, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -103,11 +103,9 @@ public class StatsProtoEmitterTest {
 
     assertTrue(s0.getTarget().getColumn().getColumnId() > 0L);
     assertEquals("b", s0.getScalar().getDisplayName());
-    assertEquals(123L, s0.getScalar().getValueCount());
 
     assertTrue(s1.getTarget().getColumn().getColumnId() > 0L);
     assertEquals("b", s1.getScalar().getDisplayName());
-    assertEquals(456L, s1.getScalar().getValueCount());
 
     // Both refer to the *same schema column*, so the computed id must be the same.
     assertEquals(
@@ -125,7 +123,7 @@ public class StatsProtoEmitterTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 0, 0), 10L), view(ref("missing", "does.not.exist", 0, 0), 20L));
+            view(ref("id", "id", 0, 0)), view(ref("missing", "does.not.exist", 0, 0)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -139,7 +137,6 @@ public class StatsProtoEmitterTest {
 
     assertEquals(1, out.size(), "unresolvable column must be skipped safely");
     assertEquals("id", out.get(0).getScalar().getDisplayName());
-    assertEquals(10L, out.get(0).getScalar().getValueCount());
   }
 
   @Test
@@ -155,8 +152,8 @@ public class StatsProtoEmitterTest {
     var in =
         List.of(
             // FIELD_ID policy uses ref.fieldId directly
-            view(ref("whatever", "does.not.matter", 0, 123), 42L),
-            view(ref("alsoWhatever", "", 0, 999), 99L));
+            view(ref("whatever", "does.not.matter", 0, 123)),
+            view(ref("alsoWhatever", "", 0, 999)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -170,10 +167,8 @@ public class StatsProtoEmitterTest {
 
     assertEquals(2, out.size());
     assertEquals(123L, out.get(0).getTarget().getColumn().getColumnId());
-    assertEquals(42L, out.get(0).getScalar().getValueCount());
 
     assertEquals(999L, out.get(1).getTarget().getColumn().getColumnId());
-    assertEquals(99L, out.get(1).getScalar().getValueCount());
   }
 
   @Test
@@ -190,7 +185,7 @@ public class StatsProtoEmitterTest {
             ConnectorFormat.CF_ICEBERG,
             ColumnIdAlgorithm.CID_PATH_ORDINAL,
             schema,
-            List.of(view(ref("id", "id", 0, 0), 12L)));
+            List.of(view(ref("id", "id", 0, 0))));
 
     assertEquals(1, out.size());
     assertTrue(out.get(0).getScalar().hasUpstream());
@@ -206,8 +201,8 @@ public class StatsProtoEmitterTest {
 
     var in =
         List.of(
-            view(ref("id", "id", 0, 0), 10L), // fieldId missing => cannot resolve
-            view(ref("id", "id", 0, -1), 20L));
+            view(ref("id", "id", 0, 0)), // fieldId missing => cannot resolve
+            view(ref("id", "id", 0, -1)));
 
     List<TargetStatsRecord> out =
         StatsProtoEmitter.toTargetColumnStats(
@@ -243,9 +238,9 @@ public class StatsProtoEmitterTest {
                 List.of(),
                 0L,
                 List.of(
-                    view(ref("id", "id", 0, 0), 100L),
+                    view(ref("id", "id", 0, 0)),
                     // element path should canonicalize
-                    view(ref("b", "a.element.b", 0, 0), 100L))),
+                    view(ref("b", "a.element.b", 0, 0)))),
             new FloecatConnector.FileColumnStatsView(
                 "s3://bucket/path/delete1",
                 "",
@@ -319,7 +314,7 @@ public class StatsProtoEmitterTest {
             0,
             List.of(),
             null,
-            List.of(view(ref("id", "id", 1, 0), 500L)));
+            List.of(view(ref("id", "id", 1, 0))));
 
     // Iceberg lambdas: name from map, fieldId from map, ordinal from map
     var icebergFile =
@@ -333,7 +328,7 @@ public class StatsProtoEmitterTest {
             0,
             List.of(),
             null,
-            List.of(view(ref("id", "id", 1, 1), 500L)));
+            List.of(view(ref("id", "id", 1, 1))));
 
     List<TargetStatsRecord> deltaOut =
         StatsProtoEmitter.toTargetFileStats(
@@ -399,7 +394,6 @@ public class StatsProtoEmitterTest {
             new FloecatConnector.ColumnStatsView(
                 ref("ts_col", "ts_col", 1, 42),
                 "timestamp",
-                null, // valueCount
                 null, // nullCount
                 null, // nanCount
                 null, // min

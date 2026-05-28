@@ -104,7 +104,6 @@ abstract class PlannerStatsBundleServiceTestSupport {
   protected static ScalarStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
     return ScalarStats.newBuilder()
         .setDisplayName("col" + columnId)
-        .setValueCount(columnId * 10)
         .setNullCount(columnId)
         .putProperties("column_id", Long.toString(columnId))
         .build();

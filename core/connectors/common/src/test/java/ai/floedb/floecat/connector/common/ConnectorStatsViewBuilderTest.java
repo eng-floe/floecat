@@ -32,7 +32,6 @@ import org.junit.jupiter.api.Test;
 class ConnectorStatsViewBuilderTest {
 
   private static final class Agg implements StatsEngine.ColumnAgg {
-    private final Long valueCount;
     private final Long nullCount;
     private final Long nanCount;
     private final Object min;
@@ -41,14 +40,12 @@ class ConnectorStatsViewBuilderTest {
     private final ColumnNdv ndv;
 
     Agg(
-        Long valueCount,
         Long nullCount,
         Long nanCount,
         Object min,
         Object max,
         Long ndvExact,
         ColumnNdv ndv) {
-      this.valueCount = valueCount;
       this.nullCount = nullCount;
       this.nanCount = nanCount;
       this.min = min;
@@ -65,11 +62,6 @@ class ConnectorStatsViewBuilderTest {
     @Override
     public ColumnNdv ndv() {
       return ndv;
-    }
-
-    @Override
-    public Long valueCount() {
-      return valueCount;
     }
 
     @Override
@@ -96,7 +88,7 @@ class ConnectorStatsViewBuilderTest {
   @Test
   void toColumnStatsView_populatesColumnRefFields() {
     Map<Integer, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
-    cols.put(10, new Agg(100L, 2L, 0L, null, null, 7L, null));
+    cols.put(10, new Agg(2L, 0L, null, null, 7L, null));
 
     List<FloecatConnector.ColumnStatsView> out =
         ConnectorStatsViewBuilder.toColumnStatsView(
@@ -116,7 +108,6 @@ class ConnectorStatsViewBuilderTest {
     assertEquals(3, v.ref().ordinal());
     assertEquals(10, v.ref().fieldId());
 
-    assertEquals(100L, v.valueCount());
     assertEquals(2L, v.nullCount());
     assertEquals(0L, v.nanCount());
     assertNotNull(v.ndv());
@@ -132,7 +123,7 @@ class ConnectorStatsViewBuilderTest {
     ndvModel.approx.rowsTotal = 0L; // triggers fallback
 
     Map<String, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
-    cols.put("col", new Agg(null, null, null, null, null, null, ndvModel));
+    cols.put("col", new Agg(null, null, null, null, null, ndvModel));
 
     long tableTotalRows = 999L;
 
@@ -153,7 +144,7 @@ class ConnectorStatsViewBuilderTest {
   @Test
   void toColumnStatsView_skipsMinMaxForNonOrderableComplexTypes() {
     Map<String, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
-    cols.put("arr_col", new Agg(10L, 0L, 0L, List.of(1, 2), List.of(9, 10), null, null));
+    cols.put("arr_col", new Agg(0L, 0L, List.of(1, 2), List.of(9, 10), null, null));
 
     List<FloecatConnector.ColumnStatsView> out =
         ConnectorStatsViewBuilder.toColumnStatsView(

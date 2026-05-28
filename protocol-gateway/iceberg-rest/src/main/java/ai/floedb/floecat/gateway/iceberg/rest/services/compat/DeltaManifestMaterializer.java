@@ -810,13 +810,13 @@ public class DeltaManifestMaterializer {
     if (file == null || file.getColumnsCount() == 0) {
       return null;
     }
-    Map<Integer, Long> valueCounts = new LinkedHashMap<>();
+	Map<Integer, Long> valueCounts = new LinkedHashMap<>();
     Map<Integer, Long> nullValueCounts = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> lowerBounds = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> upperBounds = new LinkedHashMap<>();
     List<Types.NestedField> schemaFields = schema == null ? List.of() : schema.columns();
     for (int i = 0; i < file.getColumnsCount(); i++) {
-      FileColumnStats entry = file.getColumns(i);
+      FileColumnStats entry = file.getColumns(i);	  
       ScalarStats column = entry.getScalar();
       if (column == null || schema == null) {
         continue;
@@ -840,7 +840,7 @@ public class DeltaManifestMaterializer {
       } else {
         continue;
       }
-      valueCounts.put(fieldId, Math.max(0L, column.getValueCount()));
+	  valueCounts.put(fieldId, file.getRecordCount());
       if (column.hasNullCount()) {
         nullValueCounts.put(fieldId, Math.max(0L, column.getNullCount()));
       }
@@ -851,8 +851,7 @@ public class DeltaManifestMaterializer {
         encodeBound(upperBounds, fieldId, column.getLogicalType(), column.getMax());
       }
     }
-    if (valueCounts.isEmpty()
-        && nullValueCounts.isEmpty()
+    if (nullValueCounts.isEmpty()
         && lowerBounds.isEmpty()
         && upperBounds.isEmpty()) {
       return null;
@@ -860,7 +859,7 @@ public class DeltaManifestMaterializer {
     return new Metrics(
         file.getRecordCount(),
         null,
-        valueCounts.isEmpty() ? null : valueCounts,
+	    valueCounts,
         nullValueCounts.isEmpty() ? null : nullValueCounts,
         null,
         lowerBounds.isEmpty() ? null : lowerBounds,

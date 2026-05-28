@@ -185,7 +185,6 @@ public final class FileGroupTargetStatsRollup {
     private TargetStatsRecord metadataSource;
     private String displayName = "";
     private String logicalType = "";
-    private long valueCount = 0L;
     private Long nullCount;
     private Long nanCount;
     private String min;
@@ -211,7 +210,6 @@ public final class FileGroupTargetStatsRollup {
           && logicalType.isBlank()) {
         logicalType = scalar.getLogicalType();
       }
-      valueCount += Math.max(0L, scalar.getValueCount());
       if (scalar.hasNullCount()) {
         nullCount = (nullCount == null ? 0L : nullCount) + Math.max(0L, scalar.getNullCount());
       }
@@ -225,7 +223,7 @@ public final class FileGroupTargetStatsRollup {
 
     ScalarStats toScalar() {
       ScalarStats.Builder builder =
-          ScalarStats.newBuilder().setValueCount(valueCount).setDisplayName(displayName);
+          ScalarStats.newBuilder().setDisplayName(displayName);
       if (!logicalType.isBlank()) {
         builder.setLogicalType(logicalType);
       }

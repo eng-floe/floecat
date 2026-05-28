@@ -1426,11 +1426,6 @@ public abstract class IcebergConnector implements FloecatConnector {
         }
 
         @Override
-        public Long valueCount() {
-          return null;
-        }
-
-        @Override
         public Long nullCount() {
           return null;
         }

@@ -212,7 +212,6 @@ public final class StatsProtoEmitter {
           ScalarStats.newBuilder()
               .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
               .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
-              .setValueCount(view.valueCount() == null ? 0L : view.valueCount())
               .setUpstream(upstream)
               .putAllProperties(view.properties() == null ? Map.of() : view.properties());
       if (view.nullCount() != null) {
@@ -299,7 +298,6 @@ public final class StatsProtoEmitter {
               ScalarStats.newBuilder()
                   .setDisplayName(v.ref().name() == null ? "" : v.ref().name())
                   .setUpstream(upstream);
-          if (v.valueCount() != null) b.setValueCount(v.valueCount());
           if (v.nullCount() != null) b.setNullCount(v.nullCount());
           if (v.nanCount() != null) b.setNanCount(v.nanCount());
           if (v.logicalType() != null && !v.logicalType().isBlank()) {
@@ -385,7 +383,6 @@ public final class StatsProtoEmitter {
           ScalarStats.newBuilder()
               .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
               .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
-              .setValueCount(view.valueCount() == null ? 0L : view.valueCount())
               .putAllProperties(view.properties() == null ? Map.of() : view.properties());
       if (view.nullCount() != null) {
         scalar.setNullCount(view.nullCount());
@@ -459,7 +456,6 @@ public final class StatsProtoEmitter {
               ScalarStats.newBuilder()
                   .setDisplayName(columnView.ref().name() == null ? "" : columnView.ref().name())
                   .setLogicalType(columnView.logicalType() == null ? "" : columnView.logicalType())
-                  .setValueCount(columnView.valueCount() == null ? 0L : columnView.valueCount())
                   .putAllProperties(
                       columnView.properties() == null ? Map.of() : columnView.properties());
           if (columnView.nullCount() != null) {

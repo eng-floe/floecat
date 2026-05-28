@@ -31,7 +31,6 @@ class TableStatisticsServiceImplFingerprintTest {
         ScalarStats.newBuilder()
             .setDisplayName("same")
             .setLogicalType("BIGINT")
-            .setValueCount(1L)
             .setMin("1")
             .setMax("1")
             .build();
@@ -39,7 +38,6 @@ class TableStatisticsServiceImplFingerprintTest {
         ScalarStats.newBuilder()
             .setDisplayName("same")
             .setLogicalType("BIGINT")
-            .setValueCount(1L)
             .setMin("2")
             .setMax("2")
             .build();
