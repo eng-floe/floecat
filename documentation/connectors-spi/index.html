@@ -1842,7 +1842,7 @@ field was populated (even when the string itself is empty). In brief:</p>
 <li>Binary → base64 (RFC 4648) without line breaks (padding <code>=</code> is OK).</li>
 </ul>
 </li>
-<li>Null/NAN counts are optional (<code>null_count</code>, <code>nan_count</code>); set them only when the connector can
+<li>Row/null/NAN counts are optional (<code>row_count</code>, <code>null_count</code>, <code>nan_count</code>); set them only when the connector can
     report a value so downstream planners can distinguish “unknown” from zero.</li>
 <li>Non-orderable types (<code>INTERVAL</code>, <code>JSON</code>, <code>ARRAY</code>, <code>MAP</code>, <code>STRUCT</code>, <code>VARIANT</code>) should leave
     <code>min</code>/<code>max</code> unset. Floecat treats <code>INTERVAL</code> as non‑stats‑orderable; if you still emit bounds,
