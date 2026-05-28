@@ -51,6 +51,68 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDedupesOnceMatchingJobIsRunning() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    var lease = store.leaseNext().orElseThrow();
+
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertEquals(first, second);
+    assertEquals(first, lease.jobId);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeAfterMatchingJobSucceeds() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    var lease = store.leaseNext().orElseThrow();
+    store.markSucceeded(first, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeAfterMatchingJobFails() {
+    String maxAttemptsKey = "floecat.reconciler.job-store.max-attempts";
+    String previousMaxAttempts = System.getProperty(maxAttemptsKey);
+    try {
+      System.setProperty(maxAttemptsKey, "1");
+      var store = new InMemoryReconcileJobStore();
+      ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+      String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+      var lease = store.leaseNext().orElseThrow();
+      store.markFailed(first, lease.leaseEpoch, System.currentTimeMillis(), "boom", 1, 0, 1, 0, 1);
+
+      String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+      assertNotEquals(first, second);
+    } finally {
+      restoreProperty(maxAttemptsKey, previousMaxAttempts);
+    }
+  }
+
+  @Test
+  void enqueueDoesNotDedupeAfterMatchingJobIsCancelled() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    store.cancel("acct", first, "stop");
+
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
   void enqueueDoesNotDedupeAcrossDifferentExecutionPolicies() {
     var store = new InMemoryReconcileJobStore();
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");

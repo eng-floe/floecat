@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
@@ -48,6 +49,8 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.List;
@@ -74,6 +77,8 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
+@QuarkusTest
+@TestProfile(ReconcileJobStoreControlPlaneProfile.class)
 class DurableReconcileJobStoreTest {
   private static final Pattern JOB_ID_PATTERN =
       Pattern.compile("([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})");
@@ -145,14 +150,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @AfterEach
-  void tearDown() {
-    System.clearProperty("floecat.reconciler.job-store.max-attempts");
-    System.clearProperty("floecat.reconciler.job-store.base-backoff-ms");
-    System.clearProperty("floecat.reconciler.job-store.max-backoff-ms");
-    System.clearProperty("floecat.reconciler.job-store.lease-ms");
-    System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
-    System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
-  }
+  void tearDown() {}
 
   @Test
   void enqueueDedupesWhileJobIsActive() {
@@ -164,6 +162,67 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void completedWaitingParentPromotesCanonicalStateAndDoesNotDedupe() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    StoredReconcileJob canonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical connector promotion " + connectorJobId);
+
+    assertEquals("JS_SUCCEEDED", canonical.state);
+
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    assertNotEquals(connectorJobId, second);
   }
 
   @Test
@@ -257,10 +316,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenSuccessClearsPriorFailureState() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    configureRetryPolicy(2, 0L, 0L);
 
     String jobId =
         store.enqueue(
@@ -279,9 +335,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob terminal =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_SUCCEEDED".equals(current.state) && current.errors == 0L,
-            "successful retry " + jobId);
+            "successful retry canonical view " + jobId);
     assertEquals("JS_SUCCEEDED", terminal.state);
     assertEquals(0L, terminal.errors);
     assertEquals(200L, terminal.finishedAtMs);
@@ -289,10 +345,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void retryThenFailureTransitionsToTerminalFailed() {
-    System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
-    System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "0");
-    System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "0");
-    store.init();
+    configureRetryPolicy(2, 0L, 0L);
 
     String jobId =
         store.enqueue(
@@ -311,9 +364,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob failed =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_FAILED".equals(current.state),
-            "terminal failure " + jobId);
+            "terminal failure canonical view " + jobId);
     assertEquals("JS_FAILED", failed.state);
     assertEquals(200L, failed.finishedAtMs);
   }
@@ -333,9 +386,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob cancelled =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_CANCELLED".equals(current.state),
-            "job cancellation completion " + jobId);
+            "job cancellation canonical view " + jobId);
 
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
@@ -400,6 +453,132 @@ class DurableReconcileJobStoreTest {
     assertEquals(200L, rootSummary.finishedAtMs);
     assertEquals(1L, rootSummary.tablesScanned);
     assertEquals(1L, rootSummary.tablesChanged);
+  }
+
+  @Test
+  void nestedWaitingParentsPromoteCanonicalStateBottomUp() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("sales", "trino_types", "table-1", "trino_types"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "sales", "trino_types", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markWaiting(
+        tableJobId,
+        tableLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_WAITING";
+                      current.message =
+                          "Snapshot plan recorded for sales.trino_types with 1 file group(s)";
+                      current.startedAtMs = Math.max(current.startedAtMs, 120L);
+                      current.finishedAtMs = 0L;
+                      current.childrenFinalized = true;
+                      current.readyPointerKey = null;
+                      current.updatedAtMs = Math.max(current.updatedAtMs, 130L);
+                      return current;
+                    }));
+
+    var execLease = leaseJob(execJobId);
+    store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
+    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    StoredReconcileJob snapshotCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical snapshot promotion " + snapshotJobId);
+    StoredReconcileJob tableCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical table promotion " + tableJobId);
+    StoredReconcileJob connectorCanonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical connector promotion " + connectorJobId);
+
+    assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
+    assertEquals("JS_SUCCEEDED", tableCanonical.state);
+    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
   @Test
@@ -1004,6 +1183,13 @@ class DurableReconcileJobStoreTest {
         assertDoesNotThrow(() -> invokePrivateMethod(store, "leaseManager", new Class<?>[] {}));
   }
 
+  private void configureRetryPolicy(int maxAttempts, long baseBackoffMs, long maxBackoffMs) {
+    assertDoesNotThrow(() -> setPrivateField(store, "maxAttempts", Math.max(1, maxAttempts)));
+    assertDoesNotThrow(
+        () -> setPrivateField(store, "baseBackoffMs", Math.max(100L, baseBackoffMs)));
+    assertDoesNotThrow(() -> setPrivateField(store, "maxBackoffMs", Math.max(100L, maxBackoffMs)));
+  }
+
   private ReconcileJobProjectionStore projectionStore() {
     return (ReconcileJobProjectionStore)
         assertDoesNotThrow(() -> invokePrivateMethod(store, "projections", new Class<?>[] {}));
@@ -1196,6 +1382,12 @@ class DurableReconcileJobStoreTest {
     Method method = target.getClass().getDeclaredMethod(name, parameterTypes);
     method.setAccessible(true);
     return method.invoke(target, args);
+  }
+
+  private void setPrivateField(Object target, String name, Object value) throws Exception {
+    java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    field.set(target, value);
   }
 
   private static boolean isDynamoMode() {
