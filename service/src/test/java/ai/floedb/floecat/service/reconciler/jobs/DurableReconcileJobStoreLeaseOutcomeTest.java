@@ -146,9 +146,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(
         "JS_SUCCEEDED",
         waitForValue(
-                () -> store.get(succeededJobId).orElseThrow(),
+                () -> store.getLeaseView(succeededJobId).orElseThrow(),
                 current -> "JS_SUCCEEDED".equals(current.state),
-                "succeeded lease outcome projection")
+                "succeeded lease outcome canonical view")
             .state);
 
     String cancelledJobId = enqueueRoot();
@@ -171,9 +171,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(
         "JS_CANCELLED",
         waitForValue(
-                () -> store.get(cancelledJobId).orElseThrow(),
+                () -> store.getLeaseView(cancelledJobId).orElseThrow(),
                 current -> "JS_CANCELLED".equals(current.state),
-                "cancelled lease outcome projection")
+                "cancelled lease outcome canonical view")
             .state);
   }
 
@@ -200,7 +200,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
     ReconcileJobStore.ReconcileJob job =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 4_000L,
             "cancelling success resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
@@ -239,7 +239,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
     ReconcileJobStore.ReconcileJob job =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 5_000L,
             "cancelling failure resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
@@ -271,9 +271,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(
         "JS_RUNNING",
         waitForValue(
-                () -> store.get(jobId).orElseThrow(),
+                () -> store.getLeaseView(jobId).orElseThrow(),
                 current -> "JS_RUNNING".equals(current.state),
-                "stale lease epoch leaves job running")
+                "stale lease epoch leaves canonical state running")
             .state);
   }
 
@@ -332,9 +332,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(
         "JS_SUCCEEDED",
         waitForValue(
-                () -> store.get(jobId).orElseThrow(),
+                () -> store.getLeaseView(jobId).orElseThrow(),
                 current -> "JS_SUCCEEDED".equals(current.state),
-                "terminal lease outcome remains succeeded")
+                "terminal lease outcome remains canonically succeeded")
             .state);
   }
 
@@ -364,9 +364,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(
         "JS_RUNNING",
         waitForValue(
-                () -> store.get(jobId).orElseThrow(),
+                () -> store.getLeaseView(jobId).orElseThrow(),
                 current -> "JS_RUNNING".equals(current.state),
-                "expired lease outcome leaves job running")
+                "expired lease outcome leaves canonical state running")
             .state);
   }
 

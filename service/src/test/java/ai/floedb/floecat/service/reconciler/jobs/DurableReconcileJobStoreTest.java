@@ -345,9 +345,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob terminal =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_SUCCEEDED".equals(current.state) && current.errors == 0L,
-            "successful retry " + jobId);
+            "successful retry canonical view " + jobId);
     assertEquals("JS_SUCCEEDED", terminal.state);
     assertEquals(0L, terminal.errors);
     assertEquals(200L, terminal.finishedAtMs);
@@ -377,9 +377,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob failed =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_FAILED".equals(current.state),
-            "terminal failure " + jobId);
+            "terminal failure canonical view " + jobId);
     assertEquals("JS_FAILED", failed.state);
     assertEquals(200L, failed.finishedAtMs);
   }
@@ -399,9 +399,9 @@ class DurableReconcileJobStoreTest {
 
     ReconcileJob cancelled =
         waitForValue(
-            () -> store.get(jobId).orElseThrow(),
+            () -> store.getLeaseView(jobId).orElseThrow(),
             current -> "JS_CANCELLED".equals(current.state),
-            "job cancellation completion " + jobId);
+            "job cancellation canonical view " + jobId);
 
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
