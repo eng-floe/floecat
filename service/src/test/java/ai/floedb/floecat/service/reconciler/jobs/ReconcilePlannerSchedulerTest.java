@@ -305,35 +305,28 @@ class ReconcilePlannerSchedulerTest {
     scheduler.connectors = mock(ConnectorRepository.class);
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    scheduler.autoExecutionPolicy =
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.HEAVY, "planner-lane", java.util.Map.of());
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
+    when(scheduler.jobs.enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            any(),
+            eq(
+                ReconcileExecutionPolicy.of(
+                    ReconcileExecutionClass.HEAVY, "planner-lane", java.util.Map.of())),
+            anyString()))
+        .thenReturn("job-1");
 
-    String priorClass = System.getProperty("floecat.reconciler.auto.execution-class");
-    String priorLane = System.getProperty("floecat.reconciler.auto.execution-lane");
-    System.setProperty("floecat.reconciler.auto.execution-class", "HEAVY");
-    System.setProperty("floecat.reconciler.auto.execution-lane", "planner-lane");
-    try {
-      when(scheduler.accounts.list(anyInt(), anyString(), any()))
-          .thenReturn(List.of(account("acct-a", "alpha")));
-      when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
-          .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
-      stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
-      when(scheduler.jobs.enqueuePlan(
-              anyString(),
-              anyString(),
-              anyBoolean(),
-              any(),
-              any(),
-              eq(
-                  ReconcileExecutionPolicy.of(
-                      ReconcileExecutionClass.HEAVY, "planner-lane", java.util.Map.of())),
-              anyString()))
-          .thenReturn("job-1");
-
-      scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
-    } finally {
-      restoreProperty("floecat.reconciler.auto.execution-class", priorClass);
-      restoreProperty("floecat.reconciler.auto.execution-lane", priorLane);
-    }
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
   }
 
   @Test
@@ -421,18 +414,17 @@ class ReconcilePlannerSchedulerTest {
 
   private static final class TestScheduler extends ReconcilePlannerScheduler {
     private long nowMs;
+    private ReconcileExecutionPolicy autoExecutionPolicy =
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of());
 
     @Override
     long nowMs() {
       return nowMs++;
     }
-  }
 
-  private static void restoreProperty(String key, String value) {
-    if (value == null) {
-      System.clearProperty(key);
-    } else {
-      System.setProperty(key, value);
+    @Override
+    ReconcileExecutionPolicy autoExecutionPolicy() {
+      return autoExecutionPolicy;
     }
   }
 }

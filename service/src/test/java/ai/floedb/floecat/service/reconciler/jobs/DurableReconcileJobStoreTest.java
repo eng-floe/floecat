@@ -150,14 +150,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @AfterEach
-  void tearDown() {
-    System.clearProperty("floecat.reconciler.job-store.max-attempts");
-    System.clearProperty("floecat.reconciler.job-store.base-backoff-ms");
-    System.clearProperty("floecat.reconciler.job-store.max-backoff-ms");
-    System.clearProperty("floecat.reconciler.job-store.lease-ms");
-    System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
-    System.clearProperty("floecat.reconciler.job-store.reclaim-interval-ms");
-  }
+  void tearDown() {}
 
   @Test
   void enqueueDedupesWhileJobIsActive() {

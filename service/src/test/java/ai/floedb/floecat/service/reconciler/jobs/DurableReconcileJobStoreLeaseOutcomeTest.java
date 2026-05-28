@@ -121,9 +121,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @AfterEach
-  void tearDown() {
-    System.clearProperty("floecat.reconciler.job-store.lease-renew-grace-ms");
-  }
+  void tearDown() {}
 
   @Test
   void applyLeaseOutcomeReturnsTrueForAcceptedTransitions() {
@@ -340,8 +338,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   @Test
   void applyLeaseOutcomeReturnsFalseForExpiredLease() {
-    System.setProperty("floecat.reconciler.job-store.lease-renew-grace-ms", "0");
-    store.init();
+    configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
     expireLease(jobId);
@@ -424,6 +421,17 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     return org.junit.jupiter.api.Assertions.assertDoesNotThrow(
             () -> store.leaseStore.loadLease(accountId, jobId))
         .orElseThrow();
+  }
+
+  private void configureLeaseRenewGraceMs(long leaseRenewGraceMs) {
+    org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+        () -> setPrivateField(store, "leaseRenewGraceMs", Math.max(0L, leaseRenewGraceMs)));
+  }
+
+  private void setPrivateField(Object target, String name, Object value) throws Exception {
+    java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    field.set(target, value);
   }
 
   private static boolean isDynamoMode() {
