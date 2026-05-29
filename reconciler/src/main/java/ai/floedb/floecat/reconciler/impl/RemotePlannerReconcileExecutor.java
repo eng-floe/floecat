@@ -270,6 +270,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       if (context.shouldStop().getAsBoolean()) {
         return cancelled(tablesPlanned, viewsPlanned);
       }
+      context.beforeHandledCompletion().run();
       if (!workerClient.submitPlanConnectorSuccess(remoteLease, tableJobs, viewJobs)) {
         return ExecutionResult.failure(
             tablesPlanned,

@@ -68,7 +68,7 @@ class ReconcileJobMaintenanceServiceTest {
         1,
         5_000L);
 
-    service.runMaintenanceOnce(200L);
+    service.runProjectionMaintenanceOnce(200L);
 
     assertTrue(refreshed.contains("a"));
     assertTrue(

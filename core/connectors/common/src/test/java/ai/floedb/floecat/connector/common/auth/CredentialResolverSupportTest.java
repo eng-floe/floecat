@@ -765,6 +765,31 @@ class CredentialResolverSupportTest {
   }
 
   @Test
+  void awsCredentialsStripWrappingQuotes() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("\"akid\"")
+                    .setSecretAccessKey("\"secret\"")
+                    .setSessionToken("\"session\""))
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "s3://bucket",
+            Map.of(),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("akid", applied.options().get("s3.access-key-id"));
+    assertEquals("secret", applied.options().get("s3.secret-access-key"));
+    assertEquals("session", applied.options().get("s3.session-token"));
+  }
+
+  @Test
   void buildAssumeRoleRequestUsesDefaults() {
     var ar =
         AuthCredentials.AwsAssumeRole.newBuilder()

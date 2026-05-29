@@ -17,12 +17,17 @@
 package ai.floedb.floecat.stats.identity;
 
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
+import java.util.List;
 
 /** Shared factory methods for canonical target-scoped stats records. */
 public final class TargetStatsRecords {
@@ -145,8 +150,7 @@ public final class TargetStatsRecords {
    */
   public static TargetStatsRecord fileRecord(
       ResourceId tableId, long snapshotId, FileTargetStats fileStats, StatsMetadata metadata) {
-    FileTargetStats normalized =
-        fileStats.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+    FileTargetStats normalized = canonicalFileStats(tableId, snapshotId, fileStats);
     TargetStatsRecord.Builder builder =
         TargetStatsRecord.newBuilder()
             .setTableId(tableId)
@@ -157,5 +161,41 @@ public final class TargetStatsRecords {
       builder.setMetadata(metadata);
     }
     return builder.build();
+  }
+
+  public static TargetStatsRecord canonicalize(TargetStatsRecord record) {
+    if (record == null || !record.hasFile()) {
+      return record;
+    }
+    return fileRecord(
+        record.getTableId(),
+        record.getSnapshotId(),
+        record.getFile(),
+        record.hasMetadata() ? record.getMetadata() : null);
+  }
+
+  private static FileTargetStats canonicalFileStats(
+      ResourceId tableId, long snapshotId, FileTargetStats fileStats) {
+    FileTargetStats.Builder builder =
+        fileStats.toBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+
+    if (fileStats.getEqualityFieldIdsCount() > 1) {
+      List<Integer> equalityFieldIds = new ArrayList<>(fileStats.getEqualityFieldIdsList());
+      equalityFieldIds.sort(Comparator.naturalOrder());
+      builder.clearEqualityFieldIds().addAllEqualityFieldIds(equalityFieldIds);
+    }
+
+    if (fileStats.getColumnsCount() > 1) {
+      List<FileColumnStats> columns = new ArrayList<>(fileStats.getColumnsList());
+      columns.sort(
+          Comparator.comparingLong(FileColumnStats::getColumnId)
+              .thenComparing(col -> scalarSortKey(col.hasScalar() ? col.getScalar() : null)));
+      builder.clearColumns().addAllColumns(columns);
+    }
+    return builder.build();
+  }
+
+  private static String scalarSortKey(ScalarStats scalar) {
+    return scalar == null ? "" : Base64.getEncoder().encodeToString(scalar.toByteArray());
   }
 }

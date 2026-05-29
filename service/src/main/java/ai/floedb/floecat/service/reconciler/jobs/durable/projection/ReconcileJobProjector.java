@@ -620,12 +620,8 @@ public class ReconcileJobProjector {
         effectiveState.equals(canonicalState)
             ? blankToEmpty(stored.executorId)
             : blankToEmpty(storedProjection.executorId());
-    boolean useProjectedAggregates =
-        shouldUseProjectedAggregates(stored, storedProjection, effectiveState);
     long effectiveStartedAtMs =
-        useProjectedAggregates
-            ? earliestPositiveStartedAtMs(stored.startedAtMs, storedProjection.startedAtMs())
-            : stored.startedAtMs;
+        earliestPositiveStartedAtMs(stored.startedAtMs, storedProjection.startedAtMs());
     return new StoredReconcileJobProjection(
         blankToEmpty(stored.accountId),
         blankToEmpty(stored.jobId),
@@ -636,22 +632,20 @@ public class ReconcileJobProjector {
         effectiveMessage,
         effectiveStartedAtMs,
         effectiveFinishedAtMs(effectiveState, stored.finishedAtMs, storedProjection.finishedAtMs()),
-        useProjectedAggregates ? storedProjection.tablesScanned() : stored.tablesScanned,
-        useProjectedAggregates ? storedProjection.tablesChanged() : stored.tablesChanged,
-        useProjectedAggregates ? storedProjection.viewsScanned() : stored.viewsScanned,
-        useProjectedAggregates ? storedProjection.viewsChanged() : stored.viewsChanged,
-        useProjectedAggregates ? storedProjection.errors() : stored.errors,
-        useProjectedAggregates ? storedProjection.snapshotsProcessed() : stored.snapshotsProcessed,
-        useProjectedAggregates ? storedProjection.statsProcessed() : stored.statsProcessed,
-        useProjectedAggregates ? storedProjection.indexesProcessed() : stored.indexesProcessed,
-        useProjectedAggregates ? storedProjection.plannedFileGroups() : stored.plannedFileGroups,
-        useProjectedAggregates ? storedProjection.plannedFiles() : stored.plannedFiles,
-        useProjectedAggregates
-            ? storedProjection.completedFileGroups()
-            : stored.completedFileGroups,
-        useProjectedAggregates ? storedProjection.failedFileGroups() : stored.failedFileGroups,
-        useProjectedAggregates ? storedProjection.completedFiles() : stored.completedFiles,
-        useProjectedAggregates ? storedProjection.failedFiles() : stored.failedFiles,
+        storedProjection.tablesScanned(),
+        storedProjection.tablesChanged(),
+        storedProjection.viewsScanned(),
+        storedProjection.viewsChanged(),
+        storedProjection.errors(),
+        storedProjection.snapshotsProcessed(),
+        storedProjection.statsProcessed(),
+        storedProjection.indexesProcessed(),
+        storedProjection.plannedFileGroups(),
+        storedProjection.plannedFiles(),
+        storedProjection.completedFileGroups(),
+        storedProjection.failedFileGroups(),
+        storedProjection.completedFiles(),
+        storedProjection.failedFiles(),
         effectiveExecutorId,
         true);
   }
@@ -685,28 +679,7 @@ public class ReconcileJobProjector {
   }
 
   private static String effectiveParentState(String canonicalState, String projectionState) {
-    if (canonicalState.isBlank()) {
-      return projectionState;
-    }
-    if ("JS_QUEUED".equals(canonicalState)) {
-      return "JS_QUEUED".equals(projectionState) || projectionState.isBlank()
-          ? canonicalState
-          : projectionState;
-    }
-    if ("JS_SUCCEEDED".equals(canonicalState)) {
-      return switch (projectionState) {
-        case "JS_WAITING", "JS_RUNNING", "JS_FAILED", "JS_CANCELLED", "JS_SUCCEEDED" ->
-            projectionState;
-        default -> canonicalState;
-      };
-    }
-    if (!"JS_WAITING".equals(canonicalState)) {
-      return canonicalState;
-    }
-    return switch (projectionState) {
-      case "JS_WAITING", "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> projectionState;
-      default -> canonicalState;
-    };
+    return canonicalState.isBlank() ? projectionState : canonicalState;
   }
 
   private static long effectiveFinishedAtMs(
@@ -720,46 +693,11 @@ public class ReconcileJobProjector {
     return Math.max(canonicalFinishedAtMs, projectedFinishedAtMs);
   }
 
-  private static boolean shouldUseProjectedAggregates(
-      StoredReconcileJob stored,
-      StoredReconcileJobProjection storedProjection,
-      String effectiveState) {
-    String canonicalState = blankToEmpty(stored == null ? "" : stored.state);
-    String projectionState = blankToEmpty(storedProjection == null ? "" : storedProjection.state());
-    if (projectionState.isBlank()) {
-      return false;
-    }
-    if ("JS_QUEUED".equals(projectionState) && !hasAggregateMetrics(storedProjection)) {
-      return false;
-    }
-    if ("JS_WAITING".equals(canonicalState) || "JS_SUCCEEDED".equals(canonicalState)) {
-      return true;
-    }
-    if (!effectiveState.equals(canonicalState)) {
-      return true;
-    }
-    if (!hasAggregateMetrics(storedProjection)) {
-      return false;
-    }
-    return true;
-  }
-
-  private static boolean hasAggregateMetrics(StoredReconcileJobProjection projection) {
-    return projection != null
-        && (projection.tablesScanned() > 0L
-            || projection.tablesChanged() > 0L
-            || projection.viewsScanned() > 0L
-            || projection.viewsChanged() > 0L
-            || projection.errors() > 0L
-            || projection.snapshotsProcessed() > 0L
-            || projection.statsProcessed() > 0L
-            || projection.indexesProcessed() > 0L
-            || projection.plannedFileGroups() > 0L
-            || projection.plannedFiles() > 0L
-            || projection.completedFileGroups() > 0L
-            || projection.failedFileGroups() > 0L
-            || projection.completedFiles() > 0L
-            || projection.failedFiles() > 0L);
+  private static boolean isTerminalState(String state) {
+    return switch (blankToEmpty(state)) {
+      case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
+      default -> false;
+    };
   }
 
   private static long earliestPositiveStartedAtMs(

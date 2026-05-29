@@ -582,7 +582,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     long processed = 0L;
     for (TargetStatsRecord record : records) {
-      statsStore.putTargetStats(record);
+      statsStore.putTargetStats(TargetStatsRecords.canonicalize(record));
       processed++;
     }
     return processed;
@@ -608,7 +608,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 + describeGroup(group));
       }
       for (TargetStatsRecord record : records) {
-        statsStore.putTargetStats(record);
+        statsStore.putTargetStats(TargetStatsRecords.canonicalize(record));
         processed++;
       }
     }

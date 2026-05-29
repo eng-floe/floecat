@@ -25,7 +25,9 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -313,7 +315,8 @@ public class ReconcilerService {
                         Collectors.toList())),
             defaultColumnSelectors);
 
-    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+    ConnectorConfig tableConfig = tableScopedResolvedConfig(ctx, active, tableId);
+    try (FloecatConnector connector = connectorOpener.open(tableConfig)) {
       List<FloecatConnector.SnapshotBundle> bundles =
           connector.enumerateSnapshots(
               effectiveTask.sourceNamespace(),
@@ -1073,6 +1076,44 @@ public class ReconcilerService {
           e);
     }
     return activeConnector(ctx, connector, connectorId);
+  }
+
+  ConnectorConfig tableScopedResolvedConfig(
+      ReconcileContext ctx, ActiveConnector active, ResourceId tableId) {
+    if (active == null || tableId == null || tableId.getId().isBlank()) {
+      return active == null ? null : active.resolvedConfig();
+    }
+    DestinationTableMetadata metadata = requiredTableMetadata(ctx, tableId);
+    return resolveServerSideStorage(
+        ctx,
+        active.connector(),
+        withDeltaTableStorageLocationHint(active.connector(), active.resolvedConfig(), metadata));
+  }
+
+  private ConnectorConfig withDeltaTableStorageLocationHint(
+      Connector connector, ConnectorConfig config, DestinationTableMetadata metadata) {
+    if (connector == null
+        || config == null
+        || metadata == null
+        || connector.getKind() != ConnectorKind.CK_DELTA
+        || metadata.storageLocation() == null
+        || metadata.storageLocation().isBlank()
+        || metadata.sourceNamespace() == null
+        || metadata.sourceNamespace().isBlank()
+        || metadata.sourceName() == null
+        || metadata.sourceName().isBlank()) {
+      return config;
+    }
+    LinkedHashMap<String, String> options = new LinkedHashMap<>(config.options());
+    options.put(
+        UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION,
+        metadata.sourceNamespace() + "." + metadata.sourceName());
+    options.put(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, metadata.storageLocation());
+    if (options.equals(config.options())) {
+      return config;
+    }
+    return new ConnectorConfig(
+        config.kind(), config.displayName(), config.uri(), Map.copyOf(options), config.auth());
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {

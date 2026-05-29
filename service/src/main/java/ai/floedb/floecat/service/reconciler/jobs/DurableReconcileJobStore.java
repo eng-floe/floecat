@@ -41,7 +41,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileAncestor
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCancellationService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobCompleter;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobEnqueuer;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobLister;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobMaintenanceService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobDetailLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
@@ -73,7 +72,10 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -124,7 +126,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileJobProjectionStore projectionStore;
   @Inject ReconcileJobRootSummaryStore rootSummaryStore;
   @Inject ReconcileAncestorRollupService ancestorRollupService;
-  @Inject ReconcileJobLister lister;
   @Inject ReconcileLeaseStore leaseStore;
   @Inject ReconcileJobDetailLoader detailLoader;
   @Inject ReconcileJobExecutionLoader executionLoader;
@@ -223,14 +224,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     jobIndexes.bind(
         pointerStore, DurableReconcileJobStore::requiresReadyPointer, this::readyPointerKeys);
     return jobIndexes;
-  }
-
-  private ReconcileJobLister lister() {
-    if (lister == null) {
-      lister = new ReconcileJobLister();
-    }
-    lister.bind(jobIndexStore(), projector(), projections());
-    return lister;
   }
 
   private ReconcileJobProjectionStore projections() {
@@ -517,6 +510,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (spec == null) {
         continue;
       }
+      upsertRootSummaryByJobId(item.jobId);
       if (isParentCapable(spec.jobKind)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
@@ -542,8 +536,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     return Optional.of(
         projector()
-            .toPublicJob(
-                loaded.get().record, projectionFor(loaded.get().record).orElse(null), true));
+            .toPublicJob(loaded.get().record, freshProjectionForRead(loaded.get().record), true));
   }
 
   @Override
@@ -562,7 +555,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String pageToken,
       String connectorId,
       java.util.Set<String> states) {
-    return lister().list(accountId, pageSize, pageToken, connectorId, states);
+    var page =
+        jobIndexStore()
+            .listStoredJobs(
+                accountId,
+                pageSize,
+                pageToken,
+                connectorId,
+                states == null ? java.util.Set.of() : states);
+    return new ReconcileJobPage(
+        page.records().stream()
+            .map(stored -> projector().toPublicJobSummary(stored, freshProjectionForRead(stored)))
+            .toList(),
+        page.nextPageToken());
   }
 
   @Override
@@ -575,7 +580,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     var page = rootSummaries().listSummaries(accountId, pageSize, pageToken, connectorId, states);
     List<ReconcileJob> jobs = new java.util.ArrayList<>(page.summaries().size());
     for (StoredReconcileJobListSummary summary : page.summaries()) {
-      jobs.add(ReconcileJobRootSummaryStore.toPublicJob(summary));
+      StoredEnvelope current = loadByAnyAccount(summary.jobId()).orElse(null);
+      if (current != null
+          && blankToEmpty(current.record.parentJobId).isBlank()
+          && blankToEmpty(current.record.accountId).equals(blankToEmpty(summary.accountId()))) {
+        var projection = freshProjectionForRead(current.record);
+        jobs.add(projector().toPublicJobSummary(current.record, projection));
+      } else {
+        jobs.add(ReconcileJobRootSummaryStore.toPublicJob(summary));
+      }
     }
     return new ReconcileJobPage(jobs, page.nextPageToken());
   }
@@ -583,7 +596,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public ReconcileJobPage childJobsPage(
       String accountId, String parentJobId, int pageSize, String pageToken) {
-    return lister().childJobsPage(accountId, parentJobId, pageSize, pageToken);
+    var page = jobIndexStore().listStoredChildJobs(accountId, parentJobId, pageSize, pageToken);
+    List<ReconcileJob> out = new java.util.ArrayList<>(page.records().size());
+    for (StoredReconcileJob stored : page.records()) {
+      out.add(projector().toPublicJob(stored, freshProjectionForRead(stored), true));
+    }
+    return new ReconcileJobPage(out, page.nextPageToken());
   }
 
   @Override
@@ -602,7 +620,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     java.util.ArrayDeque<String> pendingParents = new java.util.ArrayDeque<>();
     out.add(
         projector()
-            .toPublicTreeJob(rootEnvelope.record, projectionFor(rootEnvelope.record).orElse(null)));
+            .toPublicTreeJob(rootEnvelope.record, freshProjectionForRead(rootEnvelope.record)));
     pendingParents.add(rootJobId);
     while (!pendingParents.isEmpty()) {
       String parentJobId = pendingParents.removeFirst();
@@ -612,7 +630,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             jobIndexStore()
                 .listStoredChildJobs(rootEnvelope.record.accountId, parentJobId, 1000, nextToken);
         for (StoredReconcileJob stored : page.records()) {
-          out.add(projector().toPublicTreeJob(stored, projectionFor(stored).orElse(null)));
+          out.add(projector().toPublicTreeJob(stored, freshProjectionForRead(stored)));
           if (isParentCapable(stored.jobKind())) {
             pendingParents.addLast(stored.jobId);
           }
@@ -654,6 +672,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   void runMaintenanceOnce(long maxMillis) {
     maintenance().runMaintenanceOnce(maxMillis);
+  }
+
+  void runLeaseMaintenanceOnce(long maxMillis) {
+    maintenance().runLeaseMaintenanceOnce(maxMillis);
+  }
+
+  void runProjectionMaintenanceOnce(long maxMillis) {
+    maintenance().runProjectionMaintenanceOnce(maxMillis);
   }
 
   @Override
@@ -862,6 +888,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               .requireBlob(
                   manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
       validateSnapshotPlanManifestHash(manifestUri, payload.fileGroups());
+      if (!payload.fileGroups().isEmpty()) {
+        throw new IllegalArgumentException(
+            "snapshot plan manifest file-group count mismatch expected=0 actual="
+                + payload.fileGroups().size());
+      }
       return payload.fileGroups();
     }
     if (manifestUri.isBlank()) {
@@ -1024,27 +1055,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           String blobUri =
               writeFileGroupResultPayloadBlobReference(
                   loaded.get().record.accountId, loaded.get().record.jobId, effective);
-          Optional<StoredEnvelope> updated =
-              mutateByJobIdReturningRecord(
-                  loaded.get().record.jobId,
-                  existing -> {
-                    if (existing == null) {
-                      return null;
-                    }
-                    var projection = projector().projectExecFileGroup(effective, existing.state);
-                    existing.fileGroupResultBlobUri = blobUri;
-                    existing.indexesProcessed = projection.indexesProcessed();
-                    existing.plannedFileGroups = projection.plannedFileGroups();
-                    existing.plannedFiles = projection.plannedFiles();
-                    existing.completedFileGroups = projection.completedFileGroups();
-                    existing.failedFileGroups = projection.failedFileGroups();
-                    existing.completedFiles = projection.completedFiles();
-                    existing.failedFiles = projection.failedFiles();
-                    return existing;
-                  });
-          if (updated.isEmpty()) {
+          try {
+            Optional<StoredEnvelope> updated =
+                mutateByJobIdReturningRecord(
+                    loaded.get().record.jobId,
+                    existing -> {
+                      if (existing == null) {
+                        return null;
+                      }
+                      var projection = projector().projectExecFileGroup(effective, existing.state);
+                      existing.fileGroupResultBlobUri = blobUri;
+                      existing.indexesProcessed = projection.indexesProcessed();
+                      existing.plannedFileGroups = projection.plannedFileGroups();
+                      existing.plannedFiles = projection.plannedFiles();
+                      existing.completedFileGroups = projection.completedFileGroups();
+                      existing.failedFileGroups = projection.failedFileGroups();
+                      existing.completedFiles = projection.completedFiles();
+                      existing.failedFiles = projection.failedFiles();
+                      return existing;
+                    });
+            if (updated.isEmpty()) {
+              blobStore.delete(blobUri);
+              throw new IllegalStateException("Failed to update reconcile job result reference");
+            }
+          } catch (RuntimeException e) {
             blobStore.delete(blobUri);
-            throw new IllegalStateException("Failed to update reconcile job result reference");
+            throw e;
           }
         });
   }
@@ -1262,7 +1298,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore()
             .mutateByJobIdReturningRecord(jobId, mutator)
             .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-    updated.ifPresent(env -> markDirtyParentForRecord(env.record));
+    updated.ifPresent(
+        env -> {
+          markDirtyParentForRecord(env.record);
+          upsertRootSummaryForRecord(env.record);
+        });
     return updated;
   }
 
@@ -1272,7 +1312,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore()
             .mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
             .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-    updated.ifPresent(env -> markDirtyParentForRecord(env.record));
+    updated.ifPresent(
+        env -> {
+          markDirtyParentForRecord(env.record);
+          upsertRootSummaryForRecord(env.record);
+        });
     return updated;
   }
 
@@ -1329,10 +1373,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (!accountId.equals(parent.accountId) || !isParentCapable(parent.jobKind())) {
       return;
     }
-    parent = canonicalizeWaitingParentFromCanonicalChildren(parent);
+    StoredReconcileJob rollupParent = parent;
     List<StoredReconcileJob> directChildren =
         listAllStoredChildJobs(accountId, parentJobId).stream()
-            .map(this::projectedSummaryRecordForRefresh)
+            .map(child -> projectedSummaryRecordForParentRollup(rollupParent, child, true, true))
             .toList();
     long requestedGeneration = Math.max(0L, parent.projectionRequestedGeneration);
     long previousAppliedGeneration = Math.max(0L, parent.projectionAppliedGeneration);
@@ -1342,68 +1386,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     projections().upsert(nextProjection);
     advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
-    var acceptedProjection = projections().load(accountId, parentJobId).orElse(nextProjection);
-    refreshRootSummary(parent, acceptedProjection);
     if (requestedGeneration > previousAppliedGeneration) {
       markDirtyParent(parent.accountId, parent.parentJobId);
     }
-  }
-
-  private StoredReconcileJob canonicalizeWaitingParentFromCanonicalChildren(
-      StoredReconcileJob parent) {
-    if (parent == null
-        || !isParentCapable(parent.jobKind())
-        || isTerminalState(parent.state)
-        || !"JS_WAITING".equals(blankToEmpty(parent.state))) {
-      return parent;
-    }
-    List<StoredReconcileJob> directChildren =
-        listAllStoredChildJobs(parent.accountId, parent.jobId).stream()
-            .map(this::canonicalizeParentForMaintenance)
-            .toList();
-    var rollup = ancestorRollups().recomputeParentProjection(parent, directChildren);
-    if (rollup == null
-        || !isTerminalState(rollup.state())
-        || leaseManager().hasLiveLease(parent, true, System.currentTimeMillis())) {
-      return parent;
-    }
-    return jobIndexStore()
-        .mutateByJobIdReturningRecord(
-            parent.jobId,
-            existing -> {
-              if (existing == null
-                  || !parent.accountId.equals(existing.accountId)
-                  || !"JS_WAITING".equals(blankToEmpty(existing.state))
-                  || leaseManager().hasLiveLease(existing, true, System.currentTimeMillis())) {
-                return existing;
-              }
-              existing.state = rollup.state();
-              existing.message = rollup.message();
-              existing.startedAtMs = projectedStartedAtMs(existing, rollup);
-              existing.finishedAtMs = projectedFinishedAtMs(existing, rollup);
-              existing.executorId = rollup.executorId();
-              existing.childrenFinalized = true;
-              return existing;
-            })
-        .map(ReconcileJobIndexStore.CanonicalEnvelope::record)
-        .orElse(parent);
-  }
-
-  private StoredReconcileJob canonicalizeParentForMaintenance(StoredReconcileJob record) {
-    if (record == null || !isParentCapable(record.jobKind())) {
-      return record;
-    }
-    return canonicalizeWaitingParentFromCanonicalChildren(record);
-  }
-
-  private void refreshRootSummary(
-      StoredReconcileJob parent,
-      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
-          projection) {
-    if (parent == null || !parent.parentJobId.isBlank()) {
-      return;
-    }
-    rootSummaries().upsert(toRootListSummary(parent, projection));
   }
 
   private List<StoredReconcileJob> listAllStoredChildJobs(String accountId, String parentJobId) {
@@ -1430,6 +1415,40 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     markDirtyParent(record.accountId, record.parentJobId);
   }
 
+  private void upsertRootSummaryByJobId(String jobId) {
+    if (blankToEmpty(jobId).isBlank()) {
+      return;
+    }
+    loadByAnyAccount(jobId).ifPresent(env -> upsertRootSummaryForRecord(env.record));
+  }
+
+  private void upsertRootSummaryForRecord(StoredReconcileJob record) {
+    if (record == null || !blankToEmpty(record.parentJobId).isBlank()) {
+      return;
+    }
+    rootSummaries().upsert(toRootListSummary(record, freshProjectionForSummary(record)));
+  }
+
+  private StoredReconcileJob applyCanonicalParentSchedulingState(
+      StoredReconcileJob existing,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection rollup) {
+    if (existing == null || rollup == null || !isParentCapable(existing.jobKind())) {
+      return existing;
+    }
+    existing.state = rollup.state();
+    existing.message = rollup.message();
+    existing.startedAtMs = projectedStartedAtMs(existing, rollup);
+    existing.finishedAtMs = projectedFinishedAtMs(existing, rollup);
+    existing.executorId = rollup.executorId();
+    existing.readyPointerKey = null;
+    existing.nextAttemptAtMs = 0L;
+    existing.childrenFinalized =
+        existing.childrenFinalized
+            || "JS_WAITING".equals(blankToEmpty(rollup.state()))
+            || isTerminalState(rollup.state());
+    return existing;
+  }
+
   private Optional<
           ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection>
       projectionFor(StoredReconcileJob record) {
@@ -1439,35 +1458,66 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return projections().load(record.accountId, record.jobId);
   }
 
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      freshProjectionForSummary(StoredReconcileJob record) {
+    return freshProjection(record, true);
+  }
+
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      freshProjectionForRead(StoredReconcileJob record) {
+    return freshProjection(record, false);
+  }
+
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      freshProjection(StoredReconcileJob record, boolean persistProjection) {
+    if (record == null || !isParentCapable(record.jobKind())) {
+      return null;
+    }
+    var storedProjection = projectionFor(record).orElse(null);
+    if (!projectionNeedsRefresh(record, storedProjection)) {
+      return storedProjection;
+    }
+    var refreshedProjection = recomputeSummaryProjection(record, true, persistProjection);
+    if (persistProjection && refreshedProjection != null) {
+      projections().upsert(refreshedProjection);
+    }
+    return refreshedProjection;
+  }
+
   private StoredReconcileJob projectedSummaryRecord(StoredReconcileJob record) {
     return projectedSummaryRecord(record, false);
   }
 
   private StoredReconcileJob projectedSummaryRecordForRefresh(StoredReconcileJob record) {
-    return projectedSummaryRecord(record, true);
+    return projectedSummaryRecord(record, true, true);
   }
 
   private StoredReconcileJob projectedSummaryRecord(
       StoredReconcileJob record, boolean refreshStaleProjection) {
+    return projectedSummaryRecord(record, refreshStaleProjection, true);
+  }
+
+  private StoredReconcileJob projectedSummaryRecord(
+      StoredReconcileJob record, boolean refreshStaleProjection, boolean persistProjection) {
     if (record == null || !isParentCapable(record.jobKind())) {
       return record;
     }
     var projection = projections().load(record.accountId, record.jobId).orElse(null);
-    if (refreshStaleProjection && projection == null) {
-      var refreshedProjection = recomputeSummaryProjection(record, true);
-      if (refreshedProjection != null) {
+    if (refreshStaleProjection && projectionNeedsRefresh(record, projection)) {
+      var refreshedProjection = recomputeSummaryProjection(record, true, persistProjection);
+      if (persistProjection && refreshedProjection != null) {
         projections().upsert(refreshedProjection);
-        projection = refreshedProjection;
       }
+      projection = refreshedProjection;
     }
     if (projection == null) {
       return record;
     }
     if (refreshStaleProjection
         && shouldKeepCanonicalStateForTerminalProjection(record, projection)) {
-      var refreshedProjection = recomputeSummaryProjection(record, true);
+      var refreshedProjection = recomputeSummaryProjection(record, true, persistProjection);
       if (refreshedProjection != null) {
-        if (!Objects.equals(projection, refreshedProjection)) {
+        if (persistProjection && !Objects.equals(projection, refreshedProjection)) {
           projections().upsert(refreshedProjection);
         }
         projection = refreshedProjection;
@@ -1498,6 +1548,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return true;
     }
     return projectionHasAggregateSignal(projection);
+  }
+
+  private boolean projectionNeedsRefresh(
+      StoredReconcileJob record,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+          projection) {
+    if (record == null || !isParentCapable(record.jobKind())) {
+      return false;
+    }
+    if (projection == null) {
+      return true;
+    }
+    long requestedGeneration = Math.max(0L, record.projectionRequestedGeneration);
+    long appliedGeneration = Math.max(0L, projection.appliedGeneration());
+    if (requestedGeneration > appliedGeneration) {
+      return true;
+    }
+    return shouldKeepCanonicalStateForTerminalProjection(record, projection);
   }
 
   private boolean shouldKeepCanonicalStateForTerminalProjection(
@@ -1576,6 +1644,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
       recomputeSummaryProjection(StoredReconcileJob record, boolean refreshStaleDescendants) {
+    return recomputeSummaryProjection(record, refreshStaleDescendants, true);
+  }
+
+  private ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+      recomputeSummaryProjection(
+          StoredReconcileJob record, boolean refreshStaleDescendants, boolean persistProjection) {
     if (record == null || !isParentCapable(record.jobKind())) {
       return projectionFor(record).orElse(null);
     }
@@ -1583,11 +1657,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         listAllStoredChildJobs(record.accountId, record.jobId).stream()
             .map(
                 child ->
-                    refreshStaleDescendants
-                        ? projectedSummaryRecordForRefresh(child)
-                        : projectedSummaryRecord(child))
+                    projectedSummaryRecordForParentRollup(
+                        record, child, refreshStaleDescendants, persistProjection))
             .toList();
     return ancestorRollups().recomputeParentProjection(record, directChildren);
+  }
+
+  private StoredReconcileJob projectedSummaryRecordForParentRollup(
+      StoredReconcileJob parent,
+      StoredReconcileJob child,
+      boolean refreshStaleProjection,
+      boolean persistProjection) {
+    StoredReconcileJob summary =
+        refreshStaleProjection
+            ? projectedSummaryRecord(child, true, persistProjection)
+            : projectedSummaryRecord(child);
+    if (parent == null
+        || child == null
+        || summary == null
+        || parent.jobKind() != ReconcileJobKind.PLAN_CONNECTOR
+        || child.jobKind() != ReconcileJobKind.PLAN_TABLE) {
+      return summary;
+    }
+    StoredReconcileJob copy = jobIndexStore().cloneStoredRecord(summary);
+    copy.tablesScanned = Math.max(0L, child.tablesScanned);
+    copy.tablesChanged = Math.max(0L, child.tablesChanged);
+    return copy;
   }
 
   private long projectedStartedAtMs(
@@ -1685,22 +1780,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (effectiveAccountId.isBlank() || effectiveParentJobId.isBlank()) {
       return;
     }
-    jobIndexStore()
-        .mutateByJobIdReturningRecord(
-            effectiveParentJobId,
-            existing -> {
-              if (existing == null
-                  || !effectiveAccountId.equals(existing.accountId)
-                  || !isParentCapable(existing.jobKind())) {
-                return null;
-              }
-              existing.expectedDirectChildren =
-                  Math.max(0L, existing.expectedDirectChildren)
-                      + Math.max(0L, expectedDirectChildrenDelta);
-              existing.projectionRequestedGeneration =
-                  Math.max(0L, existing.projectionRequestedGeneration) + 1L;
-              return existing;
-            });
     String key = Keys.reconcileDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
     String payload = effectiveAccountId + "\n" + effectiveParentJobId;
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
@@ -1714,6 +1793,31 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                   .setVersion(current.getVersion() + 1L)
                   .build();
       if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+        var updated =
+            jobIndexStore()
+                .mutateByJobIdReturningRecord(
+                    effectiveParentJobId,
+                    existing -> {
+                      if (existing == null
+                          || !effectiveAccountId.equals(existing.accountId)
+                          || !isParentCapable(existing.jobKind())) {
+                        return null;
+                      }
+                      existing.expectedDirectChildren =
+                          Math.max(0L, existing.expectedDirectChildren)
+                              + Math.max(0L, expectedDirectChildrenDelta);
+                      existing.projectionRequestedGeneration =
+                          Math.max(0L, existing.projectionRequestedGeneration) + 1L;
+                      return existing;
+                    });
+        if (updated.isEmpty()) {
+          pointerStore.compareAndDelete(key, next.getVersion());
+          throw new IllegalStateException(
+              "Failed to advance reconcile parent projection generation accountId="
+                  + effectiveAccountId
+                  + " parentJobId="
+                  + effectiveParentJobId);
+        }
         return;
       }
     }
@@ -1804,6 +1908,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    if (applyLeaseOutcomeTransactionally(
+        jobId,
+        leaseEpoch,
+        completionKind,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed)) {
+      return true;
+    }
     return onHotPath(
         () ->
             completer()
@@ -1820,6 +1939,448 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     errors,
                     snapshotsProcessed,
                     statsProcessed));
+  }
+
+  private boolean applyLeaseOutcomeTransactionally(
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+      if (loaded == null) {
+        return false;
+      }
+      var childSnapshot =
+          jobIndexStore().loadCanonicalSnapshot(loaded.canonicalPointerKey).orElse(null);
+      StoredReconcileJob previousChild =
+          childSnapshot == null ? null : jobIndexStore().readRecord(childSnapshot).orElse(null);
+      if (childSnapshot == null || previousChild == null) {
+        return false;
+      }
+      StoredReconcileJob nextChild =
+          applyLeaseOutcomeToChildRecord(
+              loaded.canonicalPointerKey,
+              previousChild,
+              jobId,
+              leaseEpoch,
+              completionKind,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      if (nextChild == null) {
+        return false;
+      }
+      if (!isTerminalState(nextChild.state)) {
+        return false;
+      }
+      List<ReconcileJobIndexStore.CanonicalRecordMutation> mutations = new ArrayList<>();
+      List<StoredReconcileJob> changedRecords = new ArrayList<>();
+      Map<String, StoredReconcileJob> updatedRecordsByJobId = new LinkedHashMap<>();
+      mutations.add(
+          new ReconcileJobIndexStore.CanonicalRecordMutation(
+              childSnapshot, previousChild, nextChild));
+      changedRecords.add(nextChild);
+      updatedRecordsByJobId.put(nextChild.jobId, nextChild);
+
+      String accountId = blankToEmpty(nextChild.accountId);
+      String currentParentJobId = blankToEmpty(nextChild.parentJobId);
+      while (!accountId.isBlank() && !currentParentJobId.isBlank()) {
+        StoredEnvelope parentEnvelope = loadByAnyAccount(currentParentJobId).orElse(null);
+        if (parentEnvelope == null
+            || !accountId.equals(parentEnvelope.record.accountId)
+            || !isParentCapable(parentEnvelope.record.jobKind())) {
+          break;
+        }
+        var parentSnapshot =
+            jobIndexStore().loadCanonicalSnapshot(parentEnvelope.canonicalPointerKey).orElse(null);
+        StoredReconcileJob previousParent =
+            parentSnapshot == null ? null : jobIndexStore().readRecord(parentSnapshot).orElse(null);
+        if (parentSnapshot == null || previousParent == null) {
+          return false;
+        }
+        List<StoredReconcileJob> directChildren = new ArrayList<>();
+        for (StoredReconcileJob child : listAllStoredChildJobs(accountId, previousParent.jobId)) {
+          StoredReconcileJob updatedChild = updatedRecordsByJobId.get(child.jobId);
+          directChildren.add(updatedChild == null ? child : updatedChild);
+        }
+        var rollup =
+            ancestorRollups().recomputeParentProjection(previousParent, directChildren, true);
+        if (rollup == null) {
+          break;
+        }
+        StoredReconcileJob nextParent = jobIndexStore().cloneStoredRecord(previousParent);
+        applyCanonicalParentSchedulingState(nextParent, rollup);
+        if (canonicalSchedulingEquivalent(previousParent, nextParent)) {
+          break;
+        }
+        nextParent.updatedAtMs = System.currentTimeMillis();
+        nextParent.canonicalPointerKey = parentEnvelope.canonicalPointerKey;
+        mutations.add(
+            new ReconcileJobIndexStore.CanonicalRecordMutation(
+                parentSnapshot, previousParent, nextParent));
+        changedRecords.add(nextParent);
+        updatedRecordsByJobId.put(nextParent.jobId, nextParent);
+        currentParentJobId = blankToEmpty(nextParent.parentJobId);
+      }
+      if (!jobIndexStore().compareAndSetCanonicalMutations(mutations)) {
+        continue;
+      }
+      clearExecutionLeasesIfOwned(
+          new StoredEnvelope(loaded.canonicalPointerKey, nextChild), jobId, leaseEpoch);
+      for (StoredReconcileJob changedRecord : changedRecords) {
+        markDirtyParentForRecord(changedRecord);
+        upsertRootSummaryForRecord(changedRecord);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private StoredReconcileJob applyLeaseOutcomeToChildRecord(
+      String canonicalPointerKey,
+      StoredReconcileJob previousChild,
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    String op = operationName(completionKind);
+    boolean allowExpiredWithinGrace =
+        completionKind == CompletionKind.SUCCEEDED
+            || completionKind == CompletionKind.SUCCEEDED_WAITING
+            || completionKind == CompletionKind.FAILED_TERMINAL
+            || completionKind == CompletionKind.CANCELLED;
+    if (!leaseManager()
+        .hasActiveLease(
+            jobId, leaseEpoch, previousChild, op, true, true, allowExpiredWithinGrace)) {
+      return null;
+    }
+    if (isTerminalState(previousChild.state)) {
+      return null;
+    }
+    StoredReconcileJob nextChild = jobIndexStore().cloneStoredRecord(previousChild);
+    if ("JS_CANCELLING".equals(previousChild.state) && completionKind != CompletionKind.CANCELLED) {
+      nextChild.state = "JS_CANCELLED";
+      nextChild.message =
+          blank(previousChild.message) ? "Cancelled" : blankToEmpty(previousChild.message);
+      if (nextChild.startedAtMs <= 0L) {
+        nextChild.startedAtMs = finishedAtMs;
+      }
+      nextChild.finishedAtMs = finishedAtMs;
+      nextChild.tablesScanned = Math.max(nextChild.tablesScanned, tablesScanned);
+      nextChild.tablesChanged = Math.max(nextChild.tablesChanged, tablesChanged);
+      nextChild.viewsScanned = Math.max(nextChild.viewsScanned, viewsScanned);
+      nextChild.viewsChanged = Math.max(nextChild.viewsChanged, viewsChanged);
+      nextChild.errors = errors;
+      nextChild.snapshotsProcessed = Math.max(nextChild.snapshotsProcessed, snapshotsProcessed);
+      nextChild.statsProcessed = Math.max(nextChild.statsProcessed, statsProcessed);
+      nextChild.childrenFinalized = false;
+      nextChild.readyPointerKey = null;
+      nextChild.nextAttemptAtMs = 0L;
+      nextChild.updatedAtMs = System.currentTimeMillis();
+      nextChild.canonicalPointerKey = canonicalPointerKey;
+      return nextChild;
+    }
+    switch (completionKind) {
+      case SUCCEEDED ->
+          applySucceededToRecord(
+              nextChild,
+              finishedAtMs,
+              "JS_SUCCEEDED",
+              "Succeeded",
+              finishedAtMs,
+              blankToEmpty(nextChild.executorId),
+              false,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              snapshotsProcessed,
+              statsProcessed);
+      case SUCCEEDED_WAITING ->
+          applySucceededToRecord(
+              nextChild,
+              finishedAtMs,
+              "JS_WAITING",
+              blank(message) ? "Waiting on child work" : message,
+              0L,
+              "",
+              true,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_RETRYABLE ->
+          applyFailedRetryableToRecord(
+              nextChild,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_WAITING_ON_DEPENDENCY ->
+          applyFailedWaitingToRecord(
+              nextChild,
+              false,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case FAILED_TERMINAL ->
+          applyFailedTerminalToRecord(
+              nextChild,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+      case CANCELLED ->
+          applyCancelledToRecord(
+              nextChild,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed);
+    }
+    nextChild.updatedAtMs = System.currentTimeMillis();
+    nextChild.canonicalPointerKey = canonicalPointerKey;
+    return nextChild;
+  }
+
+  private boolean canonicalSchedulingEquivalent(
+      StoredReconcileJob previous, StoredReconcileJob current) {
+    if (previous == null || current == null) {
+      return previous == current;
+    }
+    return Objects.equals(previous.state, current.state)
+        && Objects.equals(previous.message, current.message)
+        && previous.startedAtMs == current.startedAtMs
+        && previous.finishedAtMs == current.finishedAtMs
+        && Objects.equals(previous.executorId, current.executorId)
+        && previous.childrenFinalized == current.childrenFinalized
+        && previous.nextAttemptAtMs == current.nextAttemptAtMs
+        && Objects.equals(previous.readyPointerKey, current.readyPointerKey);
+  }
+
+  private StoredReconcileJob applySucceededToRecord(
+      StoredReconcileJob existing,
+      long finishedAtMs,
+      String nextState,
+      String nextMessage,
+      long nextFinishedAtMs,
+      String nextExecutorId,
+      boolean childrenFinalized,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+    existing.errors = 0L;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.lastError = "";
+    existing.state = nextState;
+    existing.message = nextMessage;
+    existing.childrenFinalized = childrenFinalized;
+    existing.finishedAtMs = nextFinishedAtMs;
+    existing.executorId = nextExecutorId;
+    existing.nextAttemptAtMs = 0L;
+    if (existing.startedAtMs <= 0L) {
+      existing.startedAtMs = finishedAtMs;
+    }
+    existing.readyPointerKey = null;
+    return existing;
+  }
+
+  private StoredReconcileJob applyFailedRetryableToRecord(
+      StoredReconcileJob existing,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    existing.attempt = Math.max(0, existing.attempt) + 1;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+    existing.errors = errors;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.lastError = message == null ? "Failed" : message;
+    existing.childrenFinalized = false;
+
+    if (existing.attempt >= maxAttempts) {
+      existing.state = "JS_FAILED";
+      existing.message = message == null ? "Failed" : message;
+      if (existing.startedAtMs <= 0L) {
+        existing.startedAtMs = finishedAtMs;
+      }
+      existing.finishedAtMs = finishedAtMs;
+      existing.nextAttemptAtMs = 0L;
+      existing.readyPointerKey = null;
+      return existing;
+    }
+
+    existing.state = "JS_QUEUED";
+    existing.message = message == null ? "Retrying" : message;
+    existing.executorId = "";
+    existing.nextAttemptAtMs = System.currentTimeMillis() + backoffMs(existing.attempt);
+    existing.finishedAtMs = 0L;
+    existing.readyPointerKey = readyPointerKeyFor(existing, existing.nextAttemptAtMs);
+    return existing;
+  }
+
+  private StoredReconcileJob applyFailedWaitingToRecord(
+      StoredReconcileJob existing,
+      boolean childrenFinalized,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+    existing.errors = errors;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.lastError = message == null ? "Waiting on dependency" : message;
+    existing.state = "JS_QUEUED";
+    existing.message = message == null ? "Waiting on dependency" : message;
+    existing.childrenFinalized = childrenFinalized;
+    existing.executorId = "";
+    existing.nextAttemptAtMs = System.currentTimeMillis() + baseBackoffMs;
+    existing.finishedAtMs = 0L;
+    existing.readyPointerKey = readyPointerKeyFor(existing, existing.nextAttemptAtMs);
+    return existing;
+  }
+
+  private StoredReconcileJob applyFailedTerminalToRecord(
+      StoredReconcileJob existing,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    existing.attempt = Math.max(0, existing.attempt) + 1;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+    existing.errors = errors;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.lastError = message == null ? "Failed" : message;
+    existing.childrenFinalized = false;
+    existing.state = "JS_FAILED";
+    existing.message = message == null ? "Failed" : message;
+    if (existing.startedAtMs <= 0L) {
+      existing.startedAtMs = finishedAtMs;
+    }
+    existing.finishedAtMs = finishedAtMs;
+    existing.nextAttemptAtMs = 0L;
+    existing.readyPointerKey = null;
+    return existing;
+  }
+
+  private StoredReconcileJob applyCancelledToRecord(
+      StoredReconcileJob existing,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    existing.state = "JS_CANCELLED";
+    existing.message = message == null || message.isBlank() ? "Cancelled" : message;
+    if (existing.startedAtMs <= 0L) {
+      existing.startedAtMs = finishedAtMs;
+    }
+    existing.finishedAtMs = finishedAtMs;
+    existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+    existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+    existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+    existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+    existing.errors = errors;
+    existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+    existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+    existing.childrenFinalized = false;
+    existing.nextAttemptAtMs = 0L;
+    existing.readyPointerKey = null;
+    return existing;
+  }
+
+  private static String operationName(CompletionKind completionKind) {
+    return switch (completionKind) {
+      case SUCCEEDED -> "markSucceeded";
+      case SUCCEEDED_WAITING -> "markSucceededWaiting";
+      case FAILED_RETRYABLE -> "markFailed";
+      case FAILED_WAITING_ON_DEPENDENCY -> "markWaitingOnDependency";
+      case FAILED_TERMINAL -> "markFailedTerminal";
+      case CANCELLED -> "markCancelled";
+    };
   }
 
   private List<String> statePointerKeys(StoredReconcileJob record) {
@@ -1925,9 +2486,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return;
     }
     ReconcileFileGroupTask effective = result == null ? ReconcileFileGroupTask.empty() : result;
-    if ((!blank(effective.planId()) && !state.fileGroupPlanId.equals(effective.planId()))
-        || (!blank(effective.groupId()) && !state.fileGroupGroupId.equals(effective.groupId()))
-        || (!blank(effective.tableId()) && !state.fileGroupTableId.equals(effective.tableId()))
+    if ((!blank(effective.planId())
+            && !Objects.equals(
+                blankToEmpty(state.fileGroupPlanId), blankToEmpty(effective.planId())))
+        || (!blank(effective.groupId())
+            && !Objects.equals(
+                blankToEmpty(state.fileGroupGroupId), blankToEmpty(effective.groupId())))
+        || (!blank(effective.tableId())
+            && !Objects.equals(
+                blankToEmpty(state.fileGroupTableId), blankToEmpty(effective.tableId())))
         || (effective.snapshotId() >= 0L && state.fileGroupSnapshotId != effective.snapshotId())) {
       throw new IllegalArgumentException(
           "EXEC_FILE_GROUP result identity does not match canonical job identity");

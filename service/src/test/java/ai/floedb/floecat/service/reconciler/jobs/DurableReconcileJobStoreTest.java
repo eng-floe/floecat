@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.List;
@@ -165,6 +167,26 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueMakesRootJobImmediatelyVisibleInRootList() {
+    String connectorJobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);
+
+    StoredReconcileJob canonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    ReconcileJob listed =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+
+    assertEquals(canonical.jobId, listed.jobId);
+    assertEquals(canonical.state, listed.state);
+    assertEquals(canonical.message, listed.message);
+    assertEquals(canonical.startedAtMs, listed.startedAtMs);
+    assertEquals(canonical.finishedAtMs, listed.finishedAtMs);
+  }
+
+  @Test
   void completedWaitingParentPromotesCanonicalStateAndDoesNotDedupe() {
     String connectorJobId =
         store.enqueue(
@@ -212,7 +234,19 @@ class DurableReconcileJobStoreTest {
             current -> "JS_SUCCEEDED".equals(current.state),
             "canonical connector promotion " + connectorJobId);
 
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "root summary connector promotion " + connectorJobId);
+
     assertEquals("JS_SUCCEEDED", canonical.state);
+    assertEquals("JS_SUCCEEDED", rootSummary.state);
+    assertEquals("Succeeded", rootSummary.message);
 
     String second =
         store.enqueue(
@@ -223,6 +257,133 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.empty());
 
     assertNotEquals(connectorJobId, second);
+  }
+
+  @Test
+  void completedWaitingParentPromotesCanonicalStateEvenIfParentLeaseIsStillLive() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_WAITING";
+                      current.message = "Waiting on child work";
+                      current.childrenFinalized = true;
+                      current.startedAtMs = 50L;
+                      return current;
+                    }));
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    StoredReconcileJob canonical =
+        waitForValue(
+            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "canonical connector promotion with live waiting lease " + connectorJobId);
+
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> "JS_SUCCEEDED".equals(current.state),
+            "root summary connector promotion with live waiting lease " + connectorJobId);
+
+    assertEquals("JS_SUCCEEDED", canonical.state);
+    assertEquals("JS_SUCCEEDED", rootSummary.state);
+    assertEquals("Succeeded", rootSummary.message);
+  }
+
+  @Test
+  void terminalChildCommitsCanonicalParentStateBeforeDirtyProjectionSignal() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+
+    PointerStore originalPointerStore = store.pointerStore;
+    store.pointerStore = new DirtyParentFailingPointerStore(originalPointerStore);
+
+    IllegalStateException thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                store.markSucceeded(
+                    tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L));
+    assertTrue(thrown.getMessage().contains("Failed to mark reconcile parent dirty"));
+
+    StoredReconcileJob connectorCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    StoredReconcileJob tableCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+
+    assertEquals("JS_SUCCEEDED", tableCanonical.state);
+    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
   @Test
@@ -279,6 +440,386 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         Set.of(childOne, childTwo).contains(first.jobs.getFirst().jobId)
             && Set.of(childOne, childTwo).contains(second.jobs.getFirst().jobId));
+  }
+
+  @Test
+  void connectorProjectionKeepsCanonicalPlanTableCountsWhenChildProjectionHasSubtreeTotals() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders-id"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_SUCCEEDED";
+                      current.message = "Succeeded";
+                      current.tablesScanned = 1L;
+                      current.tablesChanged = 1L;
+                      current.startedAtMs = 100L;
+                      current.finishedAtMs = 200L;
+                      current.updatedAtMs = 200L;
+                      return current;
+                    }));
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                1L,
+                "JS_SUCCEEDED",
+                "Succeeded",
+                100L,
+                200L,
+                2L,
+                2L,
+                0L,
+                0L,
+                0L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                true));
+
+    StoredReconcileJob connectorRecord =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    StoredReconcileJobProjection projection =
+        (StoredReconcileJobProjection)
+            assertDoesNotThrow(
+                () ->
+                    invokePrivateMethod(
+                        store,
+                        "recomputeSummaryProjection",
+                        new Class<?>[] {StoredReconcileJob.class, boolean.class, boolean.class},
+                        connectorRecord,
+                        false,
+                        true));
+
+    assertEquals(1L, projection.tablesScanned());
+    assertEquals(1L, projection.tablesChanged());
+    assertEquals(1L, projection.snapshotsProcessed());
+  }
+
+  @Test
+  void readPathsRefreshStaleRootProjectionWithoutPersistingReadSideWrites() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders-id"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                current -> {
+                  current.state = "JS_WAITING";
+                  current.message = "Waiting on child work";
+                  current.startedAtMs = 10L;
+                  current.projectionRequestedGeneration = 10L;
+                  current.projectionAppliedGeneration = 10L;
+                  current.updatedAtMs = Math.max(current.updatedAtMs, 10L);
+                  return current;
+                }));
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                current -> {
+                  current.state = "JS_SUCCEEDED";
+                  current.message = "Succeeded";
+                  current.tablesScanned = 1L;
+                  current.tablesChanged = 1L;
+                  current.startedAtMs = 20L;
+                  current.finishedAtMs = 30L;
+                  current.updatedAtMs = 30L;
+                  return current;
+                }));
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                10L,
+                "JS_SUCCEEDED",
+                "Succeeded",
+                20L,
+                30L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                true));
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                connectorJobId,
+                8L,
+                "JS_WAITING",
+                "Waiting on child work",
+                10L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                false));
+
+    var summaryBeforeRead =
+        rootSummaryStore()
+            .listSummaries(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of())
+            .summaries()
+            .stream()
+            .filter(summary -> connectorJobId.equals(summary.jobId()))
+            .findFirst()
+            .orElseThrow();
+
+    ReconcileJob fromGet = store.get(ACCOUNT_ID, connectorJobId).orElseThrow();
+    ReconcileJob fromRootList =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+            .filter(job -> connectorJobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+
+    StoredReconcileJobProjection connectorProjectionAfterRead =
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
+    var summaryAfterRead =
+        rootSummaryStore()
+            .listSummaries(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of())
+            .summaries()
+            .stream()
+            .filter(summary -> connectorJobId.equals(summary.jobId()))
+            .findFirst()
+            .orElseThrow();
+
+    assertEquals(1L, fromGet.tablesScanned);
+    assertEquals(1L, fromGet.tablesChanged);
+    assertEquals(1L, fromRootList.tablesScanned);
+    assertEquals(1L, fromRootList.tablesChanged);
+    assertEquals(8L, connectorProjectionAfterRead.appliedGeneration());
+    assertEquals(0L, connectorProjectionAfterRead.tablesScanned());
+    assertEquals(0L, connectorProjectionAfterRead.tablesChanged());
+    assertEquals(summaryBeforeRead.tablesScanned(), summaryAfterRead.tablesScanned());
+    assertEquals(summaryBeforeRead.tablesChanged(), summaryAfterRead.tablesChanged());
+  }
+
+  @Test
+  void repeatedParentProjectionRefreshKeepsExactAggregateCounts() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders-id"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                current -> {
+                  current.state = "JS_WAITING";
+                  current.message = "Waiting on child work";
+                  current.startedAtMs = 10L;
+                  current.updatedAtMs = 10L;
+                  return current;
+                }));
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                current -> {
+                  current.state = "JS_SUCCEEDED";
+                  current.message = "Succeeded";
+                  current.tablesScanned = 1L;
+                  current.tablesChanged = 1L;
+                  current.startedAtMs = 20L;
+                  current.finishedAtMs = 30L;
+                  current.updatedAtMs = 30L;
+                  return current;
+                }));
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                1L,
+                "JS_SUCCEEDED",
+                "Succeeded",
+                20L,
+                30L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                true));
+
+    markDirtyParent(ACCOUNT_ID, connectorJobId);
+    runMaintenance();
+
+    StoredReconcileJobProjection firstProjection =
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, connectorJobId),
+                current ->
+                    current.isPresent()
+                        && current.get().tablesScanned() == 1L
+                        && current.get().tablesChanged() == 1L,
+                "first connector projection refresh " + connectorJobId)
+            .orElseThrow();
+    ReconcileJob firstRootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> current.tablesScanned == 1L && current.tablesChanged == 1L,
+            "first root summary refresh " + connectorJobId);
+
+    markDirtyParent(ACCOUNT_ID, connectorJobId);
+    runMaintenance();
+
+    StoredReconcileJobProjection secondProjection =
+        waitForValue(
+                () -> projectionStore().load(ACCOUNT_ID, connectorJobId),
+                current ->
+                    current.isPresent()
+                        && current.get().tablesScanned() == 1L
+                        && current.get().tablesChanged() == 1L,
+                "second connector projection refresh " + connectorJobId)
+            .orElseThrow();
+    ReconcileJob secondRootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current -> current.tablesScanned == 1L && current.tablesChanged == 1L,
+            "second root summary refresh " + connectorJobId);
+
+    assertEquals(1L, firstProjection.tablesScanned());
+    assertEquals(1L, firstProjection.tablesChanged());
+    assertEquals(1L, secondProjection.tablesScanned());
+    assertEquals(1L, secondProjection.tablesChanged());
+    assertEquals(1L, firstRootSummary.tablesScanned);
+    assertEquals(1L, firstRootSummary.tablesChanged);
+    assertEquals(1L, secondRootSummary.tablesScanned);
+    assertEquals(1L, secondRootSummary.tablesChanged);
+  }
+
+  @Test
+  void requestProjectionRefreshCleansDirtyMarkerWhenGenerationAdvanceFails() {
+    String missingParentJobId = "missing-parent";
+    String dirtyMarkerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, missingParentJobId);
+
+    InvocationTargetException failure =
+        assertThrows(
+            InvocationTargetException.class,
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "requestProjectionRefresh",
+                    new Class<?>[] {String.class, String.class, long.class},
+                    ACCOUNT_ID,
+                    missingParentJobId,
+                    0L));
+
+    assertTrue(failure.getCause() instanceof IllegalStateException);
+    assertTrue(
+        failure.getCause().getMessage().contains("Failed to advance reconcile parent projection"));
+    assertTrue(store.pointerStore.get(dirtyMarkerKey).isEmpty());
   }
 
   @Test
@@ -582,6 +1123,227 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void transactionalParentChainPromotesSchedulingBeforeExactProjectionRollups() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markWaiting(
+        tableJobId,
+        tableLease.leaseEpoch,
+        125L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L);
+
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 130L, "executor-snapshot");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        140L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var execLease = leaseJob(execJobId);
+    store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
+    store.persistFileGroupResult(
+        execJobId,
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            List.of("s3://bucket/data/file-1.parquet", "s3://bucket/data/file-2.parquet"),
+            List.of(
+                ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    2L,
+                    ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
+                ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
+    StoredReconcileJob execCanonicalAfterResult =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
+    if (execCanonicalAfterResult.fileGroupResultBlobUri != null
+        && !execCanonicalAfterResult.fileGroupResultBlobUri.isBlank()) {
+      store.blobStore.delete(execCanonicalAfterResult.fileGroupResultBlobUri);
+    }
+
+    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
+
+    StoredReconcileJob snapshotCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
+    StoredReconcileJob tableCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+    StoredReconcileJob connectorCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+
+    assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
+    assertEquals("JS_SUCCEEDED", tableCanonical.state);
+    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
+    assertEquals(0L, snapshotCanonical.completedFileGroups);
+    assertEquals(0L, snapshotCanonical.completedFiles);
+    assertEquals(0L, snapshotCanonical.failedFiles);
+    assertEquals(0L, snapshotCanonical.indexesProcessed);
+    assertEquals(0L, snapshotCanonical.statsProcessed);
+    assertEquals(0L, tableCanonical.completedFileGroups);
+    assertEquals(0L, tableCanonical.completedFiles);
+    assertEquals(0L, tableCanonical.failedFiles);
+    assertEquals(0L, tableCanonical.indexesProcessed);
+    assertEquals(0L, connectorCanonical.completedFileGroups);
+    assertEquals(0L, connectorCanonical.completedFiles);
+    assertEquals(0L, connectorCanonical.failedFiles);
+    assertEquals(0L, connectorCanonical.indexesProcessed);
+
+    ReconcileJob snapshot =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.plannedFileGroups == 1L
+                    && current.completedFileGroups == 1L
+                    && current.completedFiles == 1L
+                    && current.failedFiles == 1L
+                    && current.indexesProcessed == 1L
+                    && current.statsProcessed == 2L,
+            "transactional snapshot projection rollup " + snapshotJobId);
+    ReconcileJob table =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, tableJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L
+                    && current.plannedFileGroups == 1L
+                    && current.completedFileGroups == 1L
+                    && current.completedFiles == 1L
+                    && current.failedFiles == 1L
+                    && current.indexesProcessed == 1L,
+            "transactional table projection rollup " + tableJobId);
+    ReconcileJob connector =
+        waitForValue(
+            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L
+                    && current.completedFileGroups == 1L
+                    && current.completedFiles == 1L
+                    && current.failedFiles == 1L
+                    && current.indexesProcessed == 1L,
+            "transactional connector projection rollup " + connectorJobId);
+    ReconcileJob rootSummary =
+        waitForValue(
+            () ->
+                store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
+                    .filter(job -> connectorJobId.equals(job.jobId))
+                    .findFirst()
+                    .orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.tablesScanned == 1L
+                    && current.tablesChanged == 1L
+                    && current.completedFileGroups == 1L
+                    && current.completedFiles == 1L
+                    && current.failedFiles == 1L
+                    && current.indexesProcessed == 1L,
+            "transactional root summary rollup " + connectorJobId);
+
+    assertEquals(1L, snapshot.completedFileGroups);
+    assertEquals(1L, snapshot.completedFiles);
+    assertEquals(1L, snapshot.failedFiles);
+    assertEquals(1L, snapshot.indexesProcessed);
+    assertEquals(2L, snapshot.statsProcessed);
+    assertEquals(1L, table.tablesScanned);
+    assertEquals(1L, table.tablesChanged);
+    assertEquals(1L, table.completedFileGroups);
+    assertEquals(1L, table.completedFiles);
+    assertEquals(1L, table.failedFiles);
+    assertEquals(1L, table.indexesProcessed);
+    assertEquals(1L, connector.tablesScanned);
+    assertEquals(1L, connector.tablesChanged);
+    assertEquals(1L, connector.completedFileGroups);
+    assertEquals(1L, connector.completedFiles);
+    assertEquals(1L, connector.failedFiles);
+    assertEquals(1L, connector.indexesProcessed);
+    assertEquals(1L, rootSummary.tablesScanned);
+    assertEquals(1L, rootSummary.tablesChanged);
+    assertEquals(1L, rootSummary.completedFileGroups);
+    assertEquals(1L, rootSummary.completedFiles);
+    assertEquals(1L, rootSummary.failedFiles);
+    assertEquals(1L, rootSummary.indexesProcessed);
+  }
+
+  @Test
   void rootProjectionDoesNotSucceedUntilExpectedDirectChildrenAreObserved() {
     String connectorJobId =
         store.enqueue(
@@ -654,7 +1416,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void nestedFileGroupContributionProjectsToAncestorsWithoutCanonicalRollups() {
+  void nestedFileGroupContributionRollsIntoCanonicalAncestors() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -734,6 +1496,22 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 130L, "executor-snapshot");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        140L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.persistFileGroupResult(
@@ -758,60 +1536,60 @@ class DurableReconcileJobStoreTest {
     }
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
 
-    StoredReconcileJobProjection snapshot =
+    ReconcileJob snapshot =
         waitForValue(
-                () -> projectionStore().load(ACCOUNT_ID, snapshotJobId),
-                current ->
-                    current.isPresent()
-                        && current.get().plannedFileGroups() == 1L
-                        && current.get().completedFileGroups() == 1L
-                        && current.get().completedFiles() == 1L
-                        && current.get().failedFiles() == 1L
-                        && current.get().indexesProcessed() == 1L
-                        && current.get().statsProcessed() == 2L,
-                "snapshot projection " + snapshotJobId)
-            .orElseThrow();
+            () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
+            current ->
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.plannedFileGroups == 1L
+                    && current.completedFileGroups == 1L
+                    && current.completedFiles == 1L
+                    && current.failedFiles == 1L
+                    && current.indexesProcessed == 1L
+                    && current.statsProcessed == 2L,
+            "snapshot projected rollup " + snapshotJobId);
     ReconcileJob table =
         waitForValue(
             () -> store.get(ACCOUNT_ID, tableJobId).orElseThrow(),
             current ->
-                current.plannedFileGroups == 1L
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.plannedFileGroups == 1L
+                    && current.completedFileGroups == 1L
                     && current.completedFiles == 1L
                     && current.failedFiles == 1L
                     && current.indexesProcessed == 1L,
-            "table projection " + tableJobId);
+            "table projected rollup " + tableJobId);
     ReconcileJob connector =
         waitForValue(
             () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
             current ->
-                current.tablesScanned == 1L
+                "JS_SUCCEEDED".equals(current.state)
+                    && current.tablesScanned == 1L
                     && current.tablesChanged == 1L
+                    && current.completedFileGroups == 1L
                     && current.completedFiles == 1L
                     && current.failedFiles == 1L
                     && current.indexesProcessed == 1L,
-            "connector projection " + connectorJobId);
-    StoredReconcileJob snapshotCanonical =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
+            "connector projected rollup " + connectorJobId);
 
-    assertEquals(1L, snapshot.plannedFileGroups());
-    assertEquals(1L, snapshot.completedFileGroups());
-    assertEquals(1L, snapshot.completedFiles());
-    assertEquals(1L, snapshot.failedFiles());
-    assertEquals(1L, snapshot.indexesProcessed());
-    assertEquals(2L, snapshot.statsProcessed());
+    assertEquals("JS_SUCCEEDED", snapshot.state);
+    assertEquals(1L, snapshot.plannedFileGroups);
+    assertEquals(1L, snapshot.completedFileGroups);
+    assertEquals(1L, snapshot.completedFiles);
+    assertEquals(1L, snapshot.failedFiles);
+    assertEquals(1L, snapshot.indexesProcessed);
+    assertEquals(2L, snapshot.statsProcessed);
     assertEquals(1L, table.plannedFileGroups);
+    assertEquals(1L, table.completedFileGroups);
     assertEquals(1L, table.completedFiles);
     assertEquals(1L, table.failedFiles);
     assertEquals(1L, table.indexesProcessed);
     assertEquals(1L, connector.tablesScanned);
     assertEquals(1L, connector.tablesChanged);
+    assertEquals(1L, connector.completedFileGroups);
     assertEquals(1L, connector.completedFiles);
     assertEquals(1L, connector.failedFiles);
     assertEquals(1L, connector.indexesProcessed);
-    assertEquals(0L, snapshotCanonical.plannedFileGroups);
-    assertEquals(0L, snapshotCanonical.completedFileGroups);
-    assertEquals(0L, snapshotCanonical.completedFiles);
-    assertEquals(0L, snapshotCanonical.failedFiles);
   }
 
   @Test
@@ -1056,6 +1834,46 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         Set.of("JS_QUEUED", "JS_RUNNING", "JS_WAITING", "JS_CANCELLING")
             .contains(rootSummary.state));
+  }
+
+  @Test
+  void succeededChildDoesNotOverwriteCancellingAncestor() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.cancel(ACCOUNT_ID, connectorJobId, "stop");
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    ReconcileJob connector =
+        waitForValue(
+            () -> store.getLeaseView(connectorJobId).orElseThrow(),
+            current -> "JS_CANCELLING".equals(current.state),
+            "cancelling connector canonical view " + connectorJobId);
+
+    assertEquals("JS_CANCELLING", connector.state);
+    assertEquals("stop", connector.message);
   }
 
   @Test
@@ -1368,6 +2186,63 @@ class DurableReconcileJobStoreTest {
 
   private static String blankToDefault(String value, String fallback) {
     return value == null || value.isBlank() ? fallback : value;
+  }
+
+  private static final class DirtyParentFailingPointerStore implements PointerStore {
+    private final PointerStore delegate;
+
+    private DirtyParentFailingPointerStore(PointerStore delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public Optional<Pointer> get(String key) {
+      return delegate.get(key);
+    }
+
+    @Override
+    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+      if (key != null && key.startsWith(Keys.reconcileDirtyParentPointerPrefix())) {
+        return false;
+      }
+      return delegate.compareAndSet(key, expectedVersion, next);
+    }
+
+    @Override
+    public boolean delete(String key) {
+      return delegate.delete(key);
+    }
+
+    @Override
+    public boolean compareAndDelete(String key, long expectedVersion) {
+      return delegate.compareAndDelete(key, expectedVersion);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<CasOp> ops) {
+      return delegate.compareAndSetBatch(ops);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return delegate.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
+    public int deleteByPrefix(String prefix) {
+      return delegate.deleteByPrefix(prefix);
+    }
+
+    @Override
+    public int countByPrefix(String prefix) {
+      return delegate.countByPrefix(prefix);
+    }
+
+    @Override
+    public boolean isEmpty() {
+      return delegate.isEmpty();
+    }
   }
 
   private record DebugContext(String accountId, String jobId) {}

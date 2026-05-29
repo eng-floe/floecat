@@ -27,8 +27,10 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -47,6 +49,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class LeasedFileGroupExecutionServiceTest {
+  private static final String DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION =
+      "delta.table-root.hint.full-name";
+  private static final String DELTA_TABLE_ROOT_HINT_LOCATION_OPTION =
+      "delta.table-root.hint.location";
+
   private static final String ACCOUNT_ID = "acct";
   private static final String CONNECTOR_ID = "conn";
   private static final String PARENT_JOB_ID = "parent-job";
@@ -59,6 +66,7 @@ class LeasedFileGroupExecutionServiceTest {
   private ReconcileJobStore jobs;
   private TableRepository tableRepo;
   private ConnectorRepository connectorRepo;
+  private CredentialResolver credentialResolver;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -67,10 +75,12 @@ class LeasedFileGroupExecutionServiceTest {
     jobs = mock(ReconcileJobStore.class);
     tableRepo = mock(TableRepository.class);
     connectorRepo = mock(ConnectorRepository.class);
+    credentialResolver = mock(CredentialResolver.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.tableRepo = tableRepo;
     service.connectorRepo = connectorRepo;
+    service.credentialResolver = credentialResolver;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -220,6 +230,132 @@ class LeasedFileGroupExecutionServiceTest {
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
 
     assertEquals(scopedCapture.capturePolicy(), payload.capturePolicy());
+  }
+
+  @Test
+  void resolveAddsTableStorageLocationHintToDeltaConnectorPayload() {
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(group),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId()))
+        .thenReturn(
+            Optional.of(
+                table().toBuilder()
+                    .putProperties("storage_location", "s3://bucket/table")
+                    .build()));
+    when(connectorRepo.getById(connectorId()))
+        .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_DELTA).build()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        "db.events",
+        payload.sourceConnector().getPropertiesOrThrow(DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION));
+    assertEquals(
+        "s3://bucket/table",
+        payload.sourceConnector().getPropertiesOrThrow(DELTA_TABLE_ROOT_HINT_LOCATION_OPTION));
+  }
+
+  @Test
+  void resolveAddsResolvedDeltaStorageOptionsToConnectorPayload() {
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(group),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId()))
+        .thenReturn(
+            Optional.of(
+                table().toBuilder()
+                    .putProperties("storage_location", "s3://bucket/table")
+                    .build()));
+    when(connectorRepo.getById(connectorId()))
+        .thenReturn(
+            Optional.of(
+                connector().toBuilder()
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .putProperties("s3.endpoint", "http://localstack:4566")
+                    .putProperties("s3.path-style-access", "true")
+                    .setAuth(
+                        AuthConfig.newBuilder()
+                            .setScheme("none")
+                            .setCredentials(
+                                AuthCredentials.newBuilder()
+                                    .setAws(
+                                        AuthCredentials.AwsCredentials.newBuilder()
+                                            .setAccessKeyId("test-access")
+                                            .setSecretAccessKey("test-secret")
+                                            .setSessionToken("test-token")))
+                            .build())
+                    .build()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        "http://localstack:4566", payload.sourceConnector().getPropertiesOrThrow("s3.endpoint"));
+    assertEquals("true", payload.sourceConnector().getPropertiesOrThrow("s3.path-style-access"));
+    assertEquals("test-access", payload.sourceConnector().getPropertiesOrThrow("s3.access-key-id"));
+    assertEquals(
+        "test-secret", payload.sourceConnector().getPropertiesOrThrow("s3.secret-access-key"));
+    assertEquals("test-token", payload.sourceConnector().getPropertiesOrThrow("s3.session-token"));
   }
 
   private static ReconcileJobStore.ReconcileJob job(
