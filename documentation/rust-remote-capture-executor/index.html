@@ -2062,6 +2062,8 @@ workers. A Rust fleet should do the same if you intend to use pinned executor ro
 <li>report progress periodically</li>
 <li>check cancellation periodically</li>
 <li>stop work if the lease is no longer valid</li>
+<li>once the worker has durably submitted a handled completion, stop heartbeats and do not perform a
+  post-completion lease confirmation renew</li>
 </ul>
 <h2 id="standalone-file-group-payload">Standalone File-Group Payload<a class="headerlink" href="#standalone-file-group-payload" title="Permanent link">&para;</a></h2>
 <p><code>GetLeasedFileGroupExecution</code> returns the standalone worker payload. The important fields are:</p>
@@ -2141,6 +2143,10 @@ same <code>result_id</code> if the full request payload changes.</p>
 <li>no result payload if no per-file result should be persisted</li>
 <li>Finish with <code>CompleteLeasedReconcileJob(RCS_CANCELLED)</code> when appropriate.</li>
 </ol>
+<p>For worker implementations that use handled completion semantics, lease ownership ends when the
+handled completion RPC is durably accepted by the control plane. After that point the worker should
+not send another <code>RenewReconcileLease</code> as a final confirmation step, because the service may have
+already cleared the lease as part of successful completion.</p>
 <h2 id="what-the-rust-worker-must-produce">What the Rust Worker Must Produce<a class="headerlink" href="#what-the-rust-worker-must-produce" title="Permanent link">&para;</a></h2>
 <p>The service expects the same logical outputs the Java runner currently produces:</p>
 <ul>

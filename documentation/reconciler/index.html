@@ -1922,6 +1922,16 @@ reconcile control RPCs:</p>
   job-state transitions update them together. Lease maintenance reclaims expired leases and
   projection maintenance repairs dirty parent/root summaries, but neither path is part of queue
   correctness.</li>
+<li><strong>Canonical vs projection-owned state</strong>:</li>
+<li>canonical parent records carry scheduling and ownership state only (<code>state</code>, <code>message</code>,
+    timestamps, executor ownership, waiting/finalization metadata, retry scheduling)</li>
+<li>rolled-up aggregate counters (<code>tables*</code>, <code>views*</code>, <code>snapshotsProcessed</code>, <code>statsProcessed</code>,
+    file-group/file counters, index counters) are projection-owned and root-summary-owned rather
+    than canonical-parent-owned</li>
+<li>transactional child completion updates canonical ancestor scheduling state immediately, while
+    aggregate rollups are refreshed through projections</li>
+<li>list/get/tree read paths may recompute fresh projections for the returned response, but they do
+    not persist projection or root-summary repair</li>
 <li><strong>Backend shape</strong>:</li>
 <li>in <code>floecat.kv=dynamodb</code>, the durable store hot paths use native Dynamo-style partition/sort-key
     layouts for job indexes, ready slices, and lease rows/expiry scans</li>
@@ -1981,10 +1991,12 @@ reconcile control RPCs:</p>
       → markSucceeded or markFailed
 </code></pre></div>
 <p>Jobs include <code>fullRescan</code>, <code>executionPolicy</code>, <code>jobKind</code>, and optional task payloads. Snapshot plan
-jobs, file-group jobs, and snapshot finalization jobs also surface file-group/file counters for
-current execution state.
+jobs, file-group jobs, and snapshot finalization jobs surface file-group/file counters in projected
+public views; parent canonical records do not store rolled-up aggregate counters.
 <code>RemoteReconcileExecutorPoller</code> uses <code>AtomicBoolean</code> and in-flight counters to avoid over-leasing
-within the same instance while continuing to repoll until worker slots are full.</p>
+within the same instance while continuing to repoll until worker slots are full.
+For handled remote completions, workers stop heartbeats before the handled success RPC and do not
+perform a post-completion final lease confirmation after that RPC has durably completed the job.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Scheduling cadence via <code>reconciler.pollEvery</code> (defaults to <code>1s</code>).</li>
