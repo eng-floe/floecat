@@ -32,6 +32,7 @@ import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
@@ -69,6 +70,10 @@ import java.util.Map;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
+  private static final String DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION =
+      "delta.table-root.hint.full-name";
+  private static final String DELTA_TABLE_ROOT_HINT_LOCATION_OPTION =
+      "delta.table-root.hint.location";
   @Inject ReconcileJobStore jobs;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
@@ -107,7 +112,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                 () ->
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
-    Connector resolvedConnector = connector.toBuilder().setAuth(resolvedAuth(connector)).build();
+    Connector resolvedConnector = resolvedConnectorPayload(connector, table);
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -121,6 +126,40 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         plannedTask.groupId(),
         plannedTask.filePaths(),
         FileGroupExecutionSupport.effectiveCapturePolicy(lease));
+  }
+
+  private Connector withTableStorageLocationHint(Connector connector, Table table) {
+    if (connector == null
+        || table == null
+        || connector.getKind() != ConnectorKind.CK_DELTA
+        || !table.getPropertiesMap().containsKey("storage_location")) {
+      return connector;
+    }
+    String storageLocation = table.getPropertiesMap().get("storage_location");
+    if (storageLocation == null || storageLocation.isBlank()) {
+      return connector;
+    }
+    if (!table.hasUpstream() || table.getUpstream().getNamespacePathCount() == 0) {
+      return connector;
+    }
+    String fullName =
+        String.join(".", table.getUpstream().getNamespacePathList())
+            + "."
+            + table.getUpstream().getTableDisplayName();
+    return connector.toBuilder()
+        .putProperties(DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION, fullName)
+        .putProperties(DELTA_TABLE_ROOT_HINT_LOCATION_OPTION, storageLocation)
+        .build();
+  }
+
+  private Connector resolvedConnectorPayload(Connector connector, Table table) {
+    ConnectorConfig resolved = resolveCredentials(connector);
+    Connector payload =
+        connector.toBuilder()
+            .putAllProperties(resolved.options())
+            .setAuth(toAuthConfig(resolved.auth()))
+            .build();
+    return withTableStorageLocationHint(payload, table);
   }
 
   public boolean persistSuccess(
@@ -399,8 +438,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     indexArtifactRepo.putIndexArtifact(record.toBuilder().setContentEtag(etag).build());
   }
 
-  private AuthConfig resolvedAuth(Connector connector) {
-    ConnectorConfig.Auth resolved = resolveCredentials(connector).auth();
+  private static AuthConfig toAuthConfig(ConnectorConfig.Auth resolved) {
     return AuthConfig.newBuilder()
         .setScheme(resolved.scheme() == null ? "" : resolved.scheme())
         .putAllProperties(resolved.props())

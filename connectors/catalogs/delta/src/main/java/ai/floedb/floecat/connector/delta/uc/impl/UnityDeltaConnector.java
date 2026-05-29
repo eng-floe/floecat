@@ -26,16 +26,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 
 public final class UnityDeltaConnector extends DeltaConnector {
+  public static final String TABLE_ROOT_HINT_FULL_NAME_OPTION = "delta.table-root.hint.full-name";
+  public static final String TABLE_ROOT_HINT_LOCATION_OPTION = "delta.table-root.hint.location";
 
   private final UcHttp ucHttp;
   private final SqlStmtClient sql;
-  private final ConcurrentMap<String, String> storageLocationCache = new ConcurrentHashMap<>();
+  private final String tableRootHintFullName;
+  private final String tableRootHintLocation;
 
   UnityDeltaConnector(
       String connectorId,
@@ -45,10 +46,14 @@ public final class UnityDeltaConnector extends DeltaConnector {
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles) {
+      long ndvMaxFiles,
+      String tableRootHintFullName,
+      String tableRootHintLocation) {
     super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
     this.ucHttp = ucHttp;
     this.sql = sql;
+    this.tableRootHintFullName = normalizeHintValue(tableRootHintFullName);
+    this.tableRootHintLocation = normalizeHintValue(tableRootHintLocation);
   }
 
   @Override
@@ -131,7 +136,10 @@ public final class UnityDeltaConnector extends DeltaConnector {
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
     String full = namespaceFq + "." + tableName;
-    return storageLocationCache.computeIfAbsent(full, this::loadStorageLocation);
+    if (full.equals(tableRootHintFullName) && tableRootHintLocation != null) {
+      return tableRootHintLocation;
+    }
+    return loadStorageLocation(full);
   }
 
   @Override
@@ -372,5 +380,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (Exception e) {
       throw new RuntimeException("Failed to resolve storage_location for " + full, e);
     }
+  }
+
+  private static String normalizeHintValue(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? null : trimmed;
   }
 }

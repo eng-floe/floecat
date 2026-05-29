@@ -57,10 +57,12 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -525,6 +527,66 @@ class GrpcReconcilerBackendTest {
 
     assertThat(result).contains(plan);
     verify(source).planSnapshotFiles("main.sales", "orders", tableId, 44L);
+  }
+
+  @Test
+  void fetchSnapshotFilePlanAddsDeltaTableStorageLocationHintBeforeServerSideResolution()
+      throws Exception {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    backend.connector = mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
+    backend.serverSideStorageConfigResolver = mock(ServerSideStorageConfigResolver.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+    when(backend.connector.withInterceptors(any())).thenReturn(backend.connector);
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("storage_location", "s3://bucket/path/orders")
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setConnectorId(connectorId)
+                    .addNamespacePath("main")
+                    .addNamespacePath("sales")
+                    .setTableDisplayName("orders")
+                    .build())
+            .build();
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    Connector connector =
+        Connector.newBuilder().setResourceId(connectorId).setKind(ConnectorKind.CK_DELTA).build();
+    when(backend.connector.getConnector(any()))
+        .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
+    when(backend.serverSideStorageConfigResolver.resolve(any(), any(), any()))
+        .thenAnswer(invocation -> invocation.getArgument(2));
+
+    FloecatConnector source = mock(FloecatConnector.class);
+    backend.connectorOpener = cfg -> source;
+
+    backend.fetchSnapshotFilePlan(reconcileContext(), tableId, 44L);
+
+    var configCaptor = org.mockito.ArgumentCaptor.forClass(ConnectorConfig.class);
+    verify(backend.serverSideStorageConfigResolver).resolve(any(), any(), configCaptor.capture());
+    assertThat(configCaptor.getValue().options())
+        .containsEntry(UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION, "main.sales.orders")
+        .containsEntry(
+            UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, "s3://bucket/path/orders");
   }
 
   @Test

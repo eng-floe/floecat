@@ -491,7 +491,17 @@ public class RemoteReconcileExecutorPoller {
                     lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
                     leaseStateUncertain.set(false);
                     cancellationRequested.set(response.cancellationRequested());
-                  }));
+                  },
+                  () -> stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor)));
+      if (result.completionHandled) {
+        LOG.infof(
+            "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
+            lease.accountId,
+            lease.connectorId,
+            executor.id(),
+            Math.max(0L, System.currentTimeMillis() - started));
+        return;
+      }
       if (!leaseStillCompletable(
           remoteLease,
           lease,
@@ -503,15 +513,6 @@ public class RemoteReconcileExecutorPoller {
           cancellationRequested,
           lastLeaseConfirmedAtMs)) {
         LOG.warnf("Remote reconcile lease lost for job %s executor=%s", lease.jobId, executor.id());
-        return;
-      }
-      if (result.completionHandled) {
-        LOG.infof(
-            "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
-            lease.accountId,
-            lease.connectorId,
-            executor.id(),
-            Math.max(0L, System.currentTimeMillis() - started));
         return;
       }
       completeForOutcome(
@@ -641,6 +642,12 @@ public class RemoteReconcileExecutorPoller {
     }
   }
 
+  private void stopHeartbeatsForHandledCompletion(
+      AtomicBoolean completionStarted, ScheduledExecutorService heartbeatExecutor) {
+    completionStarted.set(true);
+    heartbeatExecutor.shutdownNow();
+  }
+
   private void completeForOutcome(
       RemoteLeasedJob remoteLease,
       ReconcileJobStore.LeasedJob lease,
@@ -736,8 +743,7 @@ public class RemoteReconcileExecutorPoller {
       String message,
       AtomicBoolean completionStarted,
       ScheduledExecutorService heartbeatExecutor) {
-    completionStarted.set(true);
-    heartbeatExecutor.shutdownNow();
+    stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor);
     RemoteReconcileExecutorClient.CompletionResult result;
     try {
       result =

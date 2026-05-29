@@ -49,6 +49,13 @@ public class ReconcileAncestorRollupService {
 
   public StoredReconcileJobProjection recomputeParentProjection(
       StoredReconcileJob parent, List<StoredReconcileJob> directChildren) {
+    return recomputeParentProjection(parent, directChildren, false);
+  }
+
+  public StoredReconcileJobProjection recomputeParentProjection(
+      StoredReconcileJob parent,
+      List<StoredReconcileJob> directChildren,
+      boolean ignoreParentLeaseLiveness) {
     if (parent == null || !projector.isParentCapable(parent.jobKind())) {
       return null;
     }
@@ -132,7 +139,8 @@ public class ReconcileAncestorRollupService {
     }
 
     ProjectedParentState parentState =
-        projectedParentState(parent, representativeChild, aggregate, startedAtMs);
+        projectedParentState(
+            parent, representativeChild, aggregate, startedAtMs, ignoreParentLeaseLiveness);
     return new StoredReconcileJobProjection(
         blankToEmpty(parent.accountId),
         blankToEmpty(parent.jobId),
@@ -196,7 +204,8 @@ public class ReconcileAncestorRollupService {
       StoredReconcileJob parent,
       StoredReconcileJob representativeChild,
       ChildAggregate aggregate,
-      long startedAtMs) {
+      long startedAtMs,
+      boolean ignoreParentLeaseLiveness) {
     DirectChildCounts directChildCounts =
         new DirectChildCounts(
             aggregate.completedChildJobs(),
@@ -226,7 +235,8 @@ public class ReconcileAncestorRollupService {
     String currentChildMessage = blankToEmpty(currentProjected.message());
     String currentChildExecutorId = blankToEmpty(currentProjected.executorId());
     boolean leaseOwnsCanonicalState =
-        leaseLiveness.hasLiveLease(parent, true, System.currentTimeMillis());
+        !ignoreParentLeaseLiveness
+            && leaseLiveness.hasLiveLease(parent, true, System.currentTimeMillis());
     String state = blankToEmpty(parent.state);
     String message = blankToEmpty(parent.message);
     String executorId = blankToEmpty(parent.executorId);
@@ -237,6 +247,10 @@ public class ReconcileAncestorRollupService {
       } else if ("JS_CANCELLED".equals(parent.state)) {
         state = "JS_CANCELLED";
         message = blankToEmpty(parent.message);
+      } else if ("JS_CANCELLING".equals(parent.state)) {
+        state = "JS_CANCELLING";
+        message = firstNonBlank(parent.message, "Cancelling");
+        executorId = blankToEmpty(parent.executorId);
       } else if ("JS_WAITING".equals(parent.state)
           && (aggregate.queuedChildJobs() > 0L
               || aggregate.waitingChildJobs() > 0L

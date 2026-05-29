@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobDetailLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -185,5 +186,64 @@ class ReconcileJobProjectorTest {
     assertEquals(2, job.fileGroupTask.fileCount());
     assertTrue(job.fileGroupTask.filePaths().isEmpty());
     assertTrue(job.fileGroupTask.fileResults().isEmpty());
+  }
+
+  @Test
+  void toPublicJobSummaryUsesProjectedAggregatesForParentSummaries() {
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(new InMemoryBlobStore(), new InMemoryPointerStore(), new ObjectMapper());
+    ReconcileJobDetailLoader detailLoader = new ReconcileJobDetailLoader();
+    detailLoader.bind(payloadStore);
+
+    ReconcileJobProjector projector = new ReconcileJobProjector();
+    projector.bind(detailLoader);
+
+    StoredReconcileJob stored = new StoredReconcileJob();
+    stored.jobId = "job-5";
+    stored.accountId = "acct-1";
+    stored.connectorId = "conn-1";
+    stored.jobKind = ReconcileJobKind.PLAN_CONNECTOR.name();
+    stored.captureMode = CaptureMode.METADATA_AND_CAPTURE.name();
+    stored.executionClass = ReconcileExecutionPolicy.defaults().executionClass().name();
+    stored.executionLane = ReconcileExecutionPolicy.defaults().lane();
+    stored.definition = StoredJobDefinition.of(null, null, null);
+    stored.state = "JS_WAITING";
+    stored.message = "Waiting on child work";
+    stored.tablesScanned = 19L;
+    stored.tablesChanged = 19L;
+    stored.snapshotsProcessed = 19L;
+
+    StoredReconcileJobProjection projection =
+        new StoredReconcileJobProjection(
+            "acct-1",
+            "job-5",
+            1L,
+            "JS_WAITING",
+            "Waiting on child work",
+            100L,
+            0L,
+            38L,
+            38L,
+            0L,
+            0L,
+            0L,
+            38L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            "",
+            true);
+
+    ReconcileJob job = projector.toPublicJobSummary(stored, projection);
+
+    assertEquals("JS_WAITING", job.state);
+    assertEquals(38L, job.tablesScanned);
+    assertEquals(38L, job.tablesChanged);
+    assertEquals(38L, job.snapshotsProcessed);
   }
 }

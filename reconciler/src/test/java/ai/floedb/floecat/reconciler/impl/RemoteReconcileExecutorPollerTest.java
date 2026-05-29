@@ -867,6 +867,126 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void runLeaseStopsHeartbeatsBeforeHandledCompletionReturns() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicInteger renewCalls = new AtomicInteger();
+    CountDownLatch sawHeartbeat = new CountDownLatch(1);
+    CountDownLatch handledCompletionStarted = new CountDownLatch(1);
+    CountDownLatch allowHandledCompletion = new CountDownLatch(1);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            context -> {
+              try {
+                assertTrue(sawHeartbeat.await(5, TimeUnit.SECONDS));
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+              context.beforeHandledCompletion().run();
+              handledCompletionStarted.countDown();
+              try {
+                assertTrue(allowHandledCompletion.await(5, TimeUnit.SECONDS));
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+              return ReconcileExecutor.ExecutionResult.successHandled(0, 0, 0, 0, 0, 0, 0, "done");
+            });
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    Config heartbeatConfig = mock(Config.class);
+    when(heartbeatConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
+        .thenReturn(java.util.Optional.of(10_000L));
+    when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
+        .thenReturn(java.util.Optional.of(200L));
+    poller.config = heartbeatConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-handled-stop-heartbeats", ReconcileJobKind.PLAN_TABLE);
+    when(client.renew(lease))
+        .thenAnswer(
+            invocation -> {
+              renewCalls.incrementAndGet();
+              sawHeartbeat.countDown();
+              return new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false);
+            });
+    when(client.cancellationRequested(lease)).thenReturn(false);
+
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            });
+    worker.start();
+
+    assertTrue(sawHeartbeat.await(5, TimeUnit.SECONDS));
+    assertTrue(handledCompletionStarted.await(5, TimeUnit.SECONDS));
+    int renewCountAtHandledCompletion = renewCalls.get();
+    Thread.sleep(500L);
+    assertTrue(renewCalls.get() == renewCountAtHandledCompletion);
+    allowHandledCompletion.countDown();
+    worker.join(5_000L);
+
+    if (failure.get() != null) {
+      throw new AssertionError("runLease failed", failure.get());
+    }
+    assertTrue(!worker.isAlive());
+    verify(client, never())
+        .complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any());
+  }
+
+  @Test
+  void runLeaseDoesNotPerformFinalLeaseConfirmationForHandledCompletion() {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            context -> {
+              context.beforeHandledCompletion().run();
+              return ReconcileExecutor.ExecutionResult.successHandled(0, 0, 0, 0, 0, 0, 0, "done");
+            });
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    Config heartbeatConfig = mock(Config.class);
+    when(heartbeatConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
+        .thenReturn(java.util.Optional.of(10_000L));
+    when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
+        .thenReturn(java.util.Optional.of(10_000L));
+    poller.config = heartbeatConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-no-final-confirm", ReconcileJobKind.PLAN_TABLE);
+    when(client.cancellationRequested(lease)).thenReturn(false);
+
+    poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+
+    verify(client).start(lease, "planner");
+    verify(client, never()).renew(lease);
+    verify(client, never())
+        .complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any());
+  }
+
+  @Test
   void runLeaseDoesNotCompleteWhenTerminalStateIsUncertain() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     AtomicReference<Throwable> failure = new AtomicReference<>();

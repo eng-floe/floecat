@@ -24,25 +24,26 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class ReconcileJobMaintenanceScheduler {
-  private static final Logger LOG = Logger.getLogger(ReconcileJobMaintenanceScheduler.class);
+public class ReconcileJobProjectionMaintenanceScheduler {
+  private static final Logger LOG =
+      Logger.getLogger(ReconcileJobProjectionMaintenanceScheduler.class);
 
   @Inject DurableReconcileJobStore jobs;
 
   @Scheduled(
-      every = "{floecat.reconciler.job-store.lease-maintenance.tick-every:1s}",
+      every = "{floecat.reconciler.job-store.projection-maintenance.tick-every:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
     long maxTickMillis =
         ConfigProvider.getConfig()
             .getOptionalValue(
-                "floecat.reconciler.job-store.lease-maintenance.max-tick-millis", Long.class)
-            .orElse(250L);
+                "floecat.reconciler.job-store.projection-maintenance.max-tick-millis", Long.class)
+            .orElse(1000L);
     try {
-      jobs.runLeaseMaintenanceOnce(maxTickMillis);
+      jobs.runProjectionMaintenanceOnce(maxTickMillis);
     } catch (RuntimeException e) {
-      LOG.warnf(e, "Reconcile job lease maintenance tick failed");
+      LOG.warnf(e, "Reconcile job projection maintenance tick failed");
     }
   }
 }

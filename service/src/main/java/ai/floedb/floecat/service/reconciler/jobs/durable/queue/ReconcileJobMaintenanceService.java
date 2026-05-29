@@ -74,6 +74,21 @@ public class ReconcileJobMaintenanceService {
         System.currentTimeMillis() - startedAtMs, System.currentTimeMillis() - startedAtMs);
   }
 
+  public void runLeaseMaintenanceOnce(long maxMillis) {
+    long startedAtMs = System.currentTimeMillis();
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    reclaimExpiredLeasesIfDue(startedAtMs, deadlineMs);
+    LOG.debugf("runLeaseMaintenanceOnce total_ms=%d", System.currentTimeMillis() - startedAtMs);
+  }
+
+  public void runProjectionMaintenanceOnce(long maxMillis) {
+    long startedAtMs = System.currentTimeMillis();
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    refreshDirtyParents(deadlineMs);
+    LOG.debugf(
+        "runProjectionMaintenanceOnce total_ms=%d", System.currentTimeMillis() - startedAtMs);
+  }
+
   private void reclaimExpiredLeasesIfDue(long nowMs, long deadlineMs) {
     if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
       return;

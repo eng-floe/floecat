@@ -1584,7 +1584,8 @@ for raw_mode in "${mode_list[@]}"; do
         "" \
         "" \
         "" \
-        "FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED=false FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS"
+        "QUARKUS_PROFILE_SERVICE=prod FLOECAT_RECONCILER_WORKER_MODE=local FLOECAT_RECONCILER_MAX_PARALLELISM=1 FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED=false FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS" \
+        "0"
       ;;
     localstack-remote)
       run_mode \
@@ -1611,7 +1612,16 @@ for raw_mode in "${mode_list[@]}"; do
         "${COMPOSE_SMOKE_REMOTE_EXECUTOR_SCALE:-1}"
       ;;
     localstack-oidc)
-      run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"
+      run_mode \
+        ./env.localstack-oidc \
+        localstack-oidc \
+        localstack-oidc \
+        "localstack keycloak" \
+        "keycloak" \
+        "8080" \
+        "" \
+        "QUARKUS_PROFILE_SERVICE=prod FLOECAT_RECONCILER_WORKER_MODE=local FLOECAT_RECONCILER_MAX_PARALLELISM=1" \
+        "0"
       ;;
     "")
       ;;

@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -302,5 +303,78 @@ class ServerSideStorageConfigResolverTest {
     assertThrows(
         StatusRuntimeException.class,
         () -> resolver.resolve(java.util.Optional.empty(), connector, config));
+  }
+
+  @Test
+  void resolveMergesResolvedStorageAuthorityForDeltaHintLocation() {
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.resolveStorageAuthorityForAccountLocation(any()))
+        .thenReturn(
+            ResolveStorageAuthorityResponse.newBuilder()
+                .putClientSafeConfig("s3.endpoint", "http://localstack:4566")
+                .putClientSafeConfig("s3.path-style-access", "true")
+                .putClientSafeConfig("s3.region", "us-east-1")
+                .addStorageCredentials(
+                    VendedStorageCredential.newBuilder()
+                        .putConfig("s3.access-key-id", "test-access")
+                        .putConfig("s3.secret-access-key", "test-secret")
+                        .putConfig("s3.session-token", "test-session"))
+                .build());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_DELTA)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR)
+                    .build())
+            .build();
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "delta",
+            "http://localhost",
+            Map.of(
+                "delta.source",
+                "unity",
+                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
+                "s3://bucket/table"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    ConnectorConfig resolved = resolver.resolve(java.util.Optional.empty(), connector, config);
+
+    assertEquals("http://localstack:4566", resolved.options().get("s3.endpoint"));
+    assertEquals("us-east-1", resolved.options().get("s3.region"));
+    assertEquals("true", resolved.options().get("s3.path-style-access"));
+    assertEquals("test-access", resolved.options().get("s3.access-key-id"));
+    assertEquals("test-secret", resolved.options().get("s3.secret-access-key"));
+    assertEquals("test-session", resolved.options().get("s3.session-token"));
+  }
+
+  @Test
+  void storageAuthorityLookupLocationUsesDeltaHintLocation() {
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "delta",
+            "http://localhost",
+            Map.of(
+                "delta.source",
+                "unity",
+                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
+                "s3://bucket/table"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    assertEquals(
+        "s3://bucket/table",
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
   }
 }

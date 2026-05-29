@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -86,6 +87,32 @@ public class ServerSideStorageConfigResolver {
       ConnectorConfig config) {
     if (connector == null || config == null || connector.getKindValue() == 0) {
       return config;
+    }
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+      if (!connector.hasResourceId()) {
+        return config;
+      }
+      String locationPrefix = storageAuthorityLookupLocation(config);
+      if (locationPrefix == null) {
+        return config;
+      }
+      ResolveStorageAuthorityResponse response =
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
+              .resolveStorageAuthorityForAccountLocation(
+                  ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
+                      .setAccountId(connector.getResourceId().getAccountId())
+                      .setLocationPrefix(locationPrefix)
+                      .setIncludeCredentials(true)
+                      .setRequired(false)
+                      .build());
+      if (response == null) {
+        return config;
+      }
+      Map<String, String> merged = mergeResolvedStorageConfig(config.options(), response, true);
+      return merged.equals(config.options())
+          ? config
+          : new ConnectorConfig(
+              config.kind(), config.displayName(), config.uri(), merged, config.auth());
     }
     if (config.kind() != ConnectorConfig.Kind.ICEBERG || !connector.hasResourceId()) {
       return config;
@@ -161,7 +188,22 @@ public class ServerSideStorageConfigResolver {
   }
 
   static String storageAuthorityLookupLocation(ConnectorConfig config) {
-    if (config == null || config.kind() != ConnectorConfig.Kind.ICEBERG) {
+    if (config == null) {
+      return null;
+    }
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+      Map<String, String> options = config.options();
+      String hintedLocation = options.get(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION);
+      if (isNonBlank(hintedLocation)) {
+        return normalizeS3Location(hintedLocation, false);
+      }
+      String tableRoot = options.get("delta.table-root");
+      if (isNonBlank(tableRoot)) {
+        return normalizeS3Location(tableRoot, false);
+      }
+      return null;
+    }
+    if (config.kind() != ConnectorConfig.Kind.ICEBERG) {
       return null;
     }
     Map<String, String> options = config.options();

@@ -118,6 +118,8 @@ During execution:
 - report progress periodically
 - check cancellation periodically
 - stop work if the lease is no longer valid
+- once the worker has durably submitted a handled completion, stop heartbeats and do not perform a
+  post-completion lease confirmation renew
 
 ## Standalone File-Group Payload
 `GetLeasedFileGroupExecution` returns the standalone worker payload. The important fields are:
@@ -206,6 +208,11 @@ Recommended loop:
    - `SubmitLeasedFileGroupExecutionResult(failure)` only if you want a durable failure payload, or
    - no result payload if no per-file result should be persisted
 6. Finish with `CompleteLeasedReconcileJob(RCS_CANCELLED)` when appropriate.
+
+For worker implementations that use handled completion semantics, lease ownership ends when the
+handled completion RPC is durably accepted by the control plane. After that point the worker should
+not send another `RenewReconcileLease` as a final confirmation step, because the service may have
+already cleared the lease as part of successful completion.
 
 ## What the Rust Worker Must Produce
 The service expects the same logical outputs the Java runner currently produces:

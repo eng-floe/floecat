@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -44,10 +45,12 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequ
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
+import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -257,6 +260,36 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(heartbeat.cancellationRequested()).isFalse();
     verify(client.executorControl, org.mockito.Mockito.times(2)).renewReconcileLease(any());
     assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease#1");
+  }
+
+  @Test
+  void closeWorkerControlChannelUsesGracefulShutdownForReset() throws Exception {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    ManagedChannel channel = mock(ManagedChannel.class);
+
+    client.closeWorkerControlChannel(channel, false);
+
+    verify(channel).shutdown();
+    org.mockito.Mockito.verify(channel, org.mockito.Mockito.never()).shutdownNow();
+    org.mockito.Mockito.verify(channel, org.mockito.Mockito.never())
+        .awaitTermination(anyLong(), any(TimeUnit.class));
+  }
+
+  @Test
+  void closeWorkerControlChannelUsesForcedShutdownForDestroy() throws Exception {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+    ManagedChannel channel = mock(ManagedChannel.class);
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    client.closeWorkerControlChannel(channel, true);
+
+    verify(channel).shutdownNow();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
+    org.mockito.Mockito.verify(channel, org.mockito.Mockito.never()).shutdown();
   }
 
   @Test

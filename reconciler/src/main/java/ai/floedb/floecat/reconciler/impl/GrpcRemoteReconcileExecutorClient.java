@@ -186,7 +186,7 @@ class GrpcRemoteReconcileExecutorClient
 
   @PreDestroy
   void destroy() {
-    resetWorkerControlChannel();
+    resetWorkerControlChannel(true);
   }
 
   @Override
@@ -1357,6 +1357,10 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private void resetWorkerControlChannel() {
+    resetWorkerControlChannel(false);
+  }
+
+  private void resetWorkerControlChannel(boolean force) {
     ManagedChannel channel = null;
     synchronized (workerControlLock) {
       if (workerControlHost.isEmpty()) {
@@ -1366,14 +1370,23 @@ class GrpcRemoteReconcileExecutorClient
       workerControlChannel = null;
       workerControlStub = null;
     }
-    if (channel != null) {
+    closeWorkerControlChannel(channel, force);
+  }
+
+  void closeWorkerControlChannel(ManagedChannel channel, boolean force) {
+    if (channel == null) {
+      return;
+    }
+    if (force) {
       channel.shutdownNow();
       try {
         channel.awaitTermination(5, TimeUnit.SECONDS);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
+      return;
     }
+    channel.shutdown();
   }
 
   private <T> T invokeWorkerControlRetryable(

@@ -170,6 +170,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                       new PlannedFileGroupJob(
                           effectiveFileGroupScope(payload.scope(), group), group))
               .toList();
+      context.beforeHandledCompletion().run();
       if (!workerClient.submitPlanSnapshotSuccess(
           remoteLease,
           plannedCapture.snapshotTask(),

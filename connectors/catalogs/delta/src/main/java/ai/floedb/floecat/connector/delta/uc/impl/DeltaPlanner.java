@@ -121,7 +121,6 @@ final class DeltaPlanner implements Planner<String> {
       NdvProvider ndvProvider,
       boolean includeStats,
       boolean allowFooterFallback) {
-
     this.engine = engine;
     this.ndvProvider = ndvProvider;
     this.allowFooterFallback = allowFooterFallback;

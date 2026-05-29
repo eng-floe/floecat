@@ -88,11 +88,21 @@ public interface ReconcileExecutor {
   record ExecutionContext(
       ReconcileJobStore.LeasedJob lease,
       BooleanSupplier shouldStop,
-      ProgressListener progressListener) {
+      ProgressListener progressListener,
+      Runnable beforeHandledCompletion) {
+    public ExecutionContext(
+        ReconcileJobStore.LeasedJob lease,
+        BooleanSupplier shouldStop,
+        ProgressListener progressListener) {
+      this(lease, shouldStop, progressListener, () -> {});
+    }
+
     public ExecutionContext {
       lease = Objects.requireNonNull(lease, "lease");
       shouldStop = Objects.requireNonNull(shouldStop, "shouldStop");
       progressListener = Objects.requireNonNull(progressListener, "progressListener");
+      beforeHandledCompletion =
+          Objects.requireNonNull(beforeHandledCompletion, "beforeHandledCompletion");
     }
   }
 

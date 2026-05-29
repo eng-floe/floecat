@@ -131,6 +131,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       return result;
     }
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
+      context.beforeHandledCompletion().run();
       if (!workerClient.submitPlanTableSuccess(
           remoteLease,
           List.of(),
@@ -165,6 +166,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
     List<PlannedSnapshotJob> snapshotJobs =
         snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
+    context.beforeHandledCompletion().run();
     if (!workerClient.submitPlanTableSuccess(
         remoteLease,
         snapshotJobs,
@@ -227,6 +229,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.message);
       return result;
     }
+    context.beforeHandledCompletion().run();
     var submit =
         workerClient.submitPlanViewSuccess(
             remoteLease,
