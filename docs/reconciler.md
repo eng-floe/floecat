@@ -156,6 +156,16 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   job-state transitions update them together. Lease maintenance reclaims expired leases and
   projection maintenance repairs dirty parent/root summaries, but neither path is part of queue
   correctness.
+- **Canonical vs projection-owned state**:
+  - canonical parent records carry scheduling and ownership state only (`state`, `message`,
+    timestamps, executor ownership, waiting/finalization metadata, retry scheduling)
+  - rolled-up aggregate counters (`tables*`, `views*`, `snapshotsProcessed`, `statsProcessed`,
+    file-group/file counters, index counters) are projection-owned and root-summary-owned rather
+    than canonical-parent-owned
+  - transactional child completion updates canonical ancestor scheduling state immediately, while
+    aggregate rollups are refreshed through projections
+  - list/get/tree read paths may recompute fresh projections for the returned response, but they do
+    not persist projection or root-summary repair
 - **Backend shape**:
   - in `floecat.kv=dynamodb`, the durable store hot paths use native Dynamo-style partition/sort-key
     layouts for job indexes, ready slices, and lease rows/expiry scans
@@ -216,10 +226,12 @@ Connector StartCapture / CaptureNow
 ```
 
 Jobs include `fullRescan`, `executionPolicy`, `jobKind`, and optional task payloads. Snapshot plan
-jobs, file-group jobs, and snapshot finalization jobs also surface file-group/file counters for
-current execution state.
+jobs, file-group jobs, and snapshot finalization jobs surface file-group/file counters in projected
+public views; parent canonical records do not store rolled-up aggregate counters.
 `RemoteReconcileExecutorPoller` uses `AtomicBoolean` and in-flight counters to avoid over-leasing
 within the same instance while continuing to repoll until worker slots are full.
+For handled remote completions, workers stop heartbeats before the handled success RPC and do not
+perform a post-completion final lease confirmation after that RPC has durably completed the job.
 
 ## Configuration & Extensibility
 - Scheduling cadence via `reconciler.pollEvery` (defaults to `1s`).
