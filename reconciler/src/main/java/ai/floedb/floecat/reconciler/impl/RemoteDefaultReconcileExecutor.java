@@ -113,7 +113,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             payload.scope(),
             payload.tableTask(),
             payload.captureMode(),
-            workerAuthorizationHeader(),
+            workerAuthorizationHeader(lease.accountId),
             context.shouldStop(),
             progressListener);
     ExecutionResult result = tableExecution.result();
@@ -213,7 +213,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             connectorId,
             payload.scope(),
             payload.viewTask(),
-            workerAuthorizationHeader(),
+            workerAuthorizationHeader(remoteLease.lease().accountId),
             context.shouldStop(),
             progressListener);
     ExecutionResult result = planned.result();
@@ -286,11 +286,11 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         scope,
         task,
         payload.captureMode(),
-        workerAuthorizationHeader());
+        workerAuthorizationHeader(principal.getAccountId()));
   }
 
-  private String workerAuthorizationHeader() {
-    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
+  private String workerAuthorizationHeader(String accountId) {
+    return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(

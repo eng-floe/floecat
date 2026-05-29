@@ -81,6 +81,8 @@ class GrpcRemoteReconcileExecutorClient
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ACCOUNT =
+      Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -199,6 +201,7 @@ class GrpcRemoteReconcileExecutorClient
             "leaseReconcileJob",
             "reconcile-lease-"
                 + (leaseClientId == null || leaseClientId.isBlank() ? "aggregate" : leaseClientId),
+            null,
             stub ->
                 stub.leaseReconcileJob(
                     LeaseReconcileJobRequest.newBuilder()
@@ -228,6 +231,7 @@ class GrpcRemoteReconcileExecutorClient
     invokeWorkerControlOnce(
         "startLeasedReconcileJob",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.startLeasedReconcileJob(
                 StartLeasedReconcileJobRequest.newBuilder()
@@ -243,6 +247,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "renewReconcileLease",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.renewReconcileLease(
                     RenewReconcileLeaseRequest.newBuilder()
@@ -267,6 +272,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "reportReconcileProgress",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.reportReconcileProgress(
                     ReportReconcileProgressRequest.newBuilder()
@@ -302,6 +308,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlOnce(
             "completeLeasedReconcileJob",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.completeLeasedReconcileJob(
                     CompleteLeasedReconcileJobRequest.newBuilder()
@@ -327,6 +334,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlRetryable(
         "getReconcileCancellation",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.getReconcileCancellation(
                     GetReconcileCancellationRequest.newBuilder()
@@ -340,6 +348,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "getLeasedPlanConnectorInput",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.getLeasedPlanConnectorInput(
                     GetLeasedPlanConnectorInputRequest.newBuilder()
@@ -385,6 +394,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanConnectorResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanConnectorResult(
                     SubmitLeasedPlanConnectorResultRequest.newBuilder()
@@ -404,6 +414,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanConnectorResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanConnectorResult(
                     SubmitLeasedPlanConnectorResultRequest.newBuilder()
@@ -425,6 +436,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "getLeasedPlanTableInput",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.getLeasedPlanTableInput(
                     GetLeasedPlanTableInputRequest.newBuilder()
@@ -472,6 +484,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanTableResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanTableResult(
                     SubmitLeasedPlanTableResultRequest.newBuilder()
@@ -491,6 +504,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanTableResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanTableResult(
                     SubmitLeasedPlanTableResultRequest.newBuilder()
@@ -512,6 +526,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "getLeasedPlanViewInput",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.getLeasedPlanViewInput(
                     GetLeasedPlanViewInputRequest.newBuilder()
@@ -550,6 +565,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlOnce(
             "submitLeasedPlanViewResult",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.submitLeasedPlanViewResult(
                     SubmitLeasedPlanViewResultRequest.newBuilder()
@@ -570,6 +586,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanViewResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanViewResult(
                     SubmitLeasedPlanViewResultRequest.newBuilder()
@@ -591,6 +608,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "getLeasedPlanSnapshotInput",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.getLeasedPlanSnapshotInput(
                     GetLeasedPlanSnapshotInputRequest.newBuilder()
@@ -628,6 +646,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanSnapshotResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanSnapshotResult(
                     SubmitLeasedPlanSnapshotResultRequest.newBuilder()
@@ -647,6 +666,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControlOnce(
         "submitLeasedPlanSnapshotResult",
         correlationId(lease),
+        lease.lease().accountId,
         stub ->
             stub.submitLeasedPlanSnapshotResult(
                     SubmitLeasedPlanSnapshotResultRequest.newBuilder()
@@ -668,6 +688,7 @@ class GrpcRemoteReconcileExecutorClient
         invokeWorkerControlRetryable(
             "getLeasedFileGroupExecution",
             correlationId(lease),
+            lease.lease().accountId,
             stub ->
                 stub.getLeasedFileGroupExecution(
                     GetLeasedFileGroupExecutionRequest.newBuilder()
@@ -753,6 +774,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControl(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
+        lease.lease().accountId,
         !resultId.isBlank(),
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
@@ -769,6 +791,7 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControl(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
+        lease.lease().accountId,
         !stableResultId.isBlank(),
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
@@ -1392,27 +1415,30 @@ class GrpcRemoteReconcileExecutorClient
   private <T> T invokeWorkerControlRetryable(
       String operation,
       String correlationId,
+      String accountId,
       Function<ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub, T> invocation) {
-    return invokeWorkerControl(operation, correlationId, true, invocation);
+    return invokeWorkerControl(operation, correlationId, accountId, true, invocation);
   }
 
   private <T> T invokeWorkerControlOnce(
       String operation,
       String correlationId,
+      String accountId,
       Function<ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub, T> invocation) {
-    return invokeWorkerControl(operation, correlationId, false, invocation);
+    return invokeWorkerControl(operation, correlationId, accountId, false, invocation);
   }
 
   private <T> T invokeWorkerControl(
       String operation,
       String correlationId,
+      String accountId,
       boolean retryOnTransportFailure,
       Function<ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub, T> invocation) {
     RuntimeException lastError = null;
     int maxAttempts = retryOnTransportFailure ? 2 : 1;
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return invocation.apply(withHeaders(controlStub(), correlationId));
+        return invocation.apply(withHeaders(controlStub(), correlationId, accountId));
       } catch (RuntimeException error) {
         lastError = error;
         boolean transportFailure = isTransportFailure(error);
@@ -1451,23 +1477,27 @@ class GrpcRemoteReconcileExecutorClient
     return false;
   }
 
-  private <T extends AbstractStub<T>> T withHeaders(T stub, String correlationId) {
+  private <T extends AbstractStub<T>> T withHeaders(
+      T stub, String correlationId, String accountId) {
     return stub.withInterceptors(
-        MetadataUtils.newAttachHeadersInterceptor(metadata(correlationId)));
+        MetadataUtils.newAttachHeadersInterceptor(metadata(correlationId, accountId)));
   }
 
-  Metadata metadata(String correlationId) {
+  Metadata metadata(String correlationId, String accountId) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, correlationId == null ? "" : correlationId);
-    attachWorkerAuthorization(metadata);
+    if (accountId != null && !accountId.isBlank()) {
+      metadata.put(ACCOUNT, accountId);
+    }
+    attachWorkerAuthorization(metadata, accountId);
     return metadata;
   }
 
-  private void attachWorkerAuthorization(Metadata metadata) {
+  private void attachWorkerAuthorization(Metadata metadata, String accountId) {
     if (workerAuthHeaderName.isEmpty()) {
       return;
     }
-    Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader();
+    Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader(accountId);
     if (authorization.isEmpty()) {
       if (!workerAuthRequired) {
         return;

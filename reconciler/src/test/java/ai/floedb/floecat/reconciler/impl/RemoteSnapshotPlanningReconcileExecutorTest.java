@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -44,6 +45,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotPlanningReconcileExecutorTest {
 
@@ -51,7 +53,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void executeUsesDirectStatsFastPathForStatsOnlySnapshot() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
 
@@ -107,7 +109,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void executeFallsBackToFileGroupsWhenPageIndexesAreRequested() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
 
@@ -168,7 +170,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void executeFallsBackToFileGroupsWhenDirectStatsAreUnavailable() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
 
@@ -218,7 +220,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void executePersistsGrpcFailureDetailsForSnapshotPlanningErrors() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
 
@@ -259,7 +261,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void executeDoesNotRequirePersistedSnapshotMetadataForCaptureOnlyPlanning() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = java.util.Optional::<String>empty;
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
 
@@ -288,16 +290,77 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     verify(backend, never()).fetchSnapshot(any(), any(), anyLong());
   }
 
+  @Test
+  void executeDoesNotLeakWorkerAuthorizationAcrossAccounts() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider =
+        accountId -> java.util.Optional.of("Bearer worker-token-" + accountId);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileJobStore.LeasedJob leaseOne = lease("job-1", "acct-a", statsOnlyScope());
+    ReconcileJobStore.LeasedJob leaseTwo = lease("job-2", "acct-b", statsOnlyScope());
+
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenAnswer(
+            invocation -> {
+              RemoteLeasedJob remoteLease = invocation.getArgument(0);
+              ReconcileJobStore.LeasedJob lease = remoteLease.lease();
+              return new StandalonePlanSnapshotPayload(
+                  lease.jobId,
+                  lease.leaseEpoch,
+                  "",
+                  connectorId(lease.accountId),
+                  ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                  false,
+                  statsOnlyScope(),
+                  snapshotTask());
+            });
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.of(List.of()));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    leaseOne, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .ok());
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    leaseTwo, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .ok());
+
+    ArgumentCaptor<ai.floedb.floecat.reconciler.spi.ReconcileContext> contextCaptor =
+        ArgumentCaptor.forClass(ai.floedb.floecat.reconciler.spi.ReconcileContext.class);
+    verify(backend, org.mockito.Mockito.times(2))
+        .captureSnapshotTargetStatsDirect(
+            contextCaptor.capture(), any(), eq(55L), any(), any(), any());
+    assertThat(contextCaptor.getAllValues())
+        .extracting(
+            ctx ->
+                ctx.principal().getAccountId() + "|" + ctx.authorizationToken().orElse("<missing>"))
+        .containsExactly("acct-a|Bearer worker-token-acct-a", "acct-b|Bearer worker-token-acct-b");
+  }
+
   private static ReconcileJobStore.LeasedJob lease(ReconcileScope scope) {
+    return lease("job-1", "acct", scope);
+  }
+
+  private static ReconcileJobStore.LeasedJob lease(
+      String jobId, String accountId, ReconcileScope scope) {
     return new ReconcileJobStore.LeasedJob(
-        "job-1",
-        "acct",
+        jobId,
+        accountId,
         "connector-1",
         false,
         ReconcilerService.CaptureMode.CAPTURE_ONLY,
         scope,
         ReconcileExecutionPolicy.defaults(),
-        "lease-1",
+        "lease-" + jobId,
         "",
         "",
         ReconcileJobKind.PLAN_SNAPSHOT,
@@ -334,8 +397,12 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   private static ResourceId connectorId() {
+    return connectorId("acct");
+  }
+
+  private static ResourceId connectorId(String accountId) {
     return ResourceId.newBuilder()
-        .setAccountId("acct")
+        .setAccountId(accountId)
         .setKind(ResourceKind.RK_CONNECTOR)
         .setId("connector-1")
         .build();

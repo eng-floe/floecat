@@ -60,12 +60,14 @@ class GrpcRemoteReconcileExecutorClientTest {
   void metadataIncludesExplicitWorkerAuthorizationHeader() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
 
-    Metadata metadata = client.metadata("corr-1");
+    Metadata metadata = client.metadata("corr-1", "acct-1");
 
     assertThat(metadata.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
         .isEqualTo("Bearer worker-token");
+    assertThat(metadata.get(Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("acct-1");
     assertThat(metadata.get(Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER)))
         .isEqualTo("corr-1");
   }
@@ -73,10 +75,11 @@ class GrpcRemoteReconcileExecutorClientTest {
   @Test
   void oidcModeRequiresWorkerAuthorizationHeader() {
     GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient("authorization", java.util.Optional::empty);
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", ignored -> java.util.Optional.empty());
 
     IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> client.metadata("corr-2"));
+        assertThrows(IllegalStateException.class, () -> client.metadata("corr-2", null));
 
     assertThat(ex).hasMessageContaining("Reconcile worker authorization header is required");
   }
@@ -84,9 +87,10 @@ class GrpcRemoteReconcileExecutorClientTest {
   @Test
   void workerAuthCanBeExplicitlyDisabled() {
     GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient("authorization", false, java.util.Optional::empty);
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization", false, ignored -> java.util.Optional.empty());
 
-    Metadata metadata = client.metadata("corr-disabled");
+    Metadata metadata = client.metadata("corr-disabled", null);
 
     assertThat(metadata.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
         .isNull();
@@ -98,9 +102,9 @@ class GrpcRemoteReconcileExecutorClientTest {
   void workerCallsUseSessionHeaderWhenConfigured() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "x-floe-session", () -> java.util.Optional.of("Bearer worker-token"));
+            "x-floe-session", ignored -> java.util.Optional.of("Bearer worker-token"));
 
-    Metadata metadata = client.metadata("corr-3");
+    Metadata metadata = client.metadata("corr-3", null);
 
     assertThat(metadata.keys()).contains("x-correlation-id");
     assertThat(metadata.get(Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER)))
@@ -108,10 +112,30 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void metadataUsesAccountScopedWorkerAuthorizationWithoutLeakage() {
+    GrpcRemoteReconcileExecutorClient client =
+        new GrpcRemoteReconcileExecutorClient(
+            "authorization",
+            accountId -> java.util.Optional.of("Bearer worker-token-" + accountId));
+
+    Metadata accountOne = client.metadata("corr-1", "acct-1");
+    Metadata accountTwo = client.metadata("corr-2", "acct-2");
+
+    assertThat(accountOne.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("Bearer worker-token-acct-1");
+    assertThat(accountTwo.get(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("Bearer worker-token-acct-2");
+    assertThat(accountOne.get(Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("acct-1");
+    assertThat(accountTwo.get(Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("acct-2");
+  }
+
+  @Test
   void planConnectorInputPreservesSnapshotSelection() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -145,7 +169,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void planTableInputPreservesSnapshotSelection() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -181,7 +205,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitPlanSnapshotSuccessOmitsDuplicateSnapshotFileGroupsWhenFileGroupJobsArePresent() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
@@ -242,7 +266,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void renewRetriesOnceOnTransportFailure() {
     TransportLoggingClient client =
         new TransportLoggingClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -266,7 +290,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void closeWorkerControlChannelUsesGracefulShutdownForReset() throws Exception {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     ManagedChannel channel = mock(ManagedChannel.class);
 
     client.closeWorkerControlChannel(channel, false);
@@ -281,7 +305,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void closeWorkerControlChannelUsesForcedShutdownForDestroy() throws Exception {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     ManagedChannel channel = mock(ManagedChannel.class);
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
@@ -296,7 +320,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitFileGroupSuccessRetriesWhenResultIdIsStable() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -318,7 +342,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -338,7 +362,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitFileGroupSuccessSendsUploadedArtifactManifestWithoutInlineContent() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
@@ -375,7 +399,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitFileGroupSuccessSendsFileStatsBlobManifestWithoutInlineStats() {
     GrpcRemoteReconcileExecutorClient client =
         new GrpcRemoteReconcileExecutorClient(
-            "authorization", () -> java.util.Optional.of("Bearer worker-token"));
+            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     client.executorControl =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);

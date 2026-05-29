@@ -138,6 +138,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ACCOUNT =
+      Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Duration DEFAULT_STATS_TIMEOUT = Duration.ofMinutes(1);
@@ -1325,6 +1327,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   Metadata metadataForContext(ReconcileContext ctx) {
     Metadata metadata = new Metadata();
     metadata.put(CORRELATION_ID, ctx.correlationId());
+    String accountId = ctx.principal().getAccountId();
+    if (accountId != null && !accountId.isBlank()) {
+      metadata.put(ACCOUNT, accountId);
+    }
     ctx.authorizationToken()
         .ifPresent(value -> metadata.put(authHeaderKey(), withBearerPrefix(value)));
     return metadata;

@@ -41,10 +41,13 @@ class GrpcReconcilerBackendMetadataTest {
 
     Metadata.Key<String> correlationKey =
         Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+    Metadata.Key<String> accountKey =
+        Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
     Metadata.Key<String> authorizationKey =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
     assertThat(metadata.get(correlationKey)).isEqualTo("corr");
+    assertThat(metadata.get(accountKey)).isEqualTo("acct");
     assertThat(metadata.get(authorizationKey)).isEqualTo("Bearer secret-token");
   }
 

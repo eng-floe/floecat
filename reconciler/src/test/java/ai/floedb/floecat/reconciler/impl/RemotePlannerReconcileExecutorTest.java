@@ -47,7 +47,8 @@ class RemotePlannerReconcileExecutorTest {
   void executeMarksMissingPinnedDestinationTableIdTerminal() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    ReconcileWorkerAuthProvider authProvider =
+        ignored -> java.util.Optional.of("Bearer worker-token");
     var executor =
         new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
 
@@ -124,7 +125,8 @@ class RemotePlannerReconcileExecutorTest {
   void executeMarksMissingAwsCredentialsTerminal() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    ReconcileWorkerAuthProvider authProvider =
+        ignored -> java.util.Optional.of("Bearer worker-token");
     var executor =
         new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
 
@@ -198,7 +200,8 @@ class RemotePlannerReconcileExecutorTest {
   void executeUsesWorkerAuthorizationForScopedViewPlanning() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    ReconcileWorkerAuthProvider authProvider =
+        ignored -> java.util.Optional.of("Bearer worker-token");
     var executor =
         new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
 
@@ -258,7 +261,8 @@ class RemotePlannerReconcileExecutorTest {
   void executeUsesWorkerAuthorizationForScopedCaptureOnlyTablePlanning() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    ReconcileWorkerAuthProvider authProvider =
+        ignored -> java.util.Optional.of("Bearer worker-token");
     var executor =
         new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
 
@@ -339,7 +343,8 @@ class RemotePlannerReconcileExecutorTest {
   void executePreservesSnapshotSelectionForScopedSingleTablePlanning() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = () -> java.util.Optional.of("Bearer worker-token");
+    ReconcileWorkerAuthProvider authProvider =
+        ignored -> java.util.Optional.of("Bearer worker-token");
     var executor =
         new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
 
@@ -417,5 +422,95 @@ class RemotePlannerReconcileExecutorTest {
                         && tableJobs.getFirst().scope().snapshotSelection().kind()
                             == ReconcileSnapshotSelection.Kind.CURRENT),
             any());
+  }
+
+  @Test
+  void executeDoesNotLeakWorkerAuthorizationAcrossAccounts() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider =
+        accountId -> java.util.Optional.of("Bearer worker-token-" + accountId);
+    var executor =
+        new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
+
+    ReconcileScope scope = ReconcileScope.ofView(List.of(), "view-1");
+    ReconcileJobStore.LeasedJob leaseOne = lease("job-1", "acct-a", scope);
+    ReconcileJobStore.LeasedJob leaseTwo = lease("job-2", "acct-b", scope);
+    RemoteLeasedJob remoteLeaseOne = new RemoteLeasedJob(leaseOne);
+    RemoteLeasedJob remoteLeaseTwo = new RemoteLeasedJob(leaseTwo);
+
+    when(workerClient.getPlanConnectorInput(remoteLeaseOne))
+        .thenReturn(planConnectorPayload(leaseOne, connectorId("acct-a"), scope));
+    when(workerClient.getPlanConnectorInput(remoteLeaseTwo))
+        .thenReturn(planConnectorPayload(leaseTwo, connectorId("acct-b"), scope));
+    when(reconcilerService.planViewTasks(
+            any(), eq(connectorId("acct-a")), eq(scope), eq("Bearer worker-token-acct-a")))
+        .thenReturn(List.of(ReconcileViewTask.of("src", "view", "ns", "view-1")));
+    when(reconcilerService.planViewTasks(
+            any(), eq(connectorId("acct-b")), eq(scope), eq("Bearer worker-token-acct-b")))
+        .thenReturn(List.of(ReconcileViewTask.of("src", "view", "ns", "view-1")));
+    when(workerClient.submitPlanConnectorSuccess(any(), any(), any())).thenReturn(true);
+
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    leaseOne, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .ok());
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    leaseTwo, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .ok());
+
+    verify(reconcilerService)
+        .planViewTasks(
+            any(), eq(connectorId("acct-a")), eq(scope), eq("Bearer worker-token-acct-a"));
+    verify(reconcilerService)
+        .planViewTasks(
+            any(), eq(connectorId("acct-b")), eq(scope), eq("Bearer worker-token-acct-b"));
+  }
+
+  private static ReconcileJobStore.LeasedJob lease(
+      String jobId, String accountId, ReconcileScope scope) {
+    return new ReconcileJobStore.LeasedJob(
+        jobId,
+        accountId,
+        "connector-1",
+        false,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "lease-" + jobId,
+        "",
+        "",
+        ReconcileJobKind.PLAN_CONNECTOR,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+        "");
+  }
+
+  private static StandalonePlanConnectorPayload planConnectorPayload(
+      ReconcileJobStore.LeasedJob lease, ResourceId connectorId, ReconcileScope scope) {
+    return new StandalonePlanConnectorPayload(
+        lease.jobId,
+        lease.leaseEpoch,
+        connectorId,
+        lease.captureMode,
+        false,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "");
+  }
+
+  private static ResourceId connectorId(String accountId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .setId("connector-1")
+        .build();
   }
 }

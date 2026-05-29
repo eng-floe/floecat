@@ -28,6 +28,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -45,7 +46,7 @@ public class OidcReconcileWorkerAuthProvider implements ReconcileWorkerAuthProvi
   private final Clock clock;
   private final TokenEndpointClient tokenEndpointClient;
 
-  private volatile CachedToken cachedToken;
+  private final ConcurrentHashMap<String, CachedToken> cachedTokens = new ConcurrentHashMap<>();
 
   @Inject
   public OidcReconcileWorkerAuthProvider(
@@ -87,35 +88,37 @@ public class OidcReconcileWorkerAuthProvider implements ReconcileWorkerAuthProvi
   }
 
   @Override
-  public Optional<String> authorizationHeader() {
+  public Optional<String> authorizationHeader(String accountId) {
     if (issuer.isEmpty() || clientId.isEmpty() || clientSecret.isEmpty()) {
       return Optional.empty();
     }
-    CachedToken current = cachedToken;
+    String normalizedAccountId = normalizeAccountId(accountId);
+    CachedToken current = cachedTokens.get(normalizedAccountId);
     Instant now = clock.instant();
     if (current != null && now.isBefore(current.refreshAt())) {
       return Optional.of(current.authorizationHeader());
     }
     synchronized (this) {
-      current = cachedToken;
+      current = cachedTokens.get(normalizedAccountId);
       now = clock.instant();
       if (current != null && now.isBefore(current.refreshAt())) {
         return Optional.of(current.authorizationHeader());
       }
-      CachedToken refreshed = fetchToken(now);
-      cachedToken = refreshed;
+      CachedToken refreshed = fetchToken(now, normalizedAccountId);
+      cachedTokens.put(normalizedAccountId, refreshed);
       return Optional.of(refreshed.authorizationHeader());
     }
   }
 
-  private CachedToken fetchToken(Instant now) {
+  private CachedToken fetchToken(Instant now, String accountId) {
     URI endpoint = tokenEndpoint();
     String requestBody =
         "client_id="
             + urlEncode(clientId.orElseThrow())
             + "&client_secret="
             + urlEncode(clientSecret.orElseThrow())
-            + "&grant_type=client_credentials";
+            + "&grant_type=client_credentials"
+            + (accountId.isBlank() ? "" : "&account_id=" + urlEncode(accountId));
     TokenResponse response = tokenEndpointClient.fetch(endpoint, requestBody, connectTimeout);
     Instant expiresAt = now.plusSeconds(Math.max(1L, response.expiresInSeconds()));
     Instant refreshAt = expiresAt.minusSeconds(refreshSkewSeconds);
@@ -123,7 +126,8 @@ public class OidcReconcileWorkerAuthProvider implements ReconcileWorkerAuthProvi
       refreshAt = now;
     }
     LOG.debugf(
-        "Acquired reconcile worker OIDC token; refreshAt=%s expiresAt=%s", refreshAt, expiresAt);
+        "Acquired reconcile worker OIDC token; accountId=%s refreshAt=%s expiresAt=%s",
+        accountId, refreshAt, expiresAt);
     return new CachedToken(withBearerPrefix(response.accessToken()), refreshAt);
   }
 
@@ -138,6 +142,10 @@ public class OidcReconcileWorkerAuthProvider implements ReconcileWorkerAuthProvi
 
   private static Optional<String> normalize(Optional<String> value) {
     return value.map(String::trim).filter(v -> !v.isBlank());
+  }
+
+  private static String normalizeAccountId(String accountId) {
+    return accountId == null ? "" : accountId.trim();
   }
 
   private static String withBearerPrefix(String token) {

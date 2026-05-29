@@ -136,7 +136,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       if (scope.hasTableFilter()) {
         var tableTasks =
             reconcilerService.planTableTasks(
-                principal, connectorId, scope, workerAuthorizationHeader());
+                principal, connectorId, scope, workerAuthorizationHeader(lease.accountId));
         if (tableTasks.isEmpty()) {
           return ExecutionResult.terminalFailure(
               0,
@@ -180,7 +180,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       } else if (scope.hasViewFilter()) {
         List<ReconcileViewTask> plannedViews =
             reconcilerService.planViewTasks(
-                principal, connectorId, scope, workerAuthorizationHeader());
+                principal, connectorId, scope, workerAuthorizationHeader(lease.accountId));
         if (plannedViews.isEmpty()) {
           return ExecutionResult.terminalFailure(
               0,
@@ -217,11 +217,11 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
             !includesMetadata(payload.captureMode()) && scope.hasCaptureRequestFilter()
                 ? planCaptureOnlyScopedTableTasks(principal, connectorId, scope)
                 : reconcilerService.planTableTasks(
-                    principal, connectorId, scope, workerAuthorizationHeader());
+                    principal, connectorId, scope, workerAuthorizationHeader(lease.accountId));
         List<ReconcileViewTask> plannedViews =
             includesMetadata(payload.captureMode())
                 ? reconcilerService.planViewTasks(
-                    principal, connectorId, scope, workerAuthorizationHeader())
+                    principal, connectorId, scope, workerAuthorizationHeader(lease.accountId))
                 : List.of();
         validateScopedCaptureRequestsMatched(payload.captureMode(), scope, tableTasks);
         if (includesMetadata(payload.captureMode())) {
@@ -400,7 +400,10 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
           ReconcileScope.of(List.of(), entry.getKey(), entry.getValue(), scope.capturePolicy());
       plannedTasks.addAll(
           reconcilerService.planTableTasks(
-              principal, connectorId, strictScope, workerAuthorizationHeader()));
+              principal,
+              connectorId,
+              strictScope,
+              workerAuthorizationHeader(principal.getAccountId())));
     }
     return plannedTasks;
   }
@@ -457,7 +460,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     return ExecutionResult.cancelled(tablesPlanned, 0, viewsPlanned, 0, 0, 0, 0, "Cancelled");
   }
 
-  private String workerAuthorizationHeader() {
-    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
+  private String workerAuthorizationHeader(String accountId) {
+    return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 }
