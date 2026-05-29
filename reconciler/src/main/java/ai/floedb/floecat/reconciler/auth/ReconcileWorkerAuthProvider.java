@@ -19,5 +19,5 @@ package ai.floedb.floecat.reconciler.auth;
 import java.util.Optional;
 
 public interface ReconcileWorkerAuthProvider {
-  Optional<String> authorizationHeader();
+  Optional<String> authorizationHeader(String accountId);
 }

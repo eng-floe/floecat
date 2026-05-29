@@ -22,6 +22,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -29,9 +31,10 @@ import org.junit.jupiter.api.Test;
 class OidcReconcileWorkerAuthProviderTest {
 
   @Test
-  void cachesTokenUntilRefreshWindow() {
+  void cachesTokenUntilRefreshWindowForSameAccount() {
     MutableClock clock = new MutableClock(Instant.parse("2026-05-07T12:00:00Z"));
     AtomicInteger calls = new AtomicInteger();
+    List<String> requestBodies = new ArrayList<>();
     OidcReconcileWorkerAuthProvider provider =
         new OidcReconcileWorkerAuthProvider(
             Optional.of("http://issuer"),
@@ -40,14 +43,49 @@ class OidcReconcileWorkerAuthProviderTest {
             30,
             Duration.ofSeconds(10),
             clock,
-            (endpoint, requestBody, connectTimeout) ->
-                new OidcReconcileWorkerAuthProvider.TokenResponse(
-                    "token-" + calls.incrementAndGet(), 120));
+            (endpoint, requestBody, connectTimeout) -> {
+              requestBodies.add(requestBody);
+              return new OidcReconcileWorkerAuthProvider.TokenResponse(
+                  "token-" + calls.incrementAndGet(), 120);
+            });
 
-    assertThat(provider.authorizationHeader()).contains("Bearer token-1");
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-1");
     clock.advanceSeconds(60);
-    assertThat(provider.authorizationHeader()).contains("Bearer token-1");
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-1");
     assertThat(calls.get()).isEqualTo(1);
+    assertThat(requestBodies)
+        .containsExactly(
+            "client_id=worker-client&client_secret=worker-secret&grant_type=client_credentials&account_id=account-a");
+  }
+
+  @Test
+  void cachesTokensSeparatelyPerAccount() {
+    MutableClock clock = new MutableClock(Instant.parse("2026-05-07T12:00:00Z"));
+    AtomicInteger calls = new AtomicInteger();
+    List<String> requestBodies = new ArrayList<>();
+    OidcReconcileWorkerAuthProvider provider =
+        new OidcReconcileWorkerAuthProvider(
+            Optional.of("http://issuer"),
+            Optional.of("worker-client"),
+            Optional.of("worker-secret"),
+            30,
+            Duration.ofSeconds(10),
+            clock,
+            (endpoint, requestBody, connectTimeout) -> {
+              requestBodies.add(requestBody);
+              return new OidcReconcileWorkerAuthProvider.TokenResponse(
+                  "token-" + calls.incrementAndGet(), 120);
+            });
+
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-1");
+    assertThat(provider.authorizationHeader("account-b")).contains("Bearer token-2");
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-1");
+    assertThat(provider.authorizationHeader("account-b")).contains("Bearer token-2");
+    assertThat(calls.get()).isEqualTo(2);
+    assertThat(requestBodies)
+        .containsExactly(
+            "client_id=worker-client&client_secret=worker-secret&grant_type=client_credentials&account_id=account-a",
+            "client_id=worker-client&client_secret=worker-secret&grant_type=client_credentials&account_id=account-b");
   }
 
   @Test
@@ -66,9 +104,9 @@ class OidcReconcileWorkerAuthProviderTest {
                 new OidcReconcileWorkerAuthProvider.TokenResponse(
                     "token-" + calls.incrementAndGet(), 120));
 
-    assertThat(provider.authorizationHeader()).contains("Bearer token-1");
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-1");
     clock.advanceSeconds(91);
-    assertThat(provider.authorizationHeader()).contains("Bearer token-2");
+    assertThat(provider.authorizationHeader("account-a")).contains("Bearer token-2");
     assertThat(calls.get()).isEqualTo(2);
   }
 

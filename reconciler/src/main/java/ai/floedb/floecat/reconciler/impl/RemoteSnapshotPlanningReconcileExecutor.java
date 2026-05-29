@@ -495,11 +495,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         principal,
         id(),
         Instant.now(),
-        Optional.ofNullable(workerAuthorizationHeader()));
+        Optional.ofNullable(workerAuthorizationHeader(lease.accountId)));
   }
 
-  private String workerAuthorizationHeader() {
-    return reconcileWorkerAuthProvider.authorizationHeader().orElse(null);
+  private String workerAuthorizationHeader(String accountId) {
+    return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
   private static ReconcileScope effectiveFileGroupScope(

@@ -41,7 +41,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
   void executePassesWorkerAuthorizationToCaptureEngine() {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
-    runner.reconcileWorkerAuthProvider = () -> Optional.of("Bearer worker-token");
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.of("Bearer worker-token");
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
 
     runner.execute(payload());
@@ -56,7 +56,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
   void executeAllowsMissingWorkerAuthorization() {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
-    runner.reconcileWorkerAuthProvider = Optional::<String>empty;
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
 
     runner.execute(payload());
@@ -67,7 +67,32 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     assertThat(request.getValue().authorizationToken()).isEmpty();
   }
 
+  @Test
+  void executeDoesNotLeakWorkerAuthorizationAcrossAccounts() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider =
+        accountId -> Optional.of("Bearer worker-token-" + accountId);
+    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+
+    runner.execute(payload("acct-a"));
+    runner.execute(payload("acct-b"));
+
+    ArgumentCaptor<CaptureEngineRequest> request =
+        ArgumentCaptor.forClass(CaptureEngineRequest.class);
+    org.mockito.Mockito.verify(runner.captureEngineRegistry, org.mockito.Mockito.times(2))
+        .capture(request.capture());
+    assertThat(request.getAllValues())
+        .extracting(CaptureEngineRequest::authorizationToken)
+        .containsExactly(
+            Optional.of("Bearer worker-token-acct-a"), Optional.of("Bearer worker-token-acct-b"));
+  }
+
   private static StandaloneFileGroupExecutionPayload payload() {
+    return payload("acct");
+  }
+
+  private static StandaloneFileGroupExecutionPayload payload(String accountId) {
     return new StandaloneFileGroupExecutionPayload(
         "job-1",
         "lease-1",
@@ -76,7 +101,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "ns",
         "table",
         ResourceId.newBuilder()
-            .setAccountId("acct")
+            .setAccountId(accountId)
             .setKind(ResourceKind.RK_TABLE)
             .setId("table-id")
             .build(),

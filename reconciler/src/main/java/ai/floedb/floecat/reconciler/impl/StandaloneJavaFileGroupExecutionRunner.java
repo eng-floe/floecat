@@ -55,7 +55,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
                 FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
                 payload.capturePageIndex(),
-                reconcileWorkerAuthProvider.authorizationHeader()));
+                reconcileWorkerAuthProvider.authorizationHeader(
+                    payload.tableId() == null ? "" : payload.tableId().getAccountId())));
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }
