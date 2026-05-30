@@ -29,6 +29,7 @@ import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** Regression test suite for {@link ScanPruningUtils}. */
@@ -366,5 +367,102 @@ public class ScanPruningUtilsTest {
                       rawBundle(List.of(f), List.of()), List.of("col"), List.of(pred)));
       assertEquals(1, out.getDataFilesCount(), "must keep file for non-orderable type " + type);
     }
+  }
+
+  @Test
+  void testColumnProjectionUsesResolvedColumnId() {
+    LogicalType t = LogicalType.of(LogicalKind.INT);
+    ScalarStats cs =
+        ScalarStats.newBuilder()
+            .setDisplayName("source_id")
+            .setLogicalType("INT")
+            .setMin(LogicalTypeProtoAdapter.encodeValue(t, 1L))
+            .setMax(LogicalTypeProtoAdapter.encodeValue(t, 10L))
+            .build();
+
+    ScanFile f =
+        ScanFile.newBuilder()
+            .setFilePath("p")
+            .addColumns(fileColumn(42L, cs))
+            .build();
+
+    var out =
+        ScanPruningUtils.pruneBundle(
+            rawBundle(List.of(f), List.of()),
+            List.of("id"),
+            List.of(),
+            List.of(),
+            Map.of("id", 42L));
+
+    assertEquals(1, out.getDataFilesCount());
+    assertEquals(1, out.getDataFiles(0).getColumnsCount());
+    assertEquals(42L, out.getDataFiles(0).getColumns(0).getColumnId());
+  }
+
+  @Test
+  void testColumnProjectionPreservesRequestedOrder() {
+    LogicalType t = LogicalType.of(LogicalKind.INT);
+    ScalarStats first =
+        ScalarStats.newBuilder()
+            .setDisplayName("source_first")
+            .setLogicalType("INT")
+            .setMin(LogicalTypeProtoAdapter.encodeValue(t, 1L))
+            .setMax(LogicalTypeProtoAdapter.encodeValue(t, 10L))
+            .build();
+    ScalarStats second =
+        ScalarStats.newBuilder()
+            .setDisplayName("source_second")
+            .setLogicalType("INT")
+            .setMin(LogicalTypeProtoAdapter.encodeValue(t, 1L))
+            .setMax(LogicalTypeProtoAdapter.encodeValue(t, 10L))
+            .build();
+
+    ScanFile f =
+        ScanFile.newBuilder()
+            .setFilePath("p")
+            // Intentionally not in requested order.
+            .addColumns(fileColumn(22L, second))
+            .addColumns(fileColumn(11L, first))
+            .build();
+
+    var out =
+        ScanPruningUtils.pruneBundle(
+            rawBundle(List.of(f), List.of()),
+            List.of("first", "second"),
+            List.of(),
+            List.of(),
+            Map.of("first", 11L, "second", 22L));
+
+    assertEquals(1, out.getDataFilesCount());
+    assertEquals(List.of(11L, 22L), out.getDataFiles(0).getColumnsList().stream().map(FileColumnStats::getColumnId).toList());
+  }
+
+  @Test
+  void testPredicateUsesResolvedColumnId() {
+    LogicalType t = LogicalType.of(LogicalKind.INT);
+    ScalarStats cs =
+        ScalarStats.newBuilder()
+            .setDisplayName("source_id")
+            .setLogicalType("INT")
+            .setMin(LogicalTypeProtoAdapter.encodeValue(t, 5L))
+            .setMax(LogicalTypeProtoAdapter.encodeValue(t, 10L))
+            .build();
+
+    ScanFile f =
+        ScanFile.newBuilder()
+            .setFilePath("p")
+            .addColumns(fileColumn(42L, cs))
+            .build();
+    Predicate pred = Predicate.newBuilder().setColumn("id").setOp(Operator.OP_EQ).addValues("7").build();
+
+    var out =
+        ScanPruningUtils.pruneBundle(
+            rawBundle(List.of(f), List.of()),
+            List.of("id"),
+            List.of(),
+            List.of(pred),
+            Map.of("id", 42L));
+
+    assertEquals(1, out.getDataFilesCount());
   }
 }

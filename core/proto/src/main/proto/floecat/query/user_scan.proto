@@ -50,6 +50,9 @@ message FetchScanBundleRequest {
 
   // Logical predicates used for file-level pruning.
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
+
+  // Stable column IDs for execution-time projection/pruning.
+  repeated int64 required_column_ids = 5;
 }
 
 message TableInfo {

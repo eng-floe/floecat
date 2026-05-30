@@ -25,8 +25,10 @@ import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -69,6 +71,19 @@ public final class ScanPruningUtils {
       ai.floedb.floecat.connector.spi.FloecatConnector.ScanBundle raw,
       List<String> requiredColumns,
       List<Predicate> predicates) {
+    return pruneBundle(raw, requiredColumns, List.of(), predicates, Map.of());
+  }
+
+  /**
+   * Applies pruning to a connector-produced bundle using resolved stable column IDs when
+   * available.
+   */
+  public static ScanBundle pruneBundle(
+      ai.floedb.floecat.connector.spi.FloecatConnector.ScanBundle raw,
+      List<String> requiredColumns,
+      List<Long> requiredColumnIds,
+      List<Predicate> predicates,
+      Map<String, Long> columnIdsByName) {
 
     // Convert raw connector bundle → RPC bundle so we operate on the same type everywhere.
     ScanBundle.Builder builder = ScanBundle.newBuilder();
@@ -76,38 +91,56 @@ public final class ScanPruningUtils {
     builder.addAllDeleteFiles(raw.deleteFiles());
     ScanBundle initial = builder.build();
 
-    ScanBundle afterProjection = pruneColumns(initial, requiredColumns);
-    return prunePredicates(afterProjection, predicates);
+    ScanBundle afterProjection =
+        pruneColumns(initial, requiredColumns, requiredColumnIds, columnIdsByName);
+    return prunePredicates(afterProjection, predicates, columnIdsByName);
   }
 
   // ----------------------------------------------------------------------
   //  Column pruning
   // ----------------------------------------------------------------------
-  private static ScanBundle pruneColumns(ScanBundle bundle, List<String> requiredColumns) {
-    if (requiredColumns == null || requiredColumns.isEmpty()) {
+  private static ScanBundle pruneColumns(
+      ScanBundle bundle,
+      List<String> requiredColumns,
+      List<Long> requiredColumnIds,
+      Map<String, Long> columnIdsByName) {
+    if ((requiredColumns == null || requiredColumns.isEmpty())
+        && (requiredColumnIds == null || requiredColumnIds.isEmpty())) {
       return bundle;
     }
 
-    Set<String> cols = new HashSet<>(requiredColumns);
+    List<ProjectionSelector> selectors =
+        projectionSelectors(requiredColumnIds, requiredColumns, columnIdsByName);
 
     ScanBundle.Builder out = ScanBundle.newBuilder();
 
     for (ScanFile f : bundle.getDataFilesList()) {
-      out.addDataFiles(filterColumns(f, cols));
+      out.addDataFiles(filterColumns(f, selectors));
     }
     for (ScanFile f : bundle.getDeleteFilesList()) {
-      out.addDeleteFiles(filterColumns(f, cols));
+      out.addDeleteFiles(filterColumns(f, selectors));
     }
 
     return out.build();
   }
 
   /** Drops column statistics not included in the projection list. */
-  private static ScanFile filterColumns(ScanFile file, Set<String> cols) {
+  private static ScanFile filterColumns(ScanFile file, List<ProjectionSelector> selectors) {
     ScanFile.Builder b = file.toBuilder().clearColumns();
-    for (var c : file.getColumnsList()) {
-      if (c.hasScalar() && cols.contains(c.getScalar().getDisplayName())) {
-        b.addColumns(c);
+    for (ProjectionSelector selector : selectors) {
+      for (var c : file.getColumnsList()) {
+        boolean matchById =
+            selector.columnId() != null
+                && c.getColumnId() > 0
+                && selector.columnId().longValue() == c.getColumnId();
+        boolean matchByName =
+            selector.columnName() != null
+                && c.hasScalar()
+                && selector.columnName().equals(normalizeName(c.getScalar().getDisplayName()));
+        if (matchById || matchByName) {
+          b.addColumns(c);
+          break;
+        }
       }
     }
     return b.build();
@@ -121,7 +154,8 @@ public final class ScanPruningUtils {
    * Filters out files that cannot satisfy the predicates based on min/max column statistics. This
    * is conservative: a file is only removed if it is guaranteed to not match.
    */
-  private static ScanBundle prunePredicates(ScanBundle bundle, List<Predicate> preds) {
+  private static ScanBundle prunePredicates(
+      ScanBundle bundle, List<Predicate> preds, Map<String, Long> columnIdsByName) {
     if (preds == null || preds.isEmpty()) {
       return bundle;
     }
@@ -131,14 +165,14 @@ public final class ScanPruningUtils {
     Map<String, Integer> deleteIndexByPath = new HashMap<>();
 
     for (ScanFile f : bundle.getDeleteFilesList()) {
-      if (matches(f, preds)) {
+      if (matches(f, preds, columnIdsByName)) {
         deleteIndexByPath.put(f.getFilePath(), out.getDeleteFilesCount());
         out.addDeleteFiles(f);
       }
     }
 
     for (ScanFile f : bundle.getDataFilesList()) {
-      if (matches(f, preds)) {
+      if (matches(f, preds, columnIdsByName)) {
         out.addDataFiles(remapDeleteFileIndices(f, originalDeletes, deleteIndexByPath));
       }
     }
@@ -165,9 +199,10 @@ public final class ScanPruningUtils {
     return builder.build();
   }
 
-  private static boolean matches(ScanFile file, List<Predicate> preds) {
+  private static boolean matches(
+      ScanFile file, List<Predicate> preds, Map<String, Long> columnIdsByName) {
     for (Predicate p : preds) {
-      if (!fileMayMatchPredicate(file, p)) {
+      if (!fileMayMatchPredicate(file, p, columnIdsByName)) {
         return false;
       }
     }
@@ -179,15 +214,21 @@ public final class ScanPruningUtils {
    * This is a conservative check: the method returns {@code true} unless the file is guaranteed to
    * not match the predicate.
    */
-  private static boolean fileMayMatchPredicate(ScanFile pf, Predicate p) {
+  private static boolean fileMayMatchPredicate(
+      ScanFile pf, Predicate p, Map<String, Long> columnIdsByName) {
     String col = p.getColumn();
     if (col == null || col.isBlank()) {
       return true;
     }
 
     ScalarStats cs = null;
+    Long requestedColumnId =
+        columnIdsByName == null ? null : columnIdsByName.get(normalizeName(col));
     for (FileColumnStats c : pf.getColumnsList()) {
-      if (c.hasScalar() && col.equalsIgnoreCase(c.getScalar().getDisplayName())) {
+      boolean matchesId = requestedColumnId != null && requestedColumnId == c.getColumnId();
+      boolean matchesName =
+          c.hasScalar() && col.equalsIgnoreCase(c.getScalar().getDisplayName());
+      if (matchesId || matchesName) {
         cs = c.getScalar();
         break;
       }
@@ -299,4 +340,48 @@ public final class ScanPruningUtils {
       return true;
     }
   }
+
+  private static List<ProjectionSelector> projectionSelectors(
+      Collection<Long> requiredColumnIds,
+      Collection<String> requiredColumns,
+      Map<String, Long> columnIdsByName) {
+    List<ProjectionSelector> selectors = new java.util.ArrayList<>();
+    Set<Long> seenColumnIds = new LinkedHashSet<>();
+    Set<String> seenColumnNames = new LinkedHashSet<>();
+
+    if (requiredColumnIds != null) {
+      for (Long columnId : requiredColumnIds) {
+        if (columnId != null && columnId > 0 && seenColumnIds.add(columnId)) {
+          selectors.add(new ProjectionSelector(columnId, null));
+        }
+      }
+    }
+    if (requiredColumns != null) {
+      for (String column : requiredColumns) {
+        String normalized = normalizeName(column);
+        if (normalized == null) {
+          continue;
+        }
+        Long columnId = columnIdsByName == null ? null : columnIdsByName.get(normalized);
+        if (columnId != null && columnId > 0) {
+          if (seenColumnIds.add(columnId)) {
+            selectors.add(new ProjectionSelector(columnId, null));
+          }
+        } else if (seenColumnNames.add(normalized)) {
+          selectors.add(new ProjectionSelector(null, normalized));
+        }
+      }
+    }
+    return selectors;
+  }
+
+  private static String normalizeName(String value) {
+    if (value == null) {
+      return null;
+    }
+    String normalized = value.trim().toLowerCase();
+    return normalized.isEmpty() ? null : normalized;
+  }
+
+  private record ProjectionSelector(Long columnId, String columnName) {}
 }
