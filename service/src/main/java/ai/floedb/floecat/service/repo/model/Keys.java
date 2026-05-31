@@ -502,6 +502,88 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/target-stats/", encode(tid), encode(tbid));
   }
 
+  public static String snapshotTargetStatsManifestPointer(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets-active";
+  }
+
+  public static String snapshotTargetStatsGenerationRootPointer(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "target-generations/";
+  }
+
+  public static String snapshotTargetStatsGenerationDirectoryPointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    String generation = req("generation_id", generationId);
+    return snapshotTargetStatsGenerationRootPointer(accountId, tableId, snapshotId)
+        + encode(generation)
+        + "/targets/";
+  }
+
+  public static String snapshotTargetStatsGenerationPointer(
+      String accountId, String tableId, long snapshotId, String generationId, String targetId) {
+    String target = req("target_id", targetId);
+    return snapshotTargetStatsGenerationDirectoryPointer(
+            accountId, tableId, snapshotId, generationId)
+        + encode(target);
+  }
+
+  public static String snapshotTargetStatsGenerationPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationDirectoryPointer(
+        accountId, tableId, snapshotId, generationId);
+  }
+
+  public static String snapshotTargetColumnStatsGenerationPrefix(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      String columnTargetIdPrefix) {
+    String prefix = req("column_target_id_prefix", columnTargetIdPrefix);
+    return snapshotTargetStatsGenerationDirectoryPointer(
+            accountId, tableId, snapshotId, generationId)
+        + encode(prefix);
+  }
+
+  public static String snapshotTargetStatsManifestBlobUri(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String generation = req("generation_id", generationId);
+    return String.format(
+        "/accounts/%s/tables/%s/target-stats/%019d/manifests/%s.pb",
+        encode(tid), encode(tbid), sid, encode(generation));
+  }
+
+  public static String snapshotTargetStatsBlobUri(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      String targetId,
+      String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String generation = req("generation_id", generationId);
+    String target = req("target_id", targetId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/target-stats/%019d/generations/%s/%s/%s.pb",
+        encode(tid), encode(tbid), sid, encode(generation), encode(target), encode(sha));
+  }
+
+  public static String snapshotTargetStatsBlobPrefix(
+      String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return String.format(
+        "/accounts/%s/tables/%s/target-stats/%019d/", encode(tid), encode(tbid), sid);
+  }
+
   public static String snapshotTargetStatsPrefix(
       String accountId, String tableId, long snapshotId) {
     return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId);

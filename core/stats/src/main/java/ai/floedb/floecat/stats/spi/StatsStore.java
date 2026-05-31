@@ -74,6 +74,21 @@ public interface StatsStore {
   boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId);
 
   /**
+   * Replaces all target stats for a table snapshot.
+   *
+   * <p>Implementations should publish the replacement set atomically when the backing store
+   * supports multi-pointer CAS. The default implementation preserves correctness for simple test
+   * stores.
+   */
+  default void replaceAllStatsForSnapshot(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    deleteAllStatsForSnapshot(tableId, snapshotId);
+    for (TargetStatsRecord record : records == null ? List.<TargetStatsRecord>of() : records) {
+      putTargetStats(record);
+    }
+  }
+
+  /**
    * Returns mutation metadata for an exact table/snapshot/target key.
    *
    * <p>{@code nowTs} is used to stamp metadata when no record exists yet.

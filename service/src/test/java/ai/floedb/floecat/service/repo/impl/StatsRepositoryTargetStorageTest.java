@@ -387,6 +387,48 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void replaceAllStatsForSnapshotSwapsAndRemovesSnapshotStats() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9192L;
+    String oldFilePath = "s3://bucket/path/old.parquet";
+
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(1L).build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(oldFilePath).setRowCount(11L).build(),
+            null));
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID,
+                snapshotId,
+                TableValueStats.newBuilder().setRowCount(27L).setDataFileCount(0L).build(),
+                null)));
+
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(1);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .isPresent()
+        .get()
+        .extracting(record -> record.getTable().getRowCount())
+        .isEqualTo(27L);
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(oldFilePath)))
+        .isEmpty();
+  }
+
+  @Test
   void puttingStatsDoesNotAdvanceTablePointerVersion() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
