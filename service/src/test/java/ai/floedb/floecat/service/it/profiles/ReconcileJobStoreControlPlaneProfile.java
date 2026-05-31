@@ -22,6 +22,7 @@ public class ReconcileJobStoreControlPlaneProfile implements QuarkusTestProfile 
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
+        "quarkus.scheduler.enabled", "false",
         "floecat.reconciler.worker.mode", "local",
         "reconciler.max-parallelism", "0");
   }
