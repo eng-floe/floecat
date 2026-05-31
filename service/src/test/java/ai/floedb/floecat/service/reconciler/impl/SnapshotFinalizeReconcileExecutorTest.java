@@ -820,7 +820,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void executeIngestsFileGroupStatsBlobsBeforeCoverageValidation() {
+  void executeRollsUpAggregatesFromLoadedFileGroupStats() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
@@ -964,6 +964,248 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow()
             .getTable()
             .getRowCount());
+  }
+
+  @Test
+  void executeFullRescanReplacesExistingFileStatsAfterValidation() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+
+    String filePath = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
+    ReconcileScope scope = captureScope();
+    ReconcileSnapshotTask snapshotTask = persistedSnapshotPlan(snapshotPlanBlobStore, scope, group);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String childJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        true,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    statsStore.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            tableId,
+            SNAPSHOT_ID,
+            FileTargetStats.newBuilder()
+                .setFilePath(filePath)
+                .setRowCount(1L)
+                .setSizeBytes(32L)
+                .build(),
+            null));
+
+    String fileStatsBlobUri = "/accounts/acct/reconcile/jobs/job-child-1/file-group-stats/1.json";
+    FILE_GROUP_STATS_RECORDS
+        .get(snapshotPlanBlobStore)
+        .put(
+            fileStatsBlobUri,
+            List.of(
+                TargetStatsRecords.fileRecord(
+                    tableId,
+                    SNAPSHOT_ID,
+                    FileTargetStats.newBuilder()
+                        .setFilePath(filePath)
+                        .setRowCount(10L)
+                        .setSizeBytes(128L)
+                        .build(),
+                    null)));
+    store.persistFileGroupResult(
+        childJobId,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(List.of(ReconcileFileResult.succeeded(filePath, 0L))));
+    ReconcileJobStore.LeasedJob childLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertTrue(result.ok());
+    assertEquals(
+        10L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.fileTarget(filePath))
+            .orElseThrow()
+            .getFile()
+            .getRowCount());
+  }
+
+  @Test
+  void executeFullRescanCoverageFailurePreservesExistingFileStats() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.jobs = store;
+    executor.statsStore = statsStore;
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            List.of("s3://bucket/data/file-1.parquet", "s3://bucket/data/file-2.parquet"));
+    ReconcileScope scope = captureScope();
+    ReconcileSnapshotTask snapshotTask = persistedSnapshotPlan(snapshotPlanBlobStore, scope, group);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String childJobId =
+        store.enqueueFileGroupExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        true,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    String existingFilePath = "s3://bucket/data/file-1.parquet";
+    statsStore.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            tableId,
+            SNAPSHOT_ID,
+            FileTargetStats.newBuilder()
+                .setFilePath(existingFilePath)
+                .setRowCount(5L)
+                .setSizeBytes(64L)
+                .build(),
+            null));
+
+    String fileStatsBlobUri = "/accounts/acct/reconcile/jobs/job-child-1/file-group-stats/1.json";
+    FILE_GROUP_STATS_RECORDS
+        .get(snapshotPlanBlobStore)
+        .put(
+            fileStatsBlobUri,
+            List.of(
+                TargetStatsRecords.fileRecord(
+                    tableId,
+                    SNAPSHOT_ID,
+                    FileTargetStats.newBuilder()
+                        .setFilePath(existingFilePath)
+                        .setRowCount(10L)
+                        .setSizeBytes(128L)
+                        .build(),
+                    null)));
+    store.persistFileGroupResult(
+        childJobId,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(
+                List.of(
+                    ReconcileFileResult.succeeded(existingFilePath, 0L),
+                    ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
+    ReconcileJobStore.LeasedJob childLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+            .orElseThrow();
+    store.markSucceeded(
+        childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertFalse(result.ok());
+    assertTrue(result.message.contains("coverage mismatch"));
+    assertEquals(
+        5L,
+        statsStore
+            .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.fileTarget(existingFilePath))
+            .orElseThrow()
+            .getFile()
+            .getRowCount());
+    assertTrue(
+        statsStore
+            .getTargetStats(
+                tableId,
+                SNAPSHOT_ID,
+                StatsTargetIdentity.fileTarget("s3://bucket/data/file-2.parquet"))
+            .isEmpty());
   }
 
   @Test
