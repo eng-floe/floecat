@@ -774,6 +774,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   toProtoDefaultColumnScope(
                                       payload.capturePolicy().defaultColumnScope()))
                               .setMaxDefaultColumns(payload.capturePolicy().maxDefaultColumns())
+                              .setMaxCost(toProtoCostHint(payload.capturePolicy().maxCost()))
                               .build());
               if (payload.sourceConnector() != null) {
                 executionBuilder.setSourceConnector(payload.sourceConnector());
@@ -1162,6 +1163,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               .setDefaultColumnScope(
                   toProtoDefaultColumnScope(effectiveScope.capturePolicy().defaultColumnScope()))
               .setMaxDefaultColumns(effectiveScope.capturePolicy().maxDefaultColumns())
+              .setMaxCost(toProtoCostHint(effectiveScope.capturePolicy().maxCost()))
               .build());
     }
     if (effectiveScope.hasSnapshotSelection()) {
