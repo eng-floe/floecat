@@ -829,6 +829,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         if (agingTracker.recordIfEligible(jobId, ageMs, jobCls, now)) {
           StatsPriorityClass promotedCls = jobCls.promote();
           if (promotedCls != jobCls) {
+            // Remove from the current class bucket BEFORE re-enqueueing at the promoted class.
+            // Without this, the jobId would exist in both buckets: P2 (promoted) and P3 (stale).
+            // The stale P3 entry would inflate sizeByClass(P3) indefinitely, causing spurious
+            // band escalation and incorrect admission decisions.
+            readyQueue.remove(jobId);
             readyQueue.enqueue(jobId, promotedCls, jobScore);
             continue; // no lane or snapshot lease acquired yet — safe to skip
           }
