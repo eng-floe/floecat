@@ -82,7 +82,7 @@ class StatsOrchestratorTest {
     assertThat(result.stats()).contains(record);
     verify(jobStore, never())
         .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
-    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
+    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any(), any());
   }
 
   // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ class StatsOrchestratorTest {
         .thenReturn(Optional.empty()) // first read: miss
         .thenReturn(Optional.of(record)); // second read after capture: hit
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+    when(syncCapture.capture(anyString(), anyString(), any(), any(), any()))
         .thenReturn(StatsSyncOutcome.CAPTURED);
 
     StatsResolutionResult result = orchestrator.resolve(request);
@@ -131,7 +131,7 @@ class StatsOrchestratorTest {
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.empty());
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+    when(syncCapture.capture(anyString(), anyString(), any(), any(), any()))
         .thenReturn(StatsSyncOutcome.TIMEOUT);
     when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");
@@ -159,7 +159,7 @@ class StatsOrchestratorTest {
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.empty());
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+    when(syncCapture.capture(anyString(), anyString(), any(), any(), any()))
         .thenReturn(StatsSyncOutcome.FAILED);
     when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");
@@ -538,7 +538,7 @@ class StatsOrchestratorTest {
             .build();
     when(statsStore.getTargetStats(any(), Mockito.anyLong(), any())).thenReturn(Optional.empty());
     when(tableRepository.getById(any())).thenReturn(Optional.of(upstreamTable()));
-    when(syncCapture.capture(anyString(), anyString(), any(), any()))
+    when(syncCapture.capture(anyString(), anyString(), any(), any(), any()))
         .thenReturn(StatsSyncOutcome.TIMEOUT);
     when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");

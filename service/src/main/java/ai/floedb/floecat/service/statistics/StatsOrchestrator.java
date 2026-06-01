@@ -251,9 +251,20 @@ public class StatsOrchestrator {
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
+      // Build P0 execution policy so the sync job is dispatched ahead of any async backlog.
+      ReconcileExecutionPolicy p0Policy =
+          ReconcileExecutionPolicy.of(
+              StatsPriorityClass.P0_SYNC,
+              request.tableId().getAccountId() + ":" + request.tableId().getId(),
+              java.util.Map.of("enqueue_reason", "sync_capture"),
+              0L);
 
       return statsSyncCapture.capture(
-          request.tableId().getAccountId(), connectorId, scope, request.latencyBudget().get());
+          request.tableId().getAccountId(),
+          connectorId,
+          scope,
+          request.latencyBudget().get(),
+          p0Policy);
     } catch (RuntimeException e) {
       LOG.warnf(e, "stats_sync_capture attempt threw for table=%s", request.tableId());
       return StatsSyncOutcome.FAILED;
