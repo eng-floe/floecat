@@ -850,12 +850,6 @@ public class LeasedPlannerWorkerService {
   }
 
   /**
-   * Returns a copy of the parent policy's attributes with scheduler-internal keys stripped. {@code
-   * policy_deferred} is an admission-control decision specific to the parent job's enqueue context
-   * — child jobs must be evaluated independently and must not inherit a stale deferral flag from
-   * their parent.
-   */
-  /**
    * Records the snapshot delta signal. At planning time, the exact row-count delta is not available
    * without a snapshot-store lookup, so we register the snapshot with an unknown delta ({@link
    * java.util.OptionalLong#empty()}). This still allows the scoring path to distinguish "seen,
@@ -874,6 +868,12 @@ public class LeasedPlannerWorkerService {
     }
   }
 
+  /**
+   * Returns a copy of the parent policy's attributes with scheduler-internal keys stripped. {@code
+   * policy_deferred} is an admission-control decision specific to the parent job's enqueue context
+   * — child jobs must be evaluated independently and must not inherit a stale deferral flag from
+   * their parent.
+   */
   private static java.util.Map<String, String> strippedChildAttributes(
       ReconcileExecutionPolicy parentPolicy) {
     if (parentPolicy == null || parentPolicy.attributes().isEmpty()) {

@@ -298,7 +298,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                   ReadyIndexType.BY_PRIORITY, String.valueOf(cls.order))));
     }
 
-    // 3. Legacy secondary indexes and GLOBAL fallback (handles jobs enqueued before BY_PRIORITY).
+    // 4. Legacy secondary indexes and GLOBAL fallback (handles jobs enqueued before BY_PRIORITY).
     if (!effective.lanes.isEmpty() && !effective.lanes.contains(LeaseRequest.anyLaneToken())) {
       effective.lanes.stream()
           .sorted()
