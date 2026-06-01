@@ -230,6 +230,27 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+
+    /**
+     * Distribution of priority scores emitted by the active {@link
+     * ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy}. Tag: {@code
+     * priority_class}. Range: [0, 1000].
+     */
+    public static final MetricId SCORING_SCORE_DIST =
+        new MetricId(
+            "floecat.service.reconcile.scoring.score", MetricType.SUMMARY, "", CONTRACT, "service");
+
+    /**
+     * Constant-1 gauge whose {@code profile_name} tag reports the active scheduler profile. Useful
+     * for dashboards and alerting rules that need to know which profile is loaded.
+     */
+    public static final MetricId POLICY_PROFILE =
+        new MetricId(
+            "floecat.service.reconcile.scheduler.profile",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {
