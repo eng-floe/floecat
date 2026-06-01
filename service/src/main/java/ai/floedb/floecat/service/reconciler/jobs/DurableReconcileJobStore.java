@@ -82,6 +82,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.Config;
@@ -111,6 +112,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
+  private static final long DEFAULT_QUEUE_STATS_CACHE_MS = 1_000L;
   private static final int CAS_MAX = 16;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -154,6 +156,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private long leaseRenewGraceMs = DEFAULT_LEASE_RENEW_GRACE_MS;
   private int readyScanLimit = DEFAULT_READY_SCAN_LIMIT;
+  private long queueStatsCacheMs = DEFAULT_QUEUE_STATS_CACHE_MS;
+  private final ReentrantLock queueStatsRefreshLock = new ReentrantLock();
+  private volatile QueueStats cachedQueueStats;
+  private volatile long cachedQueueStatsAtMs;
 
   private ReconcilePayloadStore payloads() {
     if (payloadStore == null) {
@@ -482,6 +488,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.ready-scan-limit", Integer.class)
                 .orElse(DEFAULT_READY_SCAN_LIMIT));
+    queueStatsCacheMs =
+        Math.max(
+            100L,
+            config
+                .getOptionalValue("floecat.reconciler.job-store.queue-stats-cache-ms", Long.class)
+                .orElse(DEFAULT_QUEUE_STATS_CACHE_MS));
   }
 
   @Override
@@ -666,6 +678,28 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public QueueStats queueStats() {
+    long now = System.currentTimeMillis();
+    QueueStats cached = cachedQueueStats;
+    if (cached != null && (now - cachedQueueStatsAtMs) < queueStatsCacheMs) {
+      return cached;
+    }
+    queueStatsRefreshLock.lock();
+    try {
+      long refreshNow = System.currentTimeMillis();
+      QueueStats refreshedCached = cachedQueueStats;
+      if (refreshedCached != null && (refreshNow - cachedQueueStatsAtMs) < queueStatsCacheMs) {
+        return refreshedCached;
+      }
+      QueueStats fresh = computeQueueStats(refreshNow);
+      cachedQueueStats = fresh;
+      cachedQueueStatsAtMs = refreshNow;
+      return fresh;
+    } finally {
+      queueStatsRefreshLock.unlock();
+    }
+  }
+
+  private QueueStats computeQueueStats(long nowMs) {
     long queuedCount = Math.max(0, jobIndexStore().countStoredJobsInState("JS_QUEUED"));
     long waitingCount = Math.max(0, jobIndexStore().countStoredJobsInState("JS_WAITING"));
     long queued = queuedCount + waitingCount;
@@ -681,7 +715,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     java.util.EnumMap<StatsPriorityClass, Long> queuedByClass =
         new java.util.EnumMap<>(StatsPriorityClass.class);
     long minP0DueAtMs = Long.MAX_VALUE;
-    long nowMs = System.currentTimeMillis();
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
       var slice =
           new ReconcileReadyQueueBackend.ReadyQueueSlice(
@@ -1357,10 +1390,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private void onHotPath(Runnable runnable) {
     runnable.run();
+    invalidateQueueStatsCache();
   }
 
   private <T> T onHotPath(Supplier<T> supplier) {
-    return supplier.get();
+    T result = supplier.get();
+    invalidateQueueStatsCache();
+    return result;
+  }
+
+  private void invalidateQueueStatsCache() {
+    cachedQueueStats = null;
+    cachedQueueStatsAtMs = 0L;
   }
 
   private Optional<StoredEnvelope> loadByAnyAccount(String jobId) {
@@ -1998,6 +2039,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         errors,
         snapshotsProcessed,
         statsProcessed)) {
+      invalidateQueueStatsCache();
       return true;
     }
     return onHotPath(
