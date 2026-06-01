@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -128,6 +129,17 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
               ? ""
               : Keys.reconcileReadyByJobKindPointerByDue(
                   dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
+      case BY_PRIORITY -> {
+        if (normalizedFilterValue.isBlank()) {
+          yield "";
+        }
+        try {
+          yield Keys.reconcileReadyByPriorityPointerByDue(
+              Integer.parseInt(normalizedFilterValue), dueAtMs, record.accountId, record.jobId);
+        } catch (NumberFormatException ignored) {
+          yield "";
+        }
+      }
     };
   }
 
@@ -139,6 +151,13 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
     List<String> readyKeys = new ArrayList<>();
     readyKeys.add(readyPointerKeyFor(record, dueAtMs));
+    // BY_PRIORITY index: always added so the lease scanner can dispatch by priority class order.
+    String priorityReadyKey =
+        Keys.reconcileReadyByPriorityPointerByDue(
+            record.priorityClass().order, dueAtMs, record.accountId, record.jobId);
+    if (!priorityReadyKey.isBlank()) {
+      readyKeys.add(priorityReadyKey);
+    }
     String executionClassReadyKey =
         readyPointerKeyFor(
             record,
@@ -244,6 +263,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     List<ReadyIndexSelection> selections = new ArrayList<>();
 
+    // 1. Pinned-executor slices first — jobs pinned to this executor are highest-priority for it.
     List<String> executorIds =
         effective.executorIds.stream()
             .sorted()
@@ -256,6 +276,16 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                   ReadyIndexType.PINNED_EXECUTOR, executorId)));
     }
 
+    // 2. BY_PRIORITY slices in class order (P0→P1→P2→P3) — ensures high-priority jobs are always
+    //    dispatched before lower-priority ones regardless of enqueue time.
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      selections.add(
+          new ReadyIndexSelection(
+              new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                  ReadyIndexType.BY_PRIORITY, String.valueOf(cls.order))));
+    }
+
+    // 3. Legacy secondary indexes and GLOBAL fallback (handles jobs enqueued before BY_PRIORITY).
     if (!effective.lanes.isEmpty() && !effective.lanes.contains(LeaseRequest.anyLaneToken())) {
       effective.lanes.stream()
           .sorted()
@@ -343,6 +373,8 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       case EXECUTION_LANE -> candidate.filterValue().equals(policy.lane());
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
+      case BY_PRIORITY ->
+          candidate.filterValue().equals(String.valueOf(record.priorityClass().order));
     };
   }
 

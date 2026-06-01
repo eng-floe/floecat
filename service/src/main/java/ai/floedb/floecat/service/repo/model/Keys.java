@@ -1178,6 +1178,38 @@ public final class Keys {
         reconcileReadyByJobKindPointerPrefix(jobKind), due, encode(tid), encode(jid));
   }
 
+  // ---------------------------------------------------------------------------
+  // Ready queue: by-priority index (class-ordered dispatching)
+  // ---------------------------------------------------------------------------
+
+  public static String reconcileReadyByPriorityPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/ready/by-priority/";
+  }
+
+  /**
+   * Prefix for all ready pointers in a specific priority class.
+   *
+   * @param priorityOrder the {@link ai.floedb.floecat.reconciler.jobs.StatsPriorityClass#order}
+   *     value (0–3). Lower order = higher priority, sorts first in lexicographic scan.
+   */
+  public static String reconcileReadyByPriorityPointerPrefix(int priorityOrder) {
+    return reconcileReadyByPriorityPointerPrefix() + priorityOrder + "/";
+  }
+
+  /**
+   * Ready-queue pointer key for the priority index. Lexicographic order within a priority class is
+   * by {@code dueAtMs} ascending, so the earliest-due job is dispatched first.
+   */
+  public static String reconcileReadyByPriorityPointerByDue(
+      int priorityOrder, long dueAtMs, String accountId, String jobId) {
+    long due = reqNonNegative("due_at_ms", dueAtMs);
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "%s%019d/%s/%s",
+        reconcileReadyByPriorityPointerPrefix(priorityOrder), due, encode(tid), encode(jid));
+  }
+
   public static String reconcileDedupePointer(String accountId, String dedupeKeyHash) {
     String tid = req("account_id", accountId);
     String hash = req("dedupe_key_hash", dedupeKeyHash);

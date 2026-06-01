@@ -141,6 +141,17 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
               ? ""
               : Keys.reconcileReadyByJobKindPointerByDue(
                   dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
+      case BY_PRIORITY -> {
+        if (normalizedFilterValue.isBlank()) {
+          yield "";
+        }
+        try {
+          yield Keys.reconcileReadyByPriorityPointerByDue(
+              Integer.parseInt(normalizedFilterValue), dueAtMs, record.accountId, record.jobId);
+        } catch (NumberFormatException ignored) {
+          yield "";
+        }
+      }
     };
   }
 
@@ -348,6 +359,8 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       case EXECUTION_LANE -> candidate.filterValue().equals(policy.lane());
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
+      case BY_PRIORITY ->
+          candidate.filterValue().equals(String.valueOf(record.priorityClass().order));
     };
   }
 

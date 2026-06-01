@@ -1191,6 +1191,17 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
               ? ""
               : Keys.reconcileReadyByJobKindPointerByDue(
                   dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
+      case BY_PRIORITY -> {
+        if (normalizedFilterValue.isBlank()) {
+          yield "";
+        }
+        try {
+          yield Keys.reconcileReadyByPriorityPointerByDue(
+              Integer.parseInt(normalizedFilterValue), dueAtMs, record.accountId, record.jobId);
+        } catch (NumberFormatException ignored) {
+          yield "";
+        }
+      }
     };
   }
 
