@@ -20,6 +20,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import java.util.Map;
 
 public class StoredReconcileJob {
@@ -33,6 +34,13 @@ public class StoredReconcileJob {
   public String executionClass;
   public String executionLane;
   public Map<String, String> executionAttributes = Map.of();
+
+  /** Serialised {@link StatsPriorityClass#name()}. Defaults to P3_BACKGROUND when absent. */
+  public String priorityClass;
+
+  /** Priority score within the class (higher = dispatched first). Default 0. */
+  public long priorityScore;
+
   public String pinnedExecutorId;
   public String executorId;
   public String snapshotTaskTableId;
@@ -101,7 +109,16 @@ public class StoredReconcileJob {
 
   public ReconcileExecutionPolicy executionPolicy() {
     return ReconcileExecutionPolicy.of(
-        ReconcileExecutionClass.fromString(executionClass), executionLane, executionAttributes);
+        ReconcileExecutionClass.fromString(executionClass),
+        executionLane,
+        executionAttributes,
+        StatsPriorityClass.fromString(priorityClass),
+        priorityScore);
+  }
+
+  /** Convenience accessor for the priority class as an enum value. */
+  public StatsPriorityClass priorityClass() {
+    return StatsPriorityClass.fromString(priorityClass);
   }
 
   public String pinnedExecutorId() {
