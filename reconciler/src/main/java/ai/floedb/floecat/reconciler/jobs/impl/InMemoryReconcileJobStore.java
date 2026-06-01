@@ -71,6 +71,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, Long> nextAttemptAtMs = new ConcurrentHashMap<>();
   private final PriorityReadyQueue readyQueue = new PriorityReadyQueue();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
+  private final SchedulerBandState bandState = new SchedulerBandState();
+  private final AgingPromotionTracker agingTracker = new AgingPromotionTracker();
+  private final java.util.EnumMap<StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+      admissionDeferredByClass = buildAdmissionDeferredMap();
   private volatile int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private volatile long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
   private volatile long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
@@ -104,6 +108,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             1_000L,
             readLong(
                 "floecat.reconciler.job-store.reclaim-interval-ms", DEFAULT_RECLAIM_INTERVAL_MS));
+  }
+
+  private static java.util.EnumMap<StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+      buildAdmissionDeferredMap() {
+    java.util.EnumMap<StatsPriorityClass, java.util.concurrent.atomic.AtomicLong> map =
+        new java.util.EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      map.put(cls, new java.util.concurrent.atomic.AtomicLong());
+    }
+    return map;
   }
 
   private int readInt(String key, int defaultValue) {
@@ -195,7 +209,17 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     long now = System.currentTimeMillis();
     createdAtMs.put(id, now);
     attemptsByJobId.put(id, 0);
-    nextAttemptAtMs.put(id, now);
+    // Apply store-level admission deferral on top of the profile-layer decision.
+    boolean policyDeferred =
+        SchedulerStoreHelpers.ATTR_POLICY_DEFERRED.equals(
+            effectivePolicy.attributes().get(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED));
+    long deferMs =
+        SchedulerStoreHelpers.admissionDeferMs(
+            effectivePolicy.priorityClass(), bandState.current(), policyDeferred);
+    if (deferMs > 0L) {
+      admissionDeferredByClass.get(effectivePolicy.priorityClass()).incrementAndGet();
+    }
+    nextAttemptAtMs.put(id, now + deferMs);
     dedupeKeysByJobId.put(id, dedupeKey);
     activeJobIdByDedupeKey.put(dedupeKey, id);
     laneKeysByJobId.put(
@@ -557,22 +581,55 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         default -> {}
       }
     }
-    // Populate per-class ready-queue counts from PriorityReadyQueue.
-    java.util.EnumMap<StatsPriorityClass, Long> queuedByClass =
+    // Populate per-class ready-queue counts and compute authoritative health band.
+    java.util.Map<StatsPriorityClass, Long> queuedByClass = readyQueue.sizeByAllClasses();
+    long now = System.currentTimeMillis();
+    long oldestP0AgeMs = computeOldestP0AgeMs(queuedByClass, now);
+    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, oldestP0AgeMs);
+
+    // Snapshot admission-deferred counters.
+    java.util.EnumMap<StatsPriorityClass, Long> deferredSnapshot =
         new java.util.EnumMap<>(StatsPriorityClass.class);
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
-      queuedByClass.put(cls, readyQueue.sizeByClass(cls));
+      deferredSnapshot.put(cls, admissionDeferredByClass.get(cls).get());
     }
+
     return new QueueStats(
         queued,
         running,
         cancelling,
         oldestQueued,
         queuedByClass,
-        SchedulerHealthBand.GREEN, // health band wired in Phase 2
-        0L,
-        java.util.Map.of(),
+        band,
+        agingTracker.totalPromotions(),
+        deferredSnapshot,
         java.util.Map.of());
+  }
+
+  /**
+   * Estimates the age of the oldest P0 job in the queue. Used by {@link SchedulerBandState} to
+   * determine if RED band should be triggered. Returns 0 when no P0 jobs are queued.
+   */
+  private long computeOldestP0AgeMs(
+      java.util.Map<StatsPriorityClass, Long> classSizes, long nowMs) {
+    if (classSizes.getOrDefault(StatsPriorityClass.P0_SYNC, 0L) == 0L) {
+      return 0L;
+    }
+    // Scan jobs to find the oldest P0 queued job.
+    long oldest = 0L;
+    for (ReconcileJob job : jobs.values()) {
+      if (job == null
+          || !"JS_QUEUED".equals(job.state)
+          || job.executionPolicy == null
+          || job.executionPolicy.priorityClass() != StatsPriorityClass.P0_SYNC) {
+        continue;
+      }
+      long created = createdAtMs.getOrDefault(job.jobId, 0L);
+      if (created > 0L && (oldest == 0L || created < oldest)) {
+        oldest = created;
+      }
+    }
+    return oldest > 0L ? Math.max(0L, nowMs - oldest) : 0L;
   }
 
   @Override
@@ -719,6 +776,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     reclaimExpiredLeasesIfDue(now);
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
 
+    // Update health band and clean up aging side map on each lease call.
+    java.util.Map<StatsPriorityClass, Long> classSizes = readyQueue.sizeByAllClasses();
+    long oldestP0AgeMs = computeOldestP0AgeMs(classSizes, now);
+    bandState.maybeEscalate(now, classSizes, oldestP0AgeMs);
+    bandState.maybeClearRedOnP0Drain(classSizes);
+    agingTracker.cleanupExpired(now);
+
     // Iterate priority classes in order (P0 → P1 → P2 → P3). Within each class, jobs are
     // dispatched highest-score-first. If no job can be leased in a class we fall through to
     // the next — a lower-priority job may be dispatched while a higher-priority job is
@@ -769,6 +833,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           readyQueue.enqueue(jobId, jobCls, jobScore);
           continue;
         }
+
+        // Record starvation-aging promotion if the job has waited past its threshold.
+        long ageMs = now - createdAtMs.getOrDefault(jobId, now);
+        agingTracker.recordIfEligible(jobId, ageMs, jobCls, now);
 
         if (leased.add(jobId)) {
           String leaseEpoch = UUID.randomUUID().toString();

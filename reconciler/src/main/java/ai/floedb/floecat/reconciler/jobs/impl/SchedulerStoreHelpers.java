@@ -40,25 +40,25 @@ import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
  * pluggability and testability); the store layer adds jitter and concrete delay values that are
  * implementation details of the queue store. Do not consolidate them without updating both sides.
  */
-final class SchedulerStoreHelpers {
+public final class SchedulerStoreHelpers {
 
   /** Concrete deferral delay applied when a job's admission is deferred. */
-  static final long DEFER_DELAY_MS = 5_000L;
+  public static final long DEFER_DELAY_MS = 5_000L;
 
   /** P3 jobs older than this are eligible for starvation-aging promotion to P2. */
-  static final long P3_AGING_THRESHOLD_MS = 300_000L; // 5 min
+  public static final long P3_AGING_THRESHOLD_MS = 300_000L; // 5 min
 
   /** P2 jobs older than this are eligible for starvation-aging promotion to P1. */
-  static final long P2_AGING_THRESHOLD_MS = 120_000L; // 2 min
+  public static final long P2_AGING_THRESHOLD_MS = 120_000L; // 2 min
 
   /** A promoted job is not re-promoted within this window. */
-  static final long AGING_COOLDOWN_MS = 60_000L; // 1 min
+  public static final long AGING_COOLDOWN_MS = 60_000L; // 1 min
 
   /**
    * Tag written to {@link ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy#attributes}
    * when the orchestrator-layer admission policy returns DEFER.
    */
-  static final String ATTR_POLICY_DEFERRED = "policy_deferred";
+  public static final String ATTR_POLICY_DEFERRED = "policy_deferred";
 
   private SchedulerStoreHelpers() {}
 
@@ -69,7 +69,7 @@ final class SchedulerStoreHelpers {
    * <p>P0 and P1 are always admitted (returns 0). P3 under YELLOW is admitted with 50% probability
    * (probabilistic jitter). P2 under RED and P3 under ORANGE/RED are always deferred.
    */
-  static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
+  public static long admissionDeferMs(StatsPriorityClass cls, SchedulerHealthBand band) {
     return admissionDeferMs(cls, band, false);
   }
 
@@ -78,7 +78,7 @@ final class SchedulerStoreHelpers {
    * When {@code policyDeferred} is {@code true}, P3 is deferred in YELLOW regardless of the
    * probabilistic gate.
    */
-  static long admissionDeferMs(
+  public static long admissionDeferMs(
       StatsPriorityClass cls, SchedulerHealthBand band, boolean policyDeferred) {
     if (cls == null
         || cls == StatsPriorityClass.P0_SYNC
@@ -110,7 +110,7 @@ final class SchedulerStoreHelpers {
    *
    * <p>P0 and P1 are never promoted (returns {@link Long#MAX_VALUE}).
    */
-  static long agingThresholdMs(StatsPriorityClass cls) {
+  public static long agingThresholdMs(StatsPriorityClass cls) {
     if (cls == null) {
       return Long.MAX_VALUE;
     }

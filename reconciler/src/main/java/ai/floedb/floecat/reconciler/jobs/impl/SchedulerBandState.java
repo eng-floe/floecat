@@ -42,26 +42,26 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>All methods are safe for concurrent callers. {@link #maybeEscalate} uses a compare-and-swap on
  * {@link #lastEscalateMs} to enforce the rate limit without blocking.
  */
-final class SchedulerBandState {
+public final class SchedulerBandState {
 
   /** P0 job age above which the band escalates to RED immediately. */
-  static final long P0_RED_BUDGET_MS = 1_000L;
+  public static final long P0_RED_BUDGET_MS = 1_000L;
 
   /** P2 queue depth above which the band escalates to at least ORANGE. */
-  static final long P2_ORANGE_THRESHOLD = 200L;
+  public static final long P2_ORANGE_THRESHOLD = 200L;
 
   /** P3 queue depth above which the band escalates to at least YELLOW. */
-  static final long P3_YELLOW_THRESHOLD = 500L;
+  public static final long P3_YELLOW_THRESHOLD = 500L;
 
   /** Minimum interval between {@link #maybeEscalate} evaluations (avoids hot-path contention). */
-  static final long BAND_REFRESH_INTERVAL_MS = 1_000L;
+  public static final long BAND_REFRESH_INTERVAL_MS = 1_000L;
 
   private final AtomicReference<SchedulerHealthBand> current =
       new AtomicReference<>(SchedulerHealthBand.GREEN);
   private final AtomicLong lastEscalateMs = new AtomicLong(0L);
 
   /** Returns the current health band. O(1), non-blocking. */
-  SchedulerHealthBand current() {
+  public SchedulerHealthBand current() {
     return current.get();
   }
 
@@ -70,7 +70,7 @@ final class SchedulerBandState {
    * band; escalates if any threshold is exceeded. Never downgrades — downgrade happens only in
    * {@link #computeAndSet}. Returns the current band after the check.
    */
-  SchedulerHealthBand maybeEscalate(
+  public SchedulerHealthBand maybeEscalate(
       long nowMs, Map<StatsPriorityClass, Long> queuedByClass, long oldestP0AgeMs) {
     // Rate-limit: only run the full check once per BAND_REFRESH_INTERVAL_MS.
     long last = lastEscalateMs.get();
@@ -91,7 +91,7 @@ final class SchedulerBandState {
    * {@code leaseNext()} invocation without rate-limiting so that P0 drain is reflected without
    * waiting for the next {@link #maybeEscalate} tick.
    */
-  void maybeClearRedOnP0Drain(Map<StatsPriorityClass, Long> queuedByClass) {
+  public void maybeClearRedOnP0Drain(Map<StatsPriorityClass, Long> queuedByClass) {
     if (current.get() != SchedulerHealthBand.RED) {
       return;
     }
@@ -105,7 +105,7 @@ final class SchedulerBandState {
    * Authoritative band computation called from {@code queueStats()}. Both escalates and downgrades,
    * and updates the stored band. Returns the new band.
    */
-  SchedulerHealthBand computeAndSet(
+  public SchedulerHealthBand computeAndSet(
       Map<StatsPriorityClass, Long> queuedByClass, long oldestP0AgeMs) {
     SchedulerHealthBand computed = computeBand(queuedByClass, oldestP0AgeMs);
     current.set(computed);

@@ -28,7 +28,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -133,6 +136,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileLeaseBackend leaseBackend;
   @Inject ReconcileJobEnqueuer enqueuer;
   @Inject ReconcileJobCancellationService cancellationService;
+
+  /** Scheduler health-band state for admission control. Initialised in {@link #init()}. */
+  private final SchedulerBandState bandState = new SchedulerBandState();
+
+  private final java.util.concurrent.ConcurrentHashMap<
+          StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+      admissionDeferredByClass = buildDeferredMap();
   @Inject ReconcileJobCompleter completer;
   @Inject ReconcileJobMaintenanceService maintenanceService;
   @Inject ReconcileReadyQueueStore readyQueueStore;
@@ -357,6 +367,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return completer;
   }
 
+  private static java.util.concurrent.ConcurrentHashMap<
+          StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+      buildDeferredMap() {
+    java.util.concurrent.ConcurrentHashMap<
+            StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+        map = new java.util.concurrent.ConcurrentHashMap<>();
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      map.put(cls, new java.util.concurrent.atomic.AtomicLong());
+    }
+    return map;
+  }
+
   private ReconcileJobEnqueuer enqueuer() {
     if (enqueuer == null) {
       enqueuer = new ReconcileJobEnqueuer();
@@ -372,6 +394,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue,
         this::writeFileGroupResultPayloadBlobReference);
+    enqueuer.bindSchedulerState(bandState, admissionDeferredByClass);
     return enqueuer;
   }
 
@@ -652,7 +675,30 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         firstPositiveMin(
             queuedCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_QUEUED") : 0L,
             waitingCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_WAITING") : 0L);
-    return new QueueStats(queued, running, cancelling, oldestQueued);
+
+    // Per-class counts are not tracked by the durable index in Phase 2; populate with empty map.
+    // The band state is updated with empty depths so it stays GREEN unless explicitly escalated.
+    // Admission-deferred counters are maintained as running totals via admissionDeferredByClass.
+    java.util.Map<StatsPriorityClass, Long> emptyByClass = java.util.Map.of();
+    SchedulerHealthBand band = bandState.computeAndSet(emptyByClass, 0L);
+
+    java.util.EnumMap<StatsPriorityClass, Long> deferredSnapshot =
+        new java.util.EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      java.util.concurrent.atomic.AtomicLong counter = admissionDeferredByClass.get(cls);
+      deferredSnapshot.put(cls, counter != null ? counter.get() : 0L);
+    }
+
+    return new QueueStats(
+        queued,
+        running,
+        cancelling,
+        oldestQueued,
+        emptyByClass,
+        band,
+        0L,
+        deferredSnapshot,
+        java.util.Map.of());
   }
 
   @Override

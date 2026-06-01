@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -110,5 +111,48 @@ class InMemoryStorePriorityDispatchTest {
     var first = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
     assertTrue(first.isPresent());
     assertEquals(p0Id, first.get().jobId, "P0 at score=0 must beat P3 at max score");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admission deferral + health band
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void p3JobDeferredWhenBandIsOrange() {
+    var store = new InMemoryReconcileJobStore();
+    var p2Policy = policyFor(StatsPriorityClass.P2_REPAIR, 0L);
+    // Enqueue enough P2 jobs to push the band to ORANGE.
+    for (int i = 0; i < (int) SchedulerBandState.P2_ORANGE_THRESHOLD + 5; i++) {
+      enqueueJob(store, "conn-" + i, p2Policy);
+    }
+    // Trigger authoritative band computation.
+    var stats = store.queueStats();
+    assertEquals(
+        ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand.ORANGE,
+        stats.healthBand,
+        "Band must be ORANGE when P2 depth exceeds threshold");
+
+    // Enqueue a P3 job under ORANGE — it should be deferred.
+    String p3Id = enqueueJob(store, "conn-p3", policyFor(StatsPriorityClass.P3_BACKGROUND, 0L));
+
+    // The first leased job must be a P2 job, not the deferred P3 job.
+    var lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
+    assertTrue(lease.isPresent(), "A P2 job should be leasable");
+    assertNotEquals(
+        p3Id, lease.get().jobId, "P3 job must not be dispatched before deferral expires");
+  }
+
+  @Test
+  void bandEscalatesToYellowAtP3Threshold() {
+    var store = new InMemoryReconcileJobStore();
+    var p3Policy = policyFor(StatsPriorityClass.P3_BACKGROUND, 0L);
+    for (int i = 0; i < (int) SchedulerBandState.P3_YELLOW_THRESHOLD + 5; i++) {
+      enqueueJob(store, "conn-" + i, p3Policy);
+    }
+    var stats = store.queueStats();
+    assertEquals(
+        ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand.YELLOW,
+        stats.healthBand,
+        "Band must be YELLOW when P3 depth exceeds threshold");
   }
 }

@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>All public methods are thread-safe.
  */
-final class AgingPromotionTracker {
+public final class AgingPromotionTracker {
 
   /**
    * Maps jobId → promotion-expiry-ms. An entry here means the job was recently promoted and should
@@ -52,7 +52,7 @@ final class AgingPromotionTracker {
    * @param nowMs current epoch-ms timestamp
    * @return {@code true} if the promotion was recorded (caller may dispatch at promoted class)
    */
-  boolean recordIfEligible(String jobId, long ageMs, StatsPriorityClass cls, long nowMs) {
+  public boolean recordIfEligible(String jobId, long ageMs, StatsPriorityClass cls, long nowMs) {
     if (ageMs < SchedulerStoreHelpers.agingThresholdMs(cls)) {
       return false; // not old enough
     }
@@ -70,7 +70,7 @@ final class AgingPromotionTracker {
    * Removes expired promotion entries. Intended to be called lazily on each {@code leaseNext()}
    * invocation to prevent the side map from growing without bound.
    */
-  void cleanupExpired(long nowMs) {
+  public void cleanupExpired(long nowMs) {
     promotedJobIds.entrySet().removeIf(e -> nowMs >= e.getValue());
   }
 
@@ -78,7 +78,7 @@ final class AgingPromotionTracker {
    * Returns the total number of aging promotions recorded since this tracker was created. Suitable
    * for delta-emitting a counter metric.
    */
-  long totalPromotions() {
+  public long totalPromotions() {
     return total.get();
   }
 }
