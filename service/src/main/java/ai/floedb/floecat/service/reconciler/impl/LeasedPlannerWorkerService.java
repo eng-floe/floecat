@@ -140,6 +140,10 @@ public class LeasedPlannerWorkerService {
             .count();
     java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
         new java.util.ArrayList<>((int) (plannedTableJobs + plannedViewJobs));
+    // Use childExecutionPolicy() — not effectiveExecutionPolicy() — so scheduler-internal
+    // attributes like policy_deferred are stripped before they reach child jobs. Each child
+    // must be evaluated against the admission policy independently at its own enqueue time.
+    ReconcileExecutionPolicy childPolicy = childExecutionPolicy(lease);
     for (PlannedViewJob viewJob : nullToEmpty(viewJobs)) {
       if (viewJob == null || viewJob.viewTask().isEmpty()) {
         continue;
@@ -156,7 +160,7 @@ public class LeasedPlannerWorkerService {
               viewJob.viewTask(),
               ReconcileSnapshotTask.empty(),
               ReconcileFileGroupTask.empty(),
-              effectiveExecutionPolicy(lease),
+              childPolicy,
               lease.jobId,
               ""));
     }
@@ -176,7 +180,7 @@ public class LeasedPlannerWorkerService {
               ReconcileViewTask.empty(),
               ReconcileSnapshotTask.empty(),
               ReconcileFileGroupTask.empty(),
-              effectiveExecutionPolicy(lease),
+              childPolicy,
               lease.jobId,
               ""));
     }
@@ -803,6 +807,23 @@ public class LeasedPlannerWorkerService {
     return lease == null || lease.executionPolicy == null
         ? ReconcileExecutionPolicy.defaults()
         : lease.executionPolicy;
+  }
+
+  /**
+   * Returns a child execution policy derived from the parent lease, with scheduler-internal
+   * attributes stripped. Used for PLAN_TABLE and PLAN_VIEW children of PLAN_CONNECTOR jobs so that
+   * the parent's {@code policy_deferred} flag is not inherited — each child is evaluated against
+   * the admission policy independently at its own enqueue time.
+   */
+  private static ReconcileExecutionPolicy childExecutionPolicy(ReconcileJobStore.LeasedJob lease) {
+    ReconcileExecutionPolicy parent = effectiveExecutionPolicy(lease);
+    java.util.Map<String, String> stripped = strippedChildAttributes(parent);
+    // If no stripping was needed, reuse the parent instance to avoid allocation.
+    if (stripped == parent.attributes()) {
+      return parent;
+    }
+    return ReconcileExecutionPolicy.of(
+        parent.priorityClass(), parent.lane(), stripped, parent.priorityScore());
   }
 
   /**
