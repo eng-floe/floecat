@@ -210,7 +210,10 @@ public final class ServiceMetrics {
             "service");
 
     /**
-     * Scoring signals that were present in SchedulerSignalIndex at scoring time. Tag: signal_type.
+     * Write-side signal throughput counter: incremented each time a signal value is written to
+     * SchedulerSignalIndex (e.g. on snapshot finalization or coverage recording). Tag: signal_type.
+     * Use to detect write-path failures. For scoring-time availability, see {@link
+     * #SIGNAL_LOOKUP_MISS}.
      */
     public static final MetricId SIGNAL_KNOWN =
         new MetricId(
@@ -221,8 +224,10 @@ public final class ServiceMetrics {
             "service");
 
     /**
-     * Scoring signals that were absent (returned conservative default). Tag: signal_type. A
-     * sustained rate indicates the write path is not running correctly.
+     * Write-side unknown counter: incremented when a signal write carries no real value (e.g. delta
+     * recorded as {@code OptionalLong.empty()} because the planner has no row-count data). Tag:
+     * signal_type. A sustained rate indicates the upstream value source is unavailable. For
+     * scoring-time misses, see {@link #SIGNAL_LOOKUP_MISS}.
      */
     public static final MetricId SIGNAL_UNKNOWN =
         new MetricId(

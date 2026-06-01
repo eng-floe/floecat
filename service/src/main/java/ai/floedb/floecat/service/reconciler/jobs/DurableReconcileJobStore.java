@@ -720,6 +720,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         java.util.Map.of());
   }
 
+  // Note: the durable store's leaseNext() does NOT call bandState.maybeEscalate() or
+  // bandState.maybeClearRedOnP0Drain() on the hot path. Band state is updated exclusively
+  // via the 15-second queueStats() refresh cycle. Because queueStats() always passes
+  // oldestP0AgeMs=0L (P0 age cannot be measured cheaply without reading individual job records),
+  // the RED band is structurally unreachable for the durable store under the current
+  // implementation.
+  // SchedulerBandState.maybeClearRedOnP0Drain() is therefore dead code for this store path.
+  // See the comment in queueStats() for the planned cross-cycle staleness improvement.
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
