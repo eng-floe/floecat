@@ -72,8 +72,29 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       if (leased.isPresent()) {
         return leased;
       }
+      // P0 guard: after attempting the P0 slice with no result, peek to distinguish
+      // "empty P0" (fall-through is fine) from "blocked P0" (preserve executor capacity).
+      // A single-entry head scan is cheap — the index is already in the read path.
+      if (isP0Selection(selection)) {
+        ReadyQueueScanPage peek = readyQueueBackend.scanReadySlice(selection.slice(), 1, "");
+        if (!peek.entries().isEmpty()) {
+          // P0 has ready entries but none were leasable by this executor. Return empty so
+          // the executor retries instead of stealing a slot with lower-priority work.
+          return Optional.empty();
+        }
+      }
     }
     return Optional.empty();
+  }
+
+  /**
+   * Returns {@code true} iff {@code selection} targets the BY_PRIORITY/P0 slice — i.e. the slice
+   * reserved for {@link ai.floedb.floecat.stats.spi.StatsPriorityClass#P0_SYNC} jobs.
+   */
+  private static boolean isP0Selection(ReadyIndexSelection selection) {
+    return selection.slice().indexType() == ReconcileReadyQueueStore.ReadyIndexType.BY_PRIORITY
+        && String.valueOf(ai.floedb.floecat.stats.spi.StatsPriorityClass.P0_SYNC.order)
+            .equals(selection.slice().filterValue());
   }
 
   public boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request) {

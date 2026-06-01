@@ -597,6 +597,35 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       deferredSnapshot.put(cls, admissionDeferredByClass.get(cls).get());
     }
 
+    // Compute per-lane oldest queued job wait time for the top-10 most backlogged lanes.
+    // Iterates laneKeysByJobId × createdAtMs; skips leased and non-queued jobs.
+    java.util.Map<String, Long> laneWaitAccum = new java.util.HashMap<>();
+    for (java.util.Map.Entry<String, String> e : laneKeysByJobId.entrySet()) {
+      String laneJobId = e.getKey();
+      String laneKey = e.getValue();
+      if (laneKey == null || laneKey.isBlank() || leased.contains(laneJobId)) {
+        continue;
+      }
+      ReconcileJob laneJob = jobs.get(laneJobId);
+      if (laneJob == null || !"JS_QUEUED".equals(laneJob.state)) {
+        continue;
+      }
+      long created = createdAtMs.getOrDefault(laneJobId, 0L);
+      if (created > 0L) {
+        laneWaitAccum.merge(laneKey, now - created, Math::max);
+      }
+    }
+    java.util.Map<String, Long> topLaneWaitMs =
+        laneWaitAccum.entrySet().stream()
+            .sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
+            .limit(10)
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    java.util.Map.Entry::getKey,
+                    java.util.Map.Entry::getValue,
+                    (a, b) -> a,
+                    java.util.LinkedHashMap::new));
+
     return new QueueStats(
         queued,
         running,
@@ -606,7 +635,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         band,
         agingTracker.totalPromotions(),
         deferredSnapshot,
-        java.util.Map.of());
+        topLaneWaitMs);
   }
 
   /**
@@ -874,6 +903,14 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         readyQueue.enqueue(candidate.jobId, candidate.priorityClass, candidate.priorityScore);
       }
       if (bestCandidate == null) {
+        // P0 guard: if P0 had ready jobs but none were leasable (all blocked on lane or
+        // snapshot lock), preserve executor capacity rather than dispatching lower-priority
+        // work. The blocked P0 jobs were just re-enqueued above, so sizeByClass reflects
+        // them. Returning empty here causes the caller to retry on the next lease tick.
+        if (cls == StatsPriorityClass.P0_SYNC
+            && readyQueue.sizeByClass(StatsPriorityClass.P0_SYNC) > 0) {
+          return Optional.empty();
+        }
         continue;
       }
       String jobId = bestCandidate.jobId;
