@@ -594,14 +594,20 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       }
     }
     return ReconcileCapturePolicy.of(
-        new ArrayList<>(columns.values()),
-        Set.copyOf(outputs),
-        basePolicy == null
-            ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
-            : basePolicy.defaultColumnScope(),
-        basePolicy == null
-            ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
-            : basePolicy.maxDefaultColumns());
+            new ArrayList<>(columns.values()),
+            Set.copyOf(outputs),
+            basePolicy == null
+                ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+                : basePolicy.defaultColumnScope(),
+            basePolicy == null
+                ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
+                : basePolicy.maxDefaultColumns())
+        // Preserve the cost budget from the base policy so that sync (MEDIUM) vs async
+        // (EXPENSIVE) budget distinctions are not silently dropped during policy merging.
+        .withMaxCost(
+            basePolicy == null
+                ? ai.floedb.floecat.stats.spi.JobCostHint.EXPENSIVE
+                : basePolicy.maxCost());
   }
 
   private static Optional<ReconcileCapturePolicy.Column> selectorPolicy(

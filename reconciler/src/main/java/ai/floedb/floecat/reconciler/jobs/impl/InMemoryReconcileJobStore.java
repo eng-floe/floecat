@@ -2013,7 +2013,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + policy.maxCost().name();
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {

@@ -864,7 +864,9 @@ public class ReconcileJobEnqueuer {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + policy.maxCost().name();
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
