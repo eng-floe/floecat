@@ -14,16 +14,13 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.reconciler.jobs;
+package ai.floedb.floecat.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
-import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 

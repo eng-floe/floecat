@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.reconciler.jobs;
+package ai.floedb.floecat.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import org.junit.jupiter.api.Test;
 
 class StatsPriorityClassTest {
