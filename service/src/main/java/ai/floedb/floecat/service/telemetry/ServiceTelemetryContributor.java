@@ -54,12 +54,15 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     // Scheduler-specific tag keys (not in the standard TagKey set).
     String priorityClassTag = "priority_class";
     String signalTypeTag = "signal_type";
+    String laneKeyTag = "lane_key";
     String profileNameTag = "profile_name";
     Set<String> reconcileQueueByClassRequired =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, priorityClassTag);
     Set<String> reconcileQueueByClassAllowed = reconcileQueueByClassRequired;
     Set<String> reconcileSignalRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, signalTypeTag);
     Set<String> reconcileSignalAllowed = reconcileSignalRequired;
+    Set<String> reconcileLaneRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, laneKeyTag);
+    Set<String> reconcileLaneAllowed = reconcileLaneRequired;
     Set<String> scoringRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, priorityClassTag);
     Set<String> scoringAllowed = scoringRequired;
     Set<String> profileRequired = Set.of(profileNameTag);
@@ -265,6 +268,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Cumulative starvation-aging promotions in the in-memory job store.");
     add(
         defs,
+        ServiceMetrics.Reconcile.LANE_WAIT_MS,
+        reconcileLaneRequired,
+        reconcileLaneAllowed,
+        "Oldest queued wait time in milliseconds for top lanes (lane_key tag).");
+    add(
+        defs,
         ServiceMetrics.Reconcile.SCORING_SCORE_DIST,
         scoringRequired,
         scoringAllowed,
@@ -280,13 +289,16 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         ServiceMetrics.Reconcile.SIGNAL_KNOWN,
         reconcileSignalRequired,
         reconcileSignalAllowed,
-        "Scheduling signals that were present in SchedulerSignalIndex at scoring time.");
+        "Write-side signal throughput: incremented each time a signal value is written to"
+            + " SchedulerSignalIndex. Use to detect write-path failures.");
     add(
         defs,
         ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
         reconcileSignalRequired,
         reconcileSignalAllowed,
-        "Scheduling signals absent in SchedulerSignalIndex (conservative defaults used).");
+        "Write-side unknown counter: incremented when a signal write carries no real value"
+            + " (for example delta recorded as empty). High rate means upstream source"
+            + " unavailable.");
     add(
         defs,
         ServiceMetrics.Reconcile.SIGNAL_LOOKUP_MISS,

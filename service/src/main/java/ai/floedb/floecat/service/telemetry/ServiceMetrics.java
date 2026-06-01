@@ -210,6 +210,13 @@ public final class ServiceMetrics {
             "service");
 
     /**
+     * Oldest queued wait time (ms) for hot lanes currently in the top-lane snapshot. Tag: lane_key.
+     */
+    public static final MetricId LANE_WAIT_MS =
+        new MetricId(
+            "floecat.service.reconcile.lane.wait_ms", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    /**
      * Write-side signal throughput counter: incremented each time a signal value is written to
      * SchedulerSignalIndex (e.g. on snapshot finalization or coverage recording). Tag: signal_type.
      * Use to detect write-path failures. For scoring-time availability, see {@link

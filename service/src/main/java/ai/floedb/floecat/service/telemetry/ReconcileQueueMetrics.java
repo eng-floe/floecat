@@ -28,7 +28,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
@@ -47,6 +49,7 @@ public class ReconcileQueueMetrics {
   private final AtomicLong healthBand = new AtomicLong();
   private final Map<StatsPriorityClass, AtomicLong> queuedByClass =
       new EnumMap<>(StatsPriorityClass.class);
+  private final ConcurrentHashMap<String, AtomicLong> laneWaitAtomics = new ConcurrentHashMap<>();
 
   // Delta-tracking for counter metrics (emit only the increment since last refresh).
   private long lastAgingPromotionsTotal = 0L;
@@ -123,6 +126,7 @@ public class ReconcileQueueMetrics {
         }
       }
       healthBand.set(stats.healthBand.ordinal());
+      refreshLaneWaitGauges(stats.topLaneWaitMs);
 
       // Delta-emit AGING_PROMOTIONS counter.
       long newPromotions = stats.agingPromotionsTotal;
@@ -191,4 +195,58 @@ public class ReconcileQueueMetrics {
 
   private static final Tag COMPONENT = Tag.of(TagKey.COMPONENT, "service");
   private static final Tag OPERATION = Tag.of(TagKey.OPERATION, "job_queue");
+  private static final int MAX_LANE_WAIT_GAUGES = 200;
+
+  private void refreshLaneWaitGauges(Map<String, Long> topLaneWaitMs) {
+    if (topLaneWaitMs == null || topLaneWaitMs.isEmpty()) {
+      for (AtomicLong value : laneWaitAtomics.values()) {
+        value.set(0L);
+      }
+      return;
+    }
+    HashSet<String> active = new HashSet<>();
+    for (Map.Entry<String, Long> entry : topLaneWaitMs.entrySet()) {
+      String laneKey = normalizeLaneKey(entry.getKey());
+      if (laneKey.isBlank()) {
+        continue;
+      }
+      active.add(laneKey);
+      AtomicLong gaugeValue = ensureLaneWaitGauge(laneKey);
+      if (gaugeValue != null) {
+        gaugeValue.set(Math.max(0L, entry.getValue() == null ? 0L : entry.getValue()));
+      }
+    }
+    for (Map.Entry<String, AtomicLong> entry : laneWaitAtomics.entrySet()) {
+      if (!active.contains(entry.getKey())) {
+        entry.getValue().set(0L);
+      }
+    }
+  }
+
+  private AtomicLong ensureLaneWaitGauge(String laneKey) {
+    AtomicLong existing = laneWaitAtomics.get(laneKey);
+    if (existing != null) {
+      return existing;
+    }
+    if (laneWaitAtomics.size() >= MAX_LANE_WAIT_GAUGES) {
+      return null;
+    }
+    AtomicLong created = new AtomicLong();
+    AtomicLong raced = laneWaitAtomics.putIfAbsent(laneKey, created);
+    if (raced != null) {
+      return raced;
+    }
+    observability.gauge(
+        ServiceMetrics.Reconcile.LANE_WAIT_MS,
+        created::get,
+        "Oldest queued wait time in milliseconds for hot lanes",
+        COMPONENT,
+        OPERATION,
+        Tag.of("lane_key", laneKey));
+    return created;
+  }
+
+  private static String normalizeLaneKey(String laneKey) {
+    return laneKey == null ? "" : laneKey.trim();
+  }
 }
