@@ -80,7 +80,8 @@ class StatsOrchestratorTest {
 
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.HIT);
     assertThat(result.stats()).contains(record);
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
     verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
   }
 
@@ -112,7 +113,8 @@ class StatsOrchestratorTest {
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.CAPTURED);
     assertThat(result.stats()).contains(record);
     // No async enqueue because sync succeeded.
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
@@ -131,7 +133,7 @@ class StatsOrchestratorTest {
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
     when(syncCapture.capture(anyString(), anyString(), any(), any()))
         .thenReturn(StatsSyncOutcome.TIMEOUT);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");
 
     StatsResolutionResult result = orchestrator.resolve(request);
@@ -139,7 +141,8 @@ class StatsOrchestratorTest {
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.TIMEOUT);
     assertThat(result.stats()).isEmpty();
     assertThat(result.outcomeDetail()).contains("async follow-up enqueued");
-    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore)
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
@@ -158,14 +161,15 @@ class StatsOrchestratorTest {
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
     when(syncCapture.capture(anyString(), anyString(), any(), any()))
         .thenReturn(StatsSyncOutcome.FAILED);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");
 
     StatsResolutionResult result = orchestrator.resolve(request);
 
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.FAILED);
     assertThat(result.stats()).isEmpty();
-    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore)
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   // ---------------------------------------------------------------------------
@@ -183,7 +187,7 @@ class StatsOrchestratorTest {
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.empty());
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
 
     StatsResolutionResult result = orchestrator.resolve(request);
@@ -197,7 +201,9 @@ class StatsOrchestratorTest {
             Mockito.eq("connector-1"),
             Mockito.eq(false),
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
-            scopeCaptor.capture());
+            scopeCaptor.capture(),
+            Mockito.any(),
+            Mockito.anyString());
     ReconcileScope scope = scopeCaptor.getValue();
     assertThat(scope.destinationTableId()).isEqualTo(request.tableId().getId());
     assertThat(scope.destinationCaptureRequests()).hasSize(1);
@@ -234,7 +240,7 @@ class StatsOrchestratorTest {
             .correlationId("cid-1")
             .build();
     when(tableRepository.getById(tableRequest.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-2");
 
     StatsCaptureBatchResult result =
@@ -250,7 +256,9 @@ class StatsOrchestratorTest {
             Mockito.eq("connector-1"),
             Mockito.eq(false),
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
-            scopeCaptor.capture());
+            scopeCaptor.capture(),
+            Mockito.any(),
+            Mockito.anyString());
     ReconcileScope scope = scopeCaptor.getValue();
     assertThat(scope.destinationCaptureRequests()).hasSize(2);
     assertThat(scope.capturePolicy().outputs())
@@ -279,7 +287,7 @@ class StatsOrchestratorTest {
             .correlationId("cid-1")
             .build();
     when(tableRepository.getById(columnRequest.tableId())).thenReturn(Optional.of(upstreamTable()));
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-3");
 
     orchestrator.triggerBatch(StatsCaptureBatchRequest.of(List.of(columnRequest)));
@@ -291,7 +299,9 @@ class StatsOrchestratorTest {
             Mockito.eq("connector-1"),
             Mockito.eq(false),
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
-            scopeCaptor.capture());
+            scopeCaptor.capture(),
+            Mockito.any(),
+            Mockito.anyString());
     assertThat(scopeCaptor.getValue().capturePolicy().outputs())
         .containsExactly(ReconcileCapturePolicy.Output.COLUMN_STATS);
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats()).containsExactly("#9");
@@ -330,7 +340,8 @@ class StatsOrchestratorTest {
               assertThat(item.outcome().name()).isEqualTo("UNCAPTURABLE");
               assertThat(item.detail()).contains("file-group scoped");
             });
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
     verify(tableRepository, never()).getById(any());
   }
 
@@ -369,7 +380,8 @@ class StatsOrchestratorTest {
               assertThat(item.outcome().name()).isEqualTo("UNCAPTURABLE");
               assertThat(item.detail()).contains("not yet implemented");
             });
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
     verify(tableRepository, never()).getById(any());
   }
 
@@ -394,7 +406,8 @@ class StatsOrchestratorTest {
               assertThat(item.outcome().name()).isEqualTo("UNCAPTURABLE");
               assertThat(item.detail()).isEqualTo("missing_table");
             });
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
@@ -419,7 +432,8 @@ class StatsOrchestratorTest {
               assertThat(item.outcome().name()).isEqualTo("UNCAPTURABLE");
               assertThat(item.detail()).isEqualTo("blank_connector_id");
             });
-    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    verify(jobStore, never())
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
@@ -433,7 +447,7 @@ class StatsOrchestratorTest {
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
     doThrow(new RuntimeException("boom"))
         .when(jobStore)
-        .enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
 
     StatsCaptureBatchResult result =
         orchestrator.triggerBatch(StatsCaptureBatchRequest.of(List.of(request)));
@@ -467,7 +481,7 @@ class StatsOrchestratorTest {
             .build();
     when(tableRepository.getById(accepted.tableId())).thenReturn(Optional.of(upstreamTable()));
     when(tableRepository.getById(skipped.tableId())).thenReturn(Optional.empty());
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-2");
 
     StatsCaptureBatchResult result =
@@ -526,13 +540,21 @@ class StatsOrchestratorTest {
     when(tableRepository.getById(any())).thenReturn(Optional.of(upstreamTable()));
     when(syncCapture.capture(anyString(), anyString(), any(), any()))
         .thenReturn(StatsSyncOutcome.TIMEOUT);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-followup");
 
     orchestrator.resolve(request);
 
     ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
-    verify(jobStore).enqueue(anyString(), anyString(), anyBoolean(), any(), scopeCaptor.capture());
+    verify(jobStore)
+        .enqueue(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
     // Selectors from the original request must be preserved in the follow-up scope.
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats())
         .containsExactlyInAnyOrder("col_a", "col_b");
@@ -547,7 +569,8 @@ class StatsOrchestratorTest {
       ReconcileJobStore jobStore,
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
-    return new StatsOrchestrator(statsStore, jobStore, tableRepository, syncCapture, true, null);
+    return new StatsOrchestrator(
+        statsStore, jobStore, tableRepository, syncCapture, true, null, null);
   }
 
   private static StatsCaptureRequest tableRequest(StatsExecutionMode mode) {

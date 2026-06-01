@@ -20,10 +20,16 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -80,6 +86,9 @@ public class StatsOrchestrator {
   private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
 
+  /** Nullable — absent in test contexts that don't wire CDI scheduler beans. */
+  private final SchedulerPolicyRegistry schedulerRegistry;
+
   @Inject
   public StatsOrchestrator(
       StatsStore statsStore,
@@ -88,7 +97,8 @@ public class StatsOrchestrator {
       StatsSyncCapture statsSyncCapture,
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
           boolean syncEnabled,
-      Instance<Observability> observability) {
+      Instance<Observability> observability,
+      Instance<SchedulerPolicyRegistry> schedulerRegistryInstance) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
@@ -96,6 +106,10 @@ public class StatsOrchestrator {
     this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
+    this.schedulerRegistry =
+        schedulerRegistryInstance == null || schedulerRegistryInstance.isUnsatisfied()
+            ? null
+            : schedulerRegistryInstance.get();
   }
 
   public StatsOrchestrator(
@@ -106,6 +120,7 @@ public class StatsOrchestrator {
         tableRepository,
         new StatsSyncCapture(reconcileJobStore),
         true,
+        null,
         null);
   }
 
@@ -224,7 +239,9 @@ public class StatsOrchestrator {
               request.snapshotId(),
               ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
               List.copyOf(request.columnSelectors()));
-      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request));
+      // Sync capture is always P0; budget excludes expensive full-column scans.
+      ReconcileCapturePolicy policy =
+          capturePolicyFor(List.of(request)).withMaxCost(JobCostHint.MEDIUM);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
@@ -246,7 +263,7 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    enqueueAsyncCaptureBatch(List.of(request));
+    enqueueAsyncCaptureBatch(List.of(request), StatsPriorityClass.P2_REPAIR);
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -264,6 +281,11 @@ public class StatsOrchestrator {
 
   private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
       List<StatsCaptureRequest> requests) {
+    return enqueueAsyncCaptureBatch(requests, StatsPriorityClass.P3_BACKGROUND);
+  }
+
+  private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
+      List<StatsCaptureRequest> requests, StatsPriorityClass forcedPriorityClass) {
     if (requests == null || requests.isEmpty()) {
       return List.of();
     }
@@ -291,7 +313,7 @@ public class StatsOrchestrator {
           .add(new IndexedRequest(i, toAsyncRequest(request)));
     }
     for (List<IndexedRequest> groupedRequests : groupedByTable.values()) {
-      for (IndexedResult result : enqueueAsyncGroup(groupedRequests)) {
+      for (IndexedResult result : enqueueAsyncGroup(groupedRequests, forcedPriorityClass)) {
         results.set(result.index(), result.result());
       }
     }
@@ -322,7 +344,8 @@ public class StatsOrchestrator {
     };
   }
 
-  private List<IndexedResult> enqueueAsyncGroup(List<IndexedRequest> groupedRequests) {
+  private List<IndexedResult> enqueueAsyncGroup(
+      List<IndexedRequest> groupedRequests, StatsPriorityClass forcedPriorityClass) {
     if (groupedRequests == null || groupedRequests.isEmpty()) {
       return List.of();
     }
@@ -362,20 +385,46 @@ public class StatsOrchestrator {
                 List.copyOf(request.columnSelectors())));
       }
       ReconcileCapturePolicy capturePolicy =
-          capturePolicyFor(groupedRequests.stream().map(IndexedRequest::request).toList());
+          capturePolicyFor(groupedRequests.stream().map(IndexedRequest::request).toList())
+              .withMaxCost(JobCostHint.EXPENSIVE);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(),
               table.get().getResourceId().getId(),
               List.copyOf(captureRequests),
               capturePolicy);
+
+      // Scheduler policy: compute max-score assignment across all requests in this group.
+      PriorityAssignment assignment = computeGroupAssignment(groupedRequests, first);
+      // Admission: REJECT → return degraded; DEFER/ADMIT → proceed (store applies deferral delay).
+      AdmissionDecision admission = computeAdmissionDecision(assignment, forcedPriorityClass);
+      if (admission == AdmissionDecision.REJECT) {
+        return recordAsyncSkipGroup(
+            groupedRequests,
+            "admission_rejected",
+            "Scheduler admission rejected enqueue for table " + first.tableId());
+      }
+      // Build execution policy with caller-forced class, scheduler-assigned score + lane.
+      boolean policyDeferred = admission == AdmissionDecision.DEFER;
+      java.util.Map<String, String> attrs =
+          policyDeferred
+              ? java.util.Map.of(
+                  ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED,
+                  "true")
+              : java.util.Map.of();
+      ReconcileExecutionPolicy execPolicy =
+          ReconcileExecutionPolicy.of(
+              forcedPriorityClass, assignment.laneKey(), attrs, assignment.score());
+
       String jobId =
           reconcileJobStore.enqueue(
               first.tableId().getAccountId(),
               table.get().getUpstream().getConnectorId().getId(),
               false,
               ReconcilerService.CaptureMode.CAPTURE_ONLY,
-              scope);
+              scope,
+              execPolicy,
+              "");
       lastEnqueuedJobByTable.put(tableKey(first), jobId);
       LOG.infof(
           "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s group_size=%d job=%s",
@@ -517,6 +566,56 @@ public class StatsOrchestrator {
     System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
     System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
     observability.counter(metric, amount, merged);
+  }
+
+  /**
+   * Computes the highest-scoring priority assignment across all requests in a table group. Falls
+   * back to a default P3 assignment when no registry is configured.
+   */
+  private PriorityAssignment computeGroupAssignment(
+      List<IndexedRequest> groupedRequests, StatsCaptureRequest first) {
+    if (schedulerRegistry == null) {
+      String fallbackLane = first.tableId().getAccountId() + ":" + first.tableId().getId();
+      return new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, 0L, fallbackLane);
+    }
+    try {
+      var context = schedulerRegistry.activeContext();
+      return groupedRequests.stream()
+          .map(r -> schedulerRegistry.activePriorityPolicy().assign(r.request(), context))
+          .max(java.util.Comparator.comparingLong(PriorityAssignment::score))
+          .orElseGet(
+              () -> {
+                String fallbackLane =
+                    first.tableId().getAccountId() + ":" + first.tableId().getId();
+                return new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, 0L, fallbackLane);
+              });
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e, "Scheduler priority assignment failed for table=%s; using default", first.tableId());
+      String fallbackLane = first.tableId().getAccountId() + ":" + first.tableId().getId();
+      return new PriorityAssignment(StatsPriorityClass.P3_BACKGROUND, 0L, fallbackLane);
+    }
+  }
+
+  /**
+   * Checks the admission policy for the given assignment with caller-forced priority class. Returns
+   * ADMIT when no registry is configured (safe default).
+   */
+  private AdmissionDecision computeAdmissionDecision(
+      PriorityAssignment assignment, StatsPriorityClass forcedClass) {
+    if (schedulerRegistry == null) {
+      return AdmissionDecision.ADMIT;
+    }
+    try {
+      var forcedAssignment =
+          new PriorityAssignment(forcedClass, assignment.score(), assignment.laneKey());
+      return schedulerRegistry
+          .activeAdmissionPolicy()
+          .decide(forcedAssignment, schedulerRegistry.activeContext().currentBand());
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Scheduler admission check failed; defaulting to ADMIT");
+      return AdmissionDecision.ADMIT;
+    }
   }
 
   private static ReconcileCapturePolicy capturePolicyFor(List<StatsCaptureRequest> requests) {

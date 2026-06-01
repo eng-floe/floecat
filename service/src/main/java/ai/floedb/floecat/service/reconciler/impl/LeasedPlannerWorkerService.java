@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -30,20 +31,27 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class LeasedPlannerWorkerService {
+  private static final Logger LOG = Logger.getLogger(LeasedPlannerWorkerService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject Instance<SchedulerPolicyRegistry> schedulerRegistryInstance;
 
   record PlanConnectorPayload(
       String jobId,
@@ -244,6 +252,14 @@ public class LeasedPlannerWorkerService {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
       }
+      // PLAN_SNAPSHOT jobs always represent freshly discovered snapshots → P1_FRESHNESS.
+      ReconcileExecutionPolicy snapshotPolicy =
+          assignForReconcileJobSafe(
+              ReconcileJobKind.PLAN_SNAPSHOT,
+              snapshotJob.snapshotTask().tableId(),
+              snapshotJob.snapshotTask().snapshotId(),
+              /* isNewSnapshot= */ true,
+              effectiveExecutionPolicy(lease));
       jobs.enqueueSnapshotPlan(
           lease.accountId,
           lease.connectorId,
@@ -251,7 +267,7 @@ public class LeasedPlannerWorkerService {
           lease.captureMode,
           snapshotJob.scope(),
           snapshotJob.snapshotTask(),
-          effectiveExecutionPolicy(lease),
+          snapshotPolicy,
           lease.jobId,
           lease.pinnedExecutorId);
     }
@@ -773,11 +789,56 @@ public class LeasedPlannerWorkerService {
     return lease == null || lease.scope == null ? ReconcileScope.empty() : lease.scope;
   }
 
-  private static ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy
-      effectiveExecutionPolicy(ReconcileJobStore.LeasedJob lease) {
+  private static ReconcileExecutionPolicy effectiveExecutionPolicy(
+      ReconcileJobStore.LeasedJob lease) {
     return lease == null || lease.executionPolicy == null
-        ? ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.defaults()
+        ? ReconcileExecutionPolicy.defaults()
         : lease.executionPolicy;
+  }
+
+  /**
+   * Calls the scheduler priority policy's {@code assignForReconcileJob()} and builds a {@link
+   * ReconcileExecutionPolicy} from the result. Falls back to the parent lease's policy (with the
+   * class overridden to {@link StatsPriorityClass#P1_FRESHNESS} for new snapshots) when no registry
+   * is configured or the call throws.
+   */
+  private ReconcileExecutionPolicy assignForReconcileJobSafe(
+      ReconcileJobKind kind,
+      String tableId,
+      long snapshotId,
+      boolean isNewSnapshot,
+      ReconcileExecutionPolicy parentPolicy) {
+    try {
+      SchedulerPolicyRegistry registry =
+          schedulerRegistryInstance == null || schedulerRegistryInstance.isUnsatisfied()
+              ? null
+              : schedulerRegistryInstance.get();
+      if (registry != null) {
+        var assignment =
+            registry
+                .activePriorityPolicy()
+                .assignForReconcileJob(
+                    kind, tableId, snapshotId, isNewSnapshot, registry.activeContext());
+        return ReconcileExecutionPolicy.of(
+            assignment.priorityClass(),
+            assignment.laneKey(),
+            parentPolicy == null ? java.util.Map.of() : parentPolicy.attributes(),
+            assignment.score());
+      }
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e, "assignForReconcileJob failed for kind=%s table=%s; using fallback", kind, tableId);
+    }
+    // Fallback: P1_FRESHNESS for new snapshots, otherwise inherit parent class.
+    StatsPriorityClass cls =
+        isNewSnapshot
+            ? StatsPriorityClass.P1_FRESHNESS
+            : (parentPolicy != null
+                ? parentPolicy.priorityClass()
+                : StatsPriorityClass.P3_BACKGROUND);
+    String laneKey = tableId;
+    return ReconcileExecutionPolicy.of(
+        cls, laneKey, parentPolicy == null ? java.util.Map.of() : parentPolicy.attributes(), 0L);
   }
 
   private static String blankToEmpty(String value) {
