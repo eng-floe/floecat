@@ -30,11 +30,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -53,6 +55,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   @Override
   public String id() {
@@ -371,6 +374,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     for (TargetStatsRecord aggregateStat : aggregateStats) {
       statsStore.putTargetStats(aggregateStat);
     }
+    recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
     return ExecutionResult.success(
         0,
         0,
@@ -380,6 +384,24 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         1,
         aggregateStats.size(),
         "Finalized snapshot capture " + snapshotTask.snapshotId());
+  }
+
+  private void recordFinalizedSignal(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    try {
+      signalIndexInstance
+          .get()
+          .recordFinalizedSnapshot(accountId, tableId, snapshotId, System.currentTimeMillis());
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "recordFinalizedSignal failed for accountId=%s tableId=%s snapshotId=%d",
+          accountId,
+          tableId,
+          snapshotId);
+    }
   }
 
   private long persistEmptySnapshotCompletionMarker(

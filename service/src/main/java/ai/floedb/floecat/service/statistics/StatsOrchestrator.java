@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
@@ -89,6 +90,9 @@ public class StatsOrchestrator {
   /** Nullable — absent in test contexts that don't wire CDI scheduler beans. */
   private final SchedulerPolicyRegistry schedulerRegistry;
 
+  /** Nullable — absent in test contexts that don't wire CDI scheduler beans. */
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
+
   @Inject
   public StatsOrchestrator(
       StatsStore statsStore,
@@ -132,6 +136,7 @@ public class StatsOrchestrator {
    * StatsSyncOutcome} so callers can inspect quality without inspecting the Optional payload.
    */
   public StatsResolutionResult resolve(StatsCaptureRequest request) {
+    recordDemandSignals(request);
     long startNanos = System.nanoTime();
     Optional<TargetStatsRecord> stored = readStore(request);
     if (stored.isPresent()) {
@@ -263,6 +268,16 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
+    if (signalIndexInstance != null && !signalIndexInstance.isUnsatisfied()) {
+      try {
+        signalIndexInstance
+            .get()
+            .recordPartialCoverage(
+                request.tableId().getAccountId(), request.tableId().getId(), request.snapshotId());
+      } catch (RuntimeException e) {
+        LOG.debugf(e, "recordPartialCoverage failed for table=%s", request.tableId());
+      }
+    }
     enqueueAsyncCaptureBatch(List.of(request), StatsPriorityClass.P2_REPAIR);
   }
 
@@ -615,6 +630,29 @@ public class StatsOrchestrator {
     } catch (RuntimeException e) {
       LOG.debugf(e, "Scheduler admission check failed; defaulting to ADMIT");
       return AdmissionDecision.ADMIT;
+    }
+  }
+
+  /**
+   * Records table-level and column-level demand signals for the given request. No-op when the
+   * signal index bean is absent (e.g. in test contexts).
+   */
+  private void recordDemandSignals(StatsCaptureRequest request) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    try {
+      SchedulerSignalIndex signalIndex = signalIndexInstance.get();
+      String accountId = request.tableId().getAccountId();
+      String tableId = request.tableId().getId();
+      signalIndex.recordTableDemand(accountId, tableId);
+      for (String selector : request.columnSelectors()) {
+        if (selector != null && !selector.isBlank()) {
+          signalIndex.recordColumnDemand(accountId, tableId, selector);
+        }
+      }
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "recordDemandSignals failed for table=%s", request.tableId());
     }
   }
 
