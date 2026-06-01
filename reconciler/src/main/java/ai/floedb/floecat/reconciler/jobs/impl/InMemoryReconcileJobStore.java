@@ -821,6 +821,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           continue;
         }
 
+        // Lazy starvation-aging: check BEFORE acquiring lane or snapshot lease so that no
+        // lock cleanup is needed on promotion. If the job has waited past its aging threshold,
+        // re-enqueue it at the promoted class and skip this dispatch cycle. It will be picked
+        // up as a higher-priority job on the NEXT leaseNext() call.
+        long ageMs = now - createdAtMs.getOrDefault(jobId, now);
+        if (agingTracker.recordIfEligible(jobId, ageMs, jobCls, now)) {
+          StatsPriorityClass promotedCls = jobCls.promote();
+          if (promotedCls != jobCls) {
+            readyQueue.enqueue(jobId, promotedCls, jobScore);
+            continue; // no lane or snapshot lease acquired yet — safe to skip
+          }
+        }
+
         String laneKey = laneKeysByJobId.getOrDefault(jobId, "");
         if (!laneKey.isBlank()) {
           String laneOwner = activeJobIdByLaneKey.get(laneKey);
@@ -833,10 +846,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           readyQueue.enqueue(jobId, jobCls, jobScore);
           continue;
         }
-
-        // Record starvation-aging promotion if the job has waited past its threshold.
-        long ageMs = now - createdAtMs.getOrDefault(jobId, now);
-        agingTracker.recordIfEligible(jobId, ageMs, jobCls, now);
 
         if (leased.add(jobId)) {
           String leaseEpoch = UUID.randomUUID().toString();
