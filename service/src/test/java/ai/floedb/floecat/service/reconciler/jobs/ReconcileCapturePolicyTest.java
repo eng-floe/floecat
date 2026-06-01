@@ -18,8 +18,8 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import ai.floedb.floecat.reconciler.jobs.JobCostHint;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
