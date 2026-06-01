@@ -750,6 +750,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       deferredSnapshot.put(cls, counter != null ? counter.get() : 0L);
     }
 
+    // topLaneWaitMs: BY_PRIORITY index entries expose dueAtMs and jobId but not laneKey.
+    // Computing per-lane wait would require joining with the job index store (O(n) per refresh).
+    // The in-memory store populates this field; the durable store leaves it empty.
+    java.util.Map<String, Long> topLaneWaitMs = java.util.Map.of();
+
     return new QueueStats(
         queued,
         running,
@@ -759,7 +764,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         band,
         0L,
         deferredSnapshot,
-        java.util.Map.of());
+        topLaneWaitMs);
   }
 
   // Note: the durable store's leaseNext() does NOT call bandState.maybeEscalate() or

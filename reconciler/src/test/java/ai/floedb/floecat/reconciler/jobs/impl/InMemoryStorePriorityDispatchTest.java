@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -250,5 +251,66 @@ class InMemoryStorePriorityDispatchTest {
     } finally {
       System.clearProperty(inactiveLaneWeightKey);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // P0 guard semantics
+  // ---------------------------------------------------------------------------
+
+  /**
+   * When a P0 job is present but currently blocked (its lane is held by an active lease), the store
+   * must return empty rather than falling through to P1. Dispatching a P1 job while P0 is waiting
+   * would weaken the sync-latency guarantee — the executor slot should remain reserved for when the
+   * P0 lane becomes free.
+   */
+  @Test
+  void blockedP0PreventsP1Dispatch() {
+    var store = new InMemoryReconcileJobStore();
+
+    // 1. Enqueue a lane-holder job (P3) on "sync-tbl" and lease it — this acquires the
+    //    "*|sync-tbl" lane lock without releasing it.
+    enqueueJob(store, "conn-lock", "sync-tbl", policyFor(StatsPriorityClass.P3_BACKGROUND, 0L));
+    var blocker = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
+    assertTrue(blocker.isPresent(), "Lane-holder job must be leasable");
+
+    // 2. Enqueue a P0 job on the same lane — it will be blocked by the active lease above.
+    enqueueJob(store, "conn-p0", "sync-tbl", policyFor(StatsPriorityClass.P0_SYNC, 0L));
+
+    // 3. Enqueue a P1 job on a different lane — it is not blocked by any lock.
+    enqueueJob(store, "conn-p1", "other-tbl", policyFor(StatsPriorityClass.P1_FRESHNESS, 0L));
+
+    // 4. The P0 guard must prevent dispatching the P1 job while P0 is waiting.
+    var result = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
+    assertTrue(
+        result.isEmpty(),
+        "leaseNext must return empty when P0 is present but blocked — not fall through to P1");
+  }
+
+  // ---------------------------------------------------------------------------
+  // topLaneWaitMs in queueStats
+  // ---------------------------------------------------------------------------
+
+  /**
+   * {@link ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.QueueStats#topLaneWaitMs} must be
+   * populated from {@code laneKeysByJobId} × {@code createdAtMs} for queued (not leased) jobs.
+   */
+  @Test
+  void queueStatsReportsTopLaneWaitMs() {
+    var store = new InMemoryReconcileJobStore();
+    enqueueJob(store, "conn-a", "lane-a", policyFor(StatsPriorityClass.P3_BACKGROUND, 0L));
+    enqueueJob(store, "conn-b", "lane-b", policyFor(StatsPriorityClass.P3_BACKGROUND, 0L));
+
+    var stats = store.queueStats();
+    assertFalse(
+        stats.topLaneWaitMs.isEmpty(),
+        "topLaneWaitMs must be non-empty when there are queued lane-keyed jobs");
+    assertEquals(
+        2,
+        stats.topLaneWaitMs.size(),
+        "topLaneWaitMs must contain one entry per distinct lane key");
+    stats
+        .topLaneWaitMs
+        .values()
+        .forEach(w -> assertTrue(w >= 0, "per-lane wait time must be non-negative"));
   }
 }
