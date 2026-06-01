@@ -76,6 +76,10 @@ public class SchedulerPolicyRegistry {
   private final Instance<SchedulerAdmissionPolicy> admissionPolicies;
   private final Instance<SchedulerPreemptionPolicy> preemptionPolicies;
   private final ReconcileJobStore jobs;
+
+  /** Nullable — provides live scoring signals to ReconcileJobStoreContext. */
+  private final SchedulerSignalIndex signalIndex;
+
   private final Observability observability;
 
   private SchedulerPriorityPolicy activePriorityPolicy;
@@ -93,13 +97,18 @@ public class SchedulerPolicyRegistry {
       @Any Instance<SchedulerAdmissionPolicy> admissionPolicies,
       @Any Instance<SchedulerPreemptionPolicy> preemptionPolicies,
       ReconcileJobStore jobs,
-      Observability observability) {
+      Observability observability,
+      Instance<SchedulerSignalIndex> signalIndexInstance) {
     this.profileName = profileName;
     this.priorityPolicies = priorityPolicies;
     this.admissionPolicies = admissionPolicies;
     this.preemptionPolicies = preemptionPolicies;
     this.jobs = jobs;
     this.observability = observability;
+    this.signalIndex =
+        signalIndexInstance == null || signalIndexInstance.isUnsatisfied()
+            ? null
+            : signalIndexInstance.get();
   }
 
   @PostConstruct
@@ -131,7 +140,7 @@ public class SchedulerPolicyRegistry {
     Instance<SchedulerPreemptionPolicy> selectedPreemption = preemptionPolicies.select(qualifier);
     activePreemptionPolicy = selectedPreemption.isUnsatisfied() ? null : selectedPreemption.get();
 
-    context = new ReconcileJobStoreContext(jobs);
+    context = new ReconcileJobStoreContext(jobs, signalIndex);
 
     validateInvariants();
 
@@ -323,11 +332,16 @@ public class SchedulerPolicyRegistry {
     private static final long SNAPSHOT_TTL_MS = 100L;
 
     private final ReconcileJobStore jobs;
+
+    /** Nullable — returns conservative defaults when absent. */
+    private final SchedulerSignalIndex signalIndex;
+
     private volatile ReconcileJobStore.QueueStats cachedStats;
     private volatile long cachedAtMs;
 
-    ReconcileJobStoreContext(ReconcileJobStore jobs) {
+    ReconcileJobStoreContext(ReconcileJobStore jobs, SchedulerSignalIndex signalIndex) {
       this.jobs = jobs;
+      this.signalIndex = signalIndex;
     }
 
     /**
@@ -360,17 +374,35 @@ public class SchedulerPolicyRegistry {
 
     @Override
     public OptionalLong lastSuccessfulCaptureMs(String tableId) {
-      return OptionalLong.empty();
+      return signalIndex != null
+          ? signalIndex.lastSuccessfulCaptureMs(tableId)
+          : OptionalLong.empty();
     }
 
     @Override
     public CoverageLevel coverageLevel(String tableId, long snapshotId) {
-      return CoverageLevel.NONE;
+      return signalIndex != null
+          ? signalIndex.coverageLevel(tableId, snapshotId)
+          : CoverageLevel.NONE;
     }
 
     @Override
     public OptionalLong snapshotDeltaRows(String tableId, long snapshotId) {
-      return OptionalLong.empty();
+      return signalIndex != null
+          ? signalIndex.snapshotDeltaRows(tableId, snapshotId)
+          : OptionalLong.empty();
+    }
+
+    @Override
+    public long recentPlannerRequestCount(String tableId) {
+      return signalIndex != null ? signalIndex.recentTableDemand(tableId) : 0L;
+    }
+
+    @Override
+    public long recentColumnRequestCount(String tableId, String normalizedColumnSelector) {
+      return signalIndex != null
+          ? signalIndex.recentColumnDemand(tableId, normalizedColumnSelector)
+          : 0L;
     }
   }
 

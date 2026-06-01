@@ -209,6 +209,29 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
 
+    /**
+     * Scoring signals that were present in SchedulerSignalIndex at scoring time. Tag: signal_type.
+     */
+    public static final MetricId SIGNAL_KNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.known.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Scoring signals that were absent (returned conservative default). Tag: signal_type. A
+     * sustained rate indicates the write path is not running correctly.
+     */
+    public static final MetricId SIGNAL_UNKNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.unknown.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",

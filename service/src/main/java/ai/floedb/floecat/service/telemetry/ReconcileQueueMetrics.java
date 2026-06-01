@@ -18,12 +18,14 @@ package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.EnumMap;
 import java.util.Map;
@@ -36,6 +38,7 @@ public class ReconcileQueueMetrics {
 
   @Inject ReconcileJobStore jobs;
   @Inject Observability observability;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   private final AtomicLong queued = new AtomicLong();
   private final AtomicLong running = new AtomicLong();
@@ -144,9 +147,29 @@ public class ReconcileQueueMetrics {
           lastAdmissionDeferred.put(cls, newDeferred);
         }
       }
+      // Drain and emit signal unknown-rate counters (high rates indicate write-path failures).
+      if (signalIndexInstance != null && !signalIndexInstance.isUnsatisfied()) {
+        SchedulerSignalIndex si = signalIndexInstance.get();
+        drainAndEmitSignal(
+            si.drainLastCaptureKnown(), si.drainLastCaptureUnknown(), "last_capture");
+        drainAndEmitSignal(si.drainCoverageKnown(), si.drainCoverageUnknown(), "coverage");
+        drainAndEmitSignal(si.drainDeltaKnown(), si.drainDeltaUnknown(), "delta");
+      }
     } catch (RuntimeException e) {
       // Warn rather than debug: a silent metrics failure leaves all gauges stale.
       LOG.warnf(e, "Failed to refresh reconcile queue metrics");
+    }
+  }
+
+  private void drainAndEmitSignal(long known, long unknown, String signalType) {
+    Tag sigTag = Tag.of("signal_type", signalType);
+    if (known > 0) {
+      observability.counter(
+          ServiceMetrics.Reconcile.SIGNAL_KNOWN, known, COMPONENT, OPERATION, sigTag);
+    }
+    if (unknown > 0) {
+      observability.counter(
+          ServiceMetrics.Reconcile.SIGNAL_UNKNOWN, unknown, COMPONENT, OPERATION, sigTag);
     }
   }
 
