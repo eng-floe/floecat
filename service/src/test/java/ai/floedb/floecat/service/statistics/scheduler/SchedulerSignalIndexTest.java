@@ -168,6 +168,34 @@ class SchedulerSignalIndexTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Demand decay on read path
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void demandDecaysToZeroAfterTwoWindowsOnRead() {
+    // Use a very short window so we can simulate time passing by using a tiny window.
+    // The index is constructed with windowMs=50ms; we record demand, then read after 2×50ms.
+    var idx = new SchedulerSignalIndex(50L, 100_000L);
+    String key = SchedulerSignalIndex.tableKey("acct", "tbl");
+
+    // Record demand at "now"
+    idx.recordTableDemand("acct", "tbl");
+    assertEquals(1L, idx.recentTableDemand(key), "Demand must be visible immediately");
+
+    // After 2×windowMs, the read path should rotate and demand should decay to zero.
+    // We use Thread.sleep to advance real time past 2 windows.
+    try {
+      Thread.sleep(120L);
+    } catch (InterruptedException ignored) {
+    }
+
+    assertEquals(
+        0L,
+        idx.recentTableDemand(key),
+        "Demand must decay to 0 after 2 full windows when read path triggers rotation");
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 

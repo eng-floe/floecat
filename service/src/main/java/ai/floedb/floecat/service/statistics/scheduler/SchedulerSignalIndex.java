@@ -194,16 +194,26 @@ public class SchedulerSignalIndex {
     return val == null ? OptionalLong.empty() : OptionalLong.of(val);
   }
 
-  /** Returns the sum of current + previous window demand for this table key. */
+  /**
+   * Returns the sum of current + previous window demand for this table key.
+   *
+   * <p>Triggers a window rotation check so that demand decays even when no new writes arrive (idle
+   * tables). Without this, the previous bucket's counts would remain visible for up to 2×{@code
+   * windowMs} after the last write, giving stale tables an inflated demand score.
+   */
   public long recentTableDemand(String tableKey) {
-    DemandWindow w = window.get();
+    DemandWindow w = maybeRotate(System.currentTimeMillis());
     return w.recentTableCount(tableKey);
   }
 
-  /** Returns the sum of current + previous window demand for this column selector. */
+  /**
+   * Returns the sum of current + previous window demand for this column selector.
+   *
+   * <p>See {@link #recentTableDemand} for the rotation rationale.
+   */
   public long recentColumnDemand(String tableKey, String normalizedSelector) {
     String colKey = tableKey + ':' + normalizedSelector;
-    DemandWindow w = window.get();
+    DemandWindow w = maybeRotate(System.currentTimeMillis());
     return w.recentColumnCount(colKey);
   }
 
