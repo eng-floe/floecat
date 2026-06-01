@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
@@ -43,6 +44,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
 import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
@@ -853,6 +856,42 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, lease.jobId);
     assertEquals("remote-executor", lease.pinnedExecutorId);
     assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+  }
+
+  @Test
+  void queueStatsEscalatesToRedWhenP0AgeExceedsBudgetAndClearsAfterDrain() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.INTERACTIVE, "", Map.of(), StatsPriorityClass.P0_SYNC, 0L),
+            "",
+            "");
+
+    assertDoesNotThrow(() -> Thread.sleep(SchedulerBandState.P0_RED_BUDGET_MS + 150L));
+
+    ReconcileJobStore.QueueStats beforeDrain = store.queueStats();
+    assertEquals(SchedulerHealthBand.RED, beforeDrain.healthBand);
+
+    var leased = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
+    assertEquals(jobId, leased.jobId);
+    store.markSucceeded(
+        leased.jobId, leased.leaseEpoch, System.currentTimeMillis(), 0L, 0L, 0L, 0L, 0L, 0L);
+    ReconcileJobStore.QueueStats afterDrain =
+        waitForValue(
+            () -> store.queueStats(),
+            stats -> stats.healthBand != SchedulerHealthBand.RED,
+            "durable health band clear after P0 drain");
+    assertNotEquals(SchedulerHealthBand.RED, afterDrain.healthBand);
   }
 
   @Test

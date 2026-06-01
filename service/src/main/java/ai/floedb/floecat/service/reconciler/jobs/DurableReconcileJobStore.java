@@ -680,6 +680,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     // Four bounded KV range scans (one per priority class) — acceptable at the 15s refresh cadence.
     java.util.EnumMap<StatsPriorityClass, Long> queuedByClass =
         new java.util.EnumMap<>(StatsPriorityClass.class);
+    long minP0DueAtMs = Long.MAX_VALUE;
+    long nowMs = System.currentTimeMillis();
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
       var slice =
           new ReconcileReadyQueueBackend.ReadyQueueSlice(
@@ -688,18 +690,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String token = "";
       do {
         var page = readyQueue().scanReadySlice(slice, 512, token);
-        count += page.entries().size();
+        for (var entry : page.entries()) {
+          if (!isLiveReadyEntry(entry)) {
+            continue;
+          }
+          count++;
+          if (cls == StatsPriorityClass.P0_SYNC && entry.dueAtMs() < minP0DueAtMs) {
+            minP0DueAtMs = entry.dueAtMs();
+          }
+        }
         token = page.nextPageToken();
       } while (!token.isBlank());
       queuedByClass.put(cls, count);
     }
-    // P0 age: the durable store cannot cheaply measure actual P0 job age (it would require
-    // reading individual job records). Pass 0L so computeAndSet() does not trigger RED based
-    // on the mere presence of P0 entries. RED for the durable store is only reached if P0
-    // entries persist across multiple queueStats() cycles without being drained — a future
-    // improvement can add a cross-cycle staleness counter. For now YELLOW/ORANGE (driven by
-    // P2/P3 depths) provide actionable admission pressure without oscillation.
-    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, 0L);
+    long oldestP0AgeMs =
+        queuedByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L) > 0L
+                && minP0DueAtMs < Long.MAX_VALUE
+            ? Math.max(0L, nowMs - minP0DueAtMs)
+            : 0L;
+    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, oldestP0AgeMs);
 
     java.util.EnumMap<StatsPriorityClass, Long> deferredSnapshot =
         new java.util.EnumMap<>(StatsPriorityClass.class);
@@ -721,13 +730,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   // Note: the durable store's leaseNext() does NOT call bandState.maybeEscalate() or
-  // bandState.maybeClearRedOnP0Drain() on the hot path. Band state is updated exclusively
-  // via the 15-second queueStats() refresh cycle. Because queueStats() always passes
-  // oldestP0AgeMs=0L (P0 age cannot be measured cheaply without reading individual job records),
-  // the RED band is structurally unreachable for the durable store under the current
-  // implementation.
-  // SchedulerBandState.maybeClearRedOnP0Drain() is therefore dead code for this store path.
-  // See the comment in queueStats() for the planned cross-cycle staleness improvement.
+  // bandState.maybeClearRedOnP0Drain() on the hot path. Band state is updated exclusively via the
+  // 15-second queueStats() refresh cycle.
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
@@ -2513,6 +2517,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     return "JS_QUEUED".equals(record.state);
+  }
+
+  private boolean isLiveReadyEntry(ReconcileReadyQueueStore.ReadyQueueEntry entry) {
+    if (entry == null || blank(entry.canonicalPointerKey())) {
+      return false;
+    }
+    return jobIndexStore()
+        .readCanonicalRecordByKey(entry.canonicalPointerKey())
+        .map(DurableReconcileJobStore::requiresReadyPointer)
+        .orElse(false);
   }
 
   private void logLeaseSkip(String op, String format, Object... args) {
