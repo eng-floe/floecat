@@ -859,6 +859,62 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextPrefersHigherScoreWithinSamePriorityClass() {
+    String lowScoreJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "score-low"),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT,
+                "",
+                Map.of(),
+                StatsPriorityClass.P3_BACKGROUND,
+                1L),
+            "",
+            "");
+    String highScoreJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "score-high"),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT,
+                "",
+                Map.of(),
+                StatsPriorityClass.P3_BACKGROUND,
+                100L),
+            "",
+            "");
+
+    StoredReconcileJob lowStored =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, lowScoreJobId));
+    StoredReconcileJob highStored =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, highScoreJobId));
+    assertEquals(1L, lowStored.priorityScore);
+    assertEquals(100L, highStored.priorityScore);
+
+    assertDoesNotThrow(() -> Thread.sleep(25L));
+    var lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
+    assertEquals(highScoreJobId, lease.jobId);
+    assertNotEquals(lowScoreJobId, lease.jobId);
+  }
+
+  @Test
   void queueStatsEscalatesToRedWhenP0AgeExceedsBudgetAndClearsAfterDrain() {
     String jobId =
         store.enqueue(

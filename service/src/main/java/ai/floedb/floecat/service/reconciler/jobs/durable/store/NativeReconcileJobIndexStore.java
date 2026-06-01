@@ -481,6 +481,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         source.executionAttributes == null
             ? java.util.Map.of()
             : java.util.Map.copyOf(source.executionAttributes);
+    copy.priorityClass = source.priorityClass;
+    copy.priorityScore = source.priorityScore;
     copy.pinnedExecutorId = source.pinnedExecutorId;
     copy.executorId = source.executorId;
     copy.snapshotTaskTableId = source.snapshotTaskTableId;

@@ -190,74 +190,118 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
-    String token = "";
-    int pages = 0;
-    while (true) {
-      if (scanStats != null) {
-        scanStats.scanCount++;
-      }
-      ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
-      if (page.entries().isEmpty()) {
-        return Optional.empty();
-      }
-
-      for (ReadyQueueEntry candidate : page.entries()) {
+    // Keep lease attempts bounded even if the top-ranked candidate is CAS-raced by another
+    // executor. A retry re-scans and picks the next best live candidate.
+    for (int leaseAttempt = 0; leaseAttempt < 3; leaseAttempt++) {
+      LeaseCandidate best = null;
+      String token = "";
+      int pages = 0;
+      while (true) {
         if (scanStats != null) {
-          scanStats.candidateCount++;
+          scanStats.scanCount++;
         }
-        if (candidate.dueAtMs() > nowMs) {
-          return Optional.empty();
+        ReadyQueueScanPage page =
+            readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
+        if (page.entries().isEmpty()) {
+          break;
         }
-        CanonicalPointerSnapshot canonicalSnapshot =
-            readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
-        if (canonicalSnapshot == null) {
-          continue;
+
+        boolean hitFutureDue = false;
+        for (ReadyQueueEntry candidate : page.entries()) {
+          if (scanStats != null) {
+            scanStats.candidateCount++;
+          }
+          if (candidate.dueAtMs() > nowMs) {
+            // Keys are ordered by due within a slice, so once we hit future-due all remaining
+            // entries in this and subsequent pages are also not ready yet.
+            hitFutureDue = true;
+            break;
+          }
+          CanonicalPointerSnapshot canonicalSnapshot =
+              readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
+          if (canonicalSnapshot == null) {
+            continue;
+          }
+          var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
+          if (recordOpt.isEmpty()) {
+            continue;
+          }
+          StoredReconcileJob record = recordOpt.get();
+          if ("JS_WAITING".equals(record.state)) {
+            continue;
+          }
+          if (!readyPointerMatchesRecord(candidate, record)) {
+            continue;
+          }
+          if (!matchesLeaseRequest(record, request)) {
+            continue;
+          }
+          LeaseCandidate challenger = new LeaseCandidate(candidate, canonicalSnapshot, record);
+          if (isHigherRanked(challenger, best)) {
+            best = challenger;
+          }
         }
-        var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
-        if (recordOpt.isEmpty()) {
-          continue;
+
+        if (hitFutureDue) {
+          break;
         }
-        StoredReconcileJob record = recordOpt.get();
-        if ("JS_WAITING".equals(record.state)) {
-          continue;
+        String nextToken = page.nextPageToken();
+        if (nextToken.isBlank()) {
+          break;
         }
-        if (!readyPointerMatchesRecord(candidate, record)) {
-          continue;
+        if (nextToken.equals(token)) {
+          LOG.warn(
+              "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
+                  + " livelock");
+          break;
         }
-        if (!matchesLeaseRequest(record, request)) {
-          continue;
-        }
-        var leased =
-            leaseStore.leaseCanonical(
-                candidate.canonicalPointerKey(),
-                candidate.readyPointerKey(),
-                nowMs,
-                canonicalSnapshot,
-                record);
-        if (leased.isPresent()) {
-          return leased;
+        token = nextToken;
+        pages++;
+        if (pages >= 10_000) {
+          LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
+          break;
         }
       }
 
-      String nextToken = page.nextPageToken();
-      if (nextToken.isBlank()) {
+      if (best == null) {
         return Optional.empty();
       }
-      if (nextToken.equals(token)) {
-        LOG.warn(
-            "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
-                + " livelock");
-        return Optional.empty();
-      }
-      token = nextToken;
-      pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
-        return Optional.empty();
+      var leased =
+          leaseStore.leaseCanonical(
+              best.entry().canonicalPointerKey(),
+              best.entry().readyPointerKey(),
+              nowMs,
+              best.canonicalSnapshot(),
+              best.record());
+      if (leased.isPresent()) {
+        return leased;
       }
     }
+    return Optional.empty();
   }
+
+  private static boolean isHigherRanked(LeaseCandidate challenger, LeaseCandidate currentBest) {
+    if (challenger == null) {
+      return false;
+    }
+    if (currentBest == null) {
+      return true;
+    }
+    long challengerScore = challenger.record().executionPolicy().priorityScore();
+    long currentScore = currentBest.record().executionPolicy().priorityScore();
+    if (challengerScore != currentScore) {
+      return challengerScore > currentScore;
+    }
+    if (challenger.entry().dueAtMs() != currentBest.entry().dueAtMs()) {
+      return challenger.entry().dueAtMs() < currentBest.entry().dueAtMs();
+    }
+    return challenger.record().jobId.compareTo(currentBest.record().jobId) < 0;
+  }
+
+  private record LeaseCandidate(
+      ReadyQueueEntry entry,
+      CanonicalPointerSnapshot canonicalSnapshot,
+      StoredReconcileJob record) {}
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
