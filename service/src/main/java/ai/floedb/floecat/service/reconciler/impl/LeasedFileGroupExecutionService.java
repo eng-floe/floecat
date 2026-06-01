@@ -198,25 +198,47 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>
         effectivePreUploadedArtifacts =
             preUploadedIndexArtifacts == null ? List.of() : preUploadedIndexArtifacts;
-    // Validate artifact completeness at submit time: if the capture policy requested
-    // PARQUET_PAGE_INDEX output, at least one artifact (staged or pre-uploaded) must be provided.
-    // Rejecting here is earlier than finalization detection and prevents incomplete results from
-    // being persisted at all. Note: the finalizer also enforces this per file-result.
+    // Validate per-file artifact completeness at submit time.
+    // The old coarse check ("at least one artifact total") allowed groups where some files had
+    // no artifact — those were silently written as SUCCEEDED with empty artifact and caught
+    // only at finalization. The new check uses the existing missingIndexArtifactFiles() helper
+    // to detect per-file gaps before any results are persisted.
     ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy capturePolicy =
         lease.scope == null
             ? ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty()
             : lease.scope.capturePolicy();
-    if (capturePolicy.requestsIndexes()
-        && effectiveArtifacts.isEmpty()
-        && effectivePreUploadedArtifacts.isEmpty()
-        && !plannedTask.filePaths().isEmpty()) {
-      throw io.grpc.Status.INVALID_ARGUMENT
-          .withDescription(
-              "File group execution for "
-                  + plannedTask.groupId()
-                  + " requests PARQUET_PAGE_INDEX output but submitted no index artifacts."
-                  + " All files must have a corresponding artifact when index output is requested.")
-          .asRuntimeException();
+    if (capturePolicy.requestsIndexes() && !plannedTask.filePaths().isEmpty()) {
+      List<String> missingFiles =
+          FileGroupExecutionSupport.missingIndexArtifactFiles(plannedTask, effectiveArtifacts);
+      if (!missingFiles.isEmpty() && !effectivePreUploadedArtifacts.isEmpty()) {
+        // Pre-uploaded artifacts also satisfy per-file coverage — subtract covered paths.
+        java.util.Set<String> preUploadedPaths = new java.util.HashSet<>();
+        for (ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult
+                .PreUploadedIndexArtifact
+            pa : effectivePreUploadedArtifacts) {
+          if (pa != null
+              && pa.record() != null
+              && pa.record().hasTarget()
+              && pa.record().getTarget().hasFile()) {
+            String fp = pa.record().getTarget().getFile().getFilePath();
+            if (fp != null && !fp.isBlank()) {
+              preUploadedPaths.add(fp);
+            }
+          }
+        }
+        missingFiles = missingFiles.stream().filter(f -> !preUploadedPaths.contains(f)).toList();
+      }
+      if (!missingFiles.isEmpty()) {
+        throw io.grpc.Status.INVALID_ARGUMENT
+            .withDescription(
+                "File group "
+                    + plannedTask.groupId()
+                    + " requests PARQUET_PAGE_INDEX output but "
+                    + missingFiles.size()
+                    + " file(s) have no index artifact: "
+                    + missingFiles)
+            .asRuntimeException();
+      }
     }
     byte[] requestBytes =
         successPayload(
