@@ -620,6 +620,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       if (dueAtMs != INVALID_ORDERED_POINTER_MS && dueAtMs > 0L) {
         ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
         readyKeys.add(readyPointerKeyFor(record, dueAtMs));
+        // BY_PRIORITY key must be included in cleanup to prevent stale key accumulation.
+        // When a job retries, its dueAtMs changes; the old BY_PRIORITY key (with old dueAtMs)
+        // must be deleted so the KV store doesn't accumulate unreachable entries.
+        readyKeys.add(
+            Keys.reconcileReadyByPriorityPointerByDue(
+                record.priorityClass().order, dueAtMs, record.accountId, record.jobId));
         readyKeys.add(
             readyPointerKeyFor(
                 record,
@@ -1213,6 +1219,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
     List<String> readyKeys = new ArrayList<>();
     readyKeys.add(readyPointerKeyFor(record, dueAtMs));
+    // BY_PRIORITY index: mirrors NativeReconcileReadyQueueStore.readyPointerKeys().
+    // Must be kept in sync so that the mutation path (re-enqueue on retry, cleanup) produces
+    // the same key set as the initial enqueue path. Within-class sort order is by dueAtMs
+    // (earliest-due-first) — priorityScore ordering is only enforced in the in-memory store.
+    String priorityReadyKey =
+        Keys.reconcileReadyByPriorityPointerByDue(
+            record.priorityClass().order, dueAtMs, record.accountId, record.jobId);
+    if (!priorityReadyKey.isBlank()) {
+      readyKeys.add(priorityReadyKey);
+    }
     String executionClassReadyKey =
         readyPointerKeyFor(
             record,
