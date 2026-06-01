@@ -676,11 +676,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             queuedCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_QUEUED") : 0L,
             waitingCount > 0 ? jobIndexStore().oldestStoredJobTimestampInState("JS_WAITING") : 0L);
 
-    // Per-class counts are not tracked by the durable index in Phase 2; populate with empty map.
-    // The band state is updated with empty depths so it stays GREEN unless explicitly escalated.
-    // Admission-deferred counters are maintained as running totals via admissionDeferredByClass.
-    java.util.Map<StatsPriorityClass, Long> emptyByClass = java.util.Map.of();
-    SchedulerHealthBand band = bandState.computeAndSet(emptyByClass, 0L);
+    // Count per-class ready queue depth by scanning BY_PRIORITY slices.
+    // Four bounded KV range scans (one per priority class) — acceptable at the 15s refresh cadence.
+    java.util.EnumMap<StatsPriorityClass, Long> queuedByClass =
+        new java.util.EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      var slice =
+          new ReconcileReadyQueueBackend.ReadyQueueSlice(
+              ReconcileReadyQueueStore.ReadyIndexType.BY_PRIORITY, String.valueOf(cls.order));
+      long count = 0L;
+      String token = "";
+      do {
+        var page = readyQueue().scanReadySlice(slice, 512, token);
+        count += page.entries().size();
+        token = page.nextPageToken();
+      } while (!token.isBlank());
+      queuedByClass.put(cls, count);
+    }
+    // P0 RED budget: if P0 bucket is non-empty, conservatively signal stall to trigger RED.
+    // Exact oldest-P0-age tracking would require an additional KV read per refresh; this
+    // conservative heuristic (any P0 entry → stall age > budget) is sufficient for band escalation.
+    long p0Depth = queuedByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L);
+    long oldestP0AgeMs =
+        p0Depth > 0L
+            ? ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState.P0_RED_BUDGET_MS + 1L
+            : 0L;
+    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, oldestP0AgeMs);
 
     java.util.EnumMap<StatsPriorityClass, Long> deferredSnapshot =
         new java.util.EnumMap<>(StatsPriorityClass.class);
@@ -694,7 +715,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         running,
         cancelling,
         oldestQueued,
-        emptyByClass,
+        queuedByClass,
         band,
         0L,
         deferredSnapshot,
