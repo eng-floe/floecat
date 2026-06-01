@@ -166,6 +166,19 @@ public final class ServiceMetrics {
             "ms",
             CONTRACT,
             "service");
+
+    /**
+     * Per-priority-class depth of the ready queue. Tag: {@code priority_class} (p0_sync, etc.).
+     * Autoscaler hook: when class depth grows, dispatch capacity should increase.
+     */
+    public static final MetricId QUEUE_DEPTH_BY_CLASS =
+        new MetricId(
+            "floecat.service.reconcile.queue.depth_by_class",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",

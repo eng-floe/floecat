@@ -27,6 +27,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -556,7 +557,22 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         default -> {}
       }
     }
-    return new QueueStats(queued, running, cancelling, oldestQueued);
+    // Populate per-class ready-queue counts from PriorityReadyQueue.
+    java.util.EnumMap<StatsPriorityClass, Long> queuedByClass =
+        new java.util.EnumMap<>(StatsPriorityClass.class);
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      queuedByClass.put(cls, readyQueue.sizeByClass(cls));
+    }
+    return new QueueStats(
+        queued,
+        running,
+        cancelling,
+        oldestQueued,
+        queuedByClass,
+        SchedulerHealthBand.GREEN, // health band wired in Phase 2
+        0L,
+        java.util.Map.of(),
+        java.util.Map.of());
   }
 
   @Override

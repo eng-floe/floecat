@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.jobs;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -1781,11 +1782,58 @@ public interface ReconcileJobStore {
     public final long cancelling;
     public final long oldestQueuedCreatedAtMs;
 
+    /** Per-priority-class depth of the ready queue. Empty map when not populated. */
+    public final Map<StatsPriorityClass, Long> queuedByClass;
+
+    /**
+     * Current health band. Defaults to {@link SchedulerHealthBand#GREEN} when not populated (health
+     * band state is wired in Phase 2).
+     */
+    public final SchedulerHealthBand healthBand;
+
+    /** Cumulative number of starvation-aging promotions since the store started. */
+    public final long agingPromotionsTotal;
+
+    /** Cumulative number of admission deferrals per class since the store started. */
+    public final Map<StatsPriorityClass, Long> admissionDeferredByClass;
+
+    /** Top-10 lanes by oldest queued job wait time (ms). */
+    public final Map<String, Long> topLaneWaitMs;
+
+    /** Legacy 4-arg constructor — extended fields default to empty / GREEN / 0. */
     public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
+      this(
+          queued,
+          running,
+          cancelling,
+          oldestQueuedCreatedAtMs,
+          Map.of(),
+          SchedulerHealthBand.GREEN,
+          0L,
+          Map.of(),
+          Map.of());
+    }
+
+    public QueueStats(
+        long queued,
+        long running,
+        long cancelling,
+        long oldestQueuedCreatedAtMs,
+        Map<StatsPriorityClass, Long> queuedByClass,
+        SchedulerHealthBand healthBand,
+        long agingPromotionsTotal,
+        Map<StatsPriorityClass, Long> admissionDeferredByClass,
+        Map<String, Long> topLaneWaitMs) {
       this.queued = Math.max(0L, queued);
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
       this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
+      this.queuedByClass = queuedByClass == null ? Map.of() : Map.copyOf(queuedByClass);
+      this.healthBand = healthBand == null ? SchedulerHealthBand.GREEN : healthBand;
+      this.agingPromotionsTotal = Math.max(0L, agingPromotionsTotal);
+      this.admissionDeferredByClass =
+          admissionDeferredByClass == null ? Map.of() : Map.copyOf(admissionDeferredByClass);
+      this.topLaneWaitMs = topLaneWaitMs == null ? Map.of() : Map.copyOf(topLaneWaitMs);
     }
   }
 
