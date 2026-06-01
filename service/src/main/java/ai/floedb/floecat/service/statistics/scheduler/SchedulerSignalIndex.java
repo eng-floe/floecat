@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.statistics.scheduler;
 
 import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.OptionalLong;
@@ -44,13 +46,16 @@ public class SchedulerSignalIndex {
   private final ConcurrentHashMap<String, Long> lastSuccessfulMs = new ConcurrentHashMap<>();
 
   // ---- per-(table,snapshot) coverage --------------------------------------------------
-  /** Key: {@code accountId:tableId:snapshotId} → coverage entry. */
-  private final ConcurrentHashMap<String, CoverageEntry> coverageBySnapshot =
-      new ConcurrentHashMap<>();
+  /**
+   * Key: {@code accountId:tableId:snapshotId} → coverage entry. Bounded with LRU eviction to
+   * prevent unbounded growth at high snapshot cardinality (e.g. 500k tables × 10 snapshots). Size
+   * is configurable via {@code floecat.stats.scheduler.signals.snapshot.max-entries}.
+   */
+  private final Cache<String, CoverageEntry> coverageBySnapshot;
 
   // ---- per-(table,snapshot) delta rows ------------------------------------------------
-  /** Key: {@code accountId:tableId:snapshotId} → delta row count. */
-  private final ConcurrentHashMap<String, Long> deltaBySnapshot = new ConcurrentHashMap<>();
+  /** Key: {@code accountId:tableId:snapshotId} → delta row count. Bounded same as coverage. */
+  private final Cache<String, Long> deltaBySnapshot;
 
   // ---- rolling two-bucket demand window -----------------------------------------------
   private final AtomicReference<DemandWindow> window;
@@ -70,9 +75,16 @@ public class SchedulerSignalIndex {
       @ConfigProperty(
               name = "floecat.stats.scheduler.scoring.demand.window-ms",
               defaultValue = "3600000")
-          long windowMs) {
+          long windowMs,
+      @ConfigProperty(
+              name = "floecat.stats.scheduler.signals.snapshot.max-entries",
+              defaultValue = "100000")
+          long maxSnapshotEntries) {
     this.windowMs = windowMs;
     this.window = new AtomicReference<>(new DemandWindow(System.currentTimeMillis()));
+    long effectiveMax = maxSnapshotEntries > 0L ? maxSnapshotEntries : 100_000L;
+    this.coverageBySnapshot = Caffeine.newBuilder().maximumSize(effectiveMax).build();
+    this.deltaBySnapshot = Caffeine.newBuilder().maximumSize(effectiveMax).build();
   }
 
   // ---- static key builders ------------------------------------------------------------
@@ -108,14 +120,16 @@ public class SchedulerSignalIndex {
    */
   public void recordPartialCoverage(String accountId, String tableId, long snapshotId) {
     String sKey = snapshotKey(accountId, tableId, snapshotId);
-    coverageBySnapshot.compute(
-        sKey,
-        (k, existing) -> {
-          if (existing != null && existing.closed) {
-            return existing; // never downgrade FULL → PARTIAL
-          }
-          return CoverageEntry.PARTIAL_OPEN;
-        });
+    coverageBySnapshot
+        .asMap()
+        .compute(
+            sKey,
+            (k, existing) -> {
+              if (existing != null && existing.closed) {
+                return existing; // never downgrade FULL → PARTIAL
+              }
+              return CoverageEntry.PARTIAL_OPEN;
+            });
     coverageKnown.increment();
   }
 
@@ -166,7 +180,7 @@ public class SchedulerSignalIndex {
   public CoverageLevel coverageLevel(String tableKey, long snapshotId) {
     // tableKey is already accountId:tableId; snapshotId is appended directly.
     String sKey = tableKey + ':' + snapshotId;
-    CoverageEntry entry = coverageBySnapshot.get(sKey);
+    CoverageEntry entry = coverageBySnapshot.getIfPresent(sKey);
     if (entry == null) {
       return CoverageLevel.NONE;
     }
@@ -176,7 +190,7 @@ public class SchedulerSignalIndex {
   /** Returns the recorded delta row count for a (table, snapshot) pair, or empty if unknown. */
   public OptionalLong snapshotDeltaRows(String tableKey, long snapshotId) {
     String sKey = tableKey + ':' + snapshotId;
-    Long val = deltaBySnapshot.get(sKey);
+    Long val = deltaBySnapshot.getIfPresent(sKey);
     return val == null ? OptionalLong.empty() : OptionalLong.of(val);
   }
 

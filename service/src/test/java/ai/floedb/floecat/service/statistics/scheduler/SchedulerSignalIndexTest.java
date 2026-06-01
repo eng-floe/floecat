@@ -26,11 +26,11 @@ import org.junit.jupiter.api.Test;
 class SchedulerSignalIndexTest {
 
   private static SchedulerSignalIndex index(long windowMs) {
-    return new SchedulerSignalIndex(windowMs);
+    return new SchedulerSignalIndex(windowMs, 100_000L);
   }
 
   private static SchedulerSignalIndex index() {
-    return new SchedulerSignalIndex(3_600_000L);
+    return new SchedulerSignalIndex(3_600_000L, 100_000L);
   }
 
   // ---------------------------------------------------------------------------
