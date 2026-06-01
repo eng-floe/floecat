@@ -60,13 +60,21 @@ public class SchedulerSignalIndex {
   // ---- rolling two-bucket demand window -----------------------------------------------
   private final AtomicReference<DemandWindow> window;
 
-  // ---- drain counters (reset-and-return for metrics export) ---------------------------
+  // ---- write-side counters: signal write throughput (useful for detecting write-path failures) --
   private final LongAdder lastCaptureKnown = new LongAdder();
   private final LongAdder lastCaptureUnknown = new LongAdder();
   private final LongAdder coverageKnown = new LongAdder();
   private final LongAdder coverageUnknown = new LongAdder();
   private final LongAdder deltaKnown = new LongAdder();
   private final LongAdder deltaUnknown = new LongAdder();
+
+  // ---- read-side miss counters: scoring-time signal availability ----------------------
+  // Incremented when a scoring read finds no signal and falls back to the conservative
+  // default. High rates indicate that write-path signals are not populated for the tables
+  // being scored — operators should investigate finalize / planner write paths.
+  private final LongAdder lastCaptureMiss = new LongAdder();
+  private final LongAdder coverageMiss = new LongAdder();
+  private final LongAdder deltaMiss = new LongAdder();
 
   private final long windowMs;
 
@@ -170,7 +178,11 @@ public class SchedulerSignalIndex {
   /** Returns the epoch-ms of the last successful capture, or empty if never captured. */
   public OptionalLong lastSuccessfulCaptureMs(String tableKey) {
     Long val = lastSuccessfulMs.get(tableKey);
-    return val == null ? OptionalLong.empty() : OptionalLong.of(val);
+    if (val == null) {
+      lastCaptureMiss.increment();
+      return OptionalLong.empty();
+    }
+    return OptionalLong.of(val);
   }
 
   /**
@@ -182,6 +194,7 @@ public class SchedulerSignalIndex {
     String sKey = tableKey + ':' + snapshotId;
     CoverageEntry entry = coverageBySnapshot.getIfPresent(sKey);
     if (entry == null) {
+      coverageMiss.increment();
       return CoverageLevel.NONE;
     }
     return entry.level;
@@ -191,7 +204,11 @@ public class SchedulerSignalIndex {
   public OptionalLong snapshotDeltaRows(String tableKey, long snapshotId) {
     String sKey = tableKey + ':' + snapshotId;
     Long val = deltaBySnapshot.getIfPresent(sKey);
-    return val == null ? OptionalLong.empty() : OptionalLong.of(val);
+    if (val == null) {
+      deltaMiss.increment();
+      return OptionalLong.empty();
+    }
+    return OptionalLong.of(val);
   }
 
   /**
@@ -247,6 +264,35 @@ public class SchedulerSignalIndex {
   /** Resets and returns the delta-unknown counter. */
   public long drainDeltaUnknown() {
     return getAndReset(deltaUnknown);
+  }
+
+  // ---- read-side miss drain methods ---------------------------------------------------
+
+  /**
+   * Resets and returns the last-capture miss counter — incremented at scoring time when {@link
+   * #lastSuccessfulCaptureMs} returned empty. High rates indicate the finalize executor is not
+   * populating this signal for the tables being scored.
+   */
+  public long drainLastCaptureMiss() {
+    return getAndReset(lastCaptureMiss);
+  }
+
+  /**
+   * Resets and returns the coverage miss counter — incremented at scoring time when {@link
+   * #coverageLevel} returned NONE. High rates indicate the finalize executor's coverage recording
+   * path is not firing.
+   */
+  public long drainCoverageMiss() {
+    return getAndReset(coverageMiss);
+  }
+
+  /**
+   * Resets and returns the delta miss counter — incremented at scoring time when {@link
+   * #snapshotDeltaRows} returned empty. Expected to be high until the planner populates real delta
+   * values from snapshot row counts.
+   */
+  public long drainDeltaMiss() {
+    return getAndReset(deltaMiss);
   }
 
   // ---- window rotation ----------------------------------------------------------------

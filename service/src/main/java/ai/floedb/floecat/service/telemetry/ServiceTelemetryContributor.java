@@ -289,6 +289,13 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Scheduling signals absent in SchedulerSignalIndex (conservative defaults used).");
     add(
         defs,
+        ServiceMetrics.Reconcile.SIGNAL_LOOKUP_MISS,
+        reconcileSignalRequired,
+        reconcileSignalAllowed,
+        "Scoring-time signal miss: signal was absent when the scheduler read it for scoring."
+            + " High rates mean scoring is operating on conservative defaults for that signal type.");
+    add(
+        defs,
         ServiceMetrics.Reconcile.PLANNER_TICKS,
         reconcileRequestRequired,
         reconcileRequestAllowed,

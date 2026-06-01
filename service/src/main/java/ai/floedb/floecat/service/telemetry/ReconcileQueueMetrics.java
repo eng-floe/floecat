@@ -147,13 +147,18 @@ public class ReconcileQueueMetrics {
           lastAdmissionDeferred.put(cls, newDeferred);
         }
       }
-      // Drain and emit signal unknown-rate counters (high rates indicate write-path failures).
+      // Drain and emit signal counters.
       if (signalIndexInstance != null && !signalIndexInstance.isUnsatisfied()) {
         SchedulerSignalIndex si = signalIndexInstance.get();
+        // Write-side counters: measure signal write throughput.
         drainAndEmitSignal(
             si.drainLastCaptureKnown(), si.drainLastCaptureUnknown(), "last_capture");
         drainAndEmitSignal(si.drainCoverageKnown(), si.drainCoverageUnknown(), "coverage");
         drainAndEmitSignal(si.drainDeltaKnown(), si.drainDeltaUnknown(), "delta");
+        // Read-side miss counters: measure scoring-time signal availability.
+        drainAndEmitLookupMiss(si.drainLastCaptureMiss(), "last_capture");
+        drainAndEmitLookupMiss(si.drainCoverageMiss(), "coverage");
+        drainAndEmitLookupMiss(si.drainDeltaMiss(), "delta");
       }
     } catch (RuntimeException e) {
       // Warn rather than debug: a silent metrics failure leaves all gauges stale.
@@ -170,6 +175,17 @@ public class ReconcileQueueMetrics {
     if (unknown > 0) {
       observability.counter(
           ServiceMetrics.Reconcile.SIGNAL_UNKNOWN, unknown, COMPONENT, OPERATION, sigTag);
+    }
+  }
+
+  private void drainAndEmitLookupMiss(long miss, String signalType) {
+    if (miss > 0) {
+      observability.counter(
+          ServiceMetrics.Reconcile.SIGNAL_LOOKUP_MISS,
+          miss,
+          COMPONENT,
+          OPERATION,
+          Tag.of("signal_type", signalType));
     }
   }
 

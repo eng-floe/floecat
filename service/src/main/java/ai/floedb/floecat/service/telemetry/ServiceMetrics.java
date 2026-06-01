@@ -232,6 +232,23 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
 
+    /**
+     * Scoring-time signal miss: incremented when a scoring read ({@code lastSuccessfulCaptureMs},
+     * {@code coverageLevel}, {@code snapshotDeltaRows}) found no signal and fell back to the
+     * conservative default. Tag: {@code signal_type}. Sustained high rates mean the scoring path is
+     * operating blind for that signal type.
+     *
+     * <p>Complements {@link #SIGNAL_KNOWN}/{@link #SIGNAL_UNKNOWN} which measure write throughput;
+     * this metric measures read-side availability at actual scoring time.
+     */
+    public static final MetricId SIGNAL_LOOKUP_MISS =
+        new MetricId(
+            "floecat.service.reconcile.signal.lookup.miss.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",
