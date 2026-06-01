@@ -25,8 +25,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.stats.spi.StatsPriorityClass;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -45,12 +47,20 @@ class InMemoryStorePriorityDispatchTest {
 
   private static String enqueueJob(
       InMemoryReconcileJobStore store, String connId, ReconcileExecutionPolicy policy) {
+    return enqueueJob(store, connId, "tbl", policy);
+  }
+
+  private static String enqueueJob(
+      InMemoryReconcileJobStore store,
+      String connId,
+      String destinationTableId,
+      ReconcileExecutionPolicy policy) {
     return store.enqueue(
         "acct",
         connId,
         false,
         CaptureMode.METADATA_AND_CAPTURE,
-        ReconcileScope.of(List.of(), "tbl"),
+        ReconcileScope.of(List.of(), destinationTableId),
         ReconcileJobKind.PLAN_CONNECTOR,
         null,
         null,
@@ -59,6 +69,13 @@ class InMemoryStorePriorityDispatchTest {
         policy,
         "",
         "");
+  }
+
+  private static LeasedJob leaseAndComplete(InMemoryReconcileJobStore store) {
+    LeasedJob lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
+    store.markSucceeded(
+        lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), 0L, 0L, 0L, 0L, 0L, 0L);
+    return lease;
   }
 
   @Test
@@ -154,5 +171,84 @@ class InMemoryStorePriorityDispatchTest {
         ai.floedb.floecat.stats.spi.SchedulerHealthBand.YELLOW,
         stats.healthBand,
         "Band must be YELLOW when P3 depth exceeds threshold");
+  }
+
+  @Test
+  void equalWeightLanesAlternateDispatchWithinClass() {
+    var store = new InMemoryReconcileJobStore();
+    for (int i = 0; i < 10; i++) {
+      enqueueJob(
+          store, "conn-a-" + i, "table-a", policyFor(StatsPriorityClass.P3_BACKGROUND, 500L));
+      enqueueJob(
+          store, "conn-b-" + i, "table-b", policyFor(StatsPriorityClass.P3_BACKGROUND, 499L));
+    }
+
+    List<String> seen = new ArrayList<>();
+    for (int i = 0; i < 20; i++) {
+      var lease = leaseAndComplete(store);
+      seen.add(lease.scope.destinationTableId());
+    }
+
+    for (int i = 1; i < seen.size(); i++) {
+      assertNotEquals(seen.get(i - 1), seen.get(i), "equal-weight lanes should alternate dispatch");
+    }
+  }
+
+  @Test
+  void weightedLanesDispatchProportionallyTwoToOne() {
+    String laneAWeightKey = "floecat.stats.scheduler.lane-weight.*|table-a";
+    String laneBWeightKey = "floecat.stats.scheduler.lane-weight.*|table-b";
+    System.setProperty(laneAWeightKey, "2");
+    System.setProperty(laneBWeightKey, "1");
+    try {
+      var store = new InMemoryReconcileJobStore();
+      for (int i = 0; i < 30; i++) {
+        enqueueJob(
+            store, "conn-a-" + i, "table-a", policyFor(StatsPriorityClass.P3_BACKGROUND, 500L));
+        enqueueJob(
+            store, "conn-b-" + i, "table-b", policyFor(StatsPriorityClass.P3_BACKGROUND, 499L));
+      }
+
+      int aDispatches = 0;
+      int bDispatches = 0;
+      for (int i = 0; i < 30; i++) {
+        var lease = leaseAndComplete(store);
+        if ("table-a".equals(lease.scope.destinationTableId())) {
+          aDispatches++;
+        } else if ("table-b".equals(lease.scope.destinationTableId())) {
+          bDispatches++;
+        }
+      }
+      assertEquals(20, aDispatches, "2x-weight lane should get two-thirds of dispatches");
+      assertEquals(10, bDispatches, "1x-weight lane should get one-third of dispatches");
+    } finally {
+      System.clearProperty(laneAWeightKey);
+      System.clearProperty(laneBWeightKey);
+    }
+  }
+
+  @Test
+  void missingLaneIsSkippedWithoutAffectingActiveLane() {
+    String inactiveLaneWeightKey = "floecat.stats.scheduler.lane-weight.*|table-missing";
+    System.setProperty(inactiveLaneWeightKey, "10");
+    try {
+      var store = new InMemoryReconcileJobStore();
+      for (int i = 0; i < 6; i++) {
+        enqueueJob(
+            store,
+            "conn-active-" + i,
+            "table-active",
+            policyFor(StatsPriorityClass.P3_BACKGROUND, 1L));
+      }
+      for (int i = 0; i < 6; i++) {
+        var lease = leaseAndComplete(store);
+        assertEquals(
+            "table-active",
+            lease.scope.destinationTableId(),
+            "active lane should dispatch normally when weighted lane has no jobs");
+      }
+    } finally {
+      System.clearProperty(inactiveLaneWeightKey);
+    }
   }
 }
