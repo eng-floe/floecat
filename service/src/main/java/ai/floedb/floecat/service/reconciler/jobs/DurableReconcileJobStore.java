@@ -693,15 +693,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       } while (!token.isBlank());
       queuedByClass.put(cls, count);
     }
-    // P0 RED budget: if P0 bucket is non-empty, conservatively signal stall to trigger RED.
-    // Exact oldest-P0-age tracking would require an additional KV read per refresh; this
-    // conservative heuristic (any P0 entry → stall age > budget) is sufficient for band escalation.
-    long p0Depth = queuedByClass.getOrDefault(StatsPriorityClass.P0_SYNC, 0L);
-    long oldestP0AgeMs =
-        p0Depth > 0L
-            ? ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState.P0_RED_BUDGET_MS + 1L
-            : 0L;
-    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, oldestP0AgeMs);
+    // P0 age: the durable store cannot cheaply measure actual P0 job age (it would require
+    // reading individual job records). Pass 0L so computeAndSet() does not trigger RED based
+    // on the mere presence of P0 entries. RED for the durable store is only reached if P0
+    // entries persist across multiple queueStats() cycles without being drained — a future
+    // improvement can add a cross-cycle staleness counter. For now YELLOW/ORANGE (driven by
+    // P2/P3 depths) provide actionable admission pressure without oscillation.
+    SchedulerHealthBand band = bandState.computeAndSet(queuedByClass, 0L);
 
     java.util.EnumMap<StatsPriorityClass, Long> deferredSnapshot =
         new java.util.EnumMap<>(StatsPriorityClass.class);
