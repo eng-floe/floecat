@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
 import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import io.grpc.Status;
@@ -42,6 +43,7 @@ import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -55,6 +57,8 @@ public class LeasedPlannerWorkerService {
 
   @Inject
   Instance<ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex> signalIndexInstance;
+
+  @Inject Instance<SnapshotRepository> snapshotRepoInstance;
 
   record PlanConnectorPayload(
       String jobId,
@@ -871,21 +875,78 @@ public class LeasedPlannerWorkerService {
   }
 
   /**
-   * Records the snapshot delta signal. At planning time, the exact row-count delta is not available
-   * without a snapshot-store lookup, so we register the snapshot with an unknown delta ({@link
-   * java.util.OptionalLong#empty()}). This still allows the scoring path to distinguish "seen,
-   * delta unknown" from "never seen" and applies the conservative mid-range default.
+   * Attempts to compute and record the snapshot delta row count in {@link
+   * ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex}. Uses current and parent
+   * snapshot {@code total-records} summaries when available; falls back to unknown on any missing
+   * field/parse error.
+   *
+   * <p>This is best-effort only and must never fail planner success persistence.
    */
   private void recordSnapshotDeltaSafe(String accountId, String tableId, long snapshotId) {
     if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
       return;
     }
+    if (snapshotRepoInstance == null || snapshotRepoInstance.isUnsatisfied()) {
+      return;
+    }
     try {
-      signalIndexInstance
-          .get()
-          .recordSnapshotDelta(accountId, tableId, snapshotId, java.util.OptionalLong.empty());
+      SnapshotRepository snapshotRepo = snapshotRepoInstance.get();
+      var signalIndex = signalIndexInstance.get();
+      ResourceId tableResourceId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build();
+      var currentOpt = snapshotRepo.getById(tableResourceId, snapshotId);
+      if (currentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      var current = currentOpt.get();
+      String currentTotalRaw = current.getSummaryMap().get("total-records");
+      if (currentTotalRaw == null || currentTotalRaw.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long currentTotal;
+      try {
+        currentTotal = Long.parseLong(currentTotalRaw.trim());
+      } catch (NumberFormatException ignored) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      if (!current.hasParentSnapshotId()) {
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      var parentOpt = snapshotRepo.getById(tableResourceId, current.getParentSnapshotId());
+      if (parentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      String parentTotalRaw = parentOpt.get().getSummaryMap().get("total-records");
+      if (parentTotalRaw == null || parentTotalRaw.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long parentTotal;
+      try {
+        parentTotal = Long.parseLong(parentTotalRaw.trim());
+      } catch (NumberFormatException ignored) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      signalIndex.recordSnapshotDelta(
+          accountId, tableId, snapshotId, OptionalLong.of(Math.abs(currentTotal - parentTotal)));
     } catch (RuntimeException e) {
-      LOG.debugf(e, "recordSnapshotDelta failed for table=%s snap=%d", tableId, snapshotId);
+      LOG.debugf(
+          e,
+          "scheduler_signal_index error computing snapshot delta table=%s snap=%d",
+          tableId,
+          snapshotId);
     }
   }
 
