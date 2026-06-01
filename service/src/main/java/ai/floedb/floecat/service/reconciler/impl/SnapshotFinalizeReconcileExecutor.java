@@ -201,8 +201,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     if (context.shouldStop().getAsBoolean()) {
       return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
     }
+    ReconcileCapturePolicy capturePolicy =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
     ChildState childState =
-        childState(lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups());
+        childState(
+            lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups(), capturePolicy);
     if (!childState.duplicateGroups().isEmpty()) {
       return ExecutionResult.terminalFailure(
           0,
@@ -454,7 +457,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String accountId,
       String parentJobId,
       String finalizerJobId,
-      List<ReconcileFileGroupTask> expectedGroups) {
+      List<ReconcileFileGroupTask> expectedGroups,
+      ReconcileCapturePolicy capturePolicy) {
     if (parentJobId == null || parentJobId.isBlank()) {
       return new ChildState(
           0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
@@ -507,7 +511,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         continue;
       }
       if ("JS_SUCCEEDED".equals(child.state)) {
-        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
+        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)
+            && hasCompleteIndexArtifacts(capturePolicy, child.fileGroupTask)) {
           completedGroups++;
           completedGroupTasks.add(child.fileGroupTask);
         } else {
@@ -780,6 +785,33 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     return !expectedGroup.filePaths().isEmpty() || !persistedGroup.fileResults().isEmpty();
+  }
+
+  /**
+   * Returns {@code true} if all SUCCEEDED file results carry a non-empty index artifact when the
+   * capture policy requests {@link ReconcileCapturePolicy.Output#PARQUET_PAGE_INDEX} output.
+   *
+   * <p>A file group job that marks all files SUCCEEDED without producing artifacts would otherwise
+   * pass finalization silently, leaving the snapshot index incomplete.
+   */
+  private static boolean hasCompleteIndexArtifacts(
+      ReconcileCapturePolicy policy, ReconcileFileGroupTask persistedGroup) {
+    if (policy == null || !policy.requestsIndexes()) {
+      return true; // no index output requested — always complete
+    }
+    if (persistedGroup == null) {
+      return false;
+    }
+    for (ReconcileFileResult result : persistedGroup.fileResults()) {
+      if (result == null) {
+        continue;
+      }
+      if (result.state() == ReconcileFileResult.State.SUCCEEDED
+          && (result.indexArtifact() == null || result.indexArtifact().isEmpty())) {
+        return false; // succeeded file is missing its required index artifact
+      }
+    }
+    return true;
   }
 
   private static String groupKey(ReconcileFileGroupTask fileGroupTask) {
