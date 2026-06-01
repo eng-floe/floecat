@@ -73,6 +73,17 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<String> supportedLanes() {
+    // Finalization must be lane-agnostic because child jobs now inherit table-scoped lane keys.
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
+  }
+
+  @Override
   public boolean supports(ReconcileJobStore.LeasedJob lease) {
     return lease != null && lease.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
   }
