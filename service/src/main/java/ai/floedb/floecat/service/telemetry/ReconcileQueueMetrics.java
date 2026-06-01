@@ -17,8 +17,8 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;

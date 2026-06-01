@@ -20,12 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CostHint;
 import ai.floedb.floecat.reconciler.rpc.ExecutionPolicy;
 import ai.floedb.floecat.reconciler.rpc.PriorityClass;
 import ai.floedb.floecat.stats.spi.JobCostHint;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;

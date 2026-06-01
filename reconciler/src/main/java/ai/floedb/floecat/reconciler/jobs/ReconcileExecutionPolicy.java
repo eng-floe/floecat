@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.Map;
 import java.util.TreeMap;
 

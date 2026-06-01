@@ -21,12 +21,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
-import ai.floedb.floecat.service.statistics.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
-import ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
+import ai.floedb.floecat.stats.spi.CoverageLevel;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerAdmissionPolicy.AdmissionDecision;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerContext;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerPriorityPolicy.PriorityAssignment;
 import ai.floedb.floecat.telemetry.NoopObservability;
 import java.util.EnumMap;
 import java.util.Map;

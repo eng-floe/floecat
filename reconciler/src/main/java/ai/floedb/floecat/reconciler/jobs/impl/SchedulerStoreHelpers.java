@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.reconciler.jobs.impl;
 
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 
 /**
  * Pure-static scheduling utilities shared between {@link InMemoryReconcileJobStore} and the durable

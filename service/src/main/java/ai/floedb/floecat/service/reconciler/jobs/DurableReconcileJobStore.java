@@ -28,9 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
@@ -67,6 +65,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;

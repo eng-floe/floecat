@@ -20,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import org.junit.jupiter.api.Test;
 
 /**

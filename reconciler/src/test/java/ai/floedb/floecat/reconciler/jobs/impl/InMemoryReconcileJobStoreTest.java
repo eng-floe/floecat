@@ -33,7 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.EnumSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;

@@ -17,8 +17,8 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;

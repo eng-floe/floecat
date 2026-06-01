@@ -31,10 +31,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
@@ -827,7 +827,7 @@ public class LeasedPlannerWorkerService {
             registry
                 .activePriorityPolicy()
                 .assignForReconcileJob(
-                    kind, tableId, snapshotId, isNewSnapshot, registry.activeContext());
+                    kind.name(), tableId, snapshotId, isNewSnapshot, registry.activeContext());
         return ReconcileExecutionPolicy.of(
             assignment.priorityClass(),
             assignment.laneKey(),

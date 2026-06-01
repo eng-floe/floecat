@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.service.statistics.scheduler;
 
-import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
+import ai.floedb.floecat.stats.spi.CoverageLevel;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.enterprise.context.ApplicationScoped;

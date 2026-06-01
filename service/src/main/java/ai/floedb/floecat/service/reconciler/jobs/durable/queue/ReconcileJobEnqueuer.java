@@ -29,7 +29,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
 import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -41,6 +40,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobInd
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;

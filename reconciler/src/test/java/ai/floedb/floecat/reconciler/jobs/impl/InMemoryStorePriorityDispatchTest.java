@@ -26,7 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -128,7 +128,7 @@ class InMemoryStorePriorityDispatchTest {
     // Trigger authoritative band computation.
     var stats = store.queueStats();
     assertEquals(
-        ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand.ORANGE,
+        ai.floedb.floecat.stats.spi.SchedulerHealthBand.ORANGE,
         stats.healthBand,
         "Band must be ORANGE when P2 depth exceeds threshold");
 
@@ -151,7 +151,7 @@ class InMemoryStorePriorityDispatchTest {
     }
     var stats = store.queueStats();
     assertEquals(
-        ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand.YELLOW,
+        ai.floedb.floecat.stats.spi.SchedulerHealthBand.YELLOW,
         stats.healthBand,
         "Band must be YELLOW when P3 depth exceeds threshold");
   }

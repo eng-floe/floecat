@@ -4,12 +4,17 @@
  */
 package ai.floedb.floecat.service.statistics.scheduler;
 
-import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.CoverageLevel;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsKind;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerAdmissionPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerContext;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerPreemptionPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerPriorityPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerProfile;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;

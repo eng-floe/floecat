@@ -19,8 +19,8 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.EnumMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

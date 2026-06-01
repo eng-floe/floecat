@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs.impl;
 
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 

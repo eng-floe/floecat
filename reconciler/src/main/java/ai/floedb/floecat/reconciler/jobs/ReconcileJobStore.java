@@ -17,6 +17,8 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;

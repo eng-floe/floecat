@@ -18,12 +18,17 @@ package ai.floedb.floecat.service.statistics.scheduler;
 
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.jobs.SchedulerHealthBand;
-import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.CoverageLevel;
+import ai.floedb.floecat.stats.spi.SchedulerHealthBand;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerAdmissionPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerContext;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerPreemptionPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerPriorityPolicy;
+import ai.floedb.floecat.stats.spi.scheduler.SchedulerProfile;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import jakarta.annotation.PostConstruct;
@@ -288,25 +293,25 @@ public class SchedulerPolicyRegistry {
     }
 
     // Also validate assignForReconcileJob() — the reconciler-side enqueue path.
-    for (ai.floedb.floecat.reconciler.jobs.ReconcileJobKind kind :
-        ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.values()) {
-      var assignment = policy.assignForReconcileJob(kind, "tbl-synthetic", 0L, false, ctx);
+    // Use representative job kind names (kind.name()) since the SPI now takes String.
+    for (String kindName : List.of("PLAN_SNAPSHOT", "EXEC_FILE_GROUP", "PLAN_TABLE")) {
+      var assignment = policy.assignForReconcileJob(kindName, "tbl-synthetic", 0L, false, ctx);
       if (assignment.priorityClass() == StatsPriorityClass.P0_SYNC) {
         throw new IllegalStateException(
             "Scheduler invariant violated: priority policy '"
                 + policy.getClass().getName()
                 + "' returned P0_SYNC for a reconcile job of kind "
-                + kind
+                + kindName
                 + ". P0_SYNC may only be assigned by the stats orchestrator.");
       }
       var newSnapshotAssignment =
-          policy.assignForReconcileJob(kind, "tbl-synthetic", 1L, true, ctx);
+          policy.assignForReconcileJob(kindName, "tbl-synthetic", 1L, true, ctx);
       if (newSnapshotAssignment.priorityClass() == StatsPriorityClass.P0_SYNC) {
         throw new IllegalStateException(
             "Scheduler invariant violated: priority policy '"
                 + policy.getClass().getName()
                 + "' returned P0_SYNC for a new-snapshot reconcile job of kind "
-                + kind
+                + kindName
                 + ". P0_SYNC may only be assigned by the stats orchestrator.");
       }
     }

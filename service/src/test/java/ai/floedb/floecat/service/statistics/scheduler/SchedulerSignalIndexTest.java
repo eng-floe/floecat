@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.statistics.scheduler;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.reconciler.jobs.CoverageLevel;
+import ai.floedb.floecat.stats.spi.CoverageLevel;
 import java.util.OptionalLong;
 import org.junit.jupiter.api.Test;
 
