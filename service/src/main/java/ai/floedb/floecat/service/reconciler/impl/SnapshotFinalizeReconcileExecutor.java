@@ -133,6 +133,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             requestsStatsOutputs
                 ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan)
                 : snapshotTask.directStatsRecordCount();
+        // Record finalized signal: direct-stats is a legitimate complete finalization.
+        recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
         return ExecutionResult.success(
             0,
             0,
@@ -358,6 +360,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException(coverageValidation.message()));
     }
     if (aggregateKinds.isEmpty()) {
+      // Record finalized signal: the snapshot was processed (file groups completed),
+      // even if no aggregate stats were written. Coverage and last-capture are valid.
+      recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
       return ExecutionResult.success(
           0,
           0,

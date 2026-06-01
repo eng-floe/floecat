@@ -199,6 +199,7 @@ public class StatsOrchestrator {
     ArrayList<StatsCaptureRequest> unresolvedForAsync = new ArrayList<>();
 
     for (StatsCaptureRequest request : requests) {
+      recordDemandSignals(request); // record demand for each request, same as single-item resolve()
       Optional<TargetStatsRecord> stored = readStore(request);
       if (stored.isPresent()) {
         resolved.add(StatsResolutionResult.hit(stored.get()));
