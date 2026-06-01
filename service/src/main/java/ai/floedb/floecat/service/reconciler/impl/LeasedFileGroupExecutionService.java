@@ -198,6 +198,26 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>
         effectivePreUploadedArtifacts =
             preUploadedIndexArtifacts == null ? List.of() : preUploadedIndexArtifacts;
+    // Validate artifact completeness at submit time: if the capture policy requested
+    // PARQUET_PAGE_INDEX output, at least one artifact (staged or pre-uploaded) must be provided.
+    // Rejecting here is earlier than finalization detection and prevents incomplete results from
+    // being persisted at all. Note: the finalizer also enforces this per file-result.
+    ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy capturePolicy =
+        lease.scope == null
+            ? ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    if (capturePolicy.requestsIndexes()
+        && effectiveArtifacts.isEmpty()
+        && effectivePreUploadedArtifacts.isEmpty()
+        && !plannedTask.filePaths().isEmpty()) {
+      throw io.grpc.Status.INVALID_ARGUMENT
+          .withDescription(
+              "File group execution for "
+                  + plannedTask.groupId()
+                  + " requests PARQUET_PAGE_INDEX output but submitted no index artifacts."
+                  + " All files must have a corresponding artifact when index output is requested.")
+          .asRuntimeException();
+    }
     byte[] requestBytes =
         successPayload(
                 requiredResultId,

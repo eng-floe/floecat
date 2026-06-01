@@ -18,7 +18,9 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -30,10 +32,12 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.control.ActivateRequestContext;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,6 +55,8 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
   @Inject QueryContextStore queryStore;
 
   @Inject UserObjectBundleService bundles;
+
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   private static final Logger LOG = Logger.getLogger(UserObjectsServiceImpl.class);
 
@@ -83,6 +89,10 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                             : principalCorrelationId;
                     correlationRef.set(correlationId == null ? "" : correlationId);
                     authz.require(principalContext, "catalog.read");
+
+                    // Record planner demand signals for each table in the request.
+                    // This feeds the demand multiplier in the scheduler scoring path.
+                    recordUserObjectsDemand(principalContext.getAccountId(), request);
 
                     String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
                     var ctxOpt = queryStore.get(queryId);
@@ -150,5 +160,39 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                   "query_id=%s correlation_id=%s tables=%d dispatchMs=%.1f outcome=completed",
                   request.getQueryId(), correlationRef.get(), request.getTablesCount(), dispatchMs);
             });
+  }
+
+  /**
+   * Records scheduler demand signals for each table referenced in the user-objects request. Demand
+   * from query-path lookups feeds the scoring multiplier in {@link
+   * ai.floedb.floecat.service.statistics.scheduler.DefaultSchedulerProfile}.
+   */
+  private void recordUserObjectsDemand(String accountId, GetUserObjectsRequest request) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    try {
+      SchedulerSignalIndex signalIndex = signalIndexInstance.get();
+      for (TableReferenceCandidate table : request.getTablesList()) {
+        if (table == null) {
+          continue;
+        }
+        for (QueryInput input : table.getCandidatesList()) {
+          if (input == null || input.getTargetCase() != QueryInput.TargetCase.TABLE_ID) {
+            continue;
+          }
+          String tableId = input.getTableId().getId();
+          if (tableId != null && !tableId.isBlank()) {
+            signalIndex.recordTableDemand(accountId, tableId);
+          }
+        }
+      }
+    } catch (RuntimeException e) {
+      // Best-effort — demand recording must never abort the user-objects path.
+      LOG.debugf(e, "Failed to record user-objects demand signals for account=%s", accountId);
+    }
   }
 }

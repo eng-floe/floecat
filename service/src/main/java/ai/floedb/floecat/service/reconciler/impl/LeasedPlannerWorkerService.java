@@ -53,6 +53,9 @@ public class LeasedPlannerWorkerService {
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
   @Inject Instance<SchedulerPolicyRegistry> schedulerRegistryInstance;
 
+  @Inject
+  Instance<ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex> signalIndexInstance;
+
   record PlanConnectorPayload(
       String jobId,
       String leaseEpoch,
@@ -260,6 +263,12 @@ public class LeasedPlannerWorkerService {
               snapshotJob.snapshotTask().snapshotId(),
               /* isNewSnapshot= */ true,
               effectiveExecutionPolicy(lease));
+      // Record delta signal for this snapshot (unknown at planning time; signals
+      // the snapshot as discovered so the delta dimension can be updated later).
+      recordSnapshotDeltaSafe(
+          lease.accountId,
+          snapshotJob.snapshotTask().tableId(),
+          snapshotJob.snapshotTask().snapshotId());
       jobs.enqueueSnapshotPlan(
           lease.accountId,
           lease.connectorId,
@@ -822,7 +831,7 @@ public class LeasedPlannerWorkerService {
         return ReconcileExecutionPolicy.of(
             assignment.priorityClass(),
             assignment.laneKey(),
-            parentPolicy == null ? java.util.Map.of() : parentPolicy.attributes(),
+            strippedChildAttributes(parentPolicy),
             assignment.score());
       }
     } catch (RuntimeException e) {
@@ -837,8 +846,49 @@ public class LeasedPlannerWorkerService {
                 ? parentPolicy.priorityClass()
                 : StatsPriorityClass.P3_BACKGROUND);
     String laneKey = tableId;
-    return ReconcileExecutionPolicy.of(
-        cls, laneKey, parentPolicy == null ? java.util.Map.of() : parentPolicy.attributes(), 0L);
+    return ReconcileExecutionPolicy.of(cls, laneKey, strippedChildAttributes(parentPolicy), 0L);
+  }
+
+  /**
+   * Returns a copy of the parent policy's attributes with scheduler-internal keys stripped. {@code
+   * policy_deferred} is an admission-control decision specific to the parent job's enqueue context
+   * — child jobs must be evaluated independently and must not inherit a stale deferral flag from
+   * their parent.
+   */
+  /**
+   * Records the snapshot delta signal. At planning time, the exact row-count delta is not available
+   * without a snapshot-store lookup, so we register the snapshot with an unknown delta ({@link
+   * java.util.OptionalLong#empty()}). This still allows the scoring path to distinguish "seen,
+   * delta unknown" from "never seen" and applies the conservative mid-range default.
+   */
+  private void recordSnapshotDeltaSafe(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    try {
+      signalIndexInstance
+          .get()
+          .recordSnapshotDelta(accountId, tableId, snapshotId, java.util.OptionalLong.empty());
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "recordSnapshotDelta failed for table=%s snap=%d", tableId, snapshotId);
+    }
+  }
+
+  private static java.util.Map<String, String> strippedChildAttributes(
+      ReconcileExecutionPolicy parentPolicy) {
+    if (parentPolicy == null || parentPolicy.attributes().isEmpty()) {
+      return java.util.Map.of();
+    }
+    if (!parentPolicy
+        .attributes()
+        .containsKey(
+            ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED)) {
+      return parentPolicy.attributes(); // fast path — no stripping needed
+    }
+    java.util.Map<String, String> stripped = new java.util.HashMap<>(parentPolicy.attributes());
+    stripped.remove(
+        ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED);
+    return java.util.Map.copyOf(stripped);
   }
 
   private static String blankToEmpty(String value) {
