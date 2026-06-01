@@ -263,7 +263,18 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     List<ReadyIndexSelection> selections = new ArrayList<>();
 
-    // 1. Pinned-executor slices first — jobs pinned to this executor are highest-priority for it.
+    // 1. BY_PRIORITY/P0 — scanned unconditionally before all other slices.
+    //    P0_SYNC is query-time bounded work; it must never be blocked by a pinned lower-priority
+    //    job sitting ahead of it in the scan order. Non-pinned executors skip pinned P0 jobs via
+    //    matchesLeaseRequest, so this does not break pinning semantics.
+    selections.add(
+        new ReadyIndexSelection(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReadyIndexType.BY_PRIORITY, String.valueOf(StatsPriorityClass.P0_SYNC.order))));
+
+    // 2. Pinned-executor slices — jobs that can only run on this specific executor.
+    //    P0 work is already covered above; these slices deliver pinned P1/P2/P3 jobs before the
+    //    general priority queue so that pinned assignments are not starved by unpinned work.
     List<String> executorIds =
         effective.executorIds.stream()
             .sorted()
@@ -276,9 +287,11 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                   ReadyIndexType.PINNED_EXECUTOR, executorId)));
     }
 
-    // 2. BY_PRIORITY slices in class order (P0→P1→P2→P3) — ensures high-priority jobs are always
-    //    dispatched before lower-priority ones regardless of enqueue time.
+    // 3. BY_PRIORITY/P1→P3 — remaining priority classes in order after pinned work.
     for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      if (cls == StatsPriorityClass.P0_SYNC) {
+        continue; // already added at position 1
+      }
       selections.add(
           new ReadyIndexSelection(
               new ReconcileReadyQueueBackend.ReadyQueueSlice(
