@@ -179,6 +179,36 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
 
+    /**
+     * Current health band (0=GREEN, 1=YELLOW, 2=ORANGE, 3=RED). This is the primary autoscaler
+     * signal — alert when value ≥ 2 (ORANGE).
+     */
+    public static final MetricId HEALTH_BAND =
+        new MetricId(
+            "floecat.service.reconcile.health_band", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Cumulative number of jobs deferred at enqueue due to admission control. Tag: priority_class.
+     */
+    public static final MetricId ADMISSION_DEFERRED =
+        new MetricId(
+            "floecat.service.reconcile.admission.deferred.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Cumulative number of starvation-aging promotions. A sustained rate indicates P3 starvation.
+     */
+    public static final MetricId AGING_PROMOTIONS =
+        new MetricId(
+            "floecat.service.reconcile.aging.promotions.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",
