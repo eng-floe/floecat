@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;

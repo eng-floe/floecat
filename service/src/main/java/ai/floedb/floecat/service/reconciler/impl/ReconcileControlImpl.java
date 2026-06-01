@@ -38,6 +38,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.StatsPriorityClass;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -67,6 +68,7 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -603,6 +605,14 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (policy == null) {
       return ReconcileExecutionPolicy.defaults();
     }
+    StatsPriorityClass priorityClass =
+        switch (policy.getPriorityClass()) {
+          case PC_P0_SYNC -> StatsPriorityClass.P0_SYNC;
+          case PC_P1_FRESHNESS -> StatsPriorityClass.P1_FRESHNESS;
+          case PC_P2_REPAIR -> StatsPriorityClass.P2_REPAIR;
+          case PC_P3_BACKGROUND, PRIORITY_CLASS_UNSPECIFIED, UNRECOGNIZED ->
+              StatsPriorityClass.P3_BACKGROUND;
+        };
     return ReconcileExecutionPolicy.of(
         switch (policy.getExecutionClass()) {
           case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
@@ -611,13 +621,22 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
           case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
         },
         policy.getLane(),
-        policy.getAttributesMap());
+        policy.getAttributesMap(),
+        priorityClass,
+        policy.getPriorityScore());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
       ReconcileExecutionPolicy policy) {
     ReconcileExecutionPolicy effective =
         policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+    ai.floedb.floecat.reconciler.rpc.PriorityClass protoPriorityClass =
+        switch (effective.priorityClass()) {
+          case P0_SYNC -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P0_SYNC;
+          case P1_FRESHNESS -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P1_FRESHNESS;
+          case P2_REPAIR -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P2_REPAIR;
+          case P3_BACKGROUND -> ai.floedb.floecat.reconciler.rpc.PriorityClass.PC_P3_BACKGROUND;
+        };
     return ai.floedb.floecat.reconciler.rpc.ExecutionPolicy.newBuilder()
         .setExecutionClass(
             switch (effective.executionClass()) {
@@ -628,7 +647,27 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             })
         .setLane(effective.lane())
         .putAllAttributes(effective.attributes())
+        .setPriorityClass(protoPriorityClass)
+        .setPriorityScore(effective.priorityScore())
         .build();
+  }
+
+  private static JobCostHint fromProtoCostHint(ai.floedb.floecat.reconciler.rpc.CostHint hint) {
+    if (hint == null) return JobCostHint.EXPENSIVE;
+    return switch (hint) {
+      case CH_CHEAP -> JobCostHint.CHEAP;
+      case CH_MEDIUM -> JobCostHint.MEDIUM;
+      case CH_EXPENSIVE, COST_HINT_UNSPECIFIED, UNRECOGNIZED -> JobCostHint.EXPENSIVE;
+    };
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.CostHint toProtoCostHint(JobCostHint hint) {
+    if (hint == null) return ai.floedb.floecat.reconciler.rpc.CostHint.COST_HINT_UNSPECIFIED;
+    return switch (hint) {
+      case CHEAP -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_CHEAP;
+      case MEDIUM -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_MEDIUM;
+      case EXPENSIVE -> ai.floedb.floecat.reconciler.rpc.CostHint.CH_EXPENSIVE;
+    };
   }
 
   private static ReconcileScope scopeFromCaptureScope(CaptureScope scope) {
@@ -650,19 +689,20 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .toList(),
         scope.hasCapturePolicy()
             ? ReconcileCapturePolicy.of(
-                scope.getCapturePolicy().getColumnsList().stream()
-                    .map(
-                        column ->
-                            new ReconcileCapturePolicy.Column(
-                                column.getSelector(),
-                                column.getCaptureStats(),
-                                column.getCaptureIndex()))
-                    .toList(),
-                scope.getCapturePolicy().getOutputsList().stream()
-                    .map(ReconcileControlImpl::mapCaptureOutput)
-                    .collect(java.util.stream.Collectors.toSet()),
-                fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
-                scope.getCapturePolicy().getMaxDefaultColumns())
+                    scope.getCapturePolicy().getColumnsList().stream()
+                        .map(
+                            column ->
+                                new ReconcileCapturePolicy.Column(
+                                    column.getSelector(),
+                                    column.getCaptureStats(),
+                                    column.getCaptureIndex()))
+                        .toList(),
+                    scope.getCapturePolicy().getOutputsList().stream()
+                        .map(ReconcileControlImpl::mapCaptureOutput)
+                        .collect(java.util.stream.Collectors.toSet()),
+                    fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
+                    scope.getCapturePolicy().getMaxDefaultColumns())
+                .withMaxCost(fromProtoCostHint(scope.getCapturePolicy().getMaxCost()))
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
