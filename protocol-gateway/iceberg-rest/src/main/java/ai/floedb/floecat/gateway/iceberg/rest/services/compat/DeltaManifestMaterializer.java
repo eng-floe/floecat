@@ -103,6 +103,7 @@ public class DeltaManifestMaterializer {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final PartitionSpec UNPARTITIONED = PartitionSpec.unpartitioned();
   private static final String METADATA_DIR = "metadata";
+  private static final int DEFAULT_COMPAT_FORMAT_VERSION = 2;
 
   @Inject GrpcServiceFacade grpcClient;
   @Inject TableGatewaySupport tableGatewaySupport;
@@ -194,13 +195,18 @@ public class DeltaManifestMaterializer {
 
     CompatTableOperations tableOps =
         new CompatTableOperations(fileIo, tableLocation, metadataRoot, compatMetadataPath);
+    int formatVersion = requiredFormatVersion(schema);
+    Map<String, String> initialProps =
+        formatVersion > DEFAULT_COMPAT_FORMAT_VERSION
+            ? Map.of("format-version", Integer.toString(formatVersion))
+            : Map.of();
     tableOps.initialize(
         TableMetadata.newTableMetadata(
             schema,
             requestedSpec == null ? UNPARTITIONED : requestedSpec,
             SortOrder.unsorted(),
             tableLocation,
-            Map.of()));
+            initialProps));
     PartitionSpec effectiveSpec =
         tableOps.current() == null || tableOps.current().spec() == null
             ? UNPARTITIONED
@@ -232,6 +238,49 @@ public class DeltaManifestMaterializer {
       throw new IllegalStateException("Iceberg transaction did not produce a manifest list");
     }
     return compatTable.currentSnapshot().manifestListLocation();
+  }
+
+  /**
+   * Returns the minimum Iceberg format version the schema can be expressed in. Types such as {@code
+   * variant} (carried over from Delta tables) are only valid from format version 3 onwards;
+   * building {@link TableMetadata} at v2 would otherwise fail {@code Schema.checkCompatibility} and
+   * leave the snapshot without a manifest list.
+   */
+  private static int requiredFormatVersion(Schema schema) {
+    if (schema == null) {
+      return DEFAULT_COMPAT_FORMAT_VERSION;
+    }
+    return requiresV3(schema.asStruct()) ? 3 : DEFAULT_COMPAT_FORMAT_VERSION;
+  }
+
+  private static boolean requiresV3(Type type) {
+    if (type == null) {
+      return false;
+    }
+    switch (type.typeId()) {
+      case VARIANT:
+      case GEOMETRY:
+      case GEOGRAPHY:
+      case TIMESTAMP_NANO:
+        return true;
+      default:
+        break;
+    }
+    if (type.isStructType()) {
+      for (Types.NestedField field : type.asStructType().fields()) {
+        if (requiresV3(field.type())) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (type.isListType()) {
+      return requiresV3(type.asListType().elementType());
+    }
+    if (type.isMapType()) {
+      return requiresV3(type.asMapType().keyType()) || requiresV3(type.asMapType().valueType());
+    }
+    return false;
   }
 
   private List<DeleteFile> buildDeleteFiles(
