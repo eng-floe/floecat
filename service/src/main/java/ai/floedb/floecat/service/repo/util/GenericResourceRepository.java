@@ -26,6 +26,7 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -52,6 +53,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return get(schema.canonicalPointerForKey.apply(key));
   }
 
+  /**
+   * Atomically creates a resource: the canonical (by-id) pointer and every secondary (by-name, …)
+   * pointer are reserved in a single {@link PointerStore#compareAndSetBatch} transaction. Because
+   * the batch is all-or-nothing on both backends, a mid-create storage error (or process death)
+   * leaves <b>zero</b> partial pointer state — there is nothing to roll back and no orphan can be
+   * stranded to poison later creates.
+   *
+   * <p>The blob is written first; it is content-addressed (SHA-256), so a dangling blob after a
+   * failed batch is harmless and deduped on retry.
+   *
+   * <p><b>Idempotency contract</b> (unchanged from the previous sequential implementation):
+   * re-creating a byte-identical resource is a no-op, and a collision against a pointer bound to a
+   * different blob throws {@link NameConflictException} with the same message as before.
+   */
   public void create(T value) {
     K key = schema.keyFromValue.apply(value);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
@@ -60,14 +75,51 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     putBlob(blobUri, value);
 
     Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
-    List<String> kvPairs = new ArrayList<>(2 + 2 * secondaries.size());
-    kvPairs.add(canonicalPointer);
-    kvPairs.add(blobUri);
-    for (String secondaryPtr : secondaries.values()) {
-      kvPairs.add(secondaryPtr);
-      kvPairs.add(blobUri);
+    // Canonical first, then secondaries, de-duplicated: some schemas (e.g. snapshots) expose the
+    // canonical by-id pointer as a secondary too, and a transactional batch must not contain two
+    // operations on the same key (DynamoDB rejects duplicate items within a transaction). All ops
+    // for a given key target the same blob, so dropping the duplicate is loss-free.
+    LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
+    uniqueKeys.add(canonicalPointer);
+    uniqueKeys.addAll(secondaries.values());
+    List<String> pointerKeys = new ArrayList<>(uniqueKeys);
+
+    List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+    for (String pointerKey : pointerKeys) {
+      Pointer reserve =
+          Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(1L).build();
+      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve));
     }
-    reserveAllOrRollback(kvPairs.toArray(String[]::new));
+
+    if (pointerStore.compareAndSetBatch(ops)) {
+      return;
+    }
+
+    // The batch committed nothing (atomic) because at least one pointer already existed. Reproduce
+    // the old per-key idempotency classification with a single read-back, walking
+    // canonical-then-secondary order so a conflict reports the same key/message as before.
+    classifyCreateConflict(blobUri, pointerKeys);
+  }
+
+  private void classifyCreateConflict(String blobUri, List<String> pointerKeys) {
+    boolean allBoundToOurBlob = true;
+    for (String pointerKey : pointerKeys) {
+      Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+      if (pointer == null) {
+        allBoundToOurBlob = false;
+        continue;
+      }
+      if (!blobUri.equals(pointer.getBlobUri())) {
+        throw new NameConflictException("pointer bound to different blob: " + pointerKey);
+      }
+    }
+    if (allBoundToOurBlob) {
+      // Every pointer already resolves to our blob: a byte-identical re-create is a no-op.
+      return;
+    }
+    // Some pointers exist and some are absent: a genuinely concurrent or partially-applied state
+    // (e.g. a legacy orphan). Signal the caller to retry rather than papering over it.
+    throw new AbortRetryableException("partial create state for: " + pointerKeys.get(0));
   }
 
   /**
