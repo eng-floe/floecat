@@ -31,14 +31,20 @@ import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
+import io.grpc.Channel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.StreamObserver;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -59,6 +65,9 @@ class QueryScanServiceIT {
 
   @GrpcClient("floecat")
   QueryScanServiceGrpc.QueryScanServiceBlockingStub scan;
+
+  @GrpcClient("floecat")
+  Channel scanChannel;
 
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -416,8 +425,7 @@ class QueryScanServiceIT {
   @Test
   void streamDataBeforeDeletesFails() throws Exception {
     ScanHandle handle = prepareScanHandle("precondition");
-    StatusRuntimeException ex =
-        assertThrows(StatusRuntimeException.class, () -> scan.streamDataFiles(handle).hasNext());
+    StatusRuntimeException ex = assertStreamDataFilesFails(handle);
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
     scan.closeScan(handle);
   }
@@ -435,7 +443,40 @@ class QueryScanServiceIT {
     ScanHandle handle = prepareScanHandle("delete-short");
     scan.streamDeleteFiles(handle);
     // intentionally keep delete stream unsettled (never drained)
-    assertThrows(StatusRuntimeException.class, () -> scan.streamDataFiles(handle).hasNext());
+    StatusRuntimeException ex = assertStreamDataFilesFails(handle);
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
     scan.closeScan(handle);
+  }
+
+  private StatusRuntimeException assertStreamDataFilesFails(ScanHandle handle)
+      throws InterruptedException {
+    CountDownLatch done = new CountDownLatch(1);
+    AtomicBoolean receivedData = new AtomicBoolean();
+    AtomicReference<Throwable> terminalFailure = new AtomicReference<>();
+    QueryScanServiceGrpc.newStub(scanChannel)
+        .streamDataFiles(
+            handle,
+            new StreamObserver<>() {
+              @Override
+              public void onNext(DataFileBatch value) {
+                receivedData.set(true);
+              }
+
+              @Override
+              public void onError(Throwable t) {
+                terminalFailure.set(t);
+                done.countDown();
+              }
+
+              @Override
+              public void onCompleted() {
+                terminalFailure.set(new AssertionError("expected stream failure"));
+                done.countDown();
+              }
+            });
+
+    assertTrue(done.await(5, TimeUnit.SECONDS), "timed out waiting for StreamDataFiles failure");
+    assertFalse(receivedData.get(), "StreamDataFiles emitted data before delete stream completed");
+    return assertInstanceOf(StatusRuntimeException.class, terminalFailure.get());
   }
 }
