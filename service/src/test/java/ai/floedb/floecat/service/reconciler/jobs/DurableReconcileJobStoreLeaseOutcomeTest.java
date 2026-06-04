@@ -126,7 +126,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsTrueForAcceptedTransitions() {
     String succeededJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob succeededLease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob succeededLease = awaitLease("succeeded job lease");
     assertTrue(
         store.applyLeaseOutcome(
             succeededJobId,
@@ -150,7 +150,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             .state);
 
     String cancelledJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob cancelledLease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob cancelledLease = awaitLease("cancelled job lease");
     store.cancel(ACCOUNT_ID, cancelledJobId, "stop");
     assertTrue(
         store.applyLeaseOutcome(
@@ -178,7 +178,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeCancellingSuccessResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling success lease");
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -217,7 +217,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeCancellingFailureResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling failure lease");
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -249,7 +249,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForStaleLeaseEpoch() {
     String jobId = enqueueRoot();
-    store.leaseNext().orElseThrow();
+    awaitLease("stale lease epoch lease");
 
     assertFalse(
         store.applyLeaseOutcome(
@@ -296,7 +296,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForTerminalJob() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob lease = awaitLease("terminal job lease");
     assertTrue(
         store.applyLeaseOutcome(
             jobId,
@@ -340,7 +340,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   void applyLeaseOutcomeReturnsFalseForExpiredLease() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+    ReconcileJobStore.LeasedJob lease = awaitLease("expired lease");
     expireLease(jobId);
 
     assertFalse(
@@ -370,6 +370,10 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   private String enqueueRoot() {
     return store.enqueue(
         ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+  }
+
+  private ReconcileJobStore.LeasedJob awaitLease(String description) {
+    return waitForValue(() -> store.leaseNext().orElse(null), lease -> lease != null, description);
   }
 
   private <T> T waitForValue(
