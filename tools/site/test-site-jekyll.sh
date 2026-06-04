@@ -28,6 +28,7 @@ echo "==> [SITE] building website with Jekyll (${JEKYLL_PAGES_IMAGE})"
 docker run --rm \
   -e "JEKYLL_UID=$(id -u)" \
   -e "JEKYLL_GID=$(id -g)" \
+  -e "JEKYLL_ENV=${JEKYLL_ENV:-development}" \
   -v "${SITE_DIR}:/srv/jekyll" \
   "${JEKYLL_PAGES_IMAGE}" \
   jekyll build
