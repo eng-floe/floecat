@@ -492,8 +492,9 @@ public class RemoteReconcileExecutorPoller {
                     leaseStateUncertain.set(false);
                     cancellationRequested.set(response.cancellationRequested());
                   },
-                  () -> stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor)));
+                  () -> {}));
       if (result.completionHandled) {
+        stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor);
         LOG.infof(
             "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
             lease.accountId,

@@ -867,7 +867,7 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void runLeaseStopsHeartbeatsBeforeHandledCompletionReturns() throws Exception {
+  void runLeaseKeepsHeartbeatsRunningUntilHandledCompletionReturns() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger renewCalls = new AtomicInteger();
@@ -933,8 +933,11 @@ class RemoteReconcileExecutorPollerTest {
     assertTrue(sawHeartbeat.await(5, TimeUnit.SECONDS));
     assertTrue(handledCompletionStarted.await(5, TimeUnit.SECONDS));
     int renewCountAtHandledCompletion = renewCalls.get();
-    Thread.sleep(500L);
-    assertTrue(renewCalls.get() == renewCountAtHandledCompletion);
+    long renewDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (renewCalls.get() <= renewCountAtHandledCompletion && System.nanoTime() < renewDeadline) {
+      Thread.sleep(25L);
+    }
+    assertTrue(renewCalls.get() > renewCountAtHandledCompletion);
     allowHandledCompletion.countDown();
     worker.join(5_000L);
 
@@ -949,13 +952,23 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void runLeaseDoesNotPerformFinalLeaseConfirmationForHandledCompletion() {
+  void runLeaseCanRenewDuringHandledCompletionWithoutExplicitProgress() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    AtomicInteger renewCalls = new AtomicInteger();
+    CountDownLatch handledCompletionStarted = new CountDownLatch(1);
+    CountDownLatch allowHandledCompletion = new CountDownLatch(1);
     ReconcileExecutor executor =
         remoteExecutor(
             "planner",
             context -> {
               context.beforeHandledCompletion().run();
+              handledCompletionStarted.countDown();
+              try {
+                assertTrue(allowHandledCompletion.await(5, TimeUnit.SECONDS));
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
               return ReconcileExecutor.ExecutionResult.successHandled(0, 0, 0, 0, 0, 0, 0, "done");
             });
 
@@ -968,18 +981,36 @@ class RemoteReconcileExecutorPollerTest {
     when(heartbeatConfig.getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class))
         .thenReturn(java.util.Optional.of(10_000L));
     when(heartbeatConfig.getOptionalValue("reconciler.lease-heartbeat-ms", Long.class))
-        .thenReturn(java.util.Optional.of(10_000L));
+        .thenReturn(java.util.Optional.of(200L));
     poller.config = heartbeatConfig;
     poller.workerModeValue = "local";
     poller.init();
 
     RemoteLeasedJob lease = leasedJob("job-no-final-confirm", ReconcileJobKind.PLAN_TABLE);
+    when(client.renew(lease))
+        .thenAnswer(
+            invocation -> {
+              renewCalls.incrementAndGet();
+              return new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false);
+            });
     when(client.cancellationRequested(lease)).thenReturn(false);
+    Thread worker =
+        new Thread(
+            () ->
+                poller.runLease(
+                    new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease)));
+    worker.start();
 
-    poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+    assertTrue(handledCompletionStarted.await(5, TimeUnit.SECONDS));
+    long renewDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (renewCalls.get() == 0 && System.nanoTime() < renewDeadline) {
+      Thread.sleep(25L);
+    }
+    assertTrue(renewCalls.get() > 0);
+    allowHandledCompletion.countDown();
+    worker.join(5_000L);
 
     verify(client).start(lease, "planner");
-    verify(client, never()).renew(lease);
     verify(client, never())
         .complete(
             any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
