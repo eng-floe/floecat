@@ -68,21 +68,31 @@ This lists all metrics currently available in the repository:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.reconcile.admission.deferred.total | COUNTER |  | v1 | Cumulative reconcile jobs deferred at enqueue time per priority class. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.aging.promotions.total | COUNTER |  | v1 | Cumulative starvation-aging promotions in the in-memory job store. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.get_job.total | COUNTER |  | v1 | GetReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.get_settings.total | COUNTER |  | v1 | GetReconcilerSettings request outcomes. | component, operation, result | component, operation, reason, result |
+| floecat.service.reconcile.health_band | GAUGE |  | v1 | Current scheduler health band (0=GREEN 1=YELLOW 2=ORANGE 3=RED). | component, operation | component, operation |
 | floecat.service.reconcile.job.latency | TIMER | ms | v1 | Reconcile job terminal latency by execution mode. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.jobs.cancelling | GAUGE |  | v1 | Current number of reconcile jobs waiting for cancellation. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.queued | GAUGE |  | v1 | Current number of queued reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.running | GAUGE |  | v1 | Current number of running reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.total | COUNTER |  | v1 | Reconcile job terminal outcomes by execution mode. | component, mode, operation, result | component, mode, operation, reason, result |
+| floecat.service.reconcile.lane.wait_ms | GAUGE | ms | v1 | Oldest queued wait time in milliseconds for top lanes (lane_key tag). | component, lane_key, operation | component, lane_key, operation |
 | floecat.service.reconcile.list_jobs.total | COUNTER |  | v1 | ListReconcileJobs request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.planner.enqueue.total | COUNTER |  | v1 | Automatic reconcile planner enqueue decisions by mode. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.planner.tick.latency | TIMER | ms | v1 | Automatic reconcile planner tick latency. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.planner.ticks.total | COUNTER |  | v1 | Automatic reconcile planner tick outcomes. | component, operation, result | component, operation, reason, result |
+| floecat.service.reconcile.queue.depth_by_class | GAUGE |  | v1 | Current number of queued reconcile jobs per priority class. | component, operation, priority_class | component, operation, priority_class |
 | floecat.service.reconcile.queue.oldest_age | GAUGE | ms | v1 | Age in milliseconds of the oldest queued reconcile job. | component, operation | component, operation |
+| floecat.service.reconcile.scheduler.profile | GAUGE |  | v1 | Info gauge identifying the active scheduler profile (value=1). | profile_name | profile_name |
+| floecat.service.reconcile.scoring.score | SUMMARY |  | v1 | Distribution of scheduler priority scores assigned at async enqueue time. | component, operation, priority_class | component, operation, priority_class |
+| floecat.service.reconcile.signal.known.total | COUNTER |  | v1 | Write-side signal throughput: incremented each time a signal value is written to SchedulerSignalIndex. Use to detect write-path failures. | component, operation, signal_type | component, operation, signal_type |
+| floecat.service.reconcile.signal.lookup.miss.total | COUNTER |  | v1 | Scoring-time signal miss: signal was absent when the scheduler read it for scoring. High rates mean scoring is operating on conservative defaults for that signal type. | component, operation, signal_type | component, operation, signal_type |
+| floecat.service.reconcile.signal.unknown.total | COUNTER |  | v1 | Write-side unknown counter: incremented when a signal write carries no real value (for example delta recorded as empty). High rate means upstream source unavailable. | component, operation, signal_type | component, operation, signal_type |
 | floecat.service.reconcile.snapshots_processed.total | COUNTER |  | v1 | Snapshots processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.start_capture.total | COUNTER |  | v1 | StartCapture request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.stats_processed.total | COUNTER |  | v1 | Statistics payloads processed by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

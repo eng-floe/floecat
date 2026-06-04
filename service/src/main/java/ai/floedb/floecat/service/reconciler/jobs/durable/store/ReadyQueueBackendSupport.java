@@ -27,6 +27,7 @@ final class ReadyQueueBackendSupport {
   private static final String READY_EXECUTION_LANE_PARTITION = "reconcile-ready#execution-lane#";
   private static final String READY_PINNED_EXECUTOR_PARTITION = "reconcile-ready#pinned-executor#";
   private static final String READY_JOB_KIND_PARTITION = "reconcile-ready#job-kind#";
+  private static final String READY_PRIORITY_PARTITION = "reconcile-ready#priority#";
 
   private ReadyQueueBackendSupport() {}
 
@@ -55,6 +56,16 @@ final class ReadyQueueBackendSupport {
           normalizedFilterValue.isBlank()
               ? ""
               : Keys.reconcileReadyByJobKindPointerPrefix(normalizedFilterValue);
+      case BY_PRIORITY -> {
+        if (normalizedFilterValue.isBlank()) {
+          yield "";
+        }
+        try {
+          yield Keys.reconcileReadyByPriorityPointerPrefix(Integer.parseInt(normalizedFilterValue));
+        } catch (NumberFormatException ignored) {
+          yield "";
+        }
+      }
     };
   }
 
@@ -79,12 +90,14 @@ final class ReadyQueueBackendSupport {
       String accountId;
       String jobId;
       if (slice.indexType() == ReconcileReadyQueueStore.ReadyIndexType.GLOBAL) {
+        // GLOBAL key: {dueAtMs}/{accountId}/{laneKey}/{jobId} — 4 parts after prefix
         if (parts.length != 4) {
           return null;
         }
         accountId = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
         jobId = URLDecoder.decode(parts[3], StandardCharsets.UTF_8);
       } else {
+        // All secondary indexes (including BY_PRIORITY): {dueAtMs}/{accountId}/{jobId} — 3 parts
         if (parts.length != 3) {
           return null;
         }
@@ -166,16 +179,15 @@ final class ReadyQueueBackendSupport {
       case EXECUTION_LANE -> READY_EXECUTION_LANE_PARTITION + filterValue;
       case PINNED_EXECUTOR -> READY_PINNED_EXECUTOR_PARTITION + filterValue;
       case JOB_KIND -> READY_JOB_KIND_PARTITION + filterValue;
+      case BY_PRIORITY -> READY_PRIORITY_PARTITION + filterValue;
     };
   }
 
   static ReconcileReadyQueueBackend.ReadyQueueSlice sliceForReadyPointerKey(
       String readyPointerKey) {
     String normalized = normalizePointerKey(readyPointerKey);
-    if (normalized.startsWith(normalizePointerKey(Keys.reconcileReadyPointerPrefix()))) {
-      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
-    }
+    // Check all secondary indexes (more specific prefixes) BEFORE checking GLOBAL. The GLOBAL
+    // prefix is a common base for all ready-queue keys, so it must be checked last.
     String filterValue =
         extractEncodedFilterValue(
             normalized, normalizePointerKey(Keys.reconcileReadyByExecutionClassPointerPrefix()));
@@ -203,6 +215,18 @@ final class ReadyQueueBackendSupport {
     if (filterValue != null) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
           ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, filterValue);
+    }
+    filterValue =
+        extractEncodedFilterValue(
+            normalized, normalizePointerKey(Keys.reconcileReadyByPriorityPointerPrefix()));
+    if (filterValue != null) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.BY_PRIORITY, filterValue);
+    }
+    // GLOBAL: checked last — matches any remaining ready-queue key under the base prefix.
+    if (normalized.startsWith(normalizePointerKey(Keys.reconcileReadyPointerPrefix()))) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
     }
     return null;
   }

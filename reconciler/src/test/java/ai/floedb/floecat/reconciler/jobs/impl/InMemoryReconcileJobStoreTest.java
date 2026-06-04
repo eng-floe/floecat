@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import java.util.EnumSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -692,6 +693,126 @@ class InMemoryReconcileJobStoreTest {
       restoreProperty(reclaimMsKey, previousReclaimMs);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Priority-aware dispatch
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void p0JobIsDispatchedBeforeP3JobEnqueuedFirst() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+    // Enqueue P3 first, then P0.
+    var p3Policy =
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.DEFAULT,
+            "",
+            java.util.Map.of(),
+            StatsPriorityClass.P3_BACKGROUND,
+            0L);
+    var p0Policy =
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.DEFAULT,
+            "",
+            java.util.Map.of(),
+            StatsPriorityClass.P0_SYNC,
+            0L);
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        ReconcileJobKind.PLAN_CONNECTOR,
+        null,
+        null,
+        null,
+        null,
+        p3Policy,
+        "",
+        "");
+    store.enqueue(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "tbl2"),
+        ReconcileJobKind.PLAN_CONNECTOR,
+        null,
+        null,
+        null,
+        null,
+        p0Policy,
+        "",
+        "");
+
+    var first = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
+    assertTrue(first.isPresent(), "First lease must succeed");
+    assertEquals(
+        StatsPriorityClass.P0_SYNC,
+        first.get().executionPolicy.priorityClass(),
+        "P0 job must be dispatched first regardless of enqueue order");
+  }
+
+  @Test
+  void higherScoreIsDispatchedBeforeLowerScoreWithinSameClass() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+    // Enqueue low-score P3 first, then high-score P3.
+    var lowScore =
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.DEFAULT,
+            "",
+            java.util.Map.of(),
+            StatsPriorityClass.P3_BACKGROUND,
+            10L);
+    var highScore =
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.DEFAULT,
+            "",
+            java.util.Map.of(),
+            StatsPriorityClass.P3_BACKGROUND,
+            500L);
+    String lowId =
+        store.enqueue(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            null,
+            null,
+            null,
+            lowScore,
+            "",
+            "");
+    String highId =
+        store.enqueue(
+            "acct",
+            "conn2",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.PLAN_CONNECTOR,
+            null,
+            null,
+            null,
+            null,
+            highScore,
+            "",
+            "");
+
+    var first = store.leaseNext(ReconcileJobStore.LeaseRequest.all());
+    assertTrue(first.isPresent());
+    assertEquals(
+        highId,
+        first.get().jobId,
+        "Higher-score job (score=500) must be dispatched before lower-score job (score=10)");
+  }
+
+  // ---------------------------------------------------------------------------
 
   private static void restoreProperty(String key, String value) {
     if (value == null) {

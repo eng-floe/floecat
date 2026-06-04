@@ -51,6 +51,22 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
     Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    // Scheduler-specific tag keys (not in the standard TagKey set).
+    String priorityClassTag = "priority_class";
+    String signalTypeTag = "signal_type";
+    String laneKeyTag = "lane_key";
+    String profileNameTag = "profile_name";
+    Set<String> reconcileQueueByClassRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, priorityClassTag);
+    Set<String> reconcileQueueByClassAllowed = reconcileQueueByClassRequired;
+    Set<String> reconcileSignalRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, signalTypeTag);
+    Set<String> reconcileSignalAllowed = reconcileSignalRequired;
+    Set<String> reconcileLaneRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, laneKeyTag);
+    Set<String> reconcileLaneAllowed = reconcileLaneRequired;
+    Set<String> scoringRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, priorityClassTag);
+    Set<String> scoringAllowed = scoringRequired;
+    Set<String> profileRequired = Set.of(profileNameTag);
+    Set<String> profileAllowed = profileRequired;
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsAllowed =
         Set.of(
@@ -225,6 +241,71 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         reconcileQueueRequired,
         reconcileQueueAllowed,
         "Age in milliseconds of the oldest queued reconcile job.");
+    // Scheduler priority-queue metrics (added with scheduler implementation).
+    add(
+        defs,
+        ServiceMetrics.Reconcile.QUEUE_DEPTH_BY_CLASS,
+        reconcileQueueByClassRequired,
+        reconcileQueueByClassAllowed,
+        "Current number of queued reconcile jobs per priority class.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.HEALTH_BAND,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current scheduler health band (0=GREEN 1=YELLOW 2=ORANGE 3=RED).");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.ADMISSION_DEFERRED,
+        reconcileQueueByClassRequired,
+        reconcileQueueByClassAllowed,
+        "Cumulative reconcile jobs deferred at enqueue time per priority class.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.AGING_PROMOTIONS,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Cumulative starvation-aging promotions in the in-memory job store.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LANE_WAIT_MS,
+        reconcileLaneRequired,
+        reconcileLaneAllowed,
+        "Oldest queued wait time in milliseconds for top lanes (lane_key tag).");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SCORING_SCORE_DIST,
+        scoringRequired,
+        scoringAllowed,
+        "Distribution of scheduler priority scores assigned at async enqueue time.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.POLICY_PROFILE,
+        profileRequired,
+        profileAllowed,
+        "Info gauge identifying the active scheduler profile (value=1).");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SIGNAL_KNOWN,
+        reconcileSignalRequired,
+        reconcileSignalAllowed,
+        "Write-side signal throughput: incremented each time a signal value is written to"
+            + " SchedulerSignalIndex. Use to detect write-path failures.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SIGNAL_UNKNOWN,
+        reconcileSignalRequired,
+        reconcileSignalAllowed,
+        "Write-side unknown counter: incremented when a signal write carries no real value"
+            + " (for example delta recorded as empty). High rate means upstream source"
+            + " unavailable.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SIGNAL_LOOKUP_MISS,
+        reconcileSignalRequired,
+        reconcileSignalAllowed,
+        "Scoring-time signal miss: signal was absent when the scheduler read it for scoring."
+            + " High rates mean scoring is operating on conservative defaults for that signal type.");
     add(
         defs,
         ServiceMetrics.Reconcile.PLANNER_TICKS,

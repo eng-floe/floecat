@@ -39,12 +39,13 @@ class StatsSyncCaptureTest {
   @Test
   void returnsCapturedWhenJobSucceeds() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(jobStore.get("acct", "job-1")).thenReturn(Optional.of(job("JS_SUCCEEDED")));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+    StatsSyncOutcome outcome =
+        capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.CAPTURED);
   }
@@ -52,12 +53,13 @@ class StatsSyncCaptureTest {
   @Test
   void returnsFailedWhenJobFails() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(jobStore.get("acct", "job-1")).thenReturn(Optional.of(job("JS_FAILED")));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+    StatsSyncOutcome outcome =
+        capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
   }
@@ -65,12 +67,13 @@ class StatsSyncCaptureTest {
   @Test
   void returnsFailedWhenJobCancelled() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(jobStore.get("acct", "job-1")).thenReturn(Optional.of(job("JS_CANCELLED")));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+    StatsSyncOutcome outcome =
+        capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
   }
@@ -78,11 +81,12 @@ class StatsSyncCaptureTest {
   @Test
   void returnsFailedWhenEnqueueThrows() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenThrow(new RuntimeException("store unavailable"));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+    StatsSyncOutcome outcome =
+        capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
   }
@@ -90,12 +94,13 @@ class StatsSyncCaptureTest {
   @Test
   void returnsFailedWhenJobDisappears() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(jobStore.get("acct", "job-1")).thenReturn(Optional.empty());
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+    StatsSyncOutcome outcome =
+        capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
   }
@@ -103,14 +108,14 @@ class StatsSyncCaptureTest {
   @Test
   void returnsTimeoutWhenBudgetExhaustedBeforeTerminal() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     // Job stays running indefinitely.
     when(jobStore.get("acct", "job-1")).thenReturn(Optional.of(job("JS_RUNNING")));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore);
     // Tiny budget so it times out immediately.
-    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofNanos(1));
+    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofNanos(1), null);
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.TIMEOUT);
   }

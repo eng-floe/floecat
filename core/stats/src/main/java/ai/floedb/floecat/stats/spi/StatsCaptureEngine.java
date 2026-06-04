@@ -58,6 +58,21 @@ public interface StatsCaptureEngine {
     return capabilities().supports(request);
   }
 
+  /**
+   * Cost estimate for capturing the given request. Called at enqueue time — must be cheap, no I/O.
+   * The scheduler uses this to prefer high value-per-cost captures within the same priority class.
+   * The executor uses the corresponding {@link
+   * ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy#maxCost()} to skip this engine when
+   * operating under a cost budget.
+   *
+   * <p>Default: {@link JobCostHint#MEDIUM}. Engines that perform only Parquet footer reads should
+   * override and return {@link JobCostHint#CHEAP}. Engines performing full column scans or
+   * generating page-level indexes should return {@link JobCostHint#EXPENSIVE}.
+   */
+  default JobCostHint estimatedCost(StatsCaptureRequest request) {
+    return JobCostHint.MEDIUM;
+  }
+
   /** Attempts to capture stats for the request. */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
 

@@ -42,6 +42,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -1255,10 +1256,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutionPolicy.defaults(),
         parentJobId,
         "");
+    // For PARQUET_PAGE_INDEX captures, the file result must include an index artifact.
+    // An empty artifact would indicate an incomplete capture (fix for artifact completeness check).
     store.persistFileGroupResult(
         childJobId,
         group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
+            List.of(
+                ReconcileFileResult.succeeded(
+                    "s3://bucket/data/file-1.parquet",
+                    0L,
+                    ReconcileIndexArtifactResult.of(
+                        "s3://artifacts/file-1.parquet.index", "parquet-page-index", 1)))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(

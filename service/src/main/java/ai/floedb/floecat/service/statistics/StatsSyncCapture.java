@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.statistics;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
@@ -49,16 +50,30 @@ class StatsSyncCapture {
   /**
    * Enqueues a scoped capture job and waits for it to reach a terminal state within {@code budget}.
    *
+   * <p>The {@code executionPolicy} controls priority-class dispatch. Callers on the query-time sync
+   * path must pass a policy with {@link ai.floedb.floecat.stats.spi.StatsPriorityClass#P0_SYNC} so
+   * the job is dispatched ahead of any async backlog.
+   *
    * @return {@link StatsSyncOutcome#CAPTURED} on success, {@link StatsSyncOutcome#TIMEOUT} if the
    *     budget elapsed before completion, {@link StatsSyncOutcome#FAILED} on any error or
    *     cancellation
    */
   StatsSyncOutcome capture(
-      String accountId, String connectorId, ReconcileScope scope, Duration budget) {
+      String accountId,
+      String connectorId,
+      ReconcileScope scope,
+      Duration budget,
+      ReconcileExecutionPolicy executionPolicy) {
     try {
       String jobId =
           reconcileJobStore.enqueue(
-              accountId, connectorId, false, ReconcilerService.CaptureMode.CAPTURE_ONLY, scope);
+              accountId,
+              connectorId,
+              false,
+              ReconcilerService.CaptureMode.CAPTURE_ONLY,
+              scope,
+              executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy,
+              "");
       LOG.debugf(
           "stats_sync_capture enqueued account=%s connector=%s job=%s budget=%s",
           accountId, connectorId, jobId, budget);

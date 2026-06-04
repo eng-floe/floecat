@@ -65,6 +65,12 @@
       <groupId>io.delta</groupId>
       <artifactId>delta-kernel-defaults</artifactId>
       <version>${version.delta.kernel.api}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-slf4j2-impl</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <dependency>

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.spi.capture;
 
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import java.util.Optional;
 
 /** Unified SPI for file-group scoped capture that may produce stats, index data, or both. */
@@ -30,6 +31,17 @@ public interface CaptureEngine {
 
   default boolean supports(CaptureEngineRequest request) {
     return capabilities().supports(request);
+  }
+
+  /**
+   * Cost estimate for capturing the given request. Default: {@link JobCostHint#EXPENSIVE} —
+   * file-group scoped engines typically perform full Parquet file reads.
+   *
+   * <p>Engines that do only footer reads should override and return {@link JobCostHint#CHEAP} or
+   * {@link JobCostHint#MEDIUM}.
+   */
+  default JobCostHint estimatedCost(CaptureEngineRequest request) {
+    return JobCostHint.EXPENSIVE;
   }
 
   Optional<CaptureEngineResult> capture(CaptureEngineRequest request);

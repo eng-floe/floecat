@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.stats.spi.JobCostHint;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -53,19 +54,26 @@ public final class ReconcileCapturePolicy {
 
   private static final ReconcileCapturePolicy EMPTY =
       new ReconcileCapturePolicy(
-          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
+          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS, null);
 
   private final List<Column> columns;
   private final Set<Output> outputs;
   private final DefaultColumnScope defaultColumnScope;
   private final int maxDefaultColumns;
 
+  /**
+   * Cost budget for this capture job. Engines whose {@code estimatedCost()} exceeds this hint are
+   * skipped. Defaults to {@link JobCostHint#EXPENSIVE} (no restriction).
+   */
+  private final JobCostHint maxCost;
+
   @JsonCreator
   private ReconcileCapturePolicy(
       @JsonProperty("columns") List<Column> columns,
       @JsonProperty("outputs") Set<Output> outputs,
       @JsonProperty("defaultColumnScope") DefaultColumnScope defaultColumnScope,
-      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns) {
+      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns,
+      @JsonProperty("maxCost") JobCostHint maxCost) {
     this.columns =
         columns == null
             ? List.of()
@@ -84,6 +92,7 @@ public final class ReconcileCapturePolicy {
         maxDefaultColumns == null || maxDefaultColumns <= 0
             ? DEFAULT_MAX_COLUMNS
             : maxDefaultColumns;
+    this.maxCost = maxCost == null ? JobCostHint.EXPENSIVE : maxCost;
   }
 
   public static ReconcileCapturePolicy empty() {
@@ -102,7 +111,14 @@ public final class ReconcileCapturePolicy {
     if ((columns == null || columns.isEmpty()) && (outputs == null || outputs.isEmpty())) {
       return EMPTY;
     }
-    return new ReconcileCapturePolicy(columns, outputs, defaultColumnScope, maxDefaultColumns);
+    return new ReconcileCapturePolicy(
+        columns, outputs, defaultColumnScope, maxDefaultColumns, null);
+  }
+
+  /** Returns a copy of this policy with the specified {@code maxCost} budget. */
+  public ReconcileCapturePolicy withMaxCost(JobCostHint maxCost) {
+    return new ReconcileCapturePolicy(
+        columns, outputs, defaultColumnScope, maxDefaultColumns, maxCost);
   }
 
   @JsonProperty("columns")
@@ -123,6 +139,11 @@ public final class ReconcileCapturePolicy {
   @JsonProperty("maxDefaultColumns")
   public int maxDefaultColumns() {
     return maxDefaultColumns;
+  }
+
+  @JsonProperty("maxCost")
+  public JobCostHint maxCost() {
+    return maxCost;
   }
 
   @JsonIgnore

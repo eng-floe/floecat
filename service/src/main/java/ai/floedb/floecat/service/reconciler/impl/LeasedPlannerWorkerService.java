@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -32,18 +33,32 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerPolicyRegistry;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class LeasedPlannerWorkerService {
+  private static final Logger LOG = Logger.getLogger(LeasedPlannerWorkerService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject Instance<SchedulerPolicyRegistry> schedulerRegistryInstance;
+
+  @Inject
+  Instance<ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex> signalIndexInstance;
+
+  @Inject Instance<SnapshotRepository> snapshotRepoInstance;
 
   record PlanConnectorPayload(
       String jobId,
@@ -129,6 +144,10 @@ public class LeasedPlannerWorkerService {
             .count();
     java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
         new java.util.ArrayList<>((int) (plannedTableJobs + plannedViewJobs));
+    // Use childExecutionPolicy() — not effectiveExecutionPolicy() — so scheduler-internal
+    // attributes like policy_deferred are stripped before they reach child jobs. Each child
+    // must be evaluated against the admission policy independently at its own enqueue time.
+    ReconcileExecutionPolicy childPolicy = childExecutionPolicy(lease);
     for (PlannedViewJob viewJob : nullToEmpty(viewJobs)) {
       if (viewJob == null || viewJob.viewTask().isEmpty()) {
         continue;
@@ -145,7 +164,7 @@ public class LeasedPlannerWorkerService {
               viewJob.viewTask(),
               ReconcileSnapshotTask.empty(),
               ReconcileFileGroupTask.empty(),
-              effectiveExecutionPolicy(lease),
+              childPolicy,
               lease.jobId,
               ""));
     }
@@ -165,7 +184,7 @@ public class LeasedPlannerWorkerService {
               ReconcileViewTask.empty(),
               ReconcileSnapshotTask.empty(),
               ReconcileFileGroupTask.empty(),
-              effectiveExecutionPolicy(lease),
+              childPolicy,
               lease.jobId,
               ""));
     }
@@ -244,6 +263,20 @@ public class LeasedPlannerWorkerService {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
       }
+      // PLAN_SNAPSHOT jobs always represent freshly discovered snapshots → P1_FRESHNESS.
+      ReconcileExecutionPolicy snapshotPolicy =
+          assignForReconcileJobSafe(
+              ReconcileJobKind.PLAN_SNAPSHOT,
+              snapshotJob.snapshotTask().tableId(),
+              snapshotJob.snapshotTask().snapshotId(),
+              /* isNewSnapshot= */ true,
+              effectiveExecutionPolicy(lease));
+      // Record delta signal for this snapshot (unknown at planning time; signals
+      // the snapshot as discovered so the delta dimension can be updated later).
+      recordSnapshotDeltaSafe(
+          lease.accountId,
+          snapshotJob.snapshotTask().tableId(),
+          snapshotJob.snapshotTask().snapshotId());
       jobs.enqueueSnapshotPlan(
           lease.accountId,
           lease.connectorId,
@@ -251,7 +284,7 @@ public class LeasedPlannerWorkerService {
           lease.captureMode,
           snapshotJob.scope(),
           snapshotJob.snapshotTask(),
-          effectiveExecutionPolicy(lease),
+          snapshotPolicy,
           lease.jobId,
           lease.pinnedExecutorId);
     }
@@ -773,11 +806,171 @@ public class LeasedPlannerWorkerService {
     return lease == null || lease.scope == null ? ReconcileScope.empty() : lease.scope;
   }
 
-  private static ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy
-      effectiveExecutionPolicy(ReconcileJobStore.LeasedJob lease) {
+  private static ReconcileExecutionPolicy effectiveExecutionPolicy(
+      ReconcileJobStore.LeasedJob lease) {
     return lease == null || lease.executionPolicy == null
-        ? ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.defaults()
+        ? ReconcileExecutionPolicy.defaults()
         : lease.executionPolicy;
+  }
+
+  /**
+   * Returns a child execution policy derived from the parent lease, with scheduler-internal
+   * attributes stripped. Used for PLAN_TABLE and PLAN_VIEW children of PLAN_CONNECTOR jobs so that
+   * the parent's {@code policy_deferred} flag is not inherited — each child is evaluated against
+   * the admission policy independently at its own enqueue time.
+   */
+  private static ReconcileExecutionPolicy childExecutionPolicy(ReconcileJobStore.LeasedJob lease) {
+    ReconcileExecutionPolicy parent = effectiveExecutionPolicy(lease);
+    java.util.Map<String, String> stripped = strippedChildAttributes(parent);
+    // If no stripping was needed, reuse the parent instance to avoid allocation.
+    if (stripped == parent.attributes()) {
+      return parent;
+    }
+    return ReconcileExecutionPolicy.of(
+        parent.priorityClass(), parent.lane(), stripped, parent.priorityScore());
+  }
+
+  /**
+   * Calls the scheduler priority policy's {@code assignForReconcileJob()} and builds a {@link
+   * ReconcileExecutionPolicy} from the result. Falls back to the parent lease's policy (with the
+   * class overridden to {@link StatsPriorityClass#P1_FRESHNESS} for new snapshots) when no registry
+   * is configured or the call throws.
+   */
+  private ReconcileExecutionPolicy assignForReconcileJobSafe(
+      ReconcileJobKind kind,
+      String tableId,
+      long snapshotId,
+      boolean isNewSnapshot,
+      ReconcileExecutionPolicy parentPolicy) {
+    try {
+      SchedulerPolicyRegistry registry =
+          schedulerRegistryInstance == null || schedulerRegistryInstance.isUnsatisfied()
+              ? null
+              : schedulerRegistryInstance.get();
+      if (registry != null) {
+        var assignment =
+            registry
+                .activePriorityPolicy()
+                .assignForReconcileJob(
+                    kind.name(), tableId, snapshotId, isNewSnapshot, registry.activeContext());
+        return ReconcileExecutionPolicy.of(
+            assignment.priorityClass(),
+            assignment.laneKey(),
+            strippedChildAttributes(parentPolicy),
+            assignment.score());
+      }
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e, "assignForReconcileJob failed for kind=%s table=%s; using fallback", kind, tableId);
+    }
+    // Fallback: P1_FRESHNESS for new snapshots, otherwise inherit parent class.
+    StatsPriorityClass cls =
+        isNewSnapshot
+            ? StatsPriorityClass.P1_FRESHNESS
+            : (parentPolicy != null
+                ? parentPolicy.priorityClass()
+                : StatsPriorityClass.P3_BACKGROUND);
+    String laneKey = tableId;
+    return ReconcileExecutionPolicy.of(cls, laneKey, strippedChildAttributes(parentPolicy), 0L);
+  }
+
+  /**
+   * Attempts to compute and record the snapshot delta row count in {@link
+   * ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex}. Uses current and parent
+   * snapshot {@code total-records} summaries when available; falls back to unknown on any missing
+   * field/parse error.
+   *
+   * <p>This is best-effort only and must never fail planner success persistence.
+   */
+  private void recordSnapshotDeltaSafe(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    if (snapshotRepoInstance == null || snapshotRepoInstance.isUnsatisfied()) {
+      return;
+    }
+    try {
+      SnapshotRepository snapshotRepo = snapshotRepoInstance.get();
+      var signalIndex = signalIndexInstance.get();
+      ResourceId tableResourceId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build();
+      var currentOpt = snapshotRepo.getById(tableResourceId, snapshotId);
+      if (currentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      var current = currentOpt.get();
+      String currentTotalRaw = current.getSummaryMap().get("total-records");
+      if (currentTotalRaw == null || currentTotalRaw.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long currentTotal;
+      try {
+        currentTotal = Long.parseLong(currentTotalRaw.trim());
+      } catch (NumberFormatException ignored) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      if (!current.hasParentSnapshotId()) {
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      var parentOpt = snapshotRepo.getById(tableResourceId, current.getParentSnapshotId());
+      if (parentOpt.isEmpty()) {
+        signalIndex.recordSnapshotDelta(
+            accountId, tableId, snapshotId, OptionalLong.of(currentTotal));
+        return;
+      }
+      String parentTotalRaw = parentOpt.get().getSummaryMap().get("total-records");
+      if (parentTotalRaw == null || parentTotalRaw.isBlank()) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      long parentTotal;
+      try {
+        parentTotal = Long.parseLong(parentTotalRaw.trim());
+      } catch (NumberFormatException ignored) {
+        signalIndex.recordSnapshotDelta(accountId, tableId, snapshotId, OptionalLong.empty());
+        return;
+      }
+      signalIndex.recordSnapshotDelta(
+          accountId, tableId, snapshotId, OptionalLong.of(Math.abs(currentTotal - parentTotal)));
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "scheduler_signal_index error computing snapshot delta table=%s snap=%d",
+          tableId,
+          snapshotId);
+    }
+  }
+
+  /**
+   * Returns a copy of the parent policy's attributes with scheduler-internal keys stripped. {@code
+   * policy_deferred} is an admission-control decision specific to the parent job's enqueue context
+   * — child jobs must be evaluated independently and must not inherit a stale deferral flag from
+   * their parent.
+   */
+  private static java.util.Map<String, String> strippedChildAttributes(
+      ReconcileExecutionPolicy parentPolicy) {
+    if (parentPolicy == null || parentPolicy.attributes().isEmpty()) {
+      return java.util.Map.of();
+    }
+    if (!parentPolicy
+        .attributes()
+        .containsKey(
+            ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED)) {
+      return parentPolicy.attributes(); // fast path — no stripping needed
+    }
+    java.util.Map<String, String> stripped = new java.util.HashMap<>(parentPolicy.attributes());
+    stripped.remove(
+        ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers.ATTR_POLICY_DEFERRED);
+    return java.util.Map.copyOf(stripped);
   }
 
   private static String blankToEmpty(String value) {

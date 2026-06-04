@@ -29,6 +29,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerBandState;
+import ai.floedb.floecat.reconciler.jobs.impl.SchedulerStoreHelpers;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -38,6 +40,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobInd
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
@@ -71,6 +74,14 @@ public class ReconcileJobEnqueuer {
   private ReadyPointerKeyForDue readyPointerKeyForDue;
   private ResultPayloadWriter writeFileGroupResultPayload;
 
+  /** Nullable — when null, no admission deferral is applied (conservative/safe). */
+  private SchedulerBandState bandState;
+
+  /** Nullable — incremented on each deferred enqueue for metrics. May be null. */
+  private java.util.concurrent.ConcurrentHashMap<
+          StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+      admissionDeferredByClass;
+
   @FunctionalInterface
   public interface ReadyPointerKeyForDue {
     String apply(String accountId, String laneKey, String jobId, long dueAtMs);
@@ -98,6 +109,19 @@ public class ReconcileJobEnqueuer {
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
     this.writeFileGroupResultPayload = writeFileGroupResultPayload;
+  }
+
+  /**
+   * Attaches the health-band state and admission counters. Must be called after {@link #bind} when
+   * the owning store wants store-level admission deferral.
+   */
+  public void bindSchedulerState(
+      SchedulerBandState bandState,
+      java.util.concurrent.ConcurrentHashMap<
+              StatsPriorityClass, java.util.concurrent.atomic.AtomicLong>
+          admissionDeferredByClass) {
+    this.bandState = bandState;
+    this.admissionDeferredByClass = admissionDeferredByClass;
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
@@ -419,7 +443,27 @@ public class ReconcileJobEnqueuer {
     rec.projectionAppliedGeneration = 0L;
     rec.state = "JS_QUEUED";
     rec.message = fullRescan ? "Queued (full)" : "Queued";
-    rec.nextAttemptAtMs = now;
+    // Persist priority class + score from the execution policy into the stored record.
+    rec.priorityClass = policy.priorityClass().name();
+    rec.priorityScore = policy.priorityScore();
+    // Apply store-level admission deferral if a SchedulerBandState is wired in.
+    long deferMs = 0L;
+    if (bandState != null) {
+      boolean policyDeferred =
+          SchedulerStoreHelpers.ATTR_POLICY_DEFERRED.equals(
+              policy.attributes().get(SchedulerStoreHelpers.ATTR_POLICY_DEFERRED));
+      deferMs =
+          SchedulerStoreHelpers.admissionDeferMs(
+              policy.priorityClass(), bandState.current(), policyDeferred);
+      if (deferMs > 0L && admissionDeferredByClass != null) {
+        java.util.concurrent.atomic.AtomicLong counter =
+            admissionDeferredByClass.get(policy.priorityClass());
+        if (counter != null) {
+          counter.incrementAndGet();
+        }
+      }
+    }
+    rec.nextAttemptAtMs = now + deferMs;
     rec.attempt = 0;
     rec.laneKey = laneKey;
     rec.dedupeKeyHash = dedupeKeyHash;
@@ -820,7 +864,9 @@ public class ReconcileJobEnqueuer {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + policy.maxCost().name();
   }
 
   private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {

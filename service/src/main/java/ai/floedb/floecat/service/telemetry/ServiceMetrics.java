@@ -166,6 +166,101 @@ public final class ServiceMetrics {
             "ms",
             CONTRACT,
             "service");
+
+    /**
+     * Per-priority-class depth of the ready queue. Tag: {@code priority_class} (p0_sync, etc.).
+     * Autoscaler hook: when class depth grows, dispatch capacity should increase.
+     */
+    public static final MetricId QUEUE_DEPTH_BY_CLASS =
+        new MetricId(
+            "floecat.service.reconcile.queue.depth_by_class",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Current health band (0=GREEN, 1=YELLOW, 2=ORANGE, 3=RED). This is the primary autoscaler
+     * signal — alert when value ≥ 2 (ORANGE).
+     */
+    public static final MetricId HEALTH_BAND =
+        new MetricId(
+            "floecat.service.reconcile.health_band", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Cumulative number of jobs deferred at enqueue due to admission control. Tag: priority_class.
+     */
+    public static final MetricId ADMISSION_DEFERRED =
+        new MetricId(
+            "floecat.service.reconcile.admission.deferred.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Cumulative number of starvation-aging promotions. A sustained rate indicates P3 starvation.
+     */
+    public static final MetricId AGING_PROMOTIONS =
+        new MetricId(
+            "floecat.service.reconcile.aging.promotions.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Oldest queued wait time (ms) for hot lanes currently in the top-lane snapshot. Tag: lane_key.
+     */
+    public static final MetricId LANE_WAIT_MS =
+        new MetricId(
+            "floecat.service.reconcile.lane.wait_ms", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    /**
+     * Write-side signal throughput counter: incremented each time a signal value is written to
+     * SchedulerSignalIndex (e.g. on snapshot finalization or coverage recording). Tag: signal_type.
+     * Use to detect write-path failures. For scoring-time availability, see {@link
+     * #SIGNAL_LOOKUP_MISS}.
+     */
+    public static final MetricId SIGNAL_KNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.known.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Write-side unknown counter: incremented when a signal write carries no real value (e.g. delta
+     * recorded as {@code OptionalLong.empty()} because the planner has no row-count data). Tag:
+     * signal_type. A sustained rate indicates the upstream value source is unavailable. For
+     * scoring-time misses, see {@link #SIGNAL_LOOKUP_MISS}.
+     */
+    public static final MetricId SIGNAL_UNKNOWN =
+        new MetricId(
+            "floecat.service.reconcile.signal.unknown.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Scoring-time signal miss: incremented when a scoring read ({@code lastSuccessfulCaptureMs},
+     * {@code coverageLevel}, {@code snapshotDeltaRows}) found no signal and fell back to the
+     * conservative default. Tag: {@code signal_type}. Sustained high rates mean the scoring path is
+     * operating blind for that signal type.
+     *
+     * <p>Complements {@link #SIGNAL_KNOWN}/{@link #SIGNAL_UNKNOWN} which measure write throughput;
+     * this metric measures read-side availability at actual scoring time.
+     */
+    public static final MetricId SIGNAL_LOOKUP_MISS =
+        new MetricId(
+            "floecat.service.reconcile.signal.lookup.miss.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
     public static final MetricId PLANNER_TICKS =
         new MetricId(
             "floecat.service.reconcile.planner.ticks.total",
@@ -184,6 +279,27 @@ public final class ServiceMetrics {
         new MetricId(
             "floecat.service.reconcile.planner.enqueue.total",
             MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Distribution of priority scores emitted by the active {@link
+     * ai.floedb.floecat.service.statistics.scheduler.SchedulerPriorityPolicy}. Tag: {@code
+     * priority_class}. Range: [0, 1000].
+     */
+    public static final MetricId SCORING_SCORE_DIST =
+        new MetricId(
+            "floecat.service.reconcile.scoring.score", MetricType.SUMMARY, "", CONTRACT, "service");
+
+    /**
+     * Constant-1 gauge whose {@code profile_name} tag reports the active scheduler profile. Useful
+     * for dashboards and alerting rules that need to know which profile is loaded.
+     */
+    public static final MetricId POLICY_PROFILE =
+        new MetricId(
+            "floecat.service.reconcile.scheduler.profile",
+            MetricType.GAUGE,
             "",
             CONTRACT,
             "service");

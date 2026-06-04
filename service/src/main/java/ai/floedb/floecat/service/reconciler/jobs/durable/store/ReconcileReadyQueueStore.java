@@ -29,7 +29,14 @@ public interface ReconcileReadyQueueStore {
     EXECUTION_CLASS,
     EXECUTION_LANE,
     PINNED_EXECUTOR,
-    JOB_KIND
+    JOB_KIND,
+    /**
+     * Priority-class index. One slice per {@link
+     * ai.floedb.floecat.reconciler.jobs.StatsPriorityClass#order} value (0–3). Filter value is the
+     * order as a decimal string (e.g. {@code "0"} for P0_SYNC). Scanned before GLOBAL and all other
+     * secondary indexes to guarantee P0 jobs are dispatched first.
+     */
+    BY_PRIORITY
   }
 
   final class LeaseScanStats {

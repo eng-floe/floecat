@@ -83,6 +83,8 @@ message CapturePolicy {
   repeated CaptureOutput outputs = 2;
   DefaultColumnScope default_column_scope = 3;
   uint32 max_default_columns = 4;
+  // Cost budget ceiling. UNSPECIFIED (wire default) maps to EXPENSIVE (no restriction).
+  CostHint max_cost = 5;
 }
 
 enum SnapshotSelectionKind {
@@ -245,6 +247,24 @@ message ReconcileFileGroupTask {
   repeated ReconcileFileResult file_results = 6;
 }
 
+// Priority class for stats reconcile jobs. Wire-safe default UNSPECIFIED maps to P3_BACKGROUND.
+// Enum ordinal values are stable — do not reorder or remove values.
+enum PriorityClass {
+  PRIORITY_CLASS_UNSPECIFIED = 0;  // wire default → P3_BACKGROUND in mapper
+  PC_P0_SYNC        = 1;
+  PC_P1_FRESHNESS   = 2;
+  PC_P2_REPAIR      = 3;
+  PC_P3_BACKGROUND  = 4;
+}
+
+// Cost hint for a capture job. Wire-safe default UNSPECIFIED maps to EXPENSIVE.
+enum CostHint {
+  COST_HINT_UNSPECIFIED = 0;  // wire default → EXPENSIVE in mapper
+  CH_CHEAP              = 1;
+  CH_MEDIUM             = 2;
+  CH_EXPENSIVE          = 3;
+}
+
 // Scheduler hints that influence where and how a reconcile job should run.
 message ExecutionPolicy {
   // Broad execution category used for matching jobs to executors.
@@ -253,6 +273,10 @@ message ExecutionPolicy {
   string lane = 2;
   // Free-form scheduler hints such as region, tenant, or implementation-specific labels.
   map<string, string> attributes = 3;
+  // Priority class. UNSPECIFIED (wire default) maps to P3_BACKGROUND.
+  PriorityClass priority_class = 4;
+  // Priority score within the class (higher = dispatched first). Default 0.
+  uint64 priority_score = 5;
 }
 
 // Synchronous reconcile request intended for immediate execution in the caller's RPC.

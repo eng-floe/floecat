@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.List;
@@ -71,8 +72,29 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       if (leased.isPresent()) {
         return leased;
       }
+      // P0 guard: after attempting the P0 slice with no result, peek to distinguish
+      // "empty P0" (fall-through is fine) from "blocked P0" (preserve executor capacity).
+      // A single-entry head scan is cheap — the index is already in the read path.
+      if (isP0Selection(selection)) {
+        ReadyQueueScanPage peek = readyQueueBackend.scanReadySlice(selection.slice(), 1, "");
+        if (!peek.entries().isEmpty()) {
+          // P0 has ready entries but none were leasable by this executor. Return empty so
+          // the executor retries instead of stealing a slot with lower-priority work.
+          return Optional.empty();
+        }
+      }
     }
     return Optional.empty();
+  }
+
+  /**
+   * Returns {@code true} iff {@code selection} targets the BY_PRIORITY/P0 slice — i.e. the slice
+   * reserved for {@link ai.floedb.floecat.stats.spi.StatsPriorityClass#P0_SYNC} jobs.
+   */
+  private static boolean isP0Selection(ReadyIndexSelection selection) {
+    return selection.slice().indexType() == ReconcileReadyQueueStore.ReadyIndexType.BY_PRIORITY
+        && String.valueOf(ai.floedb.floecat.stats.spi.StatsPriorityClass.P0_SYNC.order)
+            .equals(selection.slice().filterValue());
   }
 
   public boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request) {
@@ -128,6 +150,17 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
               ? ""
               : Keys.reconcileReadyByJobKindPointerByDue(
                   dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
+      case BY_PRIORITY -> {
+        if (normalizedFilterValue.isBlank()) {
+          yield "";
+        }
+        try {
+          yield Keys.reconcileReadyByPriorityPointerByDue(
+              Integer.parseInt(normalizedFilterValue), dueAtMs, record.accountId, record.jobId);
+        } catch (NumberFormatException ignored) {
+          yield "";
+        }
+      }
     };
   }
 
@@ -139,6 +172,13 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
     List<String> readyKeys = new ArrayList<>();
     readyKeys.add(readyPointerKeyFor(record, dueAtMs));
+    // BY_PRIORITY index: always added so the lease scanner can dispatch by priority class order.
+    String priorityReadyKey =
+        Keys.reconcileReadyByPriorityPointerByDue(
+            record.priorityClass().order, dueAtMs, record.accountId, record.jobId);
+    if (!priorityReadyKey.isBlank()) {
+      readyKeys.add(priorityReadyKey);
+    }
     String executionClassReadyKey =
         readyPointerKeyFor(
             record,
@@ -171,79 +211,135 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
-    String token = "";
-    int pages = 0;
-    while (true) {
-      if (scanStats != null) {
-        scanStats.scanCount++;
-      }
-      ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
-      if (page.entries().isEmpty()) {
-        return Optional.empty();
-      }
-
-      for (ReadyQueueEntry candidate : page.entries()) {
+    // Keep lease attempts bounded even if the top-ranked candidate is CAS-raced by another
+    // executor. A retry re-scans and picks the next best live candidate.
+    for (int leaseAttempt = 0; leaseAttempt < 3; leaseAttempt++) {
+      LeaseCandidate best = null;
+      String token = "";
+      int pages = 0;
+      while (true) {
         if (scanStats != null) {
-          scanStats.candidateCount++;
+          scanStats.scanCount++;
         }
-        if (candidate.dueAtMs() > nowMs) {
-          return Optional.empty();
+        ReadyQueueScanPage page =
+            readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
+        if (page.entries().isEmpty()) {
+          break;
         }
-        CanonicalPointerSnapshot canonicalSnapshot =
-            readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
-        if (canonicalSnapshot == null) {
-          continue;
+
+        boolean hitFutureDue = false;
+        for (ReadyQueueEntry candidate : page.entries()) {
+          if (scanStats != null) {
+            scanStats.candidateCount++;
+          }
+          if (candidate.dueAtMs() > nowMs) {
+            // Keys are ordered by due within a slice, so once we hit future-due all remaining
+            // entries in this and subsequent pages are also not ready yet.
+            hitFutureDue = true;
+            break;
+          }
+          CanonicalPointerSnapshot canonicalSnapshot =
+              readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
+          if (canonicalSnapshot == null) {
+            continue;
+          }
+          var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
+          if (recordOpt.isEmpty()) {
+            continue;
+          }
+          StoredReconcileJob record = recordOpt.get();
+          if ("JS_WAITING".equals(record.state)) {
+            continue;
+          }
+          if (!readyPointerMatchesRecord(candidate, record)) {
+            continue;
+          }
+          if (!matchesLeaseRequest(record, request)) {
+            continue;
+          }
+          LeaseCandidate challenger = new LeaseCandidate(candidate, canonicalSnapshot, record);
+          if (isHigherRanked(challenger, best)) {
+            best = challenger;
+          }
         }
-        var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
-        if (recordOpt.isEmpty()) {
-          continue;
+
+        if (hitFutureDue) {
+          break;
         }
-        StoredReconcileJob record = recordOpt.get();
-        if ("JS_WAITING".equals(record.state)) {
-          continue;
+        String nextToken = page.nextPageToken();
+        if (nextToken.isBlank()) {
+          break;
         }
-        if (!readyPointerMatchesRecord(candidate, record)) {
-          continue;
+        if (nextToken.equals(token)) {
+          LOG.warn(
+              "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
+                  + " livelock");
+          break;
         }
-        if (!matchesLeaseRequest(record, request)) {
-          continue;
-        }
-        var leased =
-            leaseStore.leaseCanonical(
-                candidate.canonicalPointerKey(),
-                candidate.readyPointerKey(),
-                nowMs,
-                canonicalSnapshot,
-                record);
-        if (leased.isPresent()) {
-          return leased;
+        token = nextToken;
+        pages++;
+        if (pages >= 10_000) {
+          LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
+          break;
         }
       }
 
-      String nextToken = page.nextPageToken();
-      if (nextToken.isBlank()) {
+      if (best == null) {
         return Optional.empty();
       }
-      if (nextToken.equals(token)) {
-        LOG.warn(
-            "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
-                + " livelock");
-        return Optional.empty();
-      }
-      token = nextToken;
-      pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
-        return Optional.empty();
+      var leased =
+          leaseStore.leaseCanonical(
+              best.entry().canonicalPointerKey(),
+              best.entry().readyPointerKey(),
+              nowMs,
+              best.canonicalSnapshot(),
+              best.record());
+      if (leased.isPresent()) {
+        return leased;
       }
     }
+    return Optional.empty();
   }
+
+  private static boolean isHigherRanked(LeaseCandidate challenger, LeaseCandidate currentBest) {
+    if (challenger == null) {
+      return false;
+    }
+    if (currentBest == null) {
+      return true;
+    }
+    long challengerScore = challenger.record().executionPolicy().priorityScore();
+    long currentScore = currentBest.record().executionPolicy().priorityScore();
+    if (challengerScore != currentScore) {
+      return challengerScore > currentScore;
+    }
+    if (challenger.entry().dueAtMs() != currentBest.entry().dueAtMs()) {
+      return challenger.entry().dueAtMs() < currentBest.entry().dueAtMs();
+    }
+    return challenger.record().jobId.compareTo(currentBest.record().jobId) < 0;
+  }
+
+  private record LeaseCandidate(
+      ReadyQueueEntry entry,
+      CanonicalPointerSnapshot canonicalSnapshot,
+      StoredReconcileJob record) {}
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     List<ReadyIndexSelection> selections = new ArrayList<>();
 
+    // 1. BY_PRIORITY/P0 — scanned unconditionally before all other slices.
+    //    P0_SYNC is query-time bounded work; it must never be blocked by a pinned lower-priority
+    //    job sitting ahead of it in the scan order. Non-pinned executors skip pinned P0 jobs via
+    //    matchesLeaseRequest, so this does not break pinning semantics.
+    selections.add(
+        new ReadyIndexSelection(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReadyIndexType.BY_PRIORITY, String.valueOf(StatsPriorityClass.P0_SYNC.order))));
+
+    // 2. Pinned-executor slices — jobs that can only run on this specific executor.
+    //    P0 work is already covered above; these slices deliver pinned P1/P2/P3 jobs before the
+    //    general priority queue so that pinned assignments are not starved by unpinned work.
     List<String> executorIds =
         effective.executorIds.stream()
             .sorted()
@@ -256,6 +352,18 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                   ReadyIndexType.PINNED_EXECUTOR, executorId)));
     }
 
+    // 3. BY_PRIORITY/P1→P3 — remaining priority classes in order after pinned work.
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      if (cls == StatsPriorityClass.P0_SYNC) {
+        continue; // already added at position 1
+      }
+      selections.add(
+          new ReadyIndexSelection(
+              new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                  ReadyIndexType.BY_PRIORITY, String.valueOf(cls.order))));
+    }
+
+    // 4. Legacy secondary indexes and GLOBAL fallback (handles jobs enqueued before BY_PRIORITY).
     if (!effective.lanes.isEmpty() && !effective.lanes.contains(LeaseRequest.anyLaneToken())) {
       effective.lanes.stream()
           .sorted()
@@ -343,6 +451,8 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       case EXECUTION_LANE -> candidate.filterValue().equals(policy.lane());
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
+      case BY_PRIORITY ->
+          candidate.filterValue().equals(String.valueOf(record.priorityClass().order));
     };
   }
 

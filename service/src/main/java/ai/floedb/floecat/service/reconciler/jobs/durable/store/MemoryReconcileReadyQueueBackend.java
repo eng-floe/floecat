@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsPriorityClass;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
@@ -77,6 +78,14 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     collectEntriesForPrefix(Keys.reconcileReadyByExecutionLanePointerPrefix(), null, entries);
     collectEntriesForPrefix(Keys.reconcileReadyByPinnedExecutorPointerPrefix(), null, entries);
     collectEntriesForPrefix(Keys.reconcileReadyByJobKindPointerPrefix(), null, entries);
+    // Collect BY_PRIORITY entries for all priority classes (0–3).
+    for (StatsPriorityClass cls : StatsPriorityClass.values()) {
+      collectEntriesForPrefix(
+          Keys.reconcileReadyByPriorityPointerPrefix(cls.order),
+          new ReadyQueueSlice(
+              ReconcileReadyQueueStore.ReadyIndexType.BY_PRIORITY, String.valueOf(cls.order)),
+          entries);
+    }
     entries.sort(
         Comparator.comparingLong(ReconcileReadyQueueStore.ReadyQueueEntry::dueAtMs)
             .thenComparing(ReconcileReadyQueueStore.ReadyQueueEntry::readyPointerKey));

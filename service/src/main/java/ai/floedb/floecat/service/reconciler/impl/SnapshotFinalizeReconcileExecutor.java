@@ -30,11 +30,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.statistics.scheduler.SchedulerSignalIndex;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -53,6 +55,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject ReconcileJobStore jobs;
   @Inject StatsStore statsStore;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject Instance<SchedulerSignalIndex> signalIndexInstance;
 
   @Override
   public String id() {
@@ -67,6 +70,17 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Override
   public Set<ReconcileJobKind> supportedJobKinds() {
     return EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE);
+  }
+
+  @Override
+  public Set<String> supportedLanes() {
+    // Finalization must be lane-agnostic because child jobs now inherit table-scoped lane keys.
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
   }
 
   @Override
@@ -130,6 +144,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             requestsStatsOutputs
                 ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan)
                 : snapshotTask.directStatsRecordCount();
+        // Record finalized signal: direct-stats is a legitimate complete finalization.
+        recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
         return ExecutionResult.success(
             0,
             0,
@@ -198,8 +214,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     if (context.shouldStop().getAsBoolean()) {
       return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
     }
+    ReconcileCapturePolicy capturePolicy =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
     ChildState childState =
-        childState(lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups());
+        childState(
+            lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups(), capturePolicy);
     if (!childState.duplicateGroups().isEmpty()) {
       return ExecutionResult.terminalFailure(
           0,
@@ -352,6 +371,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException(coverageValidation.message()));
     }
     if (aggregateKinds.isEmpty()) {
+      // Record finalized signal: the snapshot was processed (file groups completed),
+      // even if no aggregate stats were written. Coverage and last-capture are valid.
+      recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
       return ExecutionResult.success(
           0,
           0,
@@ -371,6 +393,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     for (TargetStatsRecord aggregateStat : aggregateStats) {
       statsStore.putTargetStats(aggregateStat);
     }
+    recordFinalizedSignal(lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
     return ExecutionResult.success(
         0,
         0,
@@ -380,6 +403,24 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         1,
         aggregateStats.size(),
         "Finalized snapshot capture " + snapshotTask.snapshotId());
+  }
+
+  private void recordFinalizedSignal(String accountId, String tableId, long snapshotId) {
+    if (signalIndexInstance == null || signalIndexInstance.isUnsatisfied()) {
+      return;
+    }
+    try {
+      signalIndexInstance
+          .get()
+          .recordFinalizedSnapshot(accountId, tableId, snapshotId, System.currentTimeMillis());
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "recordFinalizedSignal failed for accountId=%s tableId=%s snapshotId=%d",
+          accountId,
+          tableId,
+          snapshotId);
+    }
   }
 
   private long persistEmptySnapshotCompletionMarker(
@@ -432,7 +473,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       String accountId,
       String parentJobId,
       String finalizerJobId,
-      List<ReconcileFileGroupTask> expectedGroups) {
+      List<ReconcileFileGroupTask> expectedGroups,
+      ReconcileCapturePolicy capturePolicy) {
     if (parentJobId == null || parentJobId.isBlank()) {
       return new ChildState(
           0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
@@ -485,7 +527,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         continue;
       }
       if ("JS_SUCCEEDED".equals(child.state)) {
-        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
+        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)
+            && hasCompleteIndexArtifacts(capturePolicy, child.fileGroupTask)) {
           completedGroups++;
           completedGroupTasks.add(child.fileGroupTask);
         } else {
@@ -758,6 +801,33 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     return !expectedGroup.filePaths().isEmpty() || !persistedGroup.fileResults().isEmpty();
+  }
+
+  /**
+   * Returns {@code true} if all SUCCEEDED file results carry a non-empty index artifact when the
+   * capture policy requests {@link ReconcileCapturePolicy.Output#PARQUET_PAGE_INDEX} output.
+   *
+   * <p>A file group job that marks all files SUCCEEDED without producing artifacts would otherwise
+   * pass finalization silently, leaving the snapshot index incomplete.
+   */
+  private static boolean hasCompleteIndexArtifacts(
+      ReconcileCapturePolicy policy, ReconcileFileGroupTask persistedGroup) {
+    if (policy == null || !policy.requestsIndexes()) {
+      return true; // no index output requested — always complete
+    }
+    if (persistedGroup == null) {
+      return false;
+    }
+    for (ReconcileFileResult result : persistedGroup.fileResults()) {
+      if (result == null) {
+        continue;
+      }
+      if (result.state() == ReconcileFileResult.State.SUCCEEDED
+          && (result.indexArtifact() == null || result.indexArtifact().isEmpty())) {
+        return false; // succeeded file is missing its required index artifact
+      }
+    }
+    return true;
   }
 
   private static String groupKey(ReconcileFileGroupTask fileGroupTask) {
