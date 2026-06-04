@@ -72,10 +72,8 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
-import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Context;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -1749,6 +1747,7 @@ public class UserObjectBundleService {
               .build());
     }
 
+    @SuppressWarnings("unused")
     private Span startPhaseSpan(
         Span parent,
         String phase,
@@ -1756,25 +1755,12 @@ public class UserObjectBundleService {
         long startOffsetNs,
         String outcome,
         String parentPhase) {
-      if (parent == null || !parent.getSpanContext().isValid()) {
-        return Span.getInvalid();
-      }
-      long safeBaseOffset = Math.max(0L, baseOffsetNs);
-      long safeStartOffset = Math.max(0L, startOffsetNs);
-      long startTimestampNs = streamStartEpochNs + safeBaseOffset + safeStartOffset;
-      var builder =
-          GlobalOpenTelemetry.getTracer("floecat.service")
-              .spanBuilder("floecat.get_user_objects.phase." + phase)
-              .setParent(Context.root().with(parent))
-              .setStartTimestamp(startTimestampNs, TimeUnit.NANOSECONDS)
-              .setAttribute("query_id", ctx.getQueryId())
-              .setAttribute("correlation_id", correlationId)
-              .setAttribute("phase", phase)
-              .setAttribute("outcome", safe(outcome));
-      if (parentPhase != null && !parentPhase.isBlank()) {
-        builder.setAttribute("parent_phase", parentPhase);
-      }
-      return builder.startSpan();
+      // Internal sub-phase spans (floecat.get_user_objects.phase.*) are intentionally NOT
+      // emitted: they don't correspond to a gRPC call and add too much noise to query
+      // traces. Phase timings remain available as metrics/log attributes. Returning the
+      // invalid span keeps every call site (and endPhaseSpan, which no-ops on invalid
+      // spans) working unchanged.
+      return Span.getInvalid();
     }
 
     private void endPhaseSpan(
