@@ -22,18 +22,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.ConflictingBatchPointerStore;
+import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
+import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -134,16 +132,30 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
-  void create_withMissingSecondaryPointer_signalsRetryable() {
+  void create_withPartialState_throwsCorruption() {
     var repo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
     repo.create(account);
 
     // Mimic a legacy / partially-applied state: the canonical pointer survives (bound to our
-    // blob) but the secondary is gone.
+    // blob) but the secondary is gone. An atomic create can never produce this, so under the
+    // strict no-repair contract it is surfaced terminally rather than healed or retried forever.
     assertThat(ptr.delete(Keys.accountPointerByName("alpha"))).isTrue();
 
     assertThatThrownBy(() -> repo.create(account))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("partial create state");
+  }
+
+  @Test
+  void create_whenBatchConflictsButNothingPresent_signalsRetryable() {
+    // The batch reports a conflict (as a DynamoDB TransactionConflict would) but commits nothing,
+    // and the read-back finds no pointer at all. That is transient, not a stable inconsistency, so
+    // create() asks the caller to retry rather than surfacing a (terminal) corruption.
+    var conflicting = new ConflictingBatchPointerStore(ptr);
+    var repo = new AccountRepository(conflicting, blobs);
+
+    assertThatThrownBy(() -> repo.create(account("acct-1", "alpha", "")))
         .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
   }
 
@@ -166,97 +178,5 @@ class GenericResourceRepositoryCreateTest {
 
     assertThatCode(() -> snapshotRepo.create(snapshot)).doesNotThrowAnyException();
     assertThat(snapshotRepo.getById(tableId, 42L)).isPresent();
-  }
-
-  /** Forwards every {@link PointerStore} call to a delegate; subclasses override one behavior. */
-  private abstract static class DelegatingPointerStore implements PointerStore {
-    final PointerStore delegate;
-
-    DelegatingPointerStore(PointerStore delegate) {
-      this.delegate = delegate;
-    }
-
-    @Override
-    public boolean compareAndSetBatch(List<CasOp> ops) {
-      return delegate.compareAndSetBatch(ops);
-    }
-
-    @Override
-    public Optional<Pointer> get(String key) {
-      return delegate.get(key);
-    }
-
-    @Override
-    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-      return delegate.compareAndSet(key, expectedVersion, next);
-    }
-
-    @Override
-    public boolean delete(String key) {
-      return delegate.delete(key);
-    }
-
-    @Override
-    public boolean compareAndDelete(String key, long expectedVersion) {
-      return delegate.compareAndDelete(key, expectedVersion);
-    }
-
-    @Override
-    public List<Pointer> listPointersByPrefix(
-        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-      return delegate.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
-    }
-
-    @Override
-    public int deleteByPrefix(String prefix) {
-      return delegate.deleteByPrefix(prefix);
-    }
-
-    @Override
-    public int countByPrefix(String prefix) {
-      return delegate.countByPrefix(prefix);
-    }
-
-    @Override
-    public boolean isEmpty() {
-      return delegate.isEmpty();
-    }
-  }
-
-  /** PointerStore decorator that fails every batch CAS, simulating a transient storage error. */
-  private static final class FailingBatchPointerStore extends DelegatingPointerStore {
-    private FailingBatchPointerStore(PointerStore delegate) {
-      super(delegate);
-    }
-
-    static final class InjectedBatchFailure extends RuntimeException {
-      InjectedBatchFailure(String message) {
-        super(message);
-      }
-    }
-
-    @Override
-    public boolean compareAndSetBatch(List<CasOp> ops) {
-      throw new InjectedBatchFailure("injected batch storage failure");
-    }
-  }
-
-  /** Mimics DynamoDB: a transaction with two operations on the same key is rejected. */
-  private static final class DuplicateKeyRejectingPointerStore extends DelegatingPointerStore {
-    private DuplicateKeyRejectingPointerStore(PointerStore delegate) {
-      super(delegate);
-    }
-
-    @Override
-    public boolean compareAndSetBatch(List<CasOp> ops) {
-      Set<String> seen = new HashSet<>();
-      for (CasOp op : ops) {
-        String key = op instanceof CasUpsert u ? u.key() : ((CasDelete) op).key();
-        if (!seen.add(key)) {
-          throw new IllegalArgumentException("duplicate key in transactional batch: " + key);
-        }
-      }
-      return delegate.compareAndSetBatch(ops);
-    }
   }
 }

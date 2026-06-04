@@ -24,6 +24,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.micrometer.core.instrument.Metrics;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -33,8 +34,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import org.jboss.logging.Logger;
 
 public class GenericResourceRepository<T, K extends ResourceKey> extends BaseResourceRepository<T> {
+
+  private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
 
   private final ResourceSchema<T, K> schema;
 
@@ -63,9 +67,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * <p>The blob is written first; it is content-addressed (SHA-256), so a dangling blob after a
    * failed batch is harmless and deduped on retry.
    *
-   * <p><b>Idempotency contract</b> (unchanged from the previous sequential implementation):
-   * re-creating a byte-identical resource is a no-op, and a collision against a pointer bound to a
-   * different blob throws {@link NameConflictException} with the same message as before.
+   * <p><b>Idempotency &amp; conflict contract:</b> re-creating a byte-identical resource (every
+   * pointer already resolves to our blob) is a no-op; a collision against a pointer bound to a
+   * different blob throws {@link NameConflictException}. A pre-existing <em>partial</em> state —
+   * some of this resource's pointers present (bound to our blob) and some absent, which an atomic
+   * create can never itself produce — is a stored inconsistency left by a legacy or non-atomic
+   * writer; it is surfaced as a (non-retryable) {@link CorruptionException} rather than silently
+   * repaired or spun on. A batch that conflicts but whose read-back finds <em>no</em> pointer at
+   * all is a transient transaction conflict and is signalled as retryable.
    */
   public void create(T value) {
     K key = schema.keyFromValue.apply(value);
@@ -86,58 +95,79 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
     for (String pointerKey : pointerKeys) {
-      Pointer reserve =
-          Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(1L).build();
-      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve));
+      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri)));
     }
 
     if (pointerStore.compareAndSetBatch(ops)) {
       return;
     }
 
-    // The batch committed nothing (atomic) because at least one pointer already existed. Reproduce
-    // the old per-key idempotency classification with a single read-back, walking
-    // canonical-then-secondary order so a conflict reports the same key/message as before.
+    // The batch committed nothing (atomic) because at least one pointer already existed. Read back
+    // and classify, walking canonical-then-secondary order so a conflict reports the same
+    // key/message as before.
     classifyCreateConflict(blobUri, pointerKeys);
   }
 
   private void classifyCreateConflict(String blobUri, List<String> pointerKeys) {
-    boolean allBoundToOurBlob = true;
+    int present = 0;
+    int absent = 0;
     for (String pointerKey : pointerKeys) {
       Pointer pointer = pointerStore.get(pointerKey).orElse(null);
       if (pointer == null) {
-        allBoundToOurBlob = false;
+        absent++;
         continue;
       }
       if (!blobUri.equals(pointer.getBlobUri())) {
         throw new NameConflictException("pointer bound to different blob: " + pointerKey);
       }
+      present++;
     }
-    if (allBoundToOurBlob) {
+    if (absent == 0) {
       // Every pointer already resolves to our blob: a byte-identical re-create is a no-op.
       return;
     }
-    // Some pointers exist and some are absent: a genuinely concurrent or partially-applied state
-    // (e.g. a legacy orphan). Signal the caller to retry rather than papering over it.
-    throw new AbortRetryableException("partial create state for: " + pointerKeys.get(0));
+    if (present == 0) {
+      // The batch reported a conflict yet read-back finds no pointer at all: a transient batch
+      // conflict (e.g. a DynamoDB TransactionConflict) or a concurrent delete, not a stable state.
+      // Re-running the atomic batch can still make progress, so signal a retry.
+      throw new AbortRetryableException(
+          "create conflict, no pointer present: " + pointerKeys.get(0));
+    }
+    // Mixed: some pointers present (bound to our blob), some absent. An atomic create cannot
+    // produce this, so it is a stored inconsistency (a legacy orphan, or a non-atomic
+    // createIfAbsent / update that died mid-flight). Strict no-repair semantics: surface it
+    // terminally instead of healing it or spinning on a retry that can never converge.
+    throw partialStateAnomaly(
+        "create",
+        "partial create state ("
+            + present
+            + " present, "
+            + absent
+            + " absent) for: "
+            + pointerKeys);
   }
 
   /**
-   * Creates a resource only when the canonical pointer is currently absent.
+   * Creates a resource only when it does not already exist, <b>atomically</b>.
    *
-   * <p>Returns {@code true} only when this call won the canonical pointer CAS from version 0 to 1.
-   * This provides distributed create-if-absent semantics across repository instances.
+   * <p>The canonical (by-id) pointer and every secondary pointer are reserved in a single {@link
+   * PointerStore#compareAndSetBatch} transaction, so — exactly like {@link #create} — a failure
+   * leaves zero partial pointer state and there is no intermediate window in which the resource is
+   * visible by id but not yet by name.
    *
-   * <p><b>Visibility ordering:</b> the canonical pointer is published atomically via CAS before
-   * secondary pointers are created. During secondary creation a concurrent reader may find the
-   * resource via the canonical key but not yet via secondary keys. This is an inherent trade-off of
-   * the non-transactional storage model; the canonical pointer is the authoritative source of
-   * truth.
+   * <p>Returns {@code true} only when this call committed the batch (it won the create). Returns
+   * {@code false} when the canonical pointer already exists — some other writer owns the resource —
+   * <em>regardless</em> of which blob that pointer is bound to; the canonical pointer is the
+   * authoritative "already created" marker. A new secondary name owned by a different blob throws
+   * {@link NameConflictException}. A stored inconsistency (canonical absent but a secondary
+   * present, which an atomic path can never produce) is surfaced as a non-retryable {@link
+   * CorruptionException}; a transient batch conflict with nothing present is signalled as
+   * retryable.
    *
-   * <p><b>Blob cleanup:</b> the blob is written before the canonical CAS attempt. On any failure
-   * (CAS miss or secondary creation error), a best-effort cleanup is attempted. For {@code
-   * casBlobs} schemas the blob URI is content-addressed (SHA256), so a cleanup failure only wastes
-   * space; it has no correctness impact.
+   * <p><b>Blob cleanup:</b> the blob is written before the batch. When the batch does not commit, a
+   * best-effort cleanup is attempted. For {@code casBlobs} schemas the blob URI is
+   * content-addressed (SHA256), so a cleanup failure only wastes space; it has no correctness
+   * impact.
    */
   public boolean createIfAbsent(T value) {
     K key = schema.keyFromValue.apply(value);
@@ -147,41 +177,91 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     putBlob(blobUri, value);
 
-    Pointer reserveCanonical =
-        Pointer.newBuilder().setKey(canonicalPointer).setBlobUri(blobUri).setVersion(1L).build();
-    if (!pointerStore.compareAndSet(canonicalPointer, 0L, reserveCanonical)) {
-      cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+    Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
+    // Canonical first, then secondaries, de-duplicated (a schema may expose the canonical pointer
+    // as a secondary too, and a transactional batch must not repeat a key). See create().
+    LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
+    uniqueKeys.add(canonicalPointer);
+    uniqueKeys.addAll(secondaries.values());
+    List<String> pointerKeys = new ArrayList<>(uniqueKeys);
+
+    List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+    for (String pointerKey : pointerKeys) {
+      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri)));
+    }
+
+    if (pointerStore.compareAndSetBatch(ops)) {
+      return true;
+    }
+    return classifyCreateIfAbsentConflict(
+        canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
+  }
+
+  private boolean classifyCreateIfAbsentConflict(
+      String canonicalPointer,
+      String blobUri,
+      List<String> pointerKeys,
+      boolean blobExistedBefore) {
+    // The batch committed nothing, so this call did not create the resource. Reclaim the blob we
+    // optimistically wrote (best-effort, content-addressed) before classifying the outcome.
+    cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+
+    Pointer canonical = pointerStore.get(canonicalPointer).orElse(null);
+    if (canonical != null) {
+      // Canonical already taken — another writer owns the create; report a lost race regardless of
+      // which blob it points to.
       return false;
     }
 
-    Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
-    final var createdSecondary = new ArrayList<String>(secondaries.size());
-    try {
-      for (String secondaryPtr : secondaries.values()) {
-        var reserve =
-            Pointer.newBuilder().setKey(secondaryPtr).setBlobUri(blobUri).setVersion(1L).build();
-        if (pointerStore.compareAndSet(secondaryPtr, 0L, reserve)) {
-          createdSecondary.add(secondaryPtr);
-          continue;
-        }
-        var pointer = pointerStore.get(secondaryPtr).orElse(null);
-        if (pointer == null) {
-          throw new AbortRetryableException("pointer suddenly vanished: " + secondaryPtr);
-        }
-        if (!blobUri.equals(pointer.getBlobUri())) {
-          throw new NameConflictException("pointer bound to different blob: " + secondaryPtr);
-        }
+    // Canonical is absent. If a secondary nonetheless exists, classify by what it is bound to.
+    boolean anySecondaryPresent = false;
+    for (String pointerKey : pointerKeys) {
+      if (pointerKey.equals(canonicalPointer)) {
+        continue;
       }
-      return true;
-    } catch (Throwable e) {
-      for (int i = createdSecondary.size() - 1; i >= 0; i--) {
-        compareAndDeleteOrFalse(createdSecondary.get(i), 1L);
+      Pointer secondary = pointerStore.get(pointerKey).orElse(null);
+      if (secondary == null) {
+        continue;
       }
-      compareAndDeleteOrFalse(canonicalPointer, 1L);
-      // Blob was written before the try block; attempt cleanup now that all pointers are gone.
-      cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
-      throw e;
+      anySecondaryPresent = true;
+      if (!blobUri.equals(secondary.getBlobUri())) {
+        throw new NameConflictException("pointer bound to different blob: " + pointerKey);
+      }
     }
+    if (anySecondaryPresent) {
+      // Canonical absent but a secondary (bound to our blob) exists: a stored partial-create
+      // inconsistency an atomic path can never produce. Surface it terminally, do not repair.
+      throw partialStateAnomaly(
+          "createIfAbsent",
+          "partial create state (canonical absent, secondary present) for: " + canonicalPointer);
+    }
+    // Nothing present: a transient batch conflict (or a concurrent delete). A retry re-attempts
+    // the atomic batch.
+    throw new AbortRetryableException(
+        "createIfAbsent conflict, no pointer present: " + canonicalPointer);
+  }
+
+  private static Pointer reserve(String key, String blobUri) {
+    return Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+  }
+
+  /**
+   * A stable partial-pointer state that an atomic create/createIfAbsent can never itself produce (a
+   * legacy orphan, or a non-atomic writer that died mid-flight). Under the strict no-repair
+   * contract we surface it as a non-retryable {@link CorruptionException}. Log it and bump a
+   * counter so the (rare) anomaly is visible and can be reconciled out of band rather than
+   * vanishing into a generic 500.
+   */
+  private CorruptionException partialStateAnomaly(String operation, String message) {
+    log.errorf("partial pointer state in %s.%s: %s", schema.resourceName, operation, message);
+    Metrics.counter(
+            "floecat_repo_partial_state_anomalies",
+            "floecat_resource",
+            schema.resourceName,
+            "floecat_operation",
+            operation)
+        .increment();
+    return new CorruptionException(message);
   }
 
   private void cleanupCreateIfAbsentBlobOnCasMiss(
@@ -200,6 +280,19 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     deleteQuietly(() -> blobStore.delete(blobUri));
   }
 
+  /**
+   * Atomically updates a resource: the canonical pointer is advanced, new secondary pointers are
+   * reserved, kept secondaries are moved onto the new (content-addressed) blob when it changed, and
+   * removed secondaries are deleted — all in a single {@link PointerStore#compareAndSetBatch}
+   * transaction. Because the batch is all-or-nothing, a mid-update storage error (or process death)
+   * commits nothing and leaves <b>zero</b> partial pointer state.
+   *
+   * <p>Returns {@code true} on commit. Returns {@code false} when the canonical pointer is not at
+   * {@code expectedCanonicalVersion} (an optimistic-concurrency miss — it moved or was deleted
+   * under us). A new secondary name already owned by a different blob throws {@link
+   * NameConflictException}. A conflict the read-back cannot attribute to either case (a concurrent
+   * version shift) is signalled as retryable.
+   */
   public boolean update(T updatedValue, long expectedCanonicalVersion) {
     K key = schema.keyFromValue.apply(updatedValue);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
@@ -222,61 +315,92 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     toAdd.removeAll(currentSecondary);
     Set<String> toDelete = new HashSet<>(currentSecondary);
     toDelete.removeAll(nextSecondary);
+    Set<String> kept = new HashSet<>(nextSecondary);
+    kept.removeAll(toAdd);
 
     putBlob(blobUri, updatedValue);
 
-    if (!toAdd.isEmpty()) {
-      List<String> kvPairs = new ArrayList<>(2 * toAdd.size());
-      for (String p : toAdd) {
-        kvPairs.add(p);
-        kvPairs.add(blobUri);
+    boolean blobChanged = schema.casBlobs && !Objects.equals(currentBlobUri, blobUri);
+
+    // Build a single all-or-nothing batch covering every pointer mutation this update implies. Ops
+    // are de-duplicated by key (a schema may expose the canonical pointer as a secondary too) with
+    // the canonical advance taking precedence. Because the batch is atomic the update can never
+    // leave partial pointer state; a conflict commits nothing and is classified below.
+    Set<String> batchedKeys = new HashSet<>();
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+
+    batchedKeys.add(canonicalPointer);
+    ops.add(
+        new PointerStore.CasUpsert(
+            canonicalPointer, expectedCanonicalVersion, reserve(canonicalPointer, blobUri)));
+
+    for (String p : toAdd) {
+      if (!batchedKeys.add(p)) {
+        continue;
       }
-      reserveAllOrRollback(kvPairs.toArray(String[]::new));
+      Pointer existing = pointerStore.get(p).orElse(null);
+      if (existing == null) {
+        ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri)));
+      } else if (!blobUri.equals(existing.getBlobUri())) {
+        // The new name already belongs to a different blob. Nothing has been committed, so failing
+        // fast here leaves no partial state.
+        throw new NameConflictException("pointer bound to different blob: " + p);
+      }
+      // else: already reserved to our blob — idempotent, no op needed.
     }
 
-    try {
-      advancePointer(canonicalPointer, blobUri, expectedCanonicalVersion);
-    } catch (PreconditionFailedException e) {
-      for (String p : toAdd) {
-        pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
-      }
-      return false;
-    }
-
-    if (schema.casBlobs && !Objects.equals(currentBlobUri, blobUri)) {
-      for (String p : nextSecondary) {
-        refreshSecondaryPointer(p, blobUri);
+    if (blobChanged) {
+      // Kept secondaries still point at the old content-addressed blob; advance each onto the new
+      // one (or reserve it if a legacy gap left it absent).
+      for (String p : kept) {
+        if (!batchedKeys.add(p)) {
+          continue;
+        }
+        Pointer existing = pointerStore.get(p).orElse(null);
+        if (existing == null) {
+          ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri)));
+        } else if (!blobUri.equals(existing.getBlobUri())) {
+          ops.add(new PointerStore.CasUpsert(p, existing.getVersion(), reserve(p, blobUri)));
+        }
+        // else: already on the new blob — no op needed.
       }
     }
 
     for (String p : toDelete) {
-      pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
-    }
-
-    return true;
-  }
-
-  private void refreshSecondaryPointer(String key, String blobUri) {
-    for (int i = 0; i < CAS_MAX; i++) {
-      var ptr = pointerStore.get(key).orElse(null);
-      if (ptr == null) {
-        Pointer reserve =
-            Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-        if (pointerStore.compareAndSet(key, 0L, reserve)) {
-          return;
-        }
+      if (!batchedKeys.add(p)) {
         continue;
       }
-      if (Objects.equals(ptr.getBlobUri(), blobUri)) {
-        return;
-      }
-      try {
-        advancePointer(key, blobUri, ptr.getVersion());
-        return;
-      } catch (PreconditionFailedException ignore) {
-        // retry on concurrent update
+      Pointer existing = pointerStore.get(p).orElse(null);
+      if (existing != null) {
+        ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
       }
     }
+
+    if (pointerStore.compareAndSetBatch(ops)) {
+      return true;
+    }
+    return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+  }
+
+  private boolean classifyUpdateConflict(
+      String canonicalPointer, long expectedCanonicalVersion, String blobUri, Set<String> toAdd) {
+    Pointer canonical = pointerStore.get(canonicalPointer).orElse(null);
+    if (canonical == null || canonical.getVersion() != expectedCanonicalVersion) {
+      // Optimistic-concurrency miss: the canonical pointer moved or vanished under us. Same
+      // observable result as the previous advancePointer -> PreconditionFailed path — the caller
+      // retries with a fresh expected version.
+      return false;
+    }
+    // Canonical is exactly where we expected, so a secondary op lost the race. A new name now owned
+    // by a different blob is a terminal collision; otherwise a concurrent writer shifted a
+    // secondary's version between our read and the commit and a retry re-reads fresh versions.
+    for (String p : toAdd) {
+      Pointer secondary = pointerStore.get(p).orElse(null);
+      if (secondary != null && !blobUri.equals(secondary.getBlobUri())) {
+        throw new NameConflictException("pointer bound to different blob: " + p);
+      }
+    }
+    throw new AbortRetryableException("update conflict for: " + canonicalPointer);
   }
 
   public boolean delete(K key) {

@@ -87,6 +87,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   public static class CorruptionException extends RepoException {
+    public CorruptionException(String msg) {
+      super(msg);
+    }
+
     public CorruptionException(String msg, Throwable cause) {
       super(msg, cause);
     }
