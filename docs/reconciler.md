@@ -251,8 +251,9 @@ perform a post-completion final lease confirmation after that RPC has durably co
   - `floecat.reconciler.executor.remote-planner.enabled`
   - `floecat.reconciler.executor.remote-snapshot-planner.enabled`
   - `floecat.reconciler.executor.remote-file-group.enabled`
+  - `floecat.reconciler.executor.snapshot-finalize.enabled`
   - `FINALIZE_SNAPSHOT_CAPTURE` is handled by the service-local `SnapshotFinalizeReconcileExecutor`
-    and is not behind a separate feature toggle.
+    and can be disabled independently, but it is not a separate remote worker toggle.
 - Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
   references must remain stable for `GetReconcileJob`).
 - Extend `FloecatConnector` to add richer snapshot planning or file execution behavior. Query scan

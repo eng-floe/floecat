@@ -75,6 +75,16 @@ class SnapshotFinalizeReconcileExecutorTest {
   private static final Map<SnapshotPlanBlobStore, Map<String, List<TargetStatsRecord>>>
       FILE_GROUP_STATS_RECORDS = new IdentityHashMap<>();
 
+  @Test
+  void enabledDefaultsTrueAndCanBeDisabled() {
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    executor.enabled = true;
+    assertTrue(executor.enabled());
+
+    executor.enabled = false;
+    assertFalse(executor.enabled());
+  }
+
   private static SnapshotPlanBlobStore snapshotPlanBlobStore() {
     SnapshotPlanBlobStore store = mock(SnapshotPlanBlobStore.class);
     Map<String, List<ReconcileFileGroupTask>> groupsByUri = new HashMap<>();

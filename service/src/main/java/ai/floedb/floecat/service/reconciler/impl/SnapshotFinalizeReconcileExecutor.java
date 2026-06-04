@@ -44,6 +44,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -54,9 +55,19 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject StatsStore statsStore;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
+  @ConfigProperty(
+      name = "floecat.reconciler.executor.snapshot-finalize.enabled",
+      defaultValue = "true")
+  boolean enabled;
+
   @Override
   public String id() {
     return "snapshot_finalize";
+  }
+
+  @Override
+  public boolean enabled() {
+    return enabled;
   }
 
   @Override
