@@ -48,6 +48,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import java.net.URI;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
@@ -141,7 +142,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsTrueForAcceptedTransitions() {
     String succeededJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob succeededLease = leaseJob(succeededJobId);
+    ReconcileJobStore.LeasedJob succeededLease = leaseNextEventually();
     assertTrue(
         store.applyLeaseOutcome(
             succeededJobId,
@@ -156,10 +157,16 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L,
             0L));
-    assertEquals("JS_SUCCEEDED", store.getLeaseView(succeededJobId).orElseThrow().state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        waitForValue(
+                () -> store.getLeaseView(succeededJobId).orElseThrow(),
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "succeeded lease outcome canonical view")
+            .state);
 
     String cancelledJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob cancelledLease = leaseJob(cancelledJobId);
+    ReconcileJobStore.LeasedJob cancelledLease = leaseNextEventually();
     store.cancel(ACCOUNT_ID, cancelledJobId, "stop");
     assertTrue(
         store.applyLeaseOutcome(
@@ -175,13 +182,19 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L,
             0L));
-    assertEquals("JS_CANCELLED", store.getLeaseView(cancelledJobId).orElseThrow().state);
+    assertEquals(
+        "JS_CANCELLED",
+        waitForValue(
+                () -> store.getLeaseView(cancelledJobId).orElseThrow(),
+                current -> "JS_CANCELLED".equals(current.state),
+                "cancelled lease outcome canonical view")
+            .state);
   }
 
   @Test
   void applyLeaseOutcomeCancellingSuccessResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    ReconcileJobStore.LeasedJob lease = leaseNextEventually();
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -199,7 +212,11 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             5L,
             7L));
 
-    ReconcileJobStore.ReconcileJob job = store.getLeaseView(jobId).orElseThrow();
+    ReconcileJobStore.ReconcileJob job =
+        waitForValue(
+            () -> store.getLeaseView(jobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 4_000L,
+            "cancelling success resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
     assertEquals("stop", job.message);
     assertEquals(4_000L, job.finishedAtMs);
@@ -216,7 +233,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeCancellingFailureResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    ReconcileJobStore.LeasedJob lease = leaseNextEventually();
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -234,7 +251,11 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    ReconcileJobStore.ReconcileJob job = store.getLeaseView(jobId).orElseThrow();
+    ReconcileJobStore.ReconcileJob job =
+        waitForValue(
+            () -> store.getLeaseView(jobId).orElseThrow(),
+            current -> "JS_CANCELLED".equals(current.state) && current.finishedAtMs == 5_000L,
+            "cancelling failure resolves to cancelled");
     assertEquals("JS_CANCELLED", job.state);
     assertEquals("stop", job.message);
     assertEquals(5_000L, job.finishedAtMs);
@@ -244,7 +265,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForStaleLeaseEpoch() {
     String jobId = enqueueRoot();
-    leaseJob(jobId);
+    leaseNextEventually();
 
     assertFalse(
         store.applyLeaseOutcome(
@@ -261,7 +282,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_RUNNING", store.getLeaseView(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_RUNNING",
+        waitForValue(
+                () -> store.getLeaseView(jobId).orElseThrow(),
+                current -> "JS_RUNNING".equals(current.state),
+                "stale lease epoch leaves canonical state running")
+            .state);
   }
 
   @Test
@@ -285,7 +312,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForTerminalJob() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    ReconcileJobStore.LeasedJob lease = leaseNextEventually();
     assertTrue(
         store.applyLeaseOutcome(
             jobId,
@@ -316,7 +343,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_SUCCEEDED", store.getLeaseView(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        waitForValue(
+                () -> store.getLeaseView(jobId).orElseThrow(),
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "terminal lease outcome remains canonically succeeded")
+            .state);
   }
 
   @Test
@@ -354,7 +387,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertEquals("JS_SUCCEEDED", store.getLeaseView(jobId).orElseThrow().state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        waitForValue(
+                () -> store.getLeaseView(jobId).orElseThrow(),
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "expired lease outcome resolves to succeeded")
+            .state);
   }
 
   @Test
@@ -473,7 +512,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   void applyLeaseOutcomeReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    ReconcileJobStore.LeasedJob lease = leaseNextEventually();
     expireLease(jobId);
 
     assertTrue(
@@ -524,6 +563,42 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         ReconcileExecutionPolicy.defaults(),
         "",
         pinnedExecutorId);
+  }
+
+  private ReconcileJobStore.LeasedJob leaseNextEventually() {
+    return waitForValue(
+        () -> store.leaseNext().orElseThrow(), ignored -> true, "next reconcile job lease");
+  }
+
+  private <T> T waitForValue(
+      java.util.function.Supplier<T> supplier,
+      java.util.function.Predicate<T> done,
+      String description) {
+    T value = tryGetValue(supplier);
+    for (int attempt = 0; attempt < 100; attempt++) {
+      if (value != null && done.test(value)) {
+        return value;
+      }
+      try {
+        Thread.sleep(isDynamoMode() ? 25L : 0L);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("Interrupted while waiting for " + description, ie);
+      }
+      value = tryGetValue(supplier);
+    }
+    assertTrue(
+        value != null && done.test(value),
+        "Timed out waiting for " + description + "; last value=" + value);
+    return value;
+  }
+
+  private <T> T tryGetValue(java.util.function.Supplier<T> supplier) {
+    try {
+      return supplier.get();
+    } catch (IllegalStateException | NoSuchElementException e) {
+      return null;
+    }
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
