@@ -1938,6 +1938,11 @@ CLI, and reconciler.</p>
 <td></td>
 </tr>
 <tr>
+<td><code>ReconcileControl</code></td>
+<td><code>CaptureNow</code>, <code>StartCapture</code>, <code>GetReconcileJob</code>, <code>GetReconcileJobTree</code>, <code>ListReconcileJobs</code>, <code>GetFinalizedSnapshotStatus</code>, <code>CancelReconcileJob</code>, <code>GetReconcilerSettings</code>, <code>UpdateReconcilerSettings</code></td>
+<td>Client-facing reconcile control plane for synchronous execution, queued jobs, finalized snapshot status lookup, cancellation, and automatic reconcile defaults. <code>GetFinalizedSnapshotStatus</code> returns <code>FSS_PENDING</code> when no finalized snapshot record exists yet for the requested table/snapshot pair; <code>FSS_FINALIZED</code> includes <code>finalized_at</code> and <code>finalizer_job_id</code>.</td>
+</tr>
+<tr>
 <td><code>ReconcileExecutorControl</code></td>
 <td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>SubmitLeasedFileGroupExecutionResult</code></td>
 <td>Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs.</td>

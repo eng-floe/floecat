@@ -1842,6 +1842,10 @@ reconcile control RPCs:</p>
   child jobs. Parent-capable jobs (<code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_SNAPSHOT</code>) surface
   aggregate child status through eventually consistent projection/root-summary read models rather
   than synchronous parent-canonical rollups.</li>
+<li><code>ReconcileControl.GetFinalizedSnapshotStatus(table_id, snapshot_id)</code>: returns whether one
+  destination snapshot has completed reconcile finalization. <code>FSS_PENDING</code> means no finalized
+  snapshot record exists yet for that table/snapshot pair. <code>FSS_FINALIZED</code> includes the
+  <code>finalized_at</code> timestamp and <code>finalizer_job_id</code> for the job that committed finalization.</li>
 </ul>
 <p>Internally, the worker poller exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
