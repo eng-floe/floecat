@@ -43,6 +43,9 @@ import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.FinalizedSnapshotStatus;
+import ai.floedb.floecat.reconciler.rpc.GetFinalizedSnapshotStatusRequest;
+import ai.floedb.floecat.reconciler.rpc.GetFinalizedSnapshotStatusResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
@@ -376,6 +379,71 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.LIST_JOBS,
                         "list_reconcile_jobs",
+                        "error",
+                        normalizeReason(e));
+                    throw e;
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetFinalizedSnapshotStatusResponse> getFinalizedSnapshotStatus(
+      GetFinalizedSnapshotStatusRequest request) {
+    var L = LogHelper.start(LOG, "GetFinalizedSnapshotStatus");
+    return mapFailures(
+            run(
+                () -> {
+                  try {
+                    var principalContext = principalProvider.get();
+                    authz.require(principalContext, "connector.manage");
+                    if (!request.hasTableId()) {
+                      throw io.grpc.Status.INVALID_ARGUMENT
+                          .withDescription("table_id is required")
+                          .asRuntimeException();
+                    }
+                    ResourceId tableId = request.getTableId();
+                    if (tableId.getKind() != ResourceKind.RK_TABLE) {
+                      throw io.grpc.Status.INVALID_ARGUMENT
+                          .withDescription("table_id.kind must be RK_TABLE")
+                          .asRuntimeException();
+                    }
+                    if (!principalContext
+                        .getAccountId()
+                        .equals(blankToEmpty(tableId.getAccountId()))) {
+                      throw io.grpc.Status.PERMISSION_DENIED
+                          .withDescription("table_id.account_id does not match caller account")
+                          .asRuntimeException();
+                    }
+                    var finalized =
+                        jobs.getFinalizedSnapshot(
+                            principalContext.getAccountId(),
+                            tableId.getId(),
+                            (long) request.getSnapshotId());
+
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.LIST_JOBS,
+                        "get_finalized_snapshot_status",
+                        "success",
+                        null);
+                    if (finalized.isEmpty()) {
+                      return GetFinalizedSnapshotStatusResponse.newBuilder()
+                          .setStatus(FinalizedSnapshotStatus.FSS_PENDING)
+                          .build();
+                    }
+                    return GetFinalizedSnapshotStatusResponse.newBuilder()
+                        .setStatus(FinalizedSnapshotStatus.FSS_FINALIZED)
+                        .setFinalizedAt(Timestamps.fromMillis(finalized.get().finalizedAtMs))
+                        .setFinalizerJobId(finalized.get().finalizerJobId)
+                        .build();
+                  } catch (RuntimeException e) {
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.LIST_JOBS,
+                        "get_finalized_snapshot_status",
                         "error",
                         normalizeReason(e));
                     throw e;

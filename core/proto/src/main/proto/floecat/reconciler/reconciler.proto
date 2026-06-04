@@ -791,6 +791,23 @@ message GetReconcileJobTreeResponse {
   repeated GetReconcileJobResponse jobs = 1;
 }
 
+message GetFinalizedSnapshotStatusRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  uint64 snapshot_id = 2;
+}
+
+enum FinalizedSnapshotStatus {
+  FSS_UNSPECIFIED = 0;
+  FSS_PENDING = 1;
+  FSS_FINALIZED = 2;
+}
+
+message GetFinalizedSnapshotStatusResponse {
+  FinalizedSnapshotStatus status = 1;
+  google.protobuf.Timestamp finalized_at = 2;
+  string finalizer_job_id = 3;
+}
+
 // Requests cancellation of a top-level or child reconcile job.
 message CancelReconcileJobRequest {
   string job_id = 1;
@@ -857,6 +874,9 @@ service ReconcileControl {
   rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (GetReconcileJobTreeResponse);
   // Lists reconcile jobs visible to the caller.
   rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
+  // Returns finalization state for one snapshot.
+  rpc GetFinalizedSnapshotStatus(GetFinalizedSnapshotStatusRequest)
+      returns (GetFinalizedSnapshotStatusResponse);
   // Requests cancellation for a reconcile job.
   rpc CancelReconcileJob(CancelReconcileJobRequest) returns (CancelReconcileJobResponse);
   // Reads current automatic reconcile settings.

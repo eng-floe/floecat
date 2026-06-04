@@ -348,6 +348,11 @@ public interface ReconcileJobStore {
     return new ReconcileJobPage(roots, page.nextPageToken);
   }
 
+  default Optional<FinalizedSnapshotEvent> getFinalizedSnapshot(
+      String accountId, String tableId, long snapshotId) {
+    return Optional.empty();
+  }
+
   default ReconcileJobPage childJobsPage(
       String accountId, String parentJobId, int pageSize, String pageToken) {
     if (parentJobId == null || parentJobId.isBlank()) {
@@ -372,6 +377,10 @@ public interface ReconcileJobStore {
       nextToken = page.nextPageToken;
     } while (nextToken != null && !nextToken.isBlank());
     return new ReconcileJobPage(out, "");
+  }
+
+  default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
+    return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
   }
 
   default List<ReconcileJob> jobTree(String accountId, String rootJobId) {
@@ -1772,6 +1781,30 @@ public interface ReconcileJobStore {
     public ReconcileJobPage(List<ReconcileJob> jobs, String nextPageToken) {
       this.jobs = jobs == null ? List.of() : List.copyOf(jobs);
       this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  final class FinalizedSnapshotEvent {
+    public final String eventId;
+    public final String accountId;
+    public final String tableId;
+    public final long snapshotId;
+    public final long finalizedAtMs;
+    public final String finalizerJobId;
+
+    public FinalizedSnapshotEvent(
+        String eventId,
+        String accountId,
+        String tableId,
+        long snapshotId,
+        long finalizedAtMs,
+        String finalizerJobId) {
+      this.eventId = eventId == null ? "" : eventId;
+      this.accountId = accountId == null ? "" : accountId;
+      this.tableId = tableId == null ? "" : tableId;
+      this.snapshotId = Math.max(0L, snapshotId);
+      this.finalizedAtMs = Math.max(0L, finalizedAtMs);
+      this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
     }
   }
 
