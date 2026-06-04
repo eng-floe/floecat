@@ -78,16 +78,21 @@ import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFile;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
@@ -109,6 +114,8 @@ import ai.floedb.floecat.transaction.rpc.ReserveTransactionTableIdResponse;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.List;
 
 @ApplicationScoped
 public class GrpcServiceFacade {
@@ -227,9 +234,36 @@ public class GrpcServiceFacade {
     queryStub().endQuery(request);
   }
 
-  public FetchScanBundleResponse fetchScanBundle(FetchScanBundleRequest request) {
-    return queryScanStub().fetchScanBundle(request);
+  public ScanFileStreamResponse fetchScanFileStream(InitScanRequest request) {
+    QueryScanServiceGrpc.QueryScanServiceBlockingStub stub = queryScanStub();
+    InitScanResponse initResp = stub.initScan(request);
+    ScanHandle handle = initResp.getHandle();
+    try {
+      List<DeleteFile> deleteFiles = new ArrayList<>();
+      var deleteIter = stub.streamDeleteFiles(handle);
+      while (deleteIter.hasNext()) {
+        DeleteFileBatch batch = deleteIter.next();
+        deleteFiles.addAll(batch.getItemsList());
+      }
+
+      List<DataFile> dataFiles = new ArrayList<>();
+      var dataIter = stub.streamDataFiles(handle);
+      while (dataIter.hasNext()) {
+        DataFileBatch batch = dataIter.next();
+        dataFiles.addAll(batch.getItemsList());
+      }
+      return new ScanFileStreamResponse(initResp, dataFiles, deleteFiles);
+    } finally {
+      try {
+        stub.closeScan(handle);
+      } catch (Exception ignored) {
+        // best-effort cleanup
+      }
+    }
   }
+
+  public record ScanFileStreamResponse(
+      InitScanResponse initScan, List<DataFile> dataFiles, List<DeleteFile> deleteFiles) {}
 
   public DescribeInputsResponse describeInputs(DescribeInputsRequest request) {
     return querySchemaStub().describeInputs(request);

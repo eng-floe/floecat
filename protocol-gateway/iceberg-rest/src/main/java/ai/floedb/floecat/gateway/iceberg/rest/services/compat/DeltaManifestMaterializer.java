@@ -35,7 +35,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -178,7 +178,7 @@ public class DeltaManifestMaterializer {
 
   private String writeManifestArtifacts(
       FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
-    ScanBundle bundle = fetchScanBundle(table, snapshot.getSnapshotId());
+    ScanBundle bundle = fetchScanFiles(table, snapshot.getSnapshotId());
     long snapshotId = snapshot.getSnapshotId();
     String compatMetadataPath = compatMetadataPath(metadataRoot, snapshotId);
     deleteIfExists(fileIo, compatMetadataPath);
@@ -471,7 +471,7 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private ScanBundle fetchScanBundle(Table table, long snapshotId) {
+  private ScanBundle fetchScanFiles(Table table, long snapshotId) {
     String queryId = null;
     try {
       BeginQueryRequest.Builder begin = BeginQueryRequest.newBuilder();
@@ -497,13 +497,20 @@ public class DeltaManifestMaterializer {
       grpcClient.describeInputs(
           DescribeInputsRequest.newBuilder().setQueryId(queryId).addInputs(input).build());
 
-      return grpcClient
-          .fetchScanBundle(
-              FetchScanBundleRequest.newBuilder()
+      var scan =
+          grpcClient.fetchScanFileStream(
+              InitScanRequest.newBuilder()
                   .setQueryId(queryId)
                   .setTableId(table.getResourceId())
-                  .build())
-          .getBundle();
+                  .build());
+      return ScanBundle.newBuilder()
+          .addAllDataFiles(
+              scan.dataFiles().stream().map(ai.floedb.floecat.query.rpc.DataFile::getFile).toList())
+          .addAllDeleteFiles(
+              scan.deleteFiles().stream()
+                  .map(ai.floedb.floecat.query.rpc.DeleteFile::getFile)
+                  .toList())
+          .build();
     } finally {
       if (queryId != null && !queryId.isBlank()) {
         try {

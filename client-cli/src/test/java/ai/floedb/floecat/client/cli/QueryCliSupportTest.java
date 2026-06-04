@@ -25,23 +25,27 @@ import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.EndQueryResponse;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
+import com.google.protobuf.Empty;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -282,8 +286,8 @@ class QueryCliSupportTest {
           () -> CATALOG_NAME,
           () -> ACCOUNT_ID);
 
-      assertEquals(1, h.queryScanService.fetchScanBundleCalls.get());
-      assertEquals(QUERY_ID, h.queryScanService.lastFetchScanRequest.getQueryId());
+      assertEquals(1, h.queryScanService.initScanCalls.get());
+      assertEquals(QUERY_ID, h.queryScanService.lastInitScanRequest.getQueryId());
       assertTrue(buf.toString().contains("query id: " + QUERY_ID));
     }
   }
@@ -470,16 +474,44 @@ class QueryCliSupportTest {
   private static final class CapturingQueryScanService
       extends QueryScanServiceGrpc.QueryScanServiceImplBase {
 
-    final AtomicInteger fetchScanBundleCalls = new AtomicInteger();
-    FetchScanBundleRequest lastFetchScanRequest;
+    final AtomicInteger initScanCalls = new AtomicInteger();
+    final AtomicInteger streamDeleteFilesCalls = new AtomicInteger();
+    final AtomicInteger streamDataFilesCalls = new AtomicInteger();
+    final AtomicInteger closeScanCalls = new AtomicInteger();
+    InitScanRequest lastInitScanRequest;
+    final ScanHandle handle = ScanHandle.newBuilder().setId("scan-handle").build();
 
     @Override
-    public void fetchScanBundle(
-        FetchScanBundleRequest request, StreamObserver<FetchScanBundleResponse> responseObserver) {
-      fetchScanBundleCalls.incrementAndGet();
-      lastFetchScanRequest = request;
+    public void initScan(
+        InitScanRequest request, StreamObserver<InitScanResponse> responseObserver) {
+      initScanCalls.incrementAndGet();
+      lastInitScanRequest = request;
       responseObserver.onNext(
-          FetchScanBundleResponse.newBuilder().setBundle(ScanBundle.getDefaultInstance()).build());
+          InitScanResponse.newBuilder()
+              .setHandle(handle)
+              .setTableInfo(TableInfo.getDefaultInstance())
+              .build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void streamDeleteFiles(
+        ScanHandle request, StreamObserver<DeleteFileBatch> responseObserver) {
+      streamDeleteFilesCalls.incrementAndGet();
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void streamDataFiles(
+        ScanHandle request, StreamObserver<DataFileBatch> responseObserver) {
+      streamDataFilesCalls.incrementAndGet();
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void closeScan(ScanHandle request, StreamObserver<Empty> responseObserver) {
+      closeScanCalls.incrementAndGet();
+      responseObserver.onNext(Empty.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }
