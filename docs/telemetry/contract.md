@@ -100,6 +100,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.sync_outcomes.total | COUNTER |  | v1 | Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED, SKIPPED). | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
+| floecat.service.storage.partial_state.total | COUNTER |  | v1 | Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band. | operation, resource | operation, resource |
 
 <!-- METRICS:END -->
 

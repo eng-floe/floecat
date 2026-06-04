@@ -20,11 +20,16 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.NoopObservability;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
-import io.micrometer.core.instrument.Metrics;
+import io.quarkus.arc.Arc;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -39,6 +44,7 @@ import org.jboss.logging.Logger;
 public class GenericResourceRepository<T, K extends ResourceKey> extends BaseResourceRepository<T> {
 
   private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
+  private static final Observability NOOP_OBSERVABILITY = new NoopObservability();
 
   private final ResourceSchema<T, K> schema;
 
@@ -254,14 +260,34 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    */
   private CorruptionException partialStateAnomaly(String operation, String message) {
     log.errorf("partial pointer state in %s.%s: %s", schema.resourceName, operation, message);
-    Metrics.counter(
-            "floecat_repo_partial_state_anomalies",
-            "floecat_resource",
-            schema.resourceName,
-            "floecat_operation",
-            operation)
-        .increment();
+    observability()
+        .counter(
+            ServiceMetrics.Storage.PARTIAL_STATE,
+            1.0,
+            Tag.of(TagKey.OPERATION, operation),
+            Tag.of(TagKey.RESOURCE, schema.resourceName));
     return new CorruptionException(message);
+  }
+
+  /**
+   * Resolves the application {@link Observability} via Arc. The repositories are plain helpers, not
+   * CDI beans, so rather than threading an {@code Observability} through every repository
+   * constructor we look the bean up lazily on this rare anomaly path. Outside a running Arc
+   * container (e.g. unit tests) it falls back to a no-op.
+   */
+  private static Observability observability() {
+    try {
+      var container = Arc.container();
+      if (container != null) {
+        var handle = container.instance(Observability.class);
+        if (handle.isAvailable()) {
+          return handle.get();
+        }
+      }
+    } catch (RuntimeException ignore) {
+      // Arc not initialised — fall back to the no-op below.
+    }
+    return NOOP_OBSERVABILITY;
   }
 
   private void cleanupCreateIfAbsentBlobOnCasMiss(
