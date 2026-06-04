@@ -35,8 +35,17 @@ public class ReconcileJobProjectionMaintenanceScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
+    var config = ConfigProvider.getConfig();
+    boolean enabled =
+        config
+            .getOptionalValue(
+                "floecat.reconciler.job-store.projection-maintenance.enabled", Boolean.class)
+            .orElse(true);
+    if (!enabled) {
+      return;
+    }
     long maxTickMillis =
-        ConfigProvider.getConfig()
+        config
             .getOptionalValue(
                 "floecat.reconciler.job-store.projection-maintenance.max-tick-millis", Long.class)
             .orElse(1000L);
