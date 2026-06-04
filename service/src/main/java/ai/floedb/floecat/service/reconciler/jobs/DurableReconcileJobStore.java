@@ -73,6 +73,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -109,6 +110,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   private static final int CAS_MAX = 16;
+  private static final String INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX =
+      "inline:reconcile-finalized-snapshot:";
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
@@ -515,6 +518,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         markDirtyParent(spec.accountId, item.jobId);
       }
       if (item.created) {
+        resetFinalizedSnapshotIfEligible(spec);
         requestProjectionRefresh(spec.accountId, spec.parentJobId, 1L);
       } else {
         markDirtyParent(spec.accountId, spec.parentJobId);
@@ -602,6 +606,27 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       out.add(projector().toPublicJob(stored, freshProjectionForRead(stored), true));
     }
     return new ReconcileJobPage(out, page.nextPageToken());
+  }
+
+  @Override
+  public Optional<FinalizedSnapshotEvent> getFinalizedSnapshot(
+      String accountId, String tableId, long snapshotId) {
+    if (blank(accountId) || blank(tableId) || snapshotId < 0L) {
+      return Optional.empty();
+    }
+    String key = Keys.reconcileFinalizedSnapshotIdentityPointer(accountId, tableId, snapshotId);
+    return pointerStore
+        .get(key)
+        .flatMap(pointer -> readFinalizedSnapshotEvent(pointer.getBlobUri()))
+        .map(
+            stored ->
+                new FinalizedSnapshotEvent(
+                    blankToEmpty(stored.eventId),
+                    blankToEmpty(stored.accountId),
+                    blankToEmpty(stored.tableId),
+                    stored.snapshotId,
+                    stored.finalizedAtMs,
+                    blankToEmpty(stored.finalizerJobId)));
   }
 
   @Override
@@ -1142,6 +1167,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         0L,
         snapshotsProcessed,
         statsProcessed);
+    recordFinalizedSnapshotIfEligible(jobId);
   }
 
   @Override
@@ -1828,6 +1854,91 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             + effectiveParentJobId);
   }
 
+  private void recordFinalizedSnapshotIfEligible(String jobId) {
+    StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+    if (loaded == null
+        || loaded.record == null
+        || !ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE.name().equals(loaded.record.jobKind)
+        || !"JS_SUCCEEDED".equals(loaded.record.state)
+        || blank(loaded.record.accountId)
+        || blank(loaded.record.snapshotTaskTableId)
+        || blank(loaded.record.jobId)) {
+      return;
+    }
+    upsertFinalizedSnapshotEvent(
+        new StoredFinalizedSnapshotEvent(
+            finalizedSnapshotEventId(
+                loaded.record.accountId,
+                loaded.record.snapshotTaskTableId,
+                loaded.record.snapshotTaskSnapshotId),
+            loaded.record.accountId,
+            loaded.record.snapshotTaskTableId,
+            loaded.record.snapshotTaskSnapshotId,
+            Math.max(0L, loaded.record.finishedAtMs),
+            loaded.record.jobId));
+  }
+
+  private void resetFinalizedSnapshotIfEligible(BulkEnqueueSpec spec) {
+    if (spec == null
+        || spec.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+        || blank(spec.accountId)
+        || spec.snapshotTask == null
+        || blank(spec.snapshotTask.tableId())) {
+      return;
+    }
+    pointerStore.delete(
+        Keys.reconcileFinalizedSnapshotIdentityPointer(
+            spec.accountId, spec.snapshotTask.tableId(), spec.snapshotTask.snapshotId()));
+  }
+
+  private void upsertFinalizedSnapshotEvent(StoredFinalizedSnapshotEvent event) {
+    if (event == null
+        || blank(event.accountId)
+        || blank(event.tableId)
+        || blank(event.finalizerJobId)) {
+      return;
+    }
+    String identityKey =
+        Keys.reconcileFinalizedSnapshotIdentityPointer(
+            event.accountId, event.tableId, event.snapshotId);
+    String blobUri = encodeInlineFinalizedSnapshotEvent(event);
+    Pointer created =
+        Pointer.newBuilder().setKey(identityKey).setBlobUri(blobUri).setVersion(1L).build();
+    if (!pointerStore.compareAndSet(identityKey, 0L, created)) {
+      return;
+    }
+  }
+
+  private String encodeInlineFinalizedSnapshotEvent(StoredFinalizedSnapshotEvent event) {
+    try {
+      return INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX
+          + Base64.getUrlEncoder().withoutPadding().encodeToString(mapper.writeValueAsBytes(event));
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to encode finalized snapshot event", e);
+    }
+  }
+
+  private Optional<StoredFinalizedSnapshotEvent> readFinalizedSnapshotEvent(String reference) {
+    if (reference == null
+        || reference.isBlank()
+        || !reference.startsWith(INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX)) {
+      return Optional.empty();
+    }
+    try {
+      byte[] payload =
+          Base64.getUrlDecoder()
+              .decode(reference.substring(INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX.length()));
+      return Optional.ofNullable(mapper.readValue(payload, StoredFinalizedSnapshotEvent.class));
+    } catch (Exception e) {
+      LOG.warnf(e, "Failed to decode finalized snapshot event reference=%s", reference);
+      return Optional.empty();
+    }
+  }
+
+  private String finalizedSnapshotEventId(String accountId, String tableId, long snapshotId) {
+    return blankToEmpty(accountId) + ":" + blankToEmpty(tableId) + ":" + Math.max(0L, snapshotId);
+  }
+
   private void advanceAppliedProjectionGeneration(
       String accountId, String parentJobId, long appliedGeneration) {
     String effectiveAccountId = blankToEmpty(accountId);
@@ -1880,19 +1991,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
-    return applyLeaseOutcomeInternal(
-        jobId,
-        leaseEpoch,
-        completionKind,
-        finishedAtMs,
-        message,
-        tablesScanned,
-        tablesChanged,
-        viewsScanned,
-        viewsChanged,
-        errors,
-        snapshotsProcessed,
-        statsProcessed);
+    boolean accepted =
+        applyLeaseOutcomeInternal(
+            jobId,
+            leaseEpoch,
+            completionKind,
+            finishedAtMs,
+            message,
+            tablesScanned,
+            tablesChanged,
+            viewsScanned,
+            viewsChanged,
+            errors,
+            snapshotsProcessed,
+            statsProcessed);
+    if (accepted && completionKind == CompletionKind.SUCCEEDED) {
+      recordFinalizedSnapshotIfEligible(jobId);
+    }
+    return accepted;
   }
 
   private boolean applyLeaseOutcomeInternal(
@@ -2550,5 +2666,31 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       this.canonicalPointerKey = canonicalPointerKey;
       this.record = record;
     }
+  }
+
+  static final class StoredFinalizedSnapshotEvent {
+    public String eventId;
+    public String accountId;
+    public String tableId;
+    public long snapshotId;
+    public long finalizedAtMs;
+    public String finalizerJobId;
+
+    StoredFinalizedSnapshotEvent(
+        String eventId,
+        String accountId,
+        String tableId,
+        long snapshotId,
+        long finalizedAtMs,
+        String finalizerJobId) {
+      this.eventId = eventId == null ? "" : eventId;
+      this.accountId = accountId == null ? "" : accountId;
+      this.tableId = tableId == null ? "" : tableId;
+      this.snapshotId = Math.max(0L, snapshotId);
+      this.finalizedAtMs = Math.max(0L, finalizedAtMs);
+      this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+    }
+
+    StoredFinalizedSnapshotEvent() {}
   }
 }

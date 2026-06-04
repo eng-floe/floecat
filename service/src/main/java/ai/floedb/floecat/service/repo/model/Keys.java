@@ -891,6 +891,19 @@ public final class Keys {
     return "/accounts/by-id/reconcile/jobs/by-id/";
   }
 
+  public static String reconcileFinalizedSnapshotIdentityPointer(
+      String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
+    String table = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/finalized-snapshots/by-id/"
+        + encode(table)
+        + "/"
+        + String.format("%019d", sid);
+  }
+
   public static String reconcileDirtyParentPointerPrefix() {
     return "/accounts/by-id/reconcile/jobs/dirty-parents/";
   }

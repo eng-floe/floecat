@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1874,6 +1875,117 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_CANCELLING", connector.state);
     assertEquals("stop", connector.message);
+  }
+
+  @Test
+  void repeatedSnapshotFinalizationResetsFinalizedStatusUntilNewFinalizerSucceeds() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+
+    String firstJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var firstLease = leaseJob(firstJobId);
+    store.markRunning(firstJobId, firstLease.leaseEpoch, 100L, "executor-finalizer-1");
+    store.markSucceeded(firstJobId, firstLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 1L, 1L);
+
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> firstFinalized =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(firstFinalized.isPresent());
+    assertEquals(firstJobId, firstFinalized.orElseThrow().finalizerJobId);
+
+    String secondJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertNotEquals(firstJobId, secondJobId);
+    assertFalse(store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L).isPresent());
+
+    var secondLease = leaseJob(secondJobId);
+    store.markRunning(secondJobId, secondLease.leaseEpoch, 300L, "executor-finalizer-2");
+    store.markSucceeded(secondJobId, secondLease.leaseEpoch, 400L, 0L, 0L, 0L, 0L, 1L, 1L);
+
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> secondFinalized =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(secondFinalized.isPresent());
+    assertEquals(secondJobId, secondFinalized.orElseThrow().finalizerJobId);
+    assertEquals(400L, secondFinalized.orElseThrow().finalizedAtMs);
+  }
+
+  @Test
+  void remoteApplyLeaseOutcomeSucceededRecordsFinalizedSnapshotAfterWaitingPass() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var firstLease = leaseJob(jobId);
+    store.markRunning(jobId, firstLease.leaseEpoch, 100L, "executor-finalizer-1");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            firstLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
+            200L,
+            "Waiting for snapshot file groups 0/1 pending=[group-0]",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+    assertFalse(store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L).isPresent());
+
+    var secondLease = leaseJob(jobId);
+    store.markRunning(jobId, secondLease.leaseEpoch, 300L, "executor-finalizer-2");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            secondLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            400L,
+            "Finalized snapshot capture 55",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            1L));
+
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> finalized =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(finalized.isPresent());
+    assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
+    assertEquals(400L, finalized.orElseThrow().finalizedAtMs);
   }
 
   @Test
