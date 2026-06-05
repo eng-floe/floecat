@@ -41,14 +41,31 @@ fetch_commit() {
 }
 
 if [[ "${EVENT_NAME}" == "pull_request" && -n "${BASE_SHA}" && -n "${HEAD_SHA}" ]]; then
+  if ! fetch_commit "${BASE_SHA}"; then
+    echo "ERROR: unable to fetch PR base commit ${BASE_SHA}" >&2
+    exit 1
+  fi
+
   if ! fetch_commit "${HEAD_SHA}" && [[ -n "${PR_NUMBER}" ]]; then
     git fetch --no-tags --depth=1 origin "pull/${PR_NUMBER}/head" >/dev/null 2>&1 || true
   fi
-  if fetch_commit "${BASE_SHA}" && fetch_commit "${HEAD_SHA}"; then
-    git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"
+
+  if ! fetch_commit "${HEAD_SHA}"; then
+    echo "ERROR: unable to fetch PR head commit ${HEAD_SHA}" >&2
+    exit 1
   fi
+
+  git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"
 elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && -n "${HEAD_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
-  if fetch_commit "${BEFORE_SHA}" && fetch_commit "${HEAD_SHA}"; then
-    git diff --name-only "${BEFORE_SHA}" "${HEAD_SHA}"
+  if ! fetch_commit "${BEFORE_SHA}"; then
+    echo "ERROR: unable to fetch push base commit ${BEFORE_SHA}" >&2
+    exit 1
   fi
+
+  if ! fetch_commit "${HEAD_SHA}"; then
+    echo "ERROR: unable to fetch push head commit ${HEAD_SHA}" >&2
+    exit 1
+  fi
+
+  git diff --name-only "${BEFORE_SHA}" "${HEAD_SHA}"
 fi

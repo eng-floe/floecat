@@ -20,7 +20,7 @@ on:
 
 jobs:
   detect-core-changes:
-    name: detect-core-changes
+    name: Route core checks by changed files
     runs-on: ubuntu-latest
     permissions:
       contents: read
