@@ -1,0 +1,119 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.reconciler.impl;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import io.grpc.StatusRuntimeException;
+import java.util.List;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class LeasedSnapshotFinalizeExecutionServiceTest {
+  private static final String ACCOUNT_ID = "acct";
+  private static final String FINALIZE_JOB_ID = "finalize-job";
+  private static final String LEASE_EPOCH = "lease-1";
+  private static final String TABLE_ID = "table-1";
+  private static final long SNAPSHOT_ID = 55L;
+
+  private LeasedSnapshotFinalizeExecutionService service;
+  private ReconcileJobStore jobs;
+  private PrincipalContext principal;
+
+  @BeforeEach
+  void setUp() {
+    service = new LeasedSnapshotFinalizeExecutionService();
+    jobs = mock(ReconcileJobStore.class);
+    principal = mock(PrincipalContext.class);
+    service.jobs = jobs;
+    when(principal.getCorrelationId()).thenReturn("corr");
+  }
+
+  @Test
+  void persistSuccessRejectsMissingMode() {
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.ReconcileJob(
+                    FINALIZE_JOB_ID,
+                    ACCOUNT_ID,
+                    "connector",
+                    "JS_RUNNING",
+                    "",
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    0L,
+                    0L,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        0),
+                    ReconcileFileGroupTask.empty(),
+                    "parent-job")));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    FINALIZE_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    "/accounts/acct/reconcile/jobs/finalize-job/snapshot-finalize-stats/result.json",
+                    7,
+                    ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                        .SuccessMode.SFM_UNSPECIFIED));
+
+    assertEquals(
+        "INVALID_ARGUMENT: snapshot finalize success mode is required", error.getMessage());
+  }
+}

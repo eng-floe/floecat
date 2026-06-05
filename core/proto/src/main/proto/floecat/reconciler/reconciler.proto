@@ -448,6 +448,31 @@ message GetLeasedFileGroupExecutionRequest {
   string lease_epoch = 2;
 }
 
+message GetLeasedSnapshotFinalizeInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message SnapshotFinalizeGroupManifest {
+  string plan_id = 1;
+  string group_id = 2;
+  string file_stats_blob_uri = 3;
+  uint32 file_stats_record_count = 4;
+}
+
+message LeasedSnapshotFinalizeInput {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId table_id = 4;
+  uint64 snapshot_id = 5;
+  repeated SnapshotFinalizeGroupManifest completed_groups = 6;
+}
+
+message GetLeasedSnapshotFinalizeInputResponse {
+  LeasedSnapshotFinalizeInput input = 1;
+}
+
 message GetLeasedPlanConnectorInputRequest {
   string job_id = 1;
   string lease_epoch = 2;
@@ -707,6 +732,38 @@ message SubmitLeasedFileGroupExecutionResultResponse {
   bool accepted = 1;
 }
 
+message SubmitLeasedSnapshotFinalizeResultRequest {
+  enum SuccessMode {
+    SFM_UNSPECIFIED = 0;
+    SFM_REPLACE_ALL = 1;
+    SFM_INCREMENTAL_DELTA = 2;
+  }
+
+  message Success {
+    string result_id = 1;
+    string stats_blob_uri = 2;
+    uint32 stats_record_count = 3;
+    SuccessMode mode = 4;
+  }
+
+  message Failure {
+    string result_id = 1;
+    string message = 2;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedSnapshotFinalizeResultResponse {
+  bool accepted = 1;
+}
+
 message GetReconcileJobRequest {
   string job_id = 1;
 }
@@ -934,4 +991,10 @@ service ReconcileExecutorControl {
   // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
   rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
       returns (SubmitLeasedFileGroupExecutionResultResponse);
+  // Returns compact child-result manifests for one leased FINALIZE_SNAPSHOT_CAPTURE job.
+  rpc GetLeasedSnapshotFinalizeInput(GetLeasedSnapshotFinalizeInputRequest)
+      returns (GetLeasedSnapshotFinalizeInputResponse);
+  // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
+  rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
+      returns (SubmitLeasedSnapshotFinalizeResultResponse);
 }

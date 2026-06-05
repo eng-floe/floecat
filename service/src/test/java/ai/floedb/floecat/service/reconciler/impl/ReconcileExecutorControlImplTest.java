@@ -30,6 +30,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
@@ -43,6 +45,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
@@ -51,6 +54,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -72,6 +76,9 @@ class ReconcileExecutorControlImplTest {
     service.jobs = mock(ReconcileJobStore.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
     service.leasedFileGroupExecutionService = mock(LeasedFileGroupExecutionService.class);
+    service.leasedSnapshotFinalizeInputService = mock(LeasedSnapshotFinalizeInputService.class);
+    service.leasedSnapshotFinalizeExecutionService =
+        mock(LeasedSnapshotFinalizeExecutionService.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -420,6 +427,89 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(response.getAccepted());
+  }
+
+  @Test
+  void getLeasedSnapshotFinalizeInputRoutesPayload() {
+    when(service.leasedSnapshotFinalizeInputService.resolve(any(), eq("job-1"), eq("lease-1")))
+        .thenReturn(
+            new LeasedSnapshotFinalizeInputService.SnapshotFinalizeInput(
+                "job-1",
+                "lease-1",
+                "parent-1",
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("table-1")
+                    .build(),
+                55L,
+                List.of(
+                    new LeasedSnapshotFinalizeInputService.SnapshotFinalizeGroupManifest(
+                        "plan-1",
+                        "group-1",
+                        "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
+                        4))));
+
+    var response =
+        service
+            .getLeasedSnapshotFinalizeInput(
+                GetLeasedSnapshotFinalizeInputRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals("job-1", response.getInput().getJobId());
+    assertEquals("parent-1", response.getInput().getParentJobId());
+    assertEquals("table-1", response.getInput().getTableId().getId());
+    assertEquals(55L, response.getInput().getSnapshotId());
+    assertEquals(1, response.getInput().getCompletedGroupsCount());
+    assertEquals("plan-1", response.getInput().getCompletedGroups(0).getPlanId());
+  }
+
+  @Test
+  void submitLeasedSnapshotFinalizeResultRoutesBlobManifest() {
+    when(service.leasedSnapshotFinalizeExecutionService.persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
+            eq(7),
+            eq(SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode.SFM_INCREMENTAL_DELTA)))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedSnapshotFinalizeResult(
+                SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .setStatsBlobUri(
+                                "/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json")
+                            .setStatsRecordCount(7)
+                            .setMode(
+                                SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode
+                                    .SFM_INCREMENTAL_DELTA)
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.leasedSnapshotFinalizeExecutionService)
+        .persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
+            eq(7),
+            eq(SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode.SFM_INCREMENTAL_DELTA));
   }
 
   @Test

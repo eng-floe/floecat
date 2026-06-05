@@ -206,6 +206,14 @@ public class SnapshotPlanBlobStore {
   }
 
   public List<TargetStatsRecord> loadFileGroupStats(String blobUri) {
+    return loadTargetStatsBlob(blobUri, "file-group stats");
+  }
+
+  public List<TargetStatsRecord> loadTargetStatsBlob(String blobUri) {
+    return loadTargetStatsBlob(blobUri, "target stats");
+  }
+
+  private List<TargetStatsRecord> loadTargetStatsBlob(String blobUri, String description) {
     String effectiveBlobUri = blobUri == null ? "" : blobUri.trim();
     if (effectiveBlobUri.isBlank()) {
       return List.of();
@@ -219,7 +227,7 @@ public class SnapshotPlanBlobStore {
           .toList();
     } catch (Exception e) {
       throw new IllegalStateException(
-          "Failed to load file-group stats blob " + effectiveBlobUri, e);
+          "Failed to load " + description + " blob " + effectiveBlobUri, e);
     }
   }
 
