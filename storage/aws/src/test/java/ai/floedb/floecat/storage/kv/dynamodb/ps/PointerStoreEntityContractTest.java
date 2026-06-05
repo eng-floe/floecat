@@ -22,6 +22,7 @@ import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.mutiny.Uni;
@@ -194,6 +195,69 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
     assertTrue(pointers.compareAndDelete(key, 1L).await().indefinitely());
     assertTrue(pointers.get(key).await().indefinitely().isEmpty());
+  }
+
+  // ---- Batch CAS (atomic, all-or-nothing)
+
+  @Test
+  void compareAndSetBatch_allClear_commits_all_at_version_one() {
+    String k1 = "/accounts/by-id/500/catalog/a";
+    String k2 = "/accounts/by-id/500/catalog/b";
+
+    boolean ok =
+        pointers
+            .compareAndSetBatch(
+                List.of(
+                    new PointerStore.CasUpsert(
+                        k1, 0L, Pointer.newBuilder().setKey(k1).setBlobUri("s3://b/a").build()),
+                    new PointerStore.CasUpsert(
+                        k2, 0L, Pointer.newBuilder().setKey(k2).setBlobUri("s3://b/b").build())))
+            .await()
+            .indefinitely();
+
+    assertTrue(ok);
+    assertEquals(1L, pointers.get(k1).await().indefinitely().orElseThrow().getVersion());
+    assertEquals(1L, pointers.get(k2).await().indefinitely().orElseThrow().getVersion());
+  }
+
+  @Test
+  void compareAndSetBatch_partialConflict_is_atomic_and_commits_nothing() {
+    String existing = "/accounts/by-id/501/catalog/existing";
+    String fresh = "/accounts/by-id/501/catalog/fresh";
+    assertTrue(
+        pointers
+            .compareAndSet(
+                existing,
+                0L,
+                Pointer.newBuilder().setKey(existing).setBlobUri("s3://b/existing").build())
+            .await()
+            .indefinitely());
+
+    boolean ok =
+        pointers
+            .compareAndSetBatch(
+                List.of(
+                    new PointerStore.CasUpsert(
+                        fresh,
+                        0L,
+                        Pointer.newBuilder().setKey(fresh).setBlobUri("s3://b/fresh").build()),
+                    new PointerStore.CasUpsert(
+                        existing,
+                        0L,
+                        Pointer.newBuilder()
+                            .setKey(existing)
+                            .setBlobUri("s3://b/conflict")
+                            .build())))
+            .await()
+            .indefinitely();
+
+    assertFalse(ok);
+    // The fresh key's upsert would have individually succeeded; atomic rollback leaves it absent.
+    assertTrue(pointers.get(fresh).await().indefinitely().isEmpty());
+    // The existing key is untouched: still bound to its original blob at version 1.
+    Pointer got = pointers.get(existing).await().indefinitely().orElseThrow();
+    assertEquals("s3://b/existing", got.getBlobUri());
+    assertEquals(1L, got.getVersion());
   }
 
   // ---- TTL mapping

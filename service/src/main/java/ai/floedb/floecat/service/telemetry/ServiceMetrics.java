@@ -35,6 +35,13 @@ public final class ServiceMetrics {
             "bytes",
             CONTRACT,
             "service");
+    public static final MetricId PARTIAL_STATE =
+        new MetricId(
+            "floecat.service.storage.partial_state.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
   }
 
   public static final class Flight {

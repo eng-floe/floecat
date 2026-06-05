@@ -75,6 +75,15 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         accountTag,
         accountTag,
         "Estimated per-account storage byte consumption (sampled, not exact).");
+    Set<String> partialStateTags = Set.of(TagKey.OPERATION, TagKey.RESOURCE);
+    add(
+        defs,
+        Storage.PARTIAL_STATE,
+        partialStateTags,
+        partialStateTags,
+        "Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a"
+            + " canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never"
+            + " itself produce and that must be reconciled out of band.");
     add(
         defs,
         ServiceMetrics.Flight.REQUESTS,

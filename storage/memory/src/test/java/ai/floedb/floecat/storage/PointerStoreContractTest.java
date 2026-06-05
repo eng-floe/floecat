@@ -147,8 +147,51 @@ public class PointerStoreContractTest {
         () -> store.listPointersByPrefix(prefix(), 10, "bad-token", next));
   }
 
+  @Test
+  void compareAndSetBatch_emptyOps_returns_true() {
+    assertTrue(store.compareAndSetBatch(List.of()));
+  }
+
+  @Test
+  void compareAndSetBatch_allClear_commits_all_at_version_one() {
+    boolean ok =
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(key(1), 0L, pointerWithBlob(key(1), "blob/1")),
+                new PointerStore.CasUpsert(key(2), 0L, pointerWithBlob(key(2), "blob/2"))));
+
+    assertTrue(ok);
+    assertEquals("blob/1", store.get(key(1)).orElseThrow().getBlobUri());
+    assertEquals(1L, store.get(key(1)).orElseThrow().getVersion());
+    assertEquals("blob/2", store.get(key(2)).orElseThrow().getBlobUri());
+    assertEquals(1L, store.get(key(2)).orElseThrow().getVersion());
+  }
+
+  @Test
+  void compareAndSetBatch_partialConflict_is_atomic_and_commits_nothing() {
+    // Pre-commit key(1); a create-if-absent (expectedVersion 0) batch touching it must now fail.
+    assertTrue(store.compareAndSet(key(1), 0L, pointerWithBlob(key(1), "blob/existing")));
+
+    boolean ok =
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(key(2), 0L, pointerWithBlob(key(2), "blob/2")),
+                new PointerStore.CasUpsert(key(1), 0L, pointerWithBlob(key(1), "blob/conflict"))));
+
+    assertFalse(ok);
+    // key(2)'s upsert would have individually succeeded; the atomic batch rolled it back.
+    assertTrue(store.get(key(2)).isEmpty());
+    // key(1) is untouched: still bound to its original blob at version 1.
+    assertEquals("blob/existing", store.get(key(1)).orElseThrow().getBlobUri());
+    assertEquals(1L, store.get(key(1)).orElseThrow().getVersion());
+  }
+
   private static Pointer pointer(String key, long version) {
     return Pointer.newBuilder().setKey(key).setVersion(version).build();
+  }
+
+  private static Pointer pointerWithBlob(String key, String blobUri) {
+    return Pointer.newBuilder().setKey(key).setBlobUri(blobUri).build();
   }
 
   private static String prefix() {
