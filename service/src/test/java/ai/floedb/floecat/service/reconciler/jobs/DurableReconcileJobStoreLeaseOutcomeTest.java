@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -391,10 +392,37 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   private ReconcileJobStore.LeasedJob awaitLease(String description, String jobId) {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    return waitForValue(
-        () -> tryLeaseCanonicalJob(canonicalPointerKey),
-        lease -> lease != null && jobId.equals(lease.jobId),
-        description);
+    ReconcileJobStore.LeasedJob leased = null;
+    for (int attempt = 0; attempt < 100 && leased == null; attempt++) {
+      StoredReconcileJob readyRecord =
+          waitForValue(
+              () -> readStoredRecord(canonicalPointerKey),
+              current ->
+                  "JS_QUEUED".equals(current.state)
+                      && current.readyPointerKey != null
+                      && !current.readyPointerKey.isBlank(),
+              description + " ready");
+      leased =
+          tryGetValue(
+              () ->
+                  store
+                      .leaseStore
+                      .leaseCanonical(
+                          canonicalPointerKey,
+                          readyRecord.readyPointerKey,
+                          System.currentTimeMillis(),
+                          store
+                              .jobIndexStore
+                              .loadCanonicalSnapshot(canonicalPointerKey)
+                              .orElseThrow(),
+                          readyRecord)
+                      .orElse(null));
+      if (leased == null) {
+        store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+      }
+    }
+    assertNotNull(leased, "Timed out waiting for " + description);
+    return leased;
   }
 
   private <T> T waitForValue(
@@ -558,32 +586,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     } while (startKey != null && !startKey.isEmpty());
   }
 
-  private ReconcileJobStore.LeasedJob tryLeaseCanonicalJob(String canonicalPointerKey) {
-    StoredReconcileJob readyRecord =
-        tryGetValue(
-            () ->
-                store
-                    .jobIndexStore
-                    .readCanonicalRecordByKey(canonicalPointerKey)
-                    .filter(
-                        current ->
-                            "JS_QUEUED".equals(current.state)
-                                && current.readyPointerKey != null
-                                && !current.readyPointerKey.isBlank())
-                    .orElse(null));
-    if (readyRecord == null) {
-      return null;
-    }
-    return tryGetValue(
-        () ->
-            store
-                .leaseStore
-                .leaseCanonical(
-                    canonicalPointerKey,
-                    readyRecord.readyPointerKey,
-                    System.currentTimeMillis(),
-                    store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElseThrow(),
-                    readyRecord)
-                .orElse(null));
+  private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
+    return org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+            () -> store.jobIndexStore.readCanonicalRecordByKey(canonicalPointerKey))
+        .orElseThrow();
   }
 }

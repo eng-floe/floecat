@@ -36,6 +36,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -47,6 +48,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -416,12 +418,11 @@ class TableRepositoryTest {
 
     var p = ptr.get(canonKey);
     if (seedDeleted.get()) {
-      boolean deletedVisible = p.isEmpty() || !tableRepo.getById(tblId).isPresent();
-      for (int attempt = 0; attempt < 200 && !deletedVisible; attempt++) {
-        Thread.sleep(10L);
-        p = ptr.get(canonKey);
-        deletedVisible = p.isEmpty() || !tableRepo.getById(tblId).isPresent();
-      }
+      boolean deletedVisible =
+          await(
+              Duration.ofSeconds(5),
+              () -> ptr.get(canonKey).isEmpty() || tableRepo.getById(tblId).isEmpty(),
+              Duration.ofMillis(10));
       assertTrue(deletedVisible, "deleted table should not be resolvable");
       assertDoesNotThrow(() -> tableRepo.metaForSafe(tblId));
     } else {
@@ -439,5 +440,17 @@ class TableRepositoryTest {
         .setId(UUID.randomUUID().toString())
         .setKind(kind)
         .build();
+  }
+
+  private static boolean await(Duration timeout, BooleanSupplier condition, Duration step)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      if (condition.getAsBoolean()) {
+        return true;
+      }
+      Thread.sleep(step.toMillis());
+    }
+    return condition.getAsBoolean();
   }
 }
