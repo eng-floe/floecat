@@ -68,7 +68,7 @@
     <version.slf4j>2.0.17</version.slf4j>
     <version.slf4j.jboss.logmanager>2.0.2.Final</version.slf4j.jboss.logmanager>
     <version.trino>476</version.trino>
-    <version.trino.grpc>1.78.0</version.trino.grpc>
+    <version.trino.grpc>1.81.0</version.trino.grpc>
     <version.plugin.antlr4>4.13.2</version.plugin.antlr4>
     <version.plugin.build.helper>3.6.1</version.plugin.build.helper>
     <version.plugin.clean>3.5.0</version.plugin.clean>
