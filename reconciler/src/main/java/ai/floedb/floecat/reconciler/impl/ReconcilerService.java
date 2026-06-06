@@ -52,6 +52,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -294,9 +295,21 @@ public class ReconcilerService {
             .map(ReconcileScope.ScopedCaptureRequest::snapshotId)
             .filter(snapshotId -> snapshotId >= 0)
             .collect(Collectors.toCollection(LinkedHashSet::new));
-    Set<Long> knownSnapshotIds = fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, tableId);
+    boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
+    Set<Long> knownSnapshotIds =
+        (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
     Set<String> defaultColumnSelectors = normalizeSelectors(active.source().getColumnsList());
     ReconcileCapturePolicy capturePolicy = effectiveCapturePolicy(scope, captureMode);
+    boolean requiresCaptureOutputs =
+        capturePolicy.requestsStats() || capturePolicy.requestsIndexes();
+    Map<Long, List<ReconcileScope.ScopedCaptureRequest>> scopedCaptureRequestsBySnapshot =
+        scope.destinationCaptureRequests().stream()
+            .filter(request -> request != null && tableId.getId().equals(request.tableId()))
+            .collect(
+                Collectors.groupingBy(
+                    ReconcileScope.ScopedCaptureRequest::snapshotId,
+                    LinkedHashMap::new,
+                    Collectors.toList()));
     // Capture completeness is evaluated in planSnapshotTasks(), which is responsible for
     // enqueuing follow-up snapshot work. Direct table execution here is metadata-only.
     Set<Long> enumerationKnownSnapshotIds =
@@ -306,14 +319,18 @@ public class ReconcilerService {
             fullRescan,
             knownSnapshotIds,
             capturePolicy,
-            scope.destinationCaptureRequests().stream()
-                .filter(request -> request != null && tableId.getId().equals(request.tableId()))
-                .collect(
-                    Collectors.groupingBy(
-                        ReconcileScope.ScopedCaptureRequest::snapshotId,
-                        LinkedHashMap::new,
-                        Collectors.toList())),
+            scopedCaptureRequestsBySnapshot,
             defaultColumnSelectors);
+    ReconcileSnapshotSelection enumerationSelection =
+        captureOnly
+            ? captureOnlyEnumerationSelection(
+                scope.snapshotSelection(), knownSnapshotIds, targetSnapshotIds)
+            : scope.snapshotSelection();
+    Set<Long> enumerationTargetSnapshotIds =
+        captureOnly
+            ? selectionSnapshotIds(enumerationSelection).orElse(Set.of())
+            : targetSnapshotIds;
+    boolean enumerationFullRescan = captureOnly || fullRescan;
 
     ConnectorConfig tableConfig = tableScopedResolvedConfig(ctx, active, tableId);
     try (FloecatConnector connector = connectorOpener.open(tableConfig)) {
@@ -323,17 +340,28 @@ public class ReconcilerService {
               effectiveTask.sourceTable(),
               tableId,
               snapshotEnumerationOptions(
-                  scope.snapshotSelection(),
-                  fullRescan,
-                  enumerationKnownSnapshotIds,
-                  targetSnapshotIds));
+                  enumerationSelection,
+                  enumerationFullRescan,
+                  requiresCaptureOutputs ? Set.of() : enumerationKnownSnapshotIds,
+                  enumerationTargetSnapshotIds));
       if (bundles == null || bundles.isEmpty()) {
         return List.of();
       }
       List<FloecatConnector.SnapshotBundle> plannableBundles =
-          filterPlannableSnapshotBundles(bundles, fullRescan, captureMode, knownSnapshotIds);
+          filterPlannableSnapshotBundles(bundles, captureMode, knownSnapshotIds);
       return plannableBundles.stream()
           .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
+          .filter(
+              bundle ->
+                  !requiresCaptureOutputs
+                      || !isSnapshotCaptureCompleteForScope(
+                          ctx,
+                          tableId,
+                          bundle.snapshotId(),
+                          capturePolicy,
+                          scopedCaptureRequestsBySnapshot.getOrDefault(
+                              bundle.snapshotId(), List.of()),
+                          defaultColumnSelectors))
           .filter(
               bundle ->
                   targetSnapshotIds.isEmpty() || targetSnapshotIds.contains(bundle.snapshotId()))
@@ -356,11 +384,13 @@ public class ReconcilerService {
 
   static List<FloecatConnector.SnapshotBundle> filterPlannableSnapshotBundles(
       List<FloecatConnector.SnapshotBundle> bundles,
-      boolean fullRescan,
       CaptureMode captureMode,
       Set<Long> knownSnapshotIds) {
-    if (bundles == null || bundles.isEmpty() || fullRescan || includesMetadata(captureMode)) {
+    if (bundles == null || bundles.isEmpty()) {
       return bundles == null ? List.of() : bundles;
+    }
+    if (includesMetadata(captureMode)) {
+      return bundles;
     }
     if (knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return List.of();
@@ -513,6 +543,82 @@ public class ReconcilerService {
                       ctx, tableId, snapshotId, capturePolicy, scopedCaptureRequests);
           return statsComplete && indexesComplete;
         });
+  }
+
+  static ReconcileSnapshotSelection captureOnlyEnumerationSelection(
+      ReconcileSnapshotSelection selection,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    Set<Long> localSnapshotIds =
+        captureOnlySelectedSnapshotIds(selection, knownSnapshotIds, targetSnapshotIds);
+    if (localSnapshotIds.isEmpty()) {
+      return ReconcileSnapshotSelection.all();
+    }
+    return ReconcileSnapshotSelection.explicit(List.copyOf(localSnapshotIds));
+  }
+
+  private static Set<Long> captureOnlySelectedSnapshotIds(
+      ReconcileSnapshotSelection selection,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    Set<Long> known = knownSnapshotIds == null ? Set.of() : new LinkedHashSet<>(knownSnapshotIds);
+    if (known.isEmpty()) {
+      return Set.of();
+    }
+    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
+      return known.stream()
+          .filter(targetSnapshotIds::contains)
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    return switch (effective.kind()) {
+      case CURRENT -> {
+        long latestKnown = known.stream().mapToLong(Long::longValue).max().orElse(-1L);
+        yield latestKnown >= 0L ? Set.of(latestKnown) : Set.of();
+      }
+      case LATEST_N ->
+          known.stream()
+              .sorted(Comparator.reverseOrder())
+              .limit(Math.max(0, effective.latestN()))
+              .sorted()
+              .collect(Collectors.toCollection(LinkedHashSet::new));
+      case EXPLICIT ->
+          known.stream()
+              .filter(new LinkedHashSet<>(effective.snapshotIds())::contains)
+              .collect(Collectors.toCollection(LinkedHashSet::new));
+      case ALL, UNSPECIFIED -> Set.copyOf(known);
+    };
+  }
+
+  private static Optional<Set<Long>> selectionSnapshotIds(ReconcileSnapshotSelection selection) {
+    if (selection == null || selection.kind() != ReconcileSnapshotSelection.Kind.EXPLICIT) {
+      return Optional.empty();
+    }
+    return Optional.of(Set.copyOf(selection.snapshotIds()));
+  }
+
+  private boolean isSnapshotCaptureCompleteForScope(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      ReconcileCapturePolicy capturePolicy,
+      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests,
+      Set<String> defaultColumnSelectors) {
+    boolean statsComplete =
+        !capturePolicy.requestsStats()
+            || isStatsCaptureCompleteForScope(
+                ctx,
+                tableId,
+                snapshotId,
+                capturePolicy,
+                scopedCaptureRequests,
+                defaultColumnSelectors);
+    boolean indexesComplete =
+        !capturePolicy.requestsIndexes()
+            || isIndexCaptureCompleteForScope(
+                ctx, tableId, snapshotId, capturePolicy, scopedCaptureRequests);
+    return statsComplete && indexesComplete;
   }
 
   private boolean isStatsCaptureCompleteForScope(

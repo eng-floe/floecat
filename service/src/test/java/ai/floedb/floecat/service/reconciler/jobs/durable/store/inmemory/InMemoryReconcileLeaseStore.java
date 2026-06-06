@@ -222,8 +222,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       return false;
     }
     long now = System.currentTimeMillis();
-    if (requireUnexpiredLease && lease.expiresAtMs <= now) {
-      return allowExpiredWithinGrace && now - lease.expiresAtMs <= leaseRenewGraceMs;
+    if (requireUnexpiredLease && lease.expiresAtMs <= now && !allowExpiredWithinGrace) {
+      return false;
     }
     return true;
   }
@@ -295,9 +295,6 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
             return null;
           }
           long now = System.currentTimeMillis();
-          if (current.expiresAtMs > 0L && now - current.expiresAtMs > leaseRenewGraceMs) {
-            return null;
-          }
           current.expiresAtMs = now + leaseMs;
           return current;
         });

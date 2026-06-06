@@ -101,6 +101,15 @@ public class ReconcileJobEnqueuer {
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
+    return bulkEnqueue(specs, null);
+  }
+
+  public BulkEnqueueResult bulkEnqueue(
+      List<BulkEnqueueSpec> specs,
+      Function<
+              List<ReconcileJobIndexStore.QueuedJobInsert>,
+              List<ReconcileJobIndexStore.CanonicalRecordMutation>>
+          ancestorMutationsBuilder) {
     if (specs == null || specs.isEmpty()) {
       return new BulkEnqueueResult(List.of());
     }
@@ -145,25 +154,77 @@ public class ReconcileJobEnqueuer {
         logEnqueueFailed(entry, failed.error);
         continue;
       }
-      BulkEnqueueItemResult existingResult = commitBulkEntry(entry);
-      if (existingResult != null) {
+      batchDedupe.put(
+          entry.dedupePointerKey,
+          new BulkEnqueueItemResult(entry.index, entry.record.jobId, true, ""));
+    }
+
+    List<PendingBulkEnqueue> pending = new ArrayList<>();
+    for (PendingBulkEnqueue entry : preparedEntries) {
+      if (results.get(entry.index) == null) {
+        pending.add(entry);
+      }
+    }
+    if (pending.isEmpty()) {
+      return new BulkEnqueueResult(results);
+    }
+
+    var pendingByIndex = new java.util.LinkedHashMap<Integer, PendingBulkEnqueue>();
+    List<ReconcileJobIndexStore.QueuedJobInsert> inserts = new ArrayList<>(pending.size());
+    for (PendingBulkEnqueue entry : pending) {
+      pendingByIndex.put(entry.index, entry);
+      inserts.add(toQueuedInsert(entry));
+    }
+
+    List<BulkEnqueueItemResult> storeResults;
+    try {
+      storeResults = jobIndexStore.commitQueuedJobInserts(inserts, ancestorMutationsBuilder);
+    } catch (RuntimeException e) {
+      for (PendingBulkEnqueue entry : pending) {
         rollbackFailedBulkEnqueue(entry);
-        results.set(entry.index, existingResult);
-        if (existingResult.succeeded()) {
-          logEnqueueDeduped(entry, existingResult.jobId, "store");
-        } else {
-          logEnqueueFailed(entry, existingResult.error);
-        }
+      }
+      throw e;
+    }
+    java.util.Set<Integer> resolvedIndexes = new java.util.HashSet<>();
+    for (BulkEnqueueItemResult storeResult : storeResults) {
+      PendingBulkEnqueue entry = pendingByIndex.get(storeResult.index);
+      if (entry == null) {
+        continue;
+      }
+      resolvedIndexes.add(storeResult.index);
+      rollbackFailedBulkEnqueue(entry);
+      results.set(storeResult.index, storeResult);
+      if (storeResult.succeeded()) {
+        logEnqueueDeduped(entry, storeResult.jobId, "store");
+      } else {
+        logEnqueueFailed(entry, storeResult.error);
+      }
+    }
+    for (PendingBulkEnqueue entry : pending) {
+      if (resolvedIndexes.contains(entry.index)) {
         continue;
       }
       BulkEnqueueItemResult created =
           new BulkEnqueueItemResult(entry.index, entry.record.jobId, true, "");
       results.set(entry.index, created);
-      batchDedupe.put(entry.dedupePointerKey, created);
       logEnqueueCreated(entry, created.jobId);
     }
 
     return new BulkEnqueueResult(results);
+  }
+
+  private ReconcileJobIndexStore.QueuedJobInsert toQueuedInsert(PendingBulkEnqueue entry) {
+    return new ReconcileJobIndexStore.QueuedJobInsert(
+        entry.index,
+        entry.dedupePointerKey,
+        entry.canonicalKey,
+        entry.lookupKey,
+        entry.parentKey,
+        entry.readyKeys,
+        entry.stateKeys,
+        entry.connectorIndexKey,
+        entry.resultBlobUri,
+        entry.record);
   }
 
   private BulkEnqueueItemResult commitBulkEntry(PendingBulkEnqueue entry) {
@@ -313,7 +374,7 @@ public class ReconcileJobEnqueuer {
             dedupeKeyHash,
             now,
             readyPointerKeyForDue.apply(spec.accountId, laneKey, jobId, now),
-            indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
+            "",
             definition,
             snapshotPlanBlobUri);
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {

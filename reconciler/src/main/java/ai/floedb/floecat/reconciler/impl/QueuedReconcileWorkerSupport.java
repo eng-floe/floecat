@@ -1327,7 +1327,6 @@ class QueuedReconcileWorkerSupport {
     List<FloecatConnector.SnapshotBundle> bundles =
         filterBundlesForMode(
             filterBundlesForSnapshotScope(upstreamBundles, targetSnapshotIds, progress),
-            fullRescan,
             includeCoreMetadata,
             knownSnapshotIds,
             progress);
@@ -1642,15 +1641,17 @@ class QueuedReconcileWorkerSupport {
 
   static List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
-      boolean fullRescan,
       boolean includeCoreMetadata,
       Set<Long> existingSnapshotIds,
       ProgressListener progress) {
-    if (bundles == null || bundles.isEmpty() || fullRescan) {
+    if (bundles == null || bundles.isEmpty()) {
       return bundles == null ? List.of() : bundles;
     }
-    if (includeCoreMetadata || existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
+    if (includeCoreMetadata) {
       return bundles;
+    }
+    if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
+      return List.of();
     }
 
     List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
@@ -1660,7 +1661,7 @@ class QueuedReconcileWorkerSupport {
         continue;
       }
       long snapshotId = bundle.snapshotId();
-      if (snapshotId >= 0 && existingSnapshotIds.contains(snapshotId)) {
+      if (snapshotId < 0 || !existingSnapshotIds.contains(snapshotId)) {
         skipped++;
         continue;
       }
@@ -1675,7 +1676,7 @@ class QueuedReconcileWorkerSupport {
           0,
           0,
           0,
-          "Incremental reconcile skipped " + skipped + " already-ingested snapshots");
+          "Capture-only reconcile skipped " + skipped + " snapshots without local metadata");
     }
     return filtered;
   }

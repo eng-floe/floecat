@@ -74,7 +74,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   @Test
-  void filterBundlesForModeSkipsAlreadyIngestedSnapshotsForIncremental() {
+  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForIncrementalCaptureOnly() {
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
@@ -86,15 +86,15 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(11L);
+        .containsExactly(10L, 12L);
   }
 
   @Test
-  void filterBundlesForModeKeepsAllSnapshotsForFullRescan() {
+  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
@@ -104,15 +104,15 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, true, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 11L);
+        .containsExactly(10L);
   }
 
   @Test
-  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() {
+  void filterBundlesForModeSkipsSnapshotsMissingFromLocalMetadataDuringIncrementalCaptureOnly() {
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
@@ -124,11 +124,11 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
+            bundles, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 12L);
+        .containsExactly(11L);
   }
 
   @Test
@@ -144,7 +144,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         ReconcilerService.filterPlannableSnapshotBundles(
-            bundles, false, ReconcilerService.CaptureMode.CAPTURE_ONLY, Set.of(10L, 12L));
+            bundles, ReconcilerService.CaptureMode.CAPTURE_ONLY, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)

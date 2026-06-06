@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -328,19 +327,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   public StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
-    Set<String> normalizedStates = normalizeStateFilter(states);
-    if (!normalizedStates.isEmpty()) {
-      List<String> orderedStates = orderedStateFilter(normalizedStates);
-      if (!blank(connectorId)) {
-        return listByConnectorStateIndexes(
-            accountId, pageSize, pageToken, connectorId, orderedStates);
-      }
-      return listByAccountStateIndexes(accountId, pageSize, pageToken, orderedStates);
-    }
-    if (!blank(connectorId)) {
-      return listByConnectorIndex(accountId, pageSize, pageToken, connectorId, normalizedStates);
-    }
-    return listAccountWide(accountId, pageSize, pageToken, normalizedStates);
+    return listAccountWide(
+        accountId, pageSize, pageToken, connectorId, normalizeStateFilter(states));
   }
 
   public StoredJobPage listStoredChildJobs(
@@ -368,22 +356,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   public long countStoredJobsInState(String state) {
-    if (blank(state)) {
-      return 0L;
-    }
-    return countPages(token -> jobIndexBackend.listGlobalStateEntries(state, 256, token));
+    return 0L;
   }
 
   public long oldestStoredJobTimestampInState(String state) {
-    if (blank(state)) {
-      return 0L;
-    }
-    List<JobIndexEntrySnapshot> pointers =
-        jobIndexBackend.listGlobalStateEntries(state, 1, "").entries();
-    if (pointers.isEmpty()) {
-      return 0L;
-    }
-    return Math.max(0L, parseStatePointerMillis(pointers.get(0).pointerKey(), state));
+    return 0L;
   }
 
   // Job-index pointers are derived from canonical job state and are only mutated from
@@ -412,32 +389,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         appendOwnedDelete(ops, previousLookupKey, canonicalPointerKey);
       }
     }
-    String previousConnectorIndexPointerKey =
-        previous == null ? "" : blankToEmpty(previous.connectorIndexPointerKey);
-    String currentConnectorIndexPointerKey = blankToEmpty(current.connectorIndexPointerKey);
-    if (!currentConnectorIndexPointerKey.equals(previousConnectorIndexPointerKey)
-        && !currentConnectorIndexPointerKey.isBlank()) {
-      appendReferenceUpsert(ops, currentConnectorIndexPointerKey, canonicalPointerKey);
-    }
-    if (!previousConnectorIndexPointerKey.isBlank()
-        && !previousConnectorIndexPointerKey.equals(currentConnectorIndexPointerKey)) {
-      appendOwnedDelete(ops, previousConnectorIndexPointerKey, canonicalPointerKey);
-    }
-
-    List<String> previousStatePointerKeys =
-        previous == null ? List.of() : indexes.statePointerKeys(previous);
-    List<String> currentStatePointerKeys = indexes.statePointerKeys(current);
-    if (!currentStatePointerKeys.equals(previousStatePointerKeys)) {
-      for (String currentStatePointerKey : currentStatePointerKeys) {
-        appendReferenceUpsert(ops, currentStatePointerKey, canonicalPointerKey);
-      }
-      for (String previousStatePointerKey : previousStatePointerKeys) {
-        if (!currentStatePointerKeys.contains(previousStatePointerKey)) {
-          appendOwnedDelete(ops, previousStatePointerKey, canonicalPointerKey);
-        }
-      }
-    }
-
     String previousDedupePointerKey = previous == null ? "" : indexes.dedupePointerKey(previous);
     String currentDedupePointerKey = indexes.dedupePointerKey(current);
     boolean previousTerminal = previous != null && isTerminalState(previous.state);
@@ -618,34 +569,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
               ? record.nextAttemptAtMs
               : parseDueMillis(blankToEmpty(record.readyPointerKey));
       if (dueAtMs != INVALID_ORDERED_POINTER_MS && dueAtMs > 0L) {
-        ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
         readyKeys.add(readyPointerKeyFor(record, dueAtMs));
-        readyKeys.add(
-            readyPointerKeyFor(
-                record,
-                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
-                dueAtMs,
-                executionPolicy.executionClass().name()));
-        readyKeys.add(
-            readyPointerKeyFor(
-                record,
-                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
-                dueAtMs,
-                executionPolicy.lane()));
-        if (!blank(record.pinnedExecutorId())) {
-          readyKeys.add(
-              readyPointerKeyFor(
-                  record,
-                  ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
-                  dueAtMs,
-                  record.pinnedExecutorId()));
-        }
-        readyKeys.add(
-            readyPointerKeyFor(
-                record,
-                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
-                dueAtMs,
-                record.jobKind().name()));
       }
     }
     readyKeys.removeIf(NativeReconcileJobIndexStore::blank);
@@ -738,12 +662,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (!insert.parentKey().isBlank()) {
       ops.add(new JobIndexUpsert(insert.parentKey(), 0L, insert.canonicalKey()));
     }
-    if (!insert.connectorIndexKey().isBlank()) {
-      ops.add(new JobIndexUpsert(insert.connectorIndexKey(), 0L, insert.canonicalKey()));
-    }
-    for (String stateKey : insert.stateKeys()) {
-      ops.add(new JobIndexUpsert(stateKey, 0L, insert.canonicalKey()));
-    }
     return new JobIndexWriteBatch(
         ops,
         new ReadyQueueMutation(
@@ -796,7 +714,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private StoredJobPage listAccountWide(
-      String accountId, int pageSize, String pageToken, Set<String> states) {
+      String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
     int limit = Math.max(1, pageSize);
     ListCursor cursor = decodeListCursor(pageToken);
     String token = cursor.storeToken();
@@ -825,6 +743,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           continue;
         }
         StoredReconcileJob stored = rec.get();
+        if (!blank(connectorId) && !connectorId.equals(stored.connectorId)) {
+          continue;
+        }
         if (states != null && !states.isEmpty() && !states.contains(stored.state)) {
           continue;
         }
@@ -859,166 +780,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return new StoredJobPage(out, nextToken);
   }
 
-  private StoredJobPage listByConnectorIndex(
-      String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
-    int limit = Math.max(1, pageSize);
-    ListCursor cursor = decodeListCursor(pageToken);
-    String token = cursor.storeToken();
-    int skip = cursor.skip();
-    List<StoredReconcileJob> out = new ArrayList<>(limit);
-    String nextToken = "";
-    int pages = 0;
-    while (out.size() < limit) {
-      var page =
-          jobIndexBackend.listConnectorEntries(
-              accountId, connectorId, Math.max(limit * 2, 64), token);
-      List<JobIndexEntrySnapshot> pointers = page.entries();
-      if (pointers.isEmpty()) {
-        break;
-      }
-      int startIndex = Math.min(skip, pointers.size());
-      skip = 0;
-      for (int i = startIndex; i < pointers.size(); i++) {
-        JobIndexEntrySnapshot ptr = pointers.get(i);
-        var rec = readCurrentRecordFromIndexPointer(ptr);
-        if (rec.isEmpty()) {
-          continue;
-        }
-        StoredReconcileJob stored = rec.get();
-        if (!connectorId.equals(stored.connectorId)) {
-          continue;
-        }
-        if (states != null && !states.isEmpty() && !states.contains(stored.state)) {
-          continue;
-        }
-        out.add(stored);
-        if (out.size() >= limit) {
-          boolean hasMore = i + 1 < pointers.size() || !page.nextPageToken().isBlank();
-          nextToken =
-              !hasMore
-                  ? ""
-                  : (i + 1 < pointers.size()
-                      ? encodeListCursor(token, i + 1)
-                      : page.nextPageToken());
-          break;
-        }
-      }
-      if (out.size() >= limit) {
-        break;
-      }
-      nextToken = page.nextPageToken();
-      if (nextToken.isBlank()) {
-        break;
-      }
-      pages++;
-      if (pages >= LIST_SCAN_MAX_PAGES) {
-        LOG.warnf(
-            "Connector reconcile job list hit page cap accountId=%s connectorId=%s out=%d",
-            accountId, connectorId, out.size());
-        break;
-      }
-      token = nextToken;
-    }
-    return new StoredJobPage(out, nextToken);
-  }
-
-  private StoredJobPage listByAccountStateIndexes(
-      String accountId, int pageSize, String pageToken, List<String> states) {
-    if (blank(accountId) || states == null || states.isEmpty()) {
-      return new StoredJobPage(List.of(), "");
-    }
-    return listByStateIndexes(
-        pageSize,
-        pageToken,
-        states,
-        request ->
-            listByStatePage(
-                jobIndexBackend.listAccountStateEntries(
-                    accountId, request.state(), request.pageSize(), request.pageToken()),
-                stored ->
-                    accountId.equals(stored.accountId) && request.state().equals(stored.state)));
-  }
-
-  private StoredJobPage listByConnectorStateIndexes(
-      String accountId, int pageSize, String pageToken, String connectorId, List<String> states) {
-    if (blank(accountId) || blank(connectorId) || states == null || states.isEmpty()) {
-      return new StoredJobPage(List.of(), "");
-    }
-    return listByStateIndexes(
-        pageSize,
-        pageToken,
-        states,
-        request ->
-            listByStatePage(
-                jobIndexBackend.listConnectorStateEntries(
-                    accountId,
-                    connectorId,
-                    request.state(),
-                    request.pageSize(),
-                    request.pageToken()),
-                stored ->
-                    accountId.equals(stored.accountId)
-                        && connectorId.equals(stored.connectorId)
-                        && request.state().equals(stored.state)));
-  }
-
-  private StoredJobPage listByStateIndexes(
-      int pageSize,
-      String pageToken,
-      List<String> states,
-      Function<StateListRequest, StoredJobPage> fetchPage) {
-    int limit = Math.max(1, pageSize);
-    StateListCursor cursor = decodeStateListCursor(pageToken);
-    if (states == null || states.isEmpty() || cursor.stateIndex() >= states.size()) {
-      return new StoredJobPage(List.of(), "");
-    }
-
-    List<StoredReconcileJob> out = new ArrayList<>(limit);
-    int stateIndex = Math.max(0, cursor.stateIndex());
-    String nestedPageToken = cursor.pageToken();
-
-    while (stateIndex < states.size() && out.size() < limit) {
-      StoredJobPage page =
-          fetchPage.apply(
-              new StateListRequest(
-                  states.get(stateIndex), Math.max(1, limit - out.size()), nestedPageToken));
-      if (page != null && page.records() != null && !page.records().isEmpty()) {
-        out.addAll(page.records());
-      }
-      String nextNestedToken = page == null ? "" : page.nextPageToken();
-      boolean currentStateExhausted = blank(nextNestedToken);
-
-      if (out.size() >= limit) {
-        if (!currentStateExhausted) {
-          return new StoredJobPage(out, encodeStateListCursor(stateIndex, nextNestedToken));
-        }
-        if (stateIndex + 1 < states.size()) {
-          return new StoredJobPage(out, encodeStateListCursor(stateIndex + 1, ""));
-        }
-        return new StoredJobPage(out, "");
-      }
-
-      if (!currentStateExhausted) {
-        nestedPageToken = nextNestedToken;
-        continue;
-      }
-      stateIndex++;
-      nestedPageToken = "";
-    }
-    return new StoredJobPage(out, "");
-  }
-
-  private StoredJobPage listByStatePage(
-      ReconcileJobIndexBackend.JobIndexQueryPage initialPage,
-      Predicate<StoredReconcileJob> filter) {
-    List<StoredReconcileJob> out = new ArrayList<>(initialPage.entries().size());
-    for (JobIndexEntrySnapshot ptr : initialPage.entries()) {
-      var rec = readCurrentRecordFromStateIndexPointer(ptr, filter);
-      rec.ifPresent(out::add);
-    }
-    return new StoredJobPage(out, initialPage.nextPageToken());
-  }
-
   private boolean isCanonicalJobPointerKey(String accountId, String key) {
     return key != null
         && key.equals(Keys.reconcileJobPointerById(accountId, jobIdFromCanonicalKey(key)));
@@ -1046,11 +807,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         return count;
       }
     }
-  }
-
-  private long parseStatePointerMillis(String statePointerKey, String state) {
-    return parseTimestampFromOrderedPointer(
-        statePointerKey, Keys.reconcileJobByStatePointerPrefix(state));
   }
 
   private String jobIdFromCanonicalKey(String key) {
@@ -1198,49 +954,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (record == null || !requiresReadyPointer(record)) {
       return List.of();
     }
-    long dueAtMs = readyPointerDueAt(record);
-    ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
-    List<String> readyKeys = new ArrayList<>();
-    readyKeys.add(readyPointerKeyFor(record, dueAtMs));
-    String executionClassReadyKey =
-        readyPointerKeyFor(
-            record,
-            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
-            dueAtMs,
-            executionPolicy.executionClass().name());
-    if (!executionClassReadyKey.isBlank()) {
-      readyKeys.add(executionClassReadyKey);
-    }
-    String executionLaneReadyKey =
-        readyPointerKeyFor(
-            record,
-            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
-            dueAtMs,
-            executionPolicy.lane());
-    if (!executionLaneReadyKey.isBlank()) {
-      readyKeys.add(executionLaneReadyKey);
-    }
-    if (!blank(record.pinnedExecutorId())) {
-      String pinnedReadyKey =
-          readyPointerKeyFor(
-              record,
-              ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
-              dueAtMs,
-              record.pinnedExecutorId());
-      if (!pinnedReadyKey.isBlank()) {
-        readyKeys.add(pinnedReadyKey);
-      }
-    }
-    String kindReadyKey =
-        readyPointerKeyFor(
-            record,
-            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
-            dueAtMs,
-            record.jobKind().name());
-    if (!kindReadyKey.isBlank()) {
-      readyKeys.add(kindReadyKey);
-    }
-    return readyKeys;
+    return List.of(readyPointerKeyFor(record, readyPointerDueAt(record)));
   }
 
   private static boolean requiresReadyPointer(StoredReconcileJob record) {

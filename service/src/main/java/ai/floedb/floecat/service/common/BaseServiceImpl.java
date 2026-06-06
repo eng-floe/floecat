@@ -43,7 +43,6 @@ import io.grpc.protobuf.StatusProto;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.security.MessageDigest;
@@ -87,17 +86,15 @@ public abstract class BaseServiceImpl {
   protected <T> Uni<T> run(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = Context.current();
-    Uni<T> u =
-        Uni.createFrom()
-            .item(
-                () ->
-                    grpcCtx.call(
-                        () -> {
-                          try (Scope ignored = otelCtx.makeCurrent()) {
-                            return body.get();
-                          }
-                        }));
-    return u.runSubscriptionOn(Infrastructure.getDefaultExecutor());
+    return Uni.createFrom()
+        .item(
+            () ->
+                grpcCtx.call(
+                    () -> {
+                      try (Scope ignored = otelCtx.makeCurrent()) {
+                        return body.get();
+                      }
+                    }));
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {

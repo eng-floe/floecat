@@ -22,7 +22,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
@@ -135,38 +134,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     if (record == null || !Boolean.TRUE.equals(requiresReadyPointer.test(record))) {
       return List.of();
     }
-    long dueAtMs = readyPointerDueAt(record);
-    ReconcileExecutionPolicy executionPolicy = record.executionPolicy();
-    List<String> readyKeys = new ArrayList<>();
-    readyKeys.add(readyPointerKeyFor(record, dueAtMs));
-    String executionClassReadyKey =
-        readyPointerKeyFor(
-            record,
-            ReadyIndexType.EXECUTION_CLASS,
-            dueAtMs,
-            executionPolicy.executionClass().name());
-    if (!executionClassReadyKey.isBlank()) {
-      readyKeys.add(executionClassReadyKey);
-    }
-    String executionLaneReadyKey =
-        readyPointerKeyFor(record, ReadyIndexType.EXECUTION_LANE, dueAtMs, executionPolicy.lane());
-    if (!executionLaneReadyKey.isBlank()) {
-      readyKeys.add(executionLaneReadyKey);
-    }
-    if (!blank(record.pinnedExecutorId())) {
-      String pinnedReadyKey =
-          readyPointerKeyFor(
-              record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, record.pinnedExecutorId());
-      if (!pinnedReadyKey.isBlank()) {
-        readyKeys.add(pinnedReadyKey);
-      }
-    }
-    String kindReadyKey =
-        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
-    if (!kindReadyKey.isBlank()) {
-      readyKeys.add(kindReadyKey);
-    }
-    return readyKeys;
+    return List.of(readyPointerKeyFor(record, readyPointerDueAt(record)));
   }
 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
@@ -241,61 +209,9 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   }
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    List<ReadyIndexSelection> selections = new ArrayList<>();
-
-    List<String> executorIds =
-        effective.executorIds.stream()
-            .sorted()
-            .filter(executorId -> !executorId.isBlank())
-            .toList();
-    for (String executorId : executorIds) {
-      selections.add(
-          new ReadyIndexSelection(
-              new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                  ReadyIndexType.PINNED_EXECUTOR, executorId)));
-    }
-
-    if (!effective.lanes.isEmpty() && !effective.lanes.contains(LeaseRequest.anyLaneToken())) {
-      effective.lanes.stream()
-          .sorted()
-          .filter(lane -> !lane.isBlank())
-          .forEach(
-              lane ->
-                  selections.add(
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.EXECUTION_LANE, lane))));
-    }
-
-    if (!effective.jobKinds.isEmpty()) {
-      effective.jobKinds.stream()
-          .map(Enum::name)
-          .sorted()
-          .forEach(
-              jobKind ->
-                  selections.add(
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.JOB_KIND, jobKind))));
-    }
-
-    if (!effective.executionClasses.isEmpty()) {
-      effective.executionClasses.stream()
-          .map(Enum::name)
-          .sorted()
-          .forEach(
-              executionClass ->
-                  selections.add(
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.EXECUTION_CLASS, executionClass))));
-    }
-
-    selections.add(
+    return List.of(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
-    return selections;
   }
 
   private boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record) {

@@ -22,9 +22,11 @@ import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvTestProfile;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -39,6 +41,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 @QuarkusTest
+@TestProfile(DynamoDbKvTestProfile.class)
 @EnabledIfSystemProperty(named = "floecat.kv", matches = "dynamodb")
 public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> {
 

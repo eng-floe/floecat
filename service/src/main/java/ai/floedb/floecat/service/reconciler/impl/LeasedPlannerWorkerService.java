@@ -169,16 +169,21 @@ public class LeasedPlannerWorkerService {
               lease.jobId,
               ""));
     }
-    jobs.bulkEnqueue(childSpecs);
+    String completionMessage =
+        "Planned "
+            + plannedTableJobs
+            + " table job(s)"
+            + (plannedViewJobs == 0L ? "" : " and " + plannedViewJobs + " view job(s)");
     boolean accepted =
-        completePlanSuccess(
+        jobs.bulkEnqueueAndApplyLeaseOutcome(
+            childSpecs,
             jobId,
             leaseEpoch,
-            "Planned "
-                + plannedTableJobs
-                + " table job(s)"
-                + (plannedViewJobs == 0L ? "" : " and " + plannedViewJobs + " view job(s)"),
-            !childSpecs.isEmpty(),
+            childSpecs.isEmpty()
+                ? ReconcileJobStore.CompletionKind.SUCCEEDED
+                : ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            System.currentTimeMillis(),
+            completionMessage,
             plannedTableJobs,
             0L,
             plannedViewJobs,
@@ -425,10 +430,18 @@ public class LeasedPlannerWorkerService {
     if (!adopted) {
       return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
     }
+    ChildJobSummary childSummary =
+        childJobSummary(
+            lease.accountId,
+            lease.jobId,
+            plannedJobs.stream()
+                .map(PlannedFileGroupJob::fileGroupTask)
+                .filter(fileGroupTask -> fileGroupTask != null && !fileGroupTask.isEmpty())
+                .toList());
     java.util.Set<String> existingFileGroupKeys =
-        existingExecFileGroupKeys(lease.accountId, lease.jobId);
+        new java.util.LinkedHashSet<>(childSummary.existingExecFileGroupKeys());
     java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
-        new java.util.ArrayList<>(plannedJobs.size() + 1);
+        new java.util.ArrayList<>(plannedJobs.size());
     for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
@@ -456,22 +469,36 @@ public class LeasedPlannerWorkerService {
         existingFileGroupKeys.add(fileGroupKey);
       }
     }
-    childSpecs.add(
-        ReconcileJobStore.BulkEnqueueSpec.of(
-            lease.accountId,
-            lease.connectorId,
-            lease.fullRescan,
-            lease.captureMode,
-            effectiveScope(lease),
-            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.empty(),
-            durableSnapshotTask,
-            ReconcileFileGroupTask.empty(),
-            effectiveExecutionPolicy(lease),
-            lease.jobId,
-            ""));
-    jobs.bulkEnqueue(childSpecs);
+    if (!childSpecs.isEmpty()) {
+      ReconcileJobStore.BulkEnqueueResult enqueueResult = jobs.bulkEnqueue(childSpecs);
+      enqueueResult.requireAllSucceeded("snapshot file-group child enqueue");
+    }
+    boolean enqueuedFinalizer = false;
+    if (plannedFileGroupJobs == 0L) {
+      jobs.enqueueSnapshotFinalization(
+          lease.accountId,
+          lease.connectorId,
+          lease.fullRescan,
+          lease.captureMode,
+          effectiveScope(lease),
+          durableSnapshotTask,
+          effectiveExecutionPolicy(lease),
+          lease.jobId,
+          "");
+      enqueuedFinalizer = true;
+    } else if (childSummary.snapshotFinalizeReady()) {
+      jobs.enqueueSnapshotFinalization(
+          lease.accountId,
+          lease.connectorId,
+          lease.fullRescan,
+          lease.captureMode,
+          effectiveScope(lease),
+          durableSnapshotTask,
+          effectiveExecutionPolicy(lease),
+          lease.jobId,
+          "");
+      enqueuedFinalizer = true;
+    }
     boolean accepted =
         completePlanSuccess(
             jobId,
@@ -483,7 +510,7 @@ public class LeasedPlannerWorkerService {
                 + " with "
                 + plannedFileGroupJobs
                 + " file group(s)",
-            !childSpecs.isEmpty(),
+            !childSpecs.isEmpty() || enqueuedFinalizer,
             0L,
             0L,
             0L,
@@ -507,35 +534,6 @@ public class LeasedPlannerWorkerService {
     return snapshotPlanBlobStore.loadPlanJobs(effective);
   }
 
-  private java.util.Set<String> existingExecFileGroupKeys(String accountId, String parentJobId) {
-    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
-      return java.util.Set.of();
-    }
-    java.util.Set<String> keys = new java.util.LinkedHashSet<>();
-    String pageToken = "";
-    do {
-      ReconcileJobStore.ReconcileJobPage page =
-          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
-      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
-        break;
-      }
-      for (ReconcileJobStore.ReconcileJob child : page.jobs) {
-        if (child == null
-            || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP
-            || child.fileGroupTask == null
-            || child.fileGroupTask.isEmpty()) {
-          continue;
-        }
-        String key = execFileGroupKey(child.fileGroupTask);
-        if (!key.isBlank()) {
-          keys.add(key);
-        }
-      }
-      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
-    } while (!pageToken.isBlank());
-    return keys;
-  }
-
   private static String execFileGroupKey(ReconcileFileGroupTask fileGroupTask) {
     if (fileGroupTask == null) {
       return "";
@@ -547,6 +545,83 @@ public class LeasedPlannerWorkerService {
     }
     return planId + "|" + groupId;
   }
+
+  private ChildJobSummary childJobSummary(
+      String accountId, String parentJobId, List<ReconcileFileGroupTask> expectedFileGroups) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return new ChildJobSummary(java.util.Set.of(), false);
+    }
+    java.util.Set<String> expectedKeys = expectedExecFileGroupKeys(expectedFileGroups);
+    java.util.Set<String> existingKeys = new java.util.LinkedHashSet<>();
+    java.util.Set<String> succeededKeys = new java.util.LinkedHashSet<>();
+    boolean hasLiveFinalizer = false;
+    boolean sawNonSucceededExpectedChild = false;
+    boolean sawExpectedChildren = false;
+    String pageToken = "";
+    do {
+      ReconcileJobStore.ReconcileJobPage page =
+          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+        break;
+      }
+      for (ReconcileJobStore.ReconcileJob child : page.jobs) {
+        if (child == null) {
+          continue;
+        }
+        if (child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && !"JS_CANCELLED".equals(child.state)
+            && !"JS_FAILED".equals(child.state)) {
+          hasLiveFinalizer = true;
+          continue;
+        }
+        if (child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP
+            || child.fileGroupTask == null
+            || child.fileGroupTask.isEmpty()) {
+          continue;
+        }
+        String key = execFileGroupKey(child.fileGroupTask);
+        if (key.isBlank()) {
+          continue;
+        }
+        existingKeys.add(key);
+        if (!expectedKeys.contains(key)) {
+          continue;
+        }
+        sawExpectedChildren = true;
+        if (!"JS_SUCCEEDED".equals(child.state)) {
+          sawNonSucceededExpectedChild = true;
+          continue;
+        }
+        succeededKeys.add(key);
+      }
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    boolean finalizeReady =
+        !expectedKeys.isEmpty()
+            && !hasLiveFinalizer
+            && !sawNonSucceededExpectedChild
+            && sawExpectedChildren
+            && succeededKeys.containsAll(expectedKeys);
+    return new ChildJobSummary(existingKeys, finalizeReady);
+  }
+
+  private static java.util.Set<String> expectedExecFileGroupKeys(
+      List<ReconcileFileGroupTask> expectedFileGroups) {
+    if (expectedFileGroups == null || expectedFileGroups.isEmpty()) {
+      return java.util.Set.of();
+    }
+    java.util.Set<String> expectedKeys = new java.util.LinkedHashSet<>();
+    for (ReconcileFileGroupTask expected : expectedFileGroups) {
+      String key = execFileGroupKey(expected);
+      if (!key.isBlank()) {
+        expectedKeys.add(key);
+      }
+    }
+    return expectedKeys;
+  }
+
+  private record ChildJobSummary(
+      java.util.Set<String> existingExecFileGroupKeys, boolean snapshotFinalizeReady) {}
 
   private static ReconcileSnapshotTask durableSnapshotTask(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =

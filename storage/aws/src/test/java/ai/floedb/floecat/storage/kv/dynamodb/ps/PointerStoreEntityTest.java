@@ -20,13 +20,16 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
+import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvTestProfile;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 @QuarkusTest
+@TestProfile(DynamoDbKvTestProfile.class)
 @EnabledIfSystemProperty(named = "floecat.kv", matches = "dynamodb")
 public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
 
