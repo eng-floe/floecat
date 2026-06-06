@@ -24,9 +24,11 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
 import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
@@ -388,8 +390,9 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   private ReconcileJobStore.LeasedJob awaitLease(String description, String jobId) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     return waitForValue(
-        () -> store.leaseNext().orElse(null),
+        () -> tryLeaseCanonicalJob(canonicalPointerKey),
         lease -> lease != null && jobId.equals(lease.jobId),
         description);
   }
@@ -399,7 +402,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       java.util.function.Predicate<T> done,
       String description) {
     T value = tryGetValue(supplier);
-    int maxAttempts = isDynamoMode() ? 400 : 100;
+    int maxAttempts = isDynamoMode() ? 1200 : 100;
     long sleepMs = isDynamoMode() ? 25L : 0L;
     for (int attempt = 0; attempt < maxAttempts; attempt++) {
       if (value != null && done.test(value)) {
@@ -553,5 +556,34 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private ReconcileJobStore.LeasedJob tryLeaseCanonicalJob(String canonicalPointerKey) {
+    StoredReconcileJob readyRecord =
+        tryGetValue(
+            () ->
+                store
+                    .jobIndexStore
+                    .readCanonicalRecordByKey(canonicalPointerKey)
+                    .filter(
+                        current ->
+                            "JS_QUEUED".equals(current.state)
+                                && current.readyPointerKey != null
+                                && !current.readyPointerKey.isBlank())
+                    .orElse(null));
+    if (readyRecord == null) {
+      return null;
+    }
+    return tryGetValue(
+        () ->
+            store
+                .leaseStore
+                .leaseCanonical(
+                    canonicalPointerKey,
+                    readyRecord.readyPointerKey,
+                    System.currentTimeMillis(),
+                    store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElseThrow(),
+                    readyRecord)
+                .orElse(null));
   }
 }

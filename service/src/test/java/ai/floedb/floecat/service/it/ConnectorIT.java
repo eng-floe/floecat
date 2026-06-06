@@ -1488,7 +1488,7 @@ public class ConnectorIT {
     var deadline = System.nanoTime() + Duration.ofSeconds(300).toNanos();
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
-      job = jobs.get(jobId).orElse(null);
+      job = getCanonicalJob(jobId);
       if (job != null
           && (isTerminal(job.state)
               || (job.jobKind == ReconcileJobKind.PLAN_CONNECTOR
@@ -1517,7 +1517,10 @@ public class ConnectorIT {
     ReconcileJobStore.ReconcileJob refreshedPlanJob = planJob;
     List<ReconcileJobStore.ReconcileJob> descendantJobs = List.of();
     for (; ; ) {
-      refreshedPlanJob = jobs.get(planJob.jobId).orElse(planJob);
+      refreshedPlanJob = getCanonicalJob(planJob.jobId);
+      if (refreshedPlanJob == null) {
+        refreshedPlanJob = planJob;
+      }
       descendantJobs = descendantJobsFor(planJob);
       if (!descendantJobs.isEmpty()
           && descendantJobs.stream().allMatch(job -> isTerminal(job.state))) {
@@ -1672,18 +1675,7 @@ public class ConnectorIT {
 
   private List<ReconcileJobStore.ReconcileJob> childJobsFor(
       ReconcileJobStore.ReconcileJob planJob) {
-    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
-    String nextToken = "";
-    do {
-      var page = jobs.list(planJob.accountId, 200, nextToken, planJob.connectorId, Set.of());
-      for (var candidate : page.jobs) {
-        if (planJob.jobId.equals(candidate.parentJobId)) {
-          out.add(candidate);
-        }
-      }
-      nextToken = page.nextPageToken;
-    } while (nextToken != null && !nextToken.isBlank());
-    return out;
+    return childJobs(planJob.accountId, planJob.jobId);
   }
 
   private List<ReconcileJobStore.ReconcileJob> descendantJobsFor(
@@ -1705,7 +1697,10 @@ public class ConnectorIT {
       List<ReconcileJobStore.ReconcileJob> jobsToAwait, long deadlineNanos) throws Exception {
     List<ReconcileJobStore.ReconcileJob> current = jobsToAwait;
     for (; ; ) {
-      current = current.stream().map(job -> jobs.get(job.jobId).orElse(job)).toList();
+      current =
+          current.stream()
+              .map(job -> java.util.Objects.requireNonNullElse(getCanonicalJob(job.jobId), job))
+              .toList();
       if (current.stream().allMatch(job -> isTerminal(job.state))) {
         return current;
       }
@@ -2821,10 +2816,22 @@ public class ConnectorIT {
       if (page == null || page.jobs == null || page.jobs.isEmpty()) {
         break;
       }
-      out.addAll(page.jobs);
+      for (ReconcileJobStore.ReconcileJob job : page.jobs) {
+        if (job == null) {
+          continue;
+        }
+        out.add(java.util.Objects.requireNonNullElse(getCanonicalJob(job.jobId), job));
+      }
       pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
     } while (!pageToken.isBlank());
     return List.copyOf(out);
+  }
+
+  private ReconcileJobStore.ReconcileJob getCanonicalJob(String jobId) {
+    if (jobId == null || jobId.isBlank()) {
+      return null;
+    }
+    return jobs.getLeaseView(jobId).orElse(null);
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {

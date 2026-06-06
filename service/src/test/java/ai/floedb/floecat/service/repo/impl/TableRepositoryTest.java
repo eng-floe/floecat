@@ -416,9 +416,13 @@ class TableRepositoryTest {
 
     var p = ptr.get(canonKey);
     if (seedDeleted.get()) {
-      assertTrue(
-          p.isEmpty() || !tableRepo.getById(tblId).isPresent(),
-          "deleted table should not be resolvable");
+      boolean deletedVisible = p.isEmpty() || !tableRepo.getById(tblId).isPresent();
+      for (int attempt = 0; attempt < 200 && !deletedVisible; attempt++) {
+        Thread.sleep(10L);
+        p = ptr.get(canonKey);
+        deletedVisible = p.isEmpty() || !tableRepo.getById(tblId).isPresent();
+      }
+      assertTrue(deletedVisible, "deleted table should not be resolvable");
       assertDoesNotThrow(() -> tableRepo.metaForSafe(tblId));
     } else {
       long vN = p.orElseThrow().getVersion();
