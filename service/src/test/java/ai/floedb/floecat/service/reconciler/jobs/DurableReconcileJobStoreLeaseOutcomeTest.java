@@ -409,6 +409,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
                         && !current.readyPointerKey.isBlank(),
                 description + " ready");
       }
+      StoredReconcileJob readyRecordForLease = readyRecord;
       leased =
           tryGetValue(
               () ->
@@ -416,13 +417,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
                       .leaseStore
                       .leaseCanonical(
                           canonicalPointerKey,
-                          readyRecord.readyPointerKey,
+                          readyRecordForLease.readyPointerKey,
                           System.currentTimeMillis(),
                           store
                               .jobIndexStore
                               .loadCanonicalSnapshot(canonicalPointerKey)
                               .orElseThrow(),
-                          readyRecord)
+                          readyRecordForLease)
                       .orElse(null));
       if (leased == null) {
         store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
