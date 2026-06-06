@@ -62,6 +62,21 @@ class LeasedPlannerWorkerServiceTest {
     service.snapshotPlanBlobStore = snapshotPlanBlobStore;
     when(principal.getCorrelationId()).thenReturn("corr");
     when(jobs.adoptSnapshotPlanManifest(any(), any(), any(), any(), anyBoolean())).thenReturn(true);
+    when(jobs.bulkEnqueue(any()))
+        .thenAnswer(
+            invocation -> {
+              List<ReconcileJobStore.BulkEnqueueSpec> specs = invocation.getArgument(0);
+              if (specs == null || specs.isEmpty()) {
+                return new ReconcileJobStore.BulkEnqueueResult(List.of());
+              }
+              List<ReconcileJobStore.BulkEnqueueItemResult> items =
+                  new java.util.ArrayList<>(specs.size());
+              for (int index = 0; index < specs.size(); index++) {
+                items.add(
+                    new ReconcileJobStore.BulkEnqueueItemResult(index, "job-" + index, true, ""));
+              }
+              return new ReconcileJobStore.BulkEnqueueResult(items);
+            });
   }
 
   @Test
@@ -282,16 +297,12 @@ class LeasedPlannerWorkerServiceTest {
             argThat(
                 specs ->
                     specs != null
-                        && specs.size() == 2
+                        && specs.size() == 1
                         && specs.get(0).jobKind == ReconcileJobKind.EXEC_FILE_GROUP
                         && specs.get(0).fileGroupTask.equals(fullGroup.asReference())
                         && specs.get(0).scope.equals(fileGroupScope)
                         && specs.get(0).parentJobId.equals("job-1")
-                        && specs.get(0).pinnedExecutorId.isBlank()
-                        && specs.get(1).jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-                        && specs.get(1).snapshotTask.equals(durableSnapshotTask)
-                        && specs.get(1).parentJobId.equals("job-1")
-                        && specs.get(1).pinnedExecutorId.isBlank()));
+                        && specs.get(0).pinnedExecutorId.isBlank()));
     inOrder
         .verify(jobs)
         .applyLeaseOutcome(
@@ -477,6 +488,18 @@ class LeasedPlannerWorkerServiceTest {
         service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", snapshotTask);
 
     assertTrue(accepted);
+    verify(jobs, never()).bulkEnqueue(any());
+    verify(jobs)
+        .enqueueSnapshotFinalization(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            eq(ReconcileScope.empty()),
+            eq(snapshotTask),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            eq(""));
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-1"),
@@ -684,7 +707,18 @@ class LeasedPlannerWorkerServiceTest {
         .verify(jobs)
         .adoptSnapshotPlanManifest(
             eq("job-1"), eq("lease-1"), eq(directSnapshotTask), eq(""), eq(true));
-    inOrder.verify(jobs).bulkEnqueue(any());
+    inOrder
+        .verify(jobs)
+        .enqueueSnapshotFinalization(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            eq(ReconcileScope.empty()),
+            eq(directSnapshotTask),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            eq(""));
     inOrder
         .verify(jobs)
         .applyLeaseOutcome(
@@ -862,7 +896,90 @@ class LeasedPlannerWorkerServiceTest {
     verify(jobs, never())
         .enqueueFileGroupExecution(
             any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
-    verify(jobs).bulkEnqueue(any());
+    verify(jobs, never()).bulkEnqueue(any());
+    verify(jobs)
+        .enqueueSnapshotFinalization(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            eq(ReconcileScope.empty()),
+            eq(submittedSnapshotTask),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            eq(""));
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessFailsWhenRequiredFileGroupEnqueueFails() {
+    ReconcileFileGroupTask fullGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask submittedSnapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
+            1);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_SNAPSHOT)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    submittedSnapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(snapshotPlanBlobStore.loadPlanJobs(submittedSnapshotTask))
+        .thenReturn(List.of(new PlannedFileGroupJob(ReconcileScope.empty(), fullGroup)));
+    when(jobs.bulkEnqueue(any()))
+        .thenReturn(
+            new ReconcileJobStore.BulkEnqueueResult(
+                List.of(new ReconcileJobStore.BulkEnqueueItemResult(0, "", false, "boom"))));
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                service.persistPlanSnapshotSuccess(
+                    principal, "job-1", "lease-1", submittedSnapshotTask));
+
+    assertTrue(error.getMessage().contains("snapshot file-group child enqueue failed"));
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            any(),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+    verify(jobs, never())
+        .enqueueSnapshotFinalization(
+            any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -1023,7 +1140,18 @@ class LeasedPlannerWorkerServiceTest {
     assertTrue(accepted);
     verify(jobs)
         .adoptSnapshotPlanManifest(eq("job-1"), eq("lease-1"), eq(snapshotTask), eq(""), eq(true));
-    verify(jobs).bulkEnqueue(any());
+    verify(jobs, never()).bulkEnqueue(any());
+    verify(jobs)
+        .enqueueSnapshotFinalization(
+            eq("acct"),
+            eq("connector-1"),
+            eq(false),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            eq(ReconcileScope.empty()),
+            eq(snapshotTask),
+            eq(ReconcileExecutionPolicy.defaults()),
+            eq("job-1"),
+            eq(""));
   }
 
   @Test
@@ -1031,7 +1159,8 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
-    when(jobs.applyLeaseOutcome(
+    when(jobs.bulkEnqueueAndApplyLeaseOutcome(
+            any(),
             eq("job-1"),
             eq("lease-1"),
             eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
@@ -1068,7 +1197,8 @@ class LeasedPlannerWorkerServiceTest {
     when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
-    when(jobs.applyLeaseOutcome(
+    when(jobs.bulkEnqueueAndApplyLeaseOutcome(
+            any(),
             eq("job-1"),
             eq("lease-1"),
             eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
@@ -1101,7 +1231,7 @@ class LeasedPlannerWorkerServiceTest {
 
     assertTrue(accepted);
     verify(jobs)
-        .bulkEnqueue(
+        .bulkEnqueueAndApplyLeaseOutcome(
             argThat(
                 specs ->
                     specs != null
@@ -1119,9 +1249,7 @@ class LeasedPlannerWorkerServiceTest {
                                     spec.jobKind == ReconcileJobKind.PLAN_VIEW
                                         && spec.viewTask
                                             .destinationViewId()
-                                            .equals("orders_view"))));
-    verify(jobs)
-        .applyLeaseOutcome(
+                                            .equals("orders_view"))),
             eq("job-1"),
             eq("lease-1"),
             eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),

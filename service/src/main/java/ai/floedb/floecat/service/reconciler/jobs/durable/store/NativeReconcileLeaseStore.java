@@ -468,18 +468,15 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           lease.epoch);
       return false;
     }
-    if (requireUnexpiredLease && lease.expiresAtMs <= now) {
-      if (!allowExpiredWithinGrace || now - lease.expiresAtMs > leaseRenewGraceMs) {
-        logLeaseSkip(
-            op,
-            "Skipping %s for reconcile job %s due to expired lease expiresAtMs=%d now=%d graceMs=%d",
-            op,
-            jobId,
-            lease.expiresAtMs,
-            now,
-            leaseRenewGraceMs);
-        return false;
-      }
+    if (requireUnexpiredLease && lease.expiresAtMs <= now && !allowExpiredWithinGrace) {
+      logLeaseSkip(
+          op,
+          "Skipping %s for reconcile job %s due to expired lease expiresAtMs=%d now=%d",
+          op,
+          jobId,
+          lease.expiresAtMs,
+          now);
+      return false;
     }
     return true;
   }
@@ -549,24 +546,37 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   public Optional<StoredJobLease> renewLeaseIfEpochMatches(
       String accountId, String jobId, String leaseEpoch) {
-    return writeLease(
-        accountId,
-        jobId,
-        current -> {
-          if (blank(leaseEpoch)) {
-            return null;
-          }
-          long now = System.currentTimeMillis();
-          long expiry = current.expiresAtMs;
-          if (blank(current.epoch) || !leaseEpoch.equals(current.epoch)) {
-            return null;
-          }
-          if (expiry > 0L && now - expiry > leaseRenewGraceMs) {
-            return null;
-          }
-          current.expiresAtMs = now + leaseMs;
-          return current;
-        });
+    long startedAtMs = System.currentTimeMillis();
+    AtomicReference<Long> previousExpiresAtMs = new AtomicReference<>(null);
+    AtomicReference<Long> millisUntilExpiryBeforeRenew = new AtomicReference<>(null);
+    Optional<StoredJobLease> renewed =
+        writeLease(
+            accountId,
+            jobId,
+            current -> {
+              if (blank(leaseEpoch)) {
+                return null;
+              }
+              long now = System.currentTimeMillis();
+              if (blank(current.epoch) || !leaseEpoch.equals(current.epoch)) {
+                return null;
+              }
+              previousExpiresAtMs.set(current.expiresAtMs);
+              millisUntilExpiryBeforeRenew.set(current.expiresAtMs - now);
+              current.expiresAtMs = now + leaseMs;
+              return current;
+            });
+    renewed.ifPresent(
+        lease ->
+            logLeaseRenewal(
+                accountId,
+                jobId,
+                leaseEpoch,
+                previousExpiresAtMs.get(),
+                lease.expiresAtMs,
+                millisUntilExpiryBeforeRenew.get(),
+                System.currentTimeMillis() - startedAtMs));
+    return renewed;
   }
 
   public LeaseExpiryScanPage scanExpiredLeasePointersPage(
@@ -1068,6 +1078,52 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   private void logLeaseSkip(String op, String format, Object... args) {
     LOG.debugf(format, args);
+  }
+
+  private void logLeaseRenewal(
+      String accountId,
+      String jobId,
+      String leaseEpoch,
+      Long oldExpiresAtMs,
+      long newExpiresAtMs,
+      Long millisUntilExpiryBeforeRenew,
+      long renewLatencyMs) {
+    String jobKind = resolveJobKindForLeaseLog(accountId, jobId);
+    String message =
+        String.format(
+            "renewLease success jobId=%s kind=%s leaseEpoch=%s oldExpiresAt=%d newExpiresAt=%d"
+                + " millisUntilExpiryBeforeRenew=%d renewLatencyMs=%d",
+            jobId,
+            jobKind,
+            leaseEpoch,
+            oldExpiresAtMs == null ? -1L : oldExpiresAtMs,
+            newExpiresAtMs,
+            millisUntilExpiryBeforeRenew == null ? Long.MIN_VALUE : millisUntilExpiryBeforeRenew,
+            renewLatencyMs);
+    if (Objects.equals(ReconcileJobKind.EXEC_FILE_GROUP.name(), jobKind)) {
+      LOG.info(message);
+      return;
+    }
+    LOG.debug(message);
+  }
+
+  private String resolveJobKindForLeaseLog(String accountId, String jobId) {
+    if (blank(accountId) || blank(jobId)) {
+      return "";
+    }
+    try {
+      String canonicalPointerKey = Keys.reconcileJobStateRowById(accountId, jobId);
+      var snapshot = jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElse(null);
+      if (snapshot == null) {
+        return "";
+      }
+      var record = jobIndexStore.readRecord(snapshot).orElse(null);
+      return record == null ? "" : blankToEmpty(record.jobKind);
+    } catch (RuntimeException error) {
+      LOG.debugf(
+          error, "renewLease log context lookup failed jobId=%s accountId=%s", jobId, accountId);
+      return "";
+    }
   }
 
   private static boolean blank(String value) {

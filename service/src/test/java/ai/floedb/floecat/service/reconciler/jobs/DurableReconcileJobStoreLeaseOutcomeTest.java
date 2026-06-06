@@ -337,13 +337,13 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
-  void applyLeaseOutcomeReturnsFalseForExpiredLease() {
+  void applyLeaseOutcomeReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = awaitLease("expired lease");
     expireLease(jobId);
 
-    assertFalse(
+    assertTrue(
         store.applyLeaseOutcome(
             jobId,
             lease.leaseEpoch,
@@ -359,12 +359,23 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L));
 
     assertEquals(
-        "JS_RUNNING",
+        "JS_SUCCEEDED",
         waitForValue(
                 () -> store.getLeaseView(jobId).orElseThrow(),
-                current -> "JS_RUNNING".equals(current.state),
-                "expired lease outcome leaves canonical state running")
+                current -> "JS_SUCCEEDED".equals(current.state),
+                "expired lease outcome resolves when epoch still matches")
             .state);
+  }
+
+  @Test
+  void renewLeaseReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
+    configureLeaseRenewGraceMs(0L);
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = awaitLease("expired renew lease");
+    expireLease(jobId);
+
+    assertTrue(store.renewLease(jobId, lease.leaseEpoch));
+    assertTrue(readStoredLease(ACCOUNT_ID, jobId).expiresAtMs > System.currentTimeMillis());
   }
 
   private String enqueueRoot() {

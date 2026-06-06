@@ -49,6 +49,16 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
+  // Durable snapshot-plan success currently enqueues child jobs plus one parent mutation in a
+  // single transaction. Keep planned file-group jobs under that hard ceiling.
+  private static final int MAX_TRANSACTION_WRITE_ITEMS = 100;
+  private static final int FILE_GROUP_CHILD_WRITE_ITEMS = 5;
+  private static final int PARENT_COMPLETION_WRITE_ITEMS = 1;
+  private static final int MAX_FILE_GROUP_JOBS_PER_SUBMIT =
+      Math.max(
+          1,
+          (MAX_TRANSACTION_WRITE_ITEMS - PARENT_COMPLETION_WRITE_ITEMS)
+              / FILE_GROUP_CHILD_WRITE_ITEMS);
 
   private final ReconcilerBackend backend;
   private final RemotePlannerWorkerClient workerClient;
@@ -473,14 +483,25 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private List<ReconcileFileGroupTask> partitionFilePaths(
       String planId, ReconcileSnapshotTask task, List<String> filePaths) {
     java.util.ArrayList<ReconcileFileGroupTask> groups = new java.util.ArrayList<>();
-    for (int offset = 0; offset < filePaths.size(); offset += maxFilesPerGroup) {
-      int end = Math.min(filePaths.size(), offset + maxFilesPerGroup);
+    int groupSize = effectiveMaxFilesPerGroup(filePaths.size());
+    for (int offset = 0; offset < filePaths.size(); offset += groupSize) {
+      int end = Math.min(filePaths.size(), offset + groupSize);
       String groupId = "snapshot-" + task.snapshotId() + "-group-" + groups.size();
       groups.add(
           ReconcileFileGroupTask.of(
               planId, groupId, task.tableId(), task.snapshotId(), filePaths.subList(offset, end)));
     }
     return List.copyOf(groups);
+  }
+
+  private int effectiveMaxFilesPerGroup(int totalFiles) {
+    int requestedGroupSize = Math.max(1, maxFilesPerGroup);
+    if (totalFiles <= 0) {
+      return requestedGroupSize;
+    }
+    int minimumGroupSizeForAtomicSubmit =
+        Math.max(1, (int) Math.ceil((double) totalFiles / (double) MAX_FILE_GROUP_JOBS_PER_SUBMIT));
+    return Math.max(requestedGroupSize, minimumGroupSizeForAtomicSubmit);
   }
 
   private ReconcileContext reconcileContext(ReconcileJobStore.LeasedJob lease) {

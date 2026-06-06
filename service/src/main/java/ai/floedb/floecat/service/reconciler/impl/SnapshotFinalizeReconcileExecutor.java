@@ -265,7 +265,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("snapshot file-group execution cancelled"));
     }
     if (!childState.pendingGroups().isEmpty()) {
-      return ExecutionResult.dependencyNotReady(
+      return ExecutionResult.terminalFailure(
           0,
           0,
           0,
@@ -273,15 +273,18 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           0,
           0,
-          "Waiting for snapshot file groups "
+          "Snapshot finalization was scheduled before file-group completion "
+              + "completed="
               + childState.completedGroups()
               + "/"
               + childState.expectedGroups()
               + " pending="
-              + childState.pendingGroups());
+              + childState.pendingGroups(),
+          new IllegalStateException(
+              "snapshot finalization scheduled before file-group completion"));
     }
     if (!childState.missingGroups().isEmpty()) {
-      return ExecutionResult.stateUncertain(
+      return ExecutionResult.terminalFailure(
           0,
           0,
           0,
@@ -585,8 +588,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
       return new ExpectedCoverage(PlannedCoverageState.DIRECT_STATS, List.of(), List.of(), "");
     }
-    List<ReconcileFileGroupTask> plannedGroups =
-        snapshotTask.fileGroups() == null ? List.of() : snapshotTask.fileGroups();
+    List<ReconcileFileGroupTask> plannedGroups = plannedFileGroups(snapshotTask);
     LinkedHashSet<String> expectedFiles = new LinkedHashSet<>();
     for (ReconcileFileGroupTask fileGroup : plannedGroups) {
       if (fileGroup == null) {
@@ -605,6 +607,20 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         List.copyOf(expectedGroups),
         List.copyOf(expectedFiles),
         "");
+  }
+
+  private List<ReconcileFileGroupTask> plannedFileGroups(ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.fileGroups() != null && !effective.fileGroups().isEmpty()) {
+      return effective.fileGroups();
+    }
+    if (!effective.fileGroupPlanRecorded()
+        || effective.fileGroupCount() <= 0L
+        || effective.fileGroupPlanBlobUri().isBlank()) {
+      return List.of();
+    }
+    return snapshotPlanBlobStore.loadFileGroups(effective);
   }
 
   private long ingestDirectStats(

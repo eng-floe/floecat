@@ -414,7 +414,7 @@ public class ConnectorIT {
 
     var planJob = runReconcile(conn.getResourceId(), true, null, true);
     assertNotNull(planJob);
-    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+    assertPlanJobInProgressOrSucceeded(planJob);
     awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
 
     var tablePlanJobs =
@@ -1099,7 +1099,7 @@ public class ConnectorIT {
     var planJob = runReconcile(conn.getResourceId(), true, null, true);
 
     assertNotNull(planJob);
-    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+    assertPlanJobInProgressOrSucceeded(planJob);
     assertEquals(3L, planJob.tablesScanned, "expected 3 direct child jobs (2 tables + 1 view)");
     assertEquals(1L, planJob.viewsScanned, "expected 1 planned view");
     assertEquals(
@@ -1142,7 +1142,8 @@ public class ConnectorIT {
   }
 
   @Test
-  void secondReconcilePlansSnapshotJobsForExistingTables() throws Exception {
+  void secondReconcileSkipsSnapshotJobsForExistingTablesWhenCaptureIsAlreadyComplete()
+      throws Exception {
     var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-plan-snapshots", "");
 
@@ -1171,7 +1172,7 @@ public class ConnectorIT {
 
     var planJob = runReconcile(conn.getResourceId(), true, null, true);
     assertNotNull(planJob);
-    assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+    assertPlanJobInProgressOrSucceeded(planJob);
 
     var aggregatedJob =
         awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -1198,28 +1199,21 @@ public class ConnectorIT {
             .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
             .toList();
-    var completedSnapshotPlanJobs =
-        awaitJobsTerminal(snapshotPlanJobs, System.nanoTime() + Duration.ofSeconds(300).toNanos());
     assertEquals(
-        2, completedSnapshotPlanJobs.size(), "expected one PLAN_SNAPSHOT grandchild per table");
-    assertTrue(
-        completedSnapshotPlanJobs.stream()
-            .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.snapshotTask != null),
-        "expected each snapshot plan job to succeed with a snapshot task payload");
+        0,
+        snapshotPlanJobs.size(),
+        "expected no PLAN_SNAPSHOT grandchildren once capture is already complete");
 
     var fileGroupJobs =
-        completedSnapshotPlanJobs.stream()
+        tablePlanJobs.stream()
+            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
             .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
             .toList();
-    var completedFileGroupJobs =
-        awaitJobsTerminal(fileGroupJobs, System.nanoTime() + Duration.ofSeconds(300).toNanos());
     assertEquals(
-        2, completedFileGroupJobs.size(), "expected one EXEC_FILE_GROUP child per snapshot plan");
-    assertTrue(
-        completedFileGroupJobs.stream()
-            .allMatch(job -> "JS_SUCCEEDED".equals(job.state) && job.fileGroupTask != null),
-        "expected each file-group execution job to succeed with a file group payload");
+        0,
+        fileGroupJobs.size(),
+        "expected no EXEC_FILE_GROUP jobs when the existing snapshot is already fully captured");
   }
 
   @Test
@@ -1327,7 +1321,7 @@ public class ConnectorIT {
 
       var planJob = runReconcile(conn.getResourceId(), true, null, true);
       assertNotNull(planJob);
-      assertEquals("JS_SUCCEEDED", planJob.state, () -> "plan job failed: " + planJob.message);
+      assertPlanJobInProgressOrSucceeded(planJob);
       awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
 
       var tablePlanJobs =
@@ -1521,7 +1515,10 @@ public class ConnectorIT {
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
       job = jobs.get(jobId).orElse(null);
-      if (job != null && isTerminal(job.state)) {
+      if (job != null
+          && (isTerminal(job.state)
+              || (job.jobKind == ReconcileJobKind.PLAN_CONNECTOR
+                  && "JS_WAITING".equals(job.state)))) {
         break;
       }
       if (System.nanoTime() > deadline) {
@@ -1755,6 +1752,13 @@ public class ConnectorIT {
 
   private static long aggregateStatsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
     return jobs.stream().mapToLong(job -> job.statsProcessed).sum();
+  }
+
+  private static void assertPlanJobInProgressOrSucceeded(ReconcileJobStore.ReconcileJob planJob) {
+    assertTrue(
+        planJob != null
+            && ("JS_WAITING".equals(planJob.state) || "JS_SUCCEEDED".equals(planJob.state)),
+        () -> "plan job failed: " + (planJob == null ? "<null>" : planJob.message));
   }
 
   private static boolean isTerminal(String state) {

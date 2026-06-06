@@ -94,6 +94,21 @@ public interface ReconcileJobStore {
     return new BulkEnqueueResult(items);
   }
 
+  boolean bulkEnqueueAndApplyLeaseOutcome(
+      List<BulkEnqueueSpec> specs,
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
+
   default String enqueue(
       String accountId,
       String connectorId,

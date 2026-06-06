@@ -214,9 +214,9 @@ class SnapshotFinalizeReconcileExecutorTest {
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
     assertFalse(result.cancelled);
-    assertEquals(ExecutionResult.JobOutcome.RETRYABLE_FAILURE, result.outcome);
-    assertEquals(ExecutionResult.RetryClass.DEPENDENCY_NOT_READY, result.retryClass);
-    assertTrue(result.message.contains("Waiting for snapshot file groups"));
+    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    assertTrue(result.message.contains("scheduled before file-group completion"));
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(ACCOUNT_ID)
@@ -2051,8 +2051,8 @@ class SnapshotFinalizeReconcileExecutorTest {
 
     assertFalse(result.cancelled);
     assertNotNull(result.error);
-    assertEquals(ExecutionResult.RetryDisposition.RETRYABLE, result.retryDisposition);
-    assertEquals(ExecutionResult.RetryClass.STATE_UNCERTAIN, result.retryClass);
+    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
     assertTrue(result.message.contains("missing EXEC_FILE_GROUP children"));
   }
 
