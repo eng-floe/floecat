@@ -427,11 +427,11 @@ class TableRepositoryTest {
     assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
 
     var p = ptr.get(canonKey);
-    if (seedDeleted.get()) {
+    if (p.isEmpty()) {
       boolean deletedVisible =
           await(
               Duration.ofSeconds(5),
-              () -> ptr.get(canonKey).isEmpty() || tableRepo.getById(tblId).isEmpty(),
+              () -> ptr.get(canonKey).isEmpty() && tableRepo.getById(tblId).isEmpty(),
               Duration.ofMillis(10));
       assertTrue(deletedVisible, "deleted table should not be resolvable");
       assertDoesNotThrow(() -> tableRepo.metaForSafe(tblId));
