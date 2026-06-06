@@ -26,57 +26,39 @@ public class KvStoreProducerTest {
 
   @Test
   void produces_KvStore_with_expected_table_name() throws Exception {
-    KvStoreProducer producer = new KvStoreProducer();
+    FakeBootstrap bootstrap = new FakeBootstrap();
+    KvStoreProducer producer = producerWith(bootstrap);
 
-    KvStore kv = producer.coreKvStore(fakeDdb(), "tbl-one");
+    KvStore kv = producer.coreKvStore(fakeDdb(), "tbl-one", true);
     assertTrue(kv instanceof DynamoDbKvStore);
     assertEquals("tbl-one", ((DynamoDbKvStore) kv).getTable());
   }
 
   @Test
-  void startup_bootstrap_uses_configured_table_and_ttl_flag() {
+  void calls_bootstrap_ensureTableExists_with_ttl_flag() {
     FakeBootstrap bootstrap = new FakeBootstrap();
-    KvStoreProducer producer = new KvStoreProducer();
-    producer.ddbBootstrap = bootstrap;
-    producer.table = "tbl-two";
-    producer.ttlEnabled = false;
-    producer.kvMode = "dynamodb";
-    producer.autoCreate = true;
+    KvStoreProducer producer = producerWith(bootstrap);
 
-    producer.onStart(null);
+    producer.coreKvStore(fakeDdb(), "tbl-two", false);
     assertEquals("tbl-two", bootstrap.lastTable);
     assertFalse(bootstrap.lastTtl);
     assertEquals(1, bootstrap.calls);
   }
 
   @Test
-  void startup_bootstrap_applies_ttl_when_enabled() {
+  void ttl_enabled_default_true_is_applied() {
     FakeBootstrap bootstrap = new FakeBootstrap();
-    KvStoreProducer producer = new KvStoreProducer();
-    producer.ddbBootstrap = bootstrap;
-    producer.table = "tbl-three";
-    producer.ttlEnabled = true;
-    producer.kvMode = "dynamodb";
-    producer.autoCreate = true;
+    KvStoreProducer producer = producerWith(bootstrap);
 
-    producer.onStart(null);
+    producer.coreKvStore(fakeDdb(), "tbl-three", true);
     assertEquals("tbl-three", bootstrap.lastTable);
     assertTrue(bootstrap.lastTtl);
   }
 
-  @Test
-  void startup_bootstrap_skips_when_not_using_dynamodb_auto_create() {
-    FakeBootstrap bootstrap = new FakeBootstrap();
+  private static KvStoreProducer producerWith(FakeBootstrap bootstrap) {
     KvStoreProducer producer = new KvStoreProducer();
     producer.ddbBootstrap = bootstrap;
-    producer.table = "tbl-four";
-    producer.ttlEnabled = true;
-    producer.kvMode = "memory";
-    producer.autoCreate = false;
-
-    producer.onStart(null);
-    assertNull(bootstrap.lastTable);
-    assertEquals(0, bootstrap.calls);
+    return producer;
   }
 
   private static DynamoDbAsyncClient fakeDdb() {

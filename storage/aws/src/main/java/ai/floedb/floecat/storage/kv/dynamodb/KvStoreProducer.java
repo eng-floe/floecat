@@ -17,10 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
-import io.quarkus.runtime.StartupEvent;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -28,35 +25,17 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 
 @ApplicationScoped
 public class KvStoreProducer {
-  static final int BOOTSTRAP_PRIORITY = 1;
 
   @Inject DynamoDbTablesBootstrap ddbBootstrap;
-
-  @ConfigProperty(name = "floecat.kv.table")
-  String table;
-
-  @ConfigProperty(name = "floecat.kv.ttl-enabled", defaultValue = "true")
-  boolean ttlEnabled;
-
-  @ConfigProperty(name = "floecat.kv", defaultValue = "memory")
-  String kvMode;
-
-  @ConfigProperty(name = "floecat.kv.auto-create", defaultValue = "false")
-  boolean autoCreate;
-
-  void onStart(@Observes @Priority(BOOTSTRAP_PRIORITY) StartupEvent event) {
-    if (!"dynamodb".equalsIgnoreCase(kvMode) || !autoCreate) {
-      return;
-    }
-    ddbBootstrap.ensureTableExists(table, ttlEnabled);
-    DynamoDbBootstrapReadiness.markReady();
-  }
 
   @Produces
   @ApplicationScoped
   @KvTable("floecat")
   KvStore coreKvStore(
-      DynamoDbAsyncClient ddb, @ConfigProperty(name = "floecat.kv.table") String table) {
+      DynamoDbAsyncClient ddb,
+      @ConfigProperty(name = "floecat.kv.table") String table,
+      @ConfigProperty(name = "floecat.kv.ttl-enabled", defaultValue = "true") boolean ttlEnabled) {
+    ddbBootstrap.ensureTableExists(table, ttlEnabled);
     return new DynamoDbKvStore(ddb, table);
   }
 }

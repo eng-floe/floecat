@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb;
 
 import ai.floedb.floecat.storage.kv.KvAttributes;
+import io.quarkus.runtime.Startup;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,7 @@ import software.amazon.awssdk.services.dynamodb.model.*;
 import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbAsyncWaiter;
 
 @ApplicationScoped
+@Startup
 public class DynamoDbTablesBootstrap implements KvAttributes {
 
   private static final Logger log = LoggerFactory.getLogger(DynamoDbTablesBootstrap.class);
