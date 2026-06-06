@@ -126,7 +126,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsTrueForAcceptedTransitions() {
     String succeededJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob succeededLease = awaitLease("succeeded job lease");
+    ReconcileJobStore.LeasedJob succeededLease = awaitLease("succeeded job lease", succeededJobId);
     assertTrue(
         store.applyLeaseOutcome(
             succeededJobId,
@@ -150,7 +150,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             .state);
 
     String cancelledJobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob cancelledLease = awaitLease("cancelled job lease");
+    ReconcileJobStore.LeasedJob cancelledLease = awaitLease("cancelled job lease", cancelledJobId);
     store.cancel(ACCOUNT_ID, cancelledJobId, "stop");
     assertTrue(
         store.applyLeaseOutcome(
@@ -178,7 +178,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeCancellingSuccessResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling success lease");
+    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling success lease", jobId);
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -217,7 +217,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeCancellingFailureResolvesImmediatelyToCancelled() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling failure lease");
+    ReconcileJobStore.LeasedJob lease = awaitLease("cancelling failure lease", jobId);
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     assertTrue(
@@ -249,7 +249,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForStaleLeaseEpoch() {
     String jobId = enqueueRoot();
-    awaitLease("stale lease epoch lease");
+    awaitLease("stale lease epoch lease", jobId);
 
     assertFalse(
         store.applyLeaseOutcome(
@@ -296,7 +296,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   @Test
   void applyLeaseOutcomeReturnsFalseForTerminalJob() {
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = awaitLease("terminal job lease");
+    ReconcileJobStore.LeasedJob lease = awaitLease("terminal job lease", jobId);
     assertTrue(
         store.applyLeaseOutcome(
             jobId,
@@ -340,7 +340,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   void applyLeaseOutcomeReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = awaitLease("expired lease");
+    ReconcileJobStore.LeasedJob lease = awaitLease("expired lease", jobId);
     expireLease(jobId);
 
     assertTrue(
@@ -371,7 +371,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   void renewLeaseReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
-    ReconcileJobStore.LeasedJob lease = awaitLease("expired renew lease");
+    ReconcileJobStore.LeasedJob lease = awaitLease("expired renew lease", jobId);
     expireLease(jobId);
 
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
@@ -387,17 +387,26 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     return waitForValue(() -> store.leaseNext().orElse(null), lease -> lease != null, description);
   }
 
+  private ReconcileJobStore.LeasedJob awaitLease(String description, String jobId) {
+    return waitForValue(
+        () -> store.leaseNext().orElse(null),
+        lease -> lease != null && jobId.equals(lease.jobId),
+        description);
+  }
+
   private <T> T waitForValue(
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
       String description) {
     T value = tryGetValue(supplier);
-    for (int attempt = 0; attempt < 100; attempt++) {
+    int maxAttempts = isDynamoMode() ? 400 : 100;
+    long sleepMs = isDynamoMode() ? 25L : 0L;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
       if (value != null && done.test(value)) {
         return value;
       }
       try {
-        Thread.sleep(isDynamoMode() ? 25L : 0L);
+        Thread.sleep(sleepMs);
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         throw new IllegalStateException("Interrupted while waiting for " + description, ie);
