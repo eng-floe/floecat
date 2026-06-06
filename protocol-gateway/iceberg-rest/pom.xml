@@ -112,7 +112,6 @@
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-memory</artifactId>
       <version>${project.version}</version>
-      <scope>test</scope>
     </dependency>
 
     <dependency>
