@@ -22,6 +22,7 @@ import ai.floedb.floecat.storage.kv.KvStore.Key;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
+import io.quarkus.arc.properties.IfBuildProperty;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -50,6 +51,7 @@ import java.util.Optional;
  * </ul>
  */
 @Singleton
+@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   static final String KIND_POINTER = "Pointer";
