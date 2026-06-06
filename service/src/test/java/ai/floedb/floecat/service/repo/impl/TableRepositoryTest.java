@@ -300,6 +300,7 @@ class TableRepositoryTest {
     var start = new CountDownLatch(1);
     var unexpected = new ConcurrentLinkedQueue<Throwable>();
     var expectedCounts = new ConcurrentHashMap<String, LongAdder>();
+    var deleteClaimed = new AtomicBoolean(false);
     var seedDeleted = new AtomicBoolean(false);
 
     Runnable worker =
@@ -378,14 +379,23 @@ class TableRepositoryTest {
                   }
 
                 } else {
-                  if (seedDeleted.compareAndSet(false, true)) {
-                    var curMeta = tableRepo.metaFor(tblId);
-                    boolean ok =
-                        tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
-                    if (!ok) {
-                      seedDeleted.set(false);
-                      throw new BaseResourceRepository.PreconditionFailedException(
-                          "version mismatch");
+                  if (seedDeleted.get()) {
+                    continue;
+                  }
+                  if (deleteClaimed.compareAndSet(false, true)) {
+                    try {
+                      var curMeta = tableRepo.metaFor(tblId);
+                      boolean ok =
+                          tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                      if (!ok) {
+                        throw new BaseResourceRepository.PreconditionFailedException(
+                            "version mismatch");
+                      }
+                      seedDeleted.set(true);
+                    } finally {
+                      if (!seedDeleted.get()) {
+                        deleteClaimed.set(false);
+                      }
                     }
                   }
                 }
