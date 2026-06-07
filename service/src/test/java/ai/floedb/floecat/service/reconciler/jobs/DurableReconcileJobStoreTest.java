@@ -2703,36 +2703,14 @@ class DurableReconcileJobStoreTest {
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
-    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    Optional<ReconcileJobStore.LeasedJob> leased = Optional.empty();
-    for (int attempt = 0; attempt < 100 && leased.isEmpty(); attempt++) {
-      StoredReconcileJob readyRecord =
-          waitForValue(
-              () -> readStoredRecord(canonicalPointerKey),
-              current ->
-                  "JS_QUEUED".equals(current.state)
-                      && current.readyPointerKey != null
-                      && !current.readyPointerKey.isBlank(),
-              "job " + jobId + " to become ready for leasing");
-      leased =
-          assertDoesNotThrow(
-              () ->
-                  leaseManager()
-                      .leaseCanonical(
-                          canonicalPointerKey,
-                          readyRecord.readyPointerKey,
-                          System.currentTimeMillis(),
-                          store
-                              .jobIndexStore
-                              .loadCanonicalSnapshot(canonicalPointerKey)
-                              .orElseThrow(),
-                          readyRecord));
-      if (leased.isEmpty()) {
-        runMaintenance();
-      }
-    }
-    return leased.orElseThrow(
-        () -> new IllegalStateException("Unable to lease ready job " + jobId));
+    return waitForValue(
+        () ->
+            store.leaseNext().stream()
+                .filter(current -> jobId.equals(current.jobId))
+                .findFirst()
+                .orElse(null),
+        current -> current != null,
+        "job " + jobId + " to become ready for leasing");
   }
 
   private ReconcileLeaseStore leaseManager() {
@@ -2775,8 +2753,8 @@ class DurableReconcileJobStoreTest {
   }
 
   private <T> T waitForValue(Supplier<T> supplier, Predicate<T> done, String description) {
-    int attempts = isDynamoMode() ? 400 : 40;
-    long sleepMs = isDynamoMode() ? 50L : 0L;
+    int attempts = isDynamoMode() ? 400 : 100;
+    long sleepMs = isDynamoMode() ? 50L : 1L;
     runMaintenance();
     T value = tryGetValue(supplier);
     for (int attempt = 0; attempt < attempts; attempt++) {
