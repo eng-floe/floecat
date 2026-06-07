@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.KvStore.Key;
@@ -29,7 +30,6 @@ import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -57,6 +57,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   static final String KIND_POINTER = "Pointer";
   static final String GLOBAL_PK = "_ACCOUNT_DIR";
   static final String ATTR_BLOB_URI = "blob_uri";
+  static final String ATTR_REFERENCE_KIND = "reference_kind";
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
@@ -134,6 +135,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
             .setKey(keyOf(r.key()))
             .setBlobUri(r.attrs().getOrDefault(ATTR_BLOB_URI, ""))
             .setVersion(r.version());
+    String referenceKind = r.attrs().get(ATTR_REFERENCE_KIND);
+    if (referenceKind != null && !referenceKind.isBlank()) {
+      try {
+        builder.setReferenceKind(PointerReferenceKind.valueOf(referenceKind));
+      } catch (IllegalArgumentException ignored) {
+        // Preserve legacy behavior for unknown values by leaving the kind unspecified.
+      }
+    }
     var expiresAtStr = r.attrs().get(ATTR_EXPIRES_AT);
     if (expiresAtStr != null) {
       long ts = Long.parseLong(expiresAtStr);
@@ -176,11 +185,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
    */
   public Uni<Boolean> compareAndSet(String key, long expectedVersion, Pointer pointer) {
     return putCanonicalCas(
-            pointerKey(key),
-            KIND_POINTER,
-            pointer,
-            Map.of(ATTR_BLOB_URI, pointer.getBlobUri()),
-            expectedVersion)
+            pointerKey(key), KIND_POINTER, pointer, attrsFor(pointer), expectedVersion)
         .map(Optional::isPresent);
   }
 
@@ -219,8 +224,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     for (var op : ops) {
       if (op instanceof PointerStore.CasUpsert upsert) {
         long nextVersion = upsert.expectedVersion() + 1L;
-        var attrs = new HashMap<String, String>();
-        attrs.put(ATTR_BLOB_URI, upsert.next().getBlobUri());
+        var attrs = attrsFor(upsert.next());
         if (upsert.next().hasExpiresAt()) {
           long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
           attrs.put(ATTR_EXPIRES_AT, Long.toString(ttl));
@@ -234,6 +238,17 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
       }
     }
     return kv.txnWriteCas(txOps);
+  }
+
+  private static HashMap<String, String> attrsFor(Pointer pointer) {
+    var attrs = new HashMap<String, String>();
+    attrs.put(ATTR_BLOB_URI, pointer.getBlobUri());
+    if (pointer != null
+        && pointer.getReferenceKind() != null
+        && pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
+      attrs.put(ATTR_REFERENCE_KIND, pointer.getReferenceKind().name());
+    }
+    return attrs;
   }
 
   // ---- List

@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
@@ -248,7 +249,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private static Pointer reserve(String key, String blobUri) {
-    return Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+    return PointerReferences.blobPointer(key, blobUri, 1L);
   }
 
   /**

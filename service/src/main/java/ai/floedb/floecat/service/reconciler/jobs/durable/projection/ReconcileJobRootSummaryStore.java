@@ -29,6 +29,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
@@ -136,12 +137,7 @@ public class ReconcileJobRootSummaryStore {
       if (current != null && blobUri.equals(current.getBlobUri())) {
         return;
       }
-      Pointer next =
-          Pointer.newBuilder()
-              .setKey(key)
-              .setBlobUri(blobUri)
-              .setVersion(expectedVersion + 1L)
-              .build();
+      Pointer next = PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L);
       if (pointerStore.compareAndSet(key, expectedVersion, next)) {
         return;
       }

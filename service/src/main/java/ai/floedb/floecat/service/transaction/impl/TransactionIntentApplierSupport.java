@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -156,8 +157,7 @@ public class TransactionIntentApplierSupport {
     for (int i = 0; i < 3; i++) {
       var ptr = pointerStore.get(key).orElse(null);
       if (ptr == null) {
-        Pointer created =
-            Pointer.newBuilder().setKey(key).setBlobUri(nextBlobUri).setVersion(1L).build();
+        Pointer created = PointerReferences.blobPointer(key, nextBlobUri, 1L);
         if (pointerStore.compareAndSet(key, 0L, created)) {
           return ApplyOutcome.applied();
         }
@@ -179,12 +179,7 @@ public class TransactionIntentApplierSupport {
             null,
             existingId);
       }
-      Pointer next =
-          Pointer.newBuilder()
-              .setKey(key)
-              .setBlobUri(nextBlobUri)
-              .setVersion(ptr.getVersion() + 1)
-              .build();
+      Pointer next = PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1);
       if (pointerStore.compareAndSet(key, ptr.getVersion(), next)) {
         return ApplyOutcome.applied();
       }
@@ -217,7 +212,7 @@ public class TransactionIntentApplierSupport {
   public void upsertPointerBestEffort(String key, String blobUri) {
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
-      Pointer created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+      Pointer created = PointerReferences.blobPointer(key, blobUri, 1L);
       if (pointerStore.compareAndSet(key, 0L, created)) {
         return;
       }
@@ -227,12 +222,7 @@ public class TransactionIntentApplierSupport {
         return;
       }
     }
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(key)
-            .setBlobUri(blobUri)
-            .setVersion(ptr.getVersion() + 1)
-            .build();
+    Pointer next = PointerReferences.blobPointer(key, blobUri, ptr.getVersion() + 1);
     if (!pointerStore.compareAndSet(key, ptr.getVersion(), next)) {
       LOG.warnf("pointer update conflict for %s", key);
     }
@@ -311,12 +301,7 @@ public class TransactionIntentApplierSupport {
     }
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(pointerKey)
-            .setBlobUri(intent.getBlobUri())
-            .setVersion(expected + 1L)
-            .build();
+    Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
     return addOp(
         new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
   }
@@ -376,12 +361,7 @@ public class TransactionIntentApplierSupport {
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
 
     if (current == null || !Objects.equals(current.getBlobUri(), intent.getBlobUri())) {
-      Pointer next =
-          Pointer.newBuilder()
-              .setKey(pointerKey)
-              .setBlobUri(intent.getBlobUri())
-              .setVersion(expected + 1L)
-              .build();
+      Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
       ApplyOutcome outcome =
           addOp(
               new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
@@ -519,12 +499,7 @@ public class TransactionIntentApplierSupport {
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
     if (current == null || !Objects.equals(current.getBlobUri(), intent.getBlobUri())) {
-      Pointer next =
-          Pointer.newBuilder()
-              .setKey(pointerKey)
-              .setBlobUri(intent.getBlobUri())
-              .setVersion(expected + 1L)
-              .build();
+      Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
       ApplyOutcome outcome =
           addOp(
               new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
@@ -631,8 +606,7 @@ public class TransactionIntentApplierSupport {
       List<PointerStore.CasOp> ops) {
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
-      Pointer created =
-          Pointer.newBuilder().setKey(key).setBlobUri(nextBlobUri).setVersion(1L).build();
+      Pointer created = PointerReferences.blobPointer(key, nextBlobUri, 1L);
       return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
     }
     if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
@@ -651,12 +625,7 @@ public class TransactionIntentApplierSupport {
           null,
           existingId);
     }
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(key)
-            .setBlobUri(nextBlobUri)
-            .setVersion(ptr.getVersion() + 1L)
-            .build();
+    Pointer next = PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L);
     return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
   }
 
@@ -684,8 +653,7 @@ public class TransactionIntentApplierSupport {
       List<PointerStore.CasOp> ops) {
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
-      Pointer created =
-          Pointer.newBuilder().setKey(key).setBlobUri(nextBlobUri).setVersion(1L).build();
+      Pointer created = PointerReferences.blobPointer(key, nextBlobUri, 1L);
       return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
     }
     if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
@@ -704,12 +672,7 @@ public class TransactionIntentApplierSupport {
           null,
           existingId);
     }
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(key)
-            .setBlobUri(nextBlobUri)
-            .setVersion(ptr.getVersion() + 1L)
-            .build();
+    Pointer next = PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L);
     return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
   }
 

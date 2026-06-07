@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -70,8 +71,7 @@ public class MarkerStore {
   }
 
   private boolean advanceMarker(String key, long expectedVersion) {
-    var next =
-        Pointer.newBuilder().setKey(key).setBlobUri(key).setVersion(expectedVersion + 1).build();
+    var next = PointerReferences.opaqueMarkerPointer(key, key, expectedVersion + 1);
     return pointerStore.compareAndSet(key, expectedVersion, next);
   }
 }

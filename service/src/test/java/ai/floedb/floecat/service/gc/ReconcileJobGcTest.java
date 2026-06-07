@@ -21,12 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -239,11 +241,8 @@ class ReconcileJobGcTest {
         pointers.compareAndSet(
             canonicalKey,
             canonical.getVersion(),
-            Pointer.newBuilder()
-                .setKey(canonicalKey)
-                .setBlobUri("inline:reconcile-job:not-valid")
-                .setVersion(canonical.getVersion() + 1L)
-                .build()));
+            PointerReferences.inlineJsonPointer(
+                canonicalKey, "inline:reconcile-job:not-valid", canonical.getVersion() + 1L)));
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
@@ -400,7 +399,7 @@ class ReconcileJobGcTest {
   }
 
   private void putPointer(String key, String blobUri) {
-    Pointer ptr = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+    Pointer ptr = PointerReferences.pointerKeyPointer(key, blobUri, 1L);
     pointers.compareAndSet(key, 0L, ptr);
   }
 
@@ -448,7 +447,8 @@ class ReconcileJobGcTest {
             + Base64.getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(record.toString().getBytes(StandardCharsets.UTF_8));
-    putPointer(canonicalKey, inlineReference);
+    pointers.compareAndSet(
+        canonicalKey, 0L, PointerReferences.inlineJsonPointer(canonicalKey, inlineReference, 1L));
     putPointer(lookupKey, canonicalKey);
     return canonicalKey;
   }
@@ -485,14 +485,19 @@ class ReconcileJobGcTest {
         jobIndexBackend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
                 java.util.List.of(
-                    new ReconcileJobIndexStore.JobIndexUpsert(canonicalKey, 0L, inlineReference),
                     new ReconcileJobIndexStore.JobIndexUpsert(
-                        Keys.reconcileJobLookupPointerById(record.jobId), 0L, canonicalKey),
+                        canonicalKey, 0L, inlineReference, PointerReferenceKind.PRK_INLINE_JSON),
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        Keys.reconcileJobLookupPointerById(record.jobId),
+                        0L,
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileJobByParentPointer(
                             record.accountId, record.parentJobId, record.jobId),
                         0L,
-                        canonicalKey),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileJobByConnectorPointer(
                             record.accountId,
@@ -500,21 +505,25 @@ class ReconcileJobGcTest {
                             String.format(
                                 "%019d-%s", Long.MAX_VALUE - record.createdAtMs, record.jobId)),
                         0L,
-                        canonicalKey),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileDedupePointer(record.accountId, record.dedupeKeyHash),
                         0L,
-                        canonicalKey),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileJobByStatePointer(
                             record.state, record.createdAtMs, record.accountId, record.jobId),
                         0L,
-                        canonicalKey),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileJobByAccountStatePointer(
                             record.accountId, record.state, record.createdAtMs, record.jobId),
                         0L,
-                        canonicalKey),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
                     new ReconcileJobIndexStore.JobIndexUpsert(
                         Keys.reconcileJobByConnectorStatePointer(
                             record.accountId,
@@ -523,11 +532,14 @@ class ReconcileJobGcTest {
                             record.createdAtMs,
                             record.jobId),
                         0L,
-                        canonicalKey)),
+                        canonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY)),
                 new ReconcileJobIndexStore.ReadyQueueMutation(
                     java.util.List.of(
                         new ReconcileJobIndexStore.ReadyQueueWrite(
-                            record.readyPointerKey, canonicalKey)),
+                            record.readyPointerKey,
+                            canonicalKey,
+                            PointerReferenceKind.PRK_POINTER_KEY)),
                     java.util.List.of()))));
   }
 

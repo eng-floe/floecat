@@ -23,6 +23,7 @@ public class GcOnProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
+        "quarkus.scheduler.enabled", "false",
         "floecat.gc.idempotency.enabled", "true",
         "floecat.gc.idempotency.tick-every", "1s",
         "floecat.gc.idempotency.page-size", "500",
