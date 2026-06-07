@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.kv.dynamodb.ps;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import ai.floedb.floecat.storage.kv.KvAttributes;
@@ -221,6 +222,31 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     assertTrue(ok);
     assertEquals(1L, pointers.get(k1).await().indefinitely().orElseThrow().getVersion());
     assertEquals(1L, pointers.get(k2).await().indefinitely().orElseThrow().getVersion());
+  }
+
+  @Test
+  void compareAndSetBatch_preserves_reference_kind() {
+    String key = "/accounts/by-id/500/reconcile/dirty-parent/marker";
+
+    boolean ok =
+        pointers
+            .compareAndSetBatch(
+                List.of(
+                    new PointerStore.CasUpsert(
+                        key,
+                        0L,
+                        Pointer.newBuilder()
+                            .setKey(key)
+                            .setBlobUri("acct-1\nparent-1")
+                            .setReferenceKind(PointerReferenceKind.PRK_OPAQUE_MARKER)
+                            .build())))
+            .await()
+            .indefinitely();
+
+    assertTrue(ok);
+    assertEquals(
+        PointerReferenceKind.PRK_OPAQUE_MARKER,
+        pointers.get(key).await().indefinitely().orElseThrow().getReferenceKind());
   }
 
   @Test

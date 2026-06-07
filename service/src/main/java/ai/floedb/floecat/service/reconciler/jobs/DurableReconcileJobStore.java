@@ -64,6 +64,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -1935,10 +1936,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long expectedVersion = current == null ? 0L : current.getVersion();
       Pointer next =
           current == null
-              ? Pointer.newBuilder().setKey(key).setBlobUri(payload).setVersion(1L).build()
-              : current.toBuilder()
-                  .setBlobUri(payload)
-                  .setVersion(current.getVersion() + 1L)
+              ? PointerReferences.opaqueMarkerPointer(key, payload, 1L)
+              : PointerReferences.asOpaqueMarkerPointer(
+                      current.toBuilder().setVersion(current.getVersion() + 1L), payload)
                   .build();
       if (pointerStore.compareAndSet(key, expectedVersion, next)) {
         var updated =
@@ -2129,8 +2129,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Keys.reconcileFinalizedSnapshotIdentityPointer(
             event.accountId, event.tableId, event.snapshotId);
     String blobUri = encodeInlineFinalizedSnapshotEvent(event);
-    Pointer created =
-        Pointer.newBuilder().setKey(identityKey).setBlobUri(blobUri).setVersion(1L).build();
+    Pointer created = PointerReferences.inlineJsonPointer(identityKey, blobUri, 1L);
     if (!pointerStore.compareAndSet(identityKey, 0L, created)) {
       return;
     }

@@ -437,19 +437,23 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
       java.util.function.Supplier<T> supplier,
       java.util.function.Predicate<T> done,
       String description) {
+    runMaintenance();
     T value = tryGetValue(supplier);
     int maxAttempts = isDynamoMode() ? 1200 : 100;
-    long sleepMs = isDynamoMode() ? 25L : 0L;
+    long sleepMs = isDynamoMode() ? 25L : 1L;
     for (int attempt = 0; attempt < maxAttempts; attempt++) {
       if (value != null && done.test(value)) {
         return value;
       }
-      try {
-        Thread.sleep(sleepMs);
-      } catch (InterruptedException ie) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException("Interrupted while waiting for " + description, ie);
+      if (attempt + 1 < maxAttempts && sleepMs > 0L) {
+        try {
+          Thread.sleep(sleepMs);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while waiting for " + description, ie);
+        }
       }
+      runMaintenance();
       value = tryGetValue(supplier);
     }
     assertTrue(
@@ -464,6 +468,10 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     } catch (IllegalStateException | java.util.NoSuchElementException e) {
       return null;
     }
+  }
+
+  private void runMaintenance() {
+    store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
   private void expireLease(String jobId) {

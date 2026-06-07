@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
 
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -458,7 +459,8 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
         new JobIndexUpsert(
             canonicalPointerKey,
             currentSnapshot.version(),
-            payloadStore.encodeInlineJobState(current)));
+            payloadStore.encodeInlineJobState(current),
+            PointerReferenceKind.PRK_INLINE_JSON));
 
     String previousLookupKey =
         previous == null || blank(previous.jobId)
@@ -641,19 +643,32 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
         existingDedupePointer == null ? 0L : existingDedupePointer.version();
     ops.add(
         new JobIndexUpsert(
-            insert.dedupePointerKey(), dedupeExpectedVersion, insert.canonicalKey()));
+            insert.dedupePointerKey(),
+            dedupeExpectedVersion,
+            insert.canonicalKey(),
+            PointerReferenceKind.PRK_POINTER_KEY));
     ops.add(
         new JobIndexUpsert(
-            insert.canonicalKey(), 0L, payloadStore.encodeInlineJobState(insert.record())));
-    ops.add(new JobIndexUpsert(insert.lookupKey(), 0L, insert.canonicalKey()));
+            insert.canonicalKey(),
+            0L,
+            payloadStore.encodeInlineJobState(insert.record()),
+            PointerReferenceKind.PRK_INLINE_JSON));
+    ops.add(
+        new JobIndexUpsert(
+            insert.lookupKey(), 0L, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY));
     if (!insert.parentKey().isBlank()) {
-      ops.add(new JobIndexUpsert(insert.parentKey(), 0L, insert.canonicalKey()));
+      ops.add(
+          new JobIndexUpsert(
+              insert.parentKey(), 0L, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY));
     }
     return new JobIndexWriteBatch(
         ops,
         new ReadyQueueMutation(
             insert.readyKeys().stream()
-                .map(readyKey -> new ReadyQueueWrite(readyKey, insert.canonicalKey()))
+                .map(
+                    readyKey ->
+                        new ReadyQueueWrite(
+                            readyKey, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY))
                 .toList(),
             List.of()));
   }
@@ -710,7 +725,9 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       return;
     }
     long expectedVersion = existing == null ? 0L : existing.version();
-    ops.add(new JobIndexUpsert(pointerKey, expectedVersion, reference));
+    ops.add(
+        new JobIndexUpsert(
+            pointerKey, expectedVersion, reference, PointerReferenceKind.PRK_POINTER_KEY));
   }
 
   private void appendOwnedDelete(
@@ -767,7 +784,10 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     }
     List<ReadyQueueWrite> upserts =
         currentReadyPointerKeys.stream()
-            .map(readyKey -> new ReadyQueueWrite(readyKey, canonicalPointerKey))
+            .map(
+                readyKey ->
+                    new ReadyQueueWrite(
+                        readyKey, canonicalPointerKey, PointerReferenceKind.PRK_POINTER_KEY))
             .toList();
     List<String> deletes =
         previousReadyPointerKeys.stream()

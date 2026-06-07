@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -93,11 +94,8 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
     var pendingPointer =
-        Pointer.newBuilder()
-            .setKey(key)
-            .setBlobUri(uri)
-            .setExpiresAt(expiresAt)
-            .setVersion(1L)
+        PointerReferences.asBlobPointer(
+                Pointer.newBuilder().setKey(key).setExpiresAt(expiresAt).setVersion(1L), uri)
             .build();
 
     for (int i = 0; i < CAS_MAX; i++) {
@@ -147,11 +145,9 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       var current = ptr.get(key).orElse(null);
       long expected = current != null ? current.getVersion() : 0L;
       var next =
-          Pointer.newBuilder()
-              .setKey(key)
-              .setExpiresAt(expiresAt)
-              .setBlobUri(uri)
-              .setVersion(expected + 1)
+          PointerReferences.asBlobPointer(
+                  Pointer.newBuilder().setKey(key).setExpiresAt(expiresAt).setVersion(expected + 1),
+                  uri)
               .build();
       if (ptr.compareAndSet(key, expected, next)) {
         previous = current;

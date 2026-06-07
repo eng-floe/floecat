@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
@@ -33,7 +34,8 @@ public interface ReconcileJobIndexStore {
 
   record StoredJobPage(List<StoredReconcileJob> records, String nextPageToken) {}
 
-  record ReadyQueueWrite(String readyPointerKey, String canonicalPointerKey) {}
+  record ReadyQueueWrite(
+      String readyPointerKey, String canonicalPointerKey, PointerReferenceKind referenceKind) {}
 
   record ReadyQueueMutation(List<ReadyQueueWrite> upserts, List<String> deletes) {
     public static ReadyQueueMutation empty() {
@@ -47,7 +49,8 @@ public interface ReconcileJobIndexStore {
 
   sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete {}
 
-  record JobIndexUpsert(String pointerKey, long expectedVersion, String blobUri)
+  record JobIndexUpsert(
+      String pointerKey, long expectedVersion, String blobUri, PointerReferenceKind referenceKind)
       implements JobIndexWriteOp {}
 
   record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}

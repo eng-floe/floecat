@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -301,6 +302,9 @@ public class PointerGc {
         }
 
         scanned++;
+        if (!PointerReferences.isBlobPointer(p)) {
+          continue;
+        }
         String blobUri = p.getBlobUri();
         if (blobUri == null || blobUri.isBlank()) {
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
