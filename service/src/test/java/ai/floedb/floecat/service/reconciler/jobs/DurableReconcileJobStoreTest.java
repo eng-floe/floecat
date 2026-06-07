@@ -60,11 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -83,8 +79,6 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 @QuarkusTest
 @TestProfile(ReconcileJobStoreControlPlaneProfile.class)
 class DurableReconcileJobStoreTest {
-  private static final Pattern JOB_ID_PATTERN =
-      Pattern.compile("([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})");
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
 
@@ -211,7 +205,9 @@ class DurableReconcileJobStoreTest {
 
     assertFalse(accepted);
     assertTrue(store.childJobs(ACCOUNT_ID, connectorJobId).isEmpty());
-    assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, connectorJobId).orElseThrow().state);
+    assertEquals(
+        "JS_RUNNING",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)).state);
   }
 
   @Test
@@ -284,11 +280,9 @@ class DurableReconcileJobStoreTest {
     reclaimExpiredLease(snapshotJobId);
 
     StoredReconcileJob requeued =
-        waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)),
-            current -> "JS_QUEUED".equals(current.state),
-            "requeued snapshot job " + snapshotJobId);
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
     assertEquals("Lease expired; requeued", requeued.message);
+    assertEquals("JS_QUEUED", requeued.state);
 
     boolean accepted =
         store.bulkEnqueueAndApplyLeaseOutcome(
@@ -327,7 +321,9 @@ class DurableReconcileJobStoreTest {
 
     assertFalse(accepted);
     assertTrue(store.childJobs(ACCOUNT_ID, snapshotJobId).isEmpty());
-    assertEquals("JS_QUEUED", store.get(ACCOUNT_ID, snapshotJobId).orElseThrow().state);
+    assertEquals(
+        "JS_QUEUED",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)).state);
   }
 
   @Test
@@ -350,11 +346,9 @@ class DurableReconcileJobStoreTest {
     reclaimExpiredLease(tableJobId);
 
     StoredReconcileJob requeued =
-        waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId)),
-            current -> "JS_QUEUED".equals(current.state),
-            "requeued table job " + tableJobId);
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
     assertEquals("Lease expired; requeued", requeued.message);
+    assertEquals("JS_QUEUED", requeued.state);
 
     boolean accepted =
         store.bulkEnqueueAndApplyLeaseOutcome(
@@ -388,27 +382,31 @@ class DurableReconcileJobStoreTest {
 
     assertFalse(accepted);
     assertTrue(store.childJobs(ACCOUNT_ID, tableJobId).isEmpty());
-    assertEquals("JS_QUEUED", store.get(ACCOUNT_ID, tableJobId).orElseThrow().state);
+    assertEquals(
+        "JS_QUEUED", readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId)).state);
   }
 
   @Test
-  void enqueueMakesRootJobImmediatelyVisibleInRootList() {
+  void enqueueUpsertsStoredRootSummaryImmediately() {
     String connectorJobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);
 
     StoredReconcileJob canonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
-    ReconcileJob listed =
-        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
-            .filter(job -> connectorJobId.equals(job.jobId))
+    var summary =
+        rootSummaryStore()
+            .listSummaries(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of())
+            .summaries()
+            .stream()
+            .filter(current -> connectorJobId.equals(current.jobId()))
             .findFirst()
             .orElseThrow();
 
-    assertEquals(canonical.jobId, listed.jobId);
-    assertEquals(canonical.state, listed.state);
-    assertEquals(canonical.message, listed.message);
-    assertEquals(canonical.startedAtMs, listed.startedAtMs);
-    assertEquals(canonical.finishedAtMs, listed.finishedAtMs);
+    assertEquals(canonical.jobId, summary.jobId());
+    assertEquals(canonical.state, summary.state());
+    assertEquals(canonical.message, summary.message());
+    assertEquals(canonical.startedAtMs, summary.startedAtMs());
+    assertEquals(canonical.finishedAtMs, summary.finishedAtMs());
   }
 
   @Test
@@ -940,11 +938,7 @@ class DurableReconcileJobStoreTest {
     assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
     store.markSucceeded(jobId, secondLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob terminal =
-        waitForValue(
-            () -> store.getLeaseView(jobId).orElseThrow(),
-            current -> "JS_SUCCEEDED".equals(current.state) && current.errors == 0L,
-            "successful retry canonical view " + jobId);
+    ReconcileJob terminal = store.getLeaseView(jobId).orElseThrow();
     assertEquals("JS_SUCCEEDED", terminal.state);
     assertEquals(0L, terminal.errors);
     assertEquals(200L, terminal.finishedAtMs);
@@ -969,11 +963,7 @@ class DurableReconcileJobStoreTest {
     assertNotEquals(firstLease.leaseEpoch, secondLease.leaseEpoch);
     store.markFailed(jobId, secondLease.leaseEpoch, 200L, "terminal", 1L, 0L, 5L, 0L, 2L);
 
-    ReconcileJob failed =
-        waitForValue(
-            () -> store.getLeaseView(jobId).orElseThrow(),
-            current -> "JS_FAILED".equals(current.state),
-            "terminal failure canonical view " + jobId);
+    ReconcileJob failed = store.getLeaseView(jobId).orElseThrow();
     assertEquals("JS_FAILED", failed.state);
     assertEquals(200L, failed.finishedAtMs);
   }
@@ -991,11 +981,7 @@ class DurableReconcileJobStoreTest {
     store.cancel(ACCOUNT_ID, jobId, "stop");
     store.markCancelled(jobId, lease.leaseEpoch, 300L, "stop", 0L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob cancelled =
-        waitForValue(
-            () -> store.getLeaseView(jobId).orElseThrow(),
-            current -> "JS_CANCELLED".equals(current.state),
-            "job cancellation canonical view " + jobId);
+    ReconcileJob cancelled = store.getLeaseView(jobId).orElseThrow();
 
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
@@ -1108,20 +1094,11 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
 
     StoredReconcileJob snapshotCanonical =
-        waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId)),
-            current -> "JS_SUCCEEDED".equals(current.state),
-            "canonical snapshot promotion " + snapshotJobId);
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
     StoredReconcileJob tableCanonical =
-        waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId)),
-            current -> "JS_SUCCEEDED".equals(current.state),
-            "canonical table promotion " + tableJobId);
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
     StoredReconcileJob connectorCanonical =
-        waitForValue(
-            () -> readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)),
-            current -> "JS_SUCCEEDED".equals(current.state),
-            "canonical connector promotion " + connectorJobId);
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
 
     assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
     assertEquals("JS_SUCCEEDED", tableCanonical.state);
@@ -1129,7 +1106,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void nestedFileGroupContributionRollsIntoCanonicalAncestors() {
+  void nestedFileGroupContributionRollsIntoProjectionAncestors() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -1250,12 +1227,6 @@ class DurableReconcileJobStoreTest {
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
     runProjectionMaintenance();
 
-    StoredReconcileJob snapshotCanonical =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
-    StoredReconcileJob tableCanonical =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
-    StoredReconcileJob connectorCanonical =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
     StoredReconcileJobProjection tableProjection =
@@ -1263,9 +1234,6 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJobProjection connectorProjection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
-    assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
-    assertEquals("JS_SUCCEEDED", tableCanonical.state);
-    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
     assertEquals("JS_SUCCEEDED", snapshotProjection.state());
     assertEquals(1L, snapshotProjection.plannedFileGroups());
     assertEquals(1L, snapshotProjection.completedFileGroups());
@@ -1316,12 +1284,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
-    ReconcileJob connector =
-        waitForValue(
-            () -> store.getLeaseView(connectorJobId).orElseThrow(),
-            current -> "JS_CANCELLING".equals(current.state),
-            "cancelling connector canonical view " + connectorJobId);
-
+    ReconcileJob connector = store.getLeaseView(connectorJobId).orElseThrow();
     assertEquals("JS_CANCELLING", connector.state);
     assertEquals("stop", connector.message);
   }
@@ -1732,33 +1695,21 @@ class DurableReconcileJobStoreTest {
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    Optional<ReconcileJobStore.LeasedJob> leased = Optional.empty();
-    for (int attempt = 0; attempt < 100 && leased.isEmpty(); attempt++) {
-      StoredReconcileJob readyRecord =
-          waitForValue(
-              () -> readStoredRecord(canonicalPointerKey),
-              current -> "JS_QUEUED".equals(current.state),
-              "job " + jobId + " to become ready for leasing");
-      StoredReconcileJob readyRecordForLease = readyRecord;
-      leased =
-          assertDoesNotThrow(
-              () ->
-                  leaseManager()
-                      .leaseCanonical(
-                          canonicalPointerKey,
-                          "",
-                          System.currentTimeMillis(),
-                          store
-                              .jobIndexStore
-                              .loadCanonicalSnapshot(canonicalPointerKey)
-                              .orElseThrow(),
-                          readyRecordForLease));
-      if (leased.isEmpty()) {
-        runMaintenance();
-      }
-    }
-    return leased.orElseThrow(
-        () -> new IllegalStateException("Unable to lease ready job " + jobId));
+    var snapshot =
+        assertDoesNotThrow(() -> store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey))
+            .orElseThrow();
+    StoredReconcileJob readyRecord = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_QUEUED", readyRecord.state);
+    return assertDoesNotThrow(
+            () ->
+                leaseManager()
+                    .leaseCanonical(
+                        canonicalPointerKey,
+                        readyRecord.readyPointerKey,
+                        System.currentTimeMillis(),
+                        snapshot,
+                        readyRecord))
+        .orElseThrow(() -> new IllegalStateException("Unable to lease ready job " + jobId));
   }
 
   private ReconcileLeaseStore leaseManager() {
@@ -1800,48 +1751,6 @@ class DurableReconcileJobStoreTest {
         .orElseThrow();
   }
 
-  private <T> T waitForValue(Supplier<T> supplier, Predicate<T> done, String description) {
-    int attempts = isDynamoMode() ? 400 : 100;
-    long sleepMs = isDynamoMode() ? 50L : 1L;
-    runMaintenance();
-    T value = tryGetValue(supplier);
-    for (int attempt = 0; attempt < attempts; attempt++) {
-      if (value != null && done.test(value)) {
-        return value;
-      }
-      if (attempt + 1 < attempts && sleepMs > 0L) {
-        try {
-          Thread.sleep(sleepMs);
-        } catch (InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          throw new IllegalStateException("Interrupted while waiting for " + description, ie);
-        }
-      }
-      runMaintenance();
-      value = tryGetValue(supplier);
-    }
-    assertTrue(
-        value != null && done.test(value),
-        "Timed out waiting for "
-            + description
-            + "; last value="
-            + value
-            + timeoutDiagnostics(description, value));
-    return value;
-  }
-
-  private <T> T tryGetValue(Supplier<T> supplier) {
-    try {
-      return supplier.get();
-    } catch (IllegalStateException | java.util.NoSuchElementException e) {
-      return null;
-    }
-  }
-
-  private void runMaintenance() {
-    store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
-  }
-
   private void runProjectionMaintenance() {
     store.runProjectionMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
@@ -1877,117 +1786,6 @@ class DurableReconcileJobStoreTest {
   private void configureLeaseRenewGraceMs(long leaseRenewGraceMs) {
     assertDoesNotThrow(
         () -> setPrivateField(store, "leaseRenewGraceMs", Math.max(0L, leaseRenewGraceMs)));
-  }
-
-  private String timeoutDiagnostics(String description, Object value) {
-    StringBuilder out = new StringBuilder();
-    out.append("\nTimeout diagnostics:");
-    DebugContext context = debugContext(description, value);
-    out.append("\n  context=").append(context);
-    if (!context.accountId().isBlank() && !context.jobId().isBlank()) {
-      String canonicalKey = Keys.reconcileJobPointerById(context.accountId(), context.jobId());
-      out.append("\n  canonical=");
-      try {
-        out.append(store.jobIndexStore.readCanonicalRecordByKey(canonicalKey).orElse(null));
-      } catch (Exception e) {
-        out.append("<error ").append(e.getMessage()).append(">");
-      }
-      out.append("\n  projection=");
-      try {
-        out.append(projectionStore().load(context.accountId(), context.jobId()).orElse(null));
-      } catch (Exception e) {
-        out.append("<error ").append(e.getMessage()).append(">");
-      }
-      out.append("\n  dirtyMarker=");
-      try {
-        out.append(
-            store
-                .pointerStore
-                .get(Keys.reconcileDirtyParentPointer(context.accountId(), context.jobId()))
-                .orElse(null));
-      } catch (Exception e) {
-        out.append("<error ").append(e.getMessage()).append(">");
-      }
-      out.append("\n  rootSummary=");
-      try {
-        out.append(
-            rootSummaryStore()
-                .listSummaries(context.accountId(), 50, "", "", Set.of())
-                .summaries()
-                .stream()
-                .filter(summary -> context.jobId().equals(summary.jobId()))
-                .findFirst()
-                .orElse(null));
-      } catch (Exception e) {
-        out.append("<error ").append(e.getMessage()).append(">");
-      }
-    }
-    if (!context.accountId().isBlank()) {
-      out.append("\n  accountCanonicalJobs=").append(listCanonicalJobs(context.accountId(), 20));
-      out.append("\n  accountProjections=")
-          .append(
-              listPointersForPrefix(
-                  Keys.reconcileJobProjectionPointerPrefix(context.accountId()), 20));
-      out.append("\n  accountDirtyMarkers=")
-          .append(listPointersForPrefix(Keys.reconcileDirtyParentPointerPrefix(), 20));
-      out.append("\n  accountRootSummaries=");
-      try {
-        out.append(
-            rootSummaryStore()
-                .listSummaries(context.accountId(), 20, "", "", Set.of())
-                .summaries());
-      } catch (Exception e) {
-        out.append("<error ").append(e.getMessage()).append(">");
-      }
-    }
-    return out.toString();
-  }
-
-  private List<StoredReconcileJob> listCanonicalJobs(String accountId, int limit) {
-    StringBuilder next = new StringBuilder();
-    return store
-        .pointerStore
-        .listPointersByPrefix(Keys.reconcileJobPointerByIdPrefix(accountId), limit, "", next)
-        .stream()
-        .map(pointer -> readStoredRecord(pointer.getKey()))
-        .toList();
-  }
-
-  private List<Pointer> listPointersForPrefix(String prefix, int limit) {
-    StringBuilder next = new StringBuilder();
-    return store.pointerStore.listPointersByPrefix(prefix, limit, "", next);
-  }
-
-  private DebugContext debugContext(String description, Object value) {
-    String accountId = ACCOUNT_ID;
-    String jobId = "";
-    if (value instanceof ReconcileJob job) {
-      accountId = blankToDefault(job.accountId, ACCOUNT_ID);
-      jobId = blankToEmpty(job.jobId);
-    } else if (value instanceof StoredReconcileJob job) {
-      accountId = blankToDefault(job.accountId, ACCOUNT_ID);
-      jobId = blankToEmpty(job.jobId);
-    } else if (value instanceof Optional<?> optional && optional.isPresent()) {
-      return debugContext(description, optional.get());
-    } else if (value instanceof StoredReconcileJobProjection projection) {
-      accountId = blankToDefault(projection.accountId(), ACCOUNT_ID);
-      jobId = blankToEmpty(projection.jobId());
-    }
-    if (jobId.isBlank()) {
-      Matcher matcher = JOB_ID_PATTERN.matcher(description == null ? "" : description);
-      if (matcher.find()) {
-        jobId = matcher.group(1);
-      }
-    }
-    return new DebugContext(accountId, jobId);
-  }
-
-  private static String blankToEmpty(String value) {
-    return value == null ? "" : value;
-  }
-
-  private static String blankToDefault(String value, String fallback) {
-    return value == null || value.isBlank() ? fallback : value;
   }
 
   private static final class DirtyParentFailingPointerStore implements PointerStore {
@@ -2046,8 +1844,6 @@ class DurableReconcileJobStoreTest {
       return delegate.isEmpty();
     }
   }
-
-  private record DebugContext(String accountId, String jobId) {}
 
   private Object invokePrivateMethod(Object target, String name, Class<?>[] parameterTypes)
       throws Exception {
