@@ -443,6 +443,9 @@ class ReconcileExecutorControlImplTest {
                     .setId("table-1")
                     .build(),
                 55L,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "",
+                0,
                 List.of(
                     new LeasedSnapshotFinalizeInputService.SnapshotFinalizeGroupManifest(
                         "plan-1",
@@ -464,8 +467,50 @@ class ReconcileExecutorControlImplTest {
     assertEquals("parent-1", response.getInput().getParentJobId());
     assertEquals("table-1", response.getInput().getTableId().getId());
     assertEquals(55L, response.getInput().getSnapshotId());
+    assertEquals(
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_FILE_GROUPS,
+        response.getInput().getCompletionMode());
     assertEquals(1, response.getInput().getCompletedGroupsCount());
     assertEquals("plan-1", response.getInput().getCompletedGroups(0).getPlanId());
+  }
+
+  @Test
+  void getLeasedSnapshotFinalizeInputRoutesDirectStatsPayload() {
+    when(service.leasedSnapshotFinalizeInputService.resolve(any(), eq("job-1"), eq("lease-1")))
+        .thenReturn(
+            new LeasedSnapshotFinalizeInputService.SnapshotFinalizeInput(
+                "job-1",
+                "lease-1",
+                "parent-1",
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("table-1")
+                    .build(),
+                55L,
+                ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+                "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
+                3,
+                List.of()));
+
+    var response =
+        service
+            .getLeasedSnapshotFinalizeInput(
+                GetLeasedSnapshotFinalizeInputRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_DIRECT_STATS,
+        response.getInput().getCompletionMode());
+    assertEquals(
+        "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
+        response.getInput().getDirectStatsBlobUri());
+    assertEquals(3, response.getInput().getDirectStatsRecordCount());
+    assertEquals(0, response.getInput().getCompletedGroupsCount());
   }
 
   @Test

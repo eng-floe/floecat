@@ -145,6 +145,13 @@ class SnapshotFinalizeReconcileExecutorTest {
     return persistence;
   }
 
+  private static SnapshotFinalizeCoverageService coverageService(
+      SnapshotPlanBlobStore snapshotPlanBlobStore) {
+    var coverageService = new SnapshotFinalizeCoverageService();
+    coverageService.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    return coverageService;
+  }
+
   private static SnapshotFinalizeReconcileExecutor executor(
       ReconcileJobStore jobs, StatsStore statsStore, SnapshotPlanBlobStore snapshotPlanBlobStore) {
     var executor = new SnapshotFinalizeReconcileExecutor();
@@ -152,6 +159,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     executor.jobs = jobs;
     executor.persistence = persistence(statsStore);
     executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    executor.coverageService = coverageService(snapshotPlanBlobStore);
     childStateService.jobs = jobs;
     executor.childStateService = childStateService;
     return executor;

@@ -33,6 +33,7 @@ import java.util.List;
 public class LeasedSnapshotFinalizeInputService {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotFinalizeChildStateService childStateService;
+  @Inject SnapshotFinalizeCoverageService coverageService;
 
   record SnapshotFinalizeGroupManifest(
       String planId, String groupId, String fileStatsBlobUri, int fileStatsRecordCount) {}
@@ -43,6 +44,9 @@ public class LeasedSnapshotFinalizeInputService {
       String parentJobId,
       ResourceId tableId,
       long snapshotId,
+      ReconcileSnapshotTask.CompletionMode completionMode,
+      String directStatsBlobUri,
+      int directStatsRecordCount,
       List<SnapshotFinalizeGroupManifest> completedGroups) {}
 
   public SnapshotFinalizeInput resolve(
@@ -56,9 +60,26 @@ public class LeasedSnapshotFinalizeInputService {
           .withDescription("snapshot finalization requires parent snapshot plan job")
           .asRuntimeException();
     }
+    SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
+        coverageService.expectedCoverage(snapshotTask);
+    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.UNKNOWN) {
+      throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
+    }
+    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
+      return new SnapshotFinalizeInput(
+          lease.jobId,
+          lease.leaseEpoch,
+          lease.parentJobId,
+          tableId(lease, snapshotTask),
+          snapshotTask.snapshotId(),
+          ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+          requireDirectStatsBlobUri(snapshotTask),
+          snapshotTask.directStatsRecordCount(),
+          List.of());
+    }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.childState(
-            lease.accountId, lease.parentJobId, lease.jobId, snapshotTask.fileGroups());
+            lease.accountId, lease.parentJobId, lease.jobId, coverage.expectedGroups());
     requireReadyForFinalize(childState);
     return new SnapshotFinalizeInput(
         lease.jobId,
@@ -66,6 +87,9 @@ public class LeasedSnapshotFinalizeInputService {
         lease.parentJobId,
         tableId(lease, snapshotTask),
         snapshotTask.snapshotId(),
+        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+        "",
+        0,
         completedGroupManifests(childState));
   }
 
@@ -96,6 +120,19 @@ public class LeasedSnapshotFinalizeInputService {
               persistedGroup.fileStatsRecordCount()));
     }
     return List.copyOf(manifests);
+  }
+
+  private static String requireDirectStatsBlobUri(ReconcileSnapshotTask snapshotTask) {
+    String blobUri =
+        snapshotTask == null || snapshotTask.directStatsBlobUri() == null
+            ? ""
+            : snapshotTask.directStatsBlobUri().trim();
+    if (blobUri.isBlank()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot finalization requires persisted direct stats blob metadata")
+          .asRuntimeException();
+    }
+    return blobUri;
   }
 
   private ReconcileJobStore.LeasedJob requireLeasedSnapshotFinalizeJob(

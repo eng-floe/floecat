@@ -813,7 +813,18 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setLeaseEpoch(payload.leaseEpoch())
                       .setParentJobId(payload.parentJobId())
                       .setTableId(payload.tableId())
-                      .setSnapshotId(payload.snapshotId());
+                      .setSnapshotId(payload.snapshotId())
+                      .setDirectStatsBlobUri(payload.directStatsBlobUri())
+                      .setDirectStatsRecordCount(payload.directStatsRecordCount())
+                      .setCompletionMode(
+                          switch (payload.completionMode()) {
+                            case DIRECT_STATS ->
+                                ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask
+                                    .CompletionMode.RSCM_DIRECT_STATS;
+                            case FILE_GROUPS ->
+                                ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask
+                                    .CompletionMode.RSCM_FILE_GROUPS;
+                          });
               for (var group : payload.completedGroups()) {
                 inputBuilder.addCompletedGroups(
                     SnapshotFinalizeGroupManifest.newBuilder()

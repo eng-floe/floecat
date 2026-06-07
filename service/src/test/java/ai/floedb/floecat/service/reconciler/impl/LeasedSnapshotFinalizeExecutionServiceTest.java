@@ -19,10 +19,16 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -46,14 +52,23 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   private LeasedSnapshotFinalizeExecutionService service;
   private ReconcileJobStore jobs;
+  private SnapshotFinalizePersistenceService persistence;
+  private SnapshotPlanBlobStore snapshotPlanBlobStore;
+  private SnapshotFinalizeCoverageService coverageService;
   private PrincipalContext principal;
 
   @BeforeEach
   void setUp() {
     service = new LeasedSnapshotFinalizeExecutionService();
     jobs = mock(ReconcileJobStore.class);
+    persistence = mock(SnapshotFinalizePersistenceService.class);
+    snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    coverageService = mock(SnapshotFinalizeCoverageService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
+    service.persistence = persistence;
+    service.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    service.coverageService = coverageService;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -115,5 +130,89 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     assertEquals(
         "INVALID_ARGUMENT: snapshot finalize success mode is required", error.getMessage());
+  }
+
+  @Test
+  void persistSuccessOutputBlobRejectsReplaceAllCoverageMismatchBeforeWrite() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
+    ReconcileJobStore.LeasedJob lease = leasedJob(false);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    TargetStatsRecord fileRecord = mock(TargetStatsRecord.class);
+    when(snapshotPlanBlobStore.loadTargetStatsBlob("blob://result"))
+        .thenReturn(List.of(fileRecord));
+    when(persistence.validateReplacementStats(List.of(fileRecord), tableId, SNAPSHOT_ID))
+        .thenReturn(List.of(fileRecord));
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.NON_EMPTY,
+                List.of(),
+                List.of("s3://bucket/file-1.parquet"),
+                ""));
+    when(coverageService.validateCoverage(
+            List.of("s3://bucket/file-1.parquet"), List.of(fileRecord)))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.CoverageValidation(
+                false,
+                List.of("s3://bucket/file-1.parquet"),
+                List.of(),
+                List.of(),
+                "Snapshot finalization coverage mismatch missing=[s3://bucket/file-1.parquet]"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.persistSuccessOutputBlob(
+                    lease,
+                    snapshotTask,
+                    tableId,
+                    SNAPSHOT_ID,
+                    "blob://result",
+                    1,
+                    ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                        .SuccessMode.SFM_REPLACE_ALL));
+
+    assertEquals(
+        "FAILED_PRECONDITION: Snapshot finalization coverage mismatch"
+            + " missing=[s3://bucket/file-1.parquet]",
+        error.getMessage());
+    verify(persistence, never())
+        .replaceAllStatsForSnapshot(tableId, SNAPSHOT_ID, List.of(fileRecord));
+  }
+
+  private static ReconcileJobStore.LeasedJob leasedJob(boolean fullRescan) {
+    return new ReconcileJobStore.LeasedJob(
+        FINALIZE_JOB_ID,
+        ACCOUNT_ID,
+        "connector",
+        fullRescan,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        LEASE_EPOCH,
+        "",
+        "",
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-job");
   }
 }

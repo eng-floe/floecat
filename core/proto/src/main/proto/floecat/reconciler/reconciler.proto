@@ -466,7 +466,10 @@ message LeasedSnapshotFinalizeInput {
   string parent_job_id = 3;
   ai.floedb.floecat.common.ResourceId table_id = 4;
   uint64 snapshot_id = 5;
-  repeated SnapshotFinalizeGroupManifest completed_groups = 6;
+  ReconcileSnapshotTask.CompletionMode completion_mode = 6;
+  string direct_stats_blob_uri = 7;
+  uint32 direct_stats_record_count = 8;
+  repeated SnapshotFinalizeGroupManifest completed_groups = 9;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
@@ -737,6 +740,8 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
     SFM_UNSPECIFIED = 0;
     SFM_REPLACE_ALL = 1;
     SFM_INCREMENTAL_DELTA = 2;
+    SFM_DIRECT_STATS = 3;
+    SFM_EMPTY_SNAPSHOT = 4;
   }
 
   message Success {
