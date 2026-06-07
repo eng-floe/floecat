@@ -1248,61 +1248,42 @@ class DurableReconcileJobStoreTest {
       store.blobStore.delete(execCanonicalAfterResult.fileGroupResultBlobUri);
     }
     store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
+    runProjectionMaintenance();
 
-    ReconcileJob snapshot =
-        waitForValue(
-            () -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow(),
-            current ->
-                "JS_SUCCEEDED".equals(current.state)
-                    && current.plannedFileGroups == 1L
-                    && current.completedFileGroups == 1L
-                    && current.completedFiles == 1L
-                    && current.failedFiles == 1L
-                    && current.indexesProcessed == 1L
-                    && current.statsProcessed == 2L,
-            "snapshot projected rollup " + snapshotJobId);
-    ReconcileJob table =
-        waitForValue(
-            () -> store.get(ACCOUNT_ID, tableJobId).orElseThrow(),
-            current ->
-                "JS_SUCCEEDED".equals(current.state)
-                    && current.plannedFileGroups == 1L
-                    && current.completedFileGroups == 1L
-                    && current.completedFiles == 1L
-                    && current.failedFiles == 1L
-                    && current.indexesProcessed == 1L,
-            "table projected rollup " + tableJobId);
-    ReconcileJob connector =
-        waitForValue(
-            () -> store.get(ACCOUNT_ID, connectorJobId).orElseThrow(),
-            current ->
-                "JS_SUCCEEDED".equals(current.state)
-                    && current.tablesScanned == 1L
-                    && current.tablesChanged == 1L
-                    && current.completedFileGroups == 1L
-                    && current.completedFiles == 1L
-                    && current.failedFiles == 1L
-                    && current.indexesProcessed == 1L,
-            "connector projected rollup " + connectorJobId);
+    StoredReconcileJob snapshotCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId));
+    StoredReconcileJob tableCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+    StoredReconcileJob connectorCanonical =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    StoredReconcileJobProjection snapshotProjection =
+        projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
+    StoredReconcileJobProjection tableProjection =
+        projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
+    StoredReconcileJobProjection connectorProjection =
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
-    assertEquals("JS_SUCCEEDED", snapshot.state);
-    assertEquals(1L, snapshot.plannedFileGroups);
-    assertEquals(1L, snapshot.completedFileGroups);
-    assertEquals(1L, snapshot.completedFiles);
-    assertEquals(1L, snapshot.failedFiles);
-    assertEquals(1L, snapshot.indexesProcessed);
-    assertEquals(2L, snapshot.statsProcessed);
-    assertEquals(1L, table.plannedFileGroups);
-    assertEquals(1L, table.completedFileGroups);
-    assertEquals(1L, table.completedFiles);
-    assertEquals(1L, table.failedFiles);
-    assertEquals(1L, table.indexesProcessed);
-    assertEquals(1L, connector.tablesScanned);
-    assertEquals(1L, connector.tablesChanged);
-    assertEquals(1L, connector.completedFileGroups);
-    assertEquals(1L, connector.completedFiles);
-    assertEquals(1L, connector.failedFiles);
-    assertEquals(1L, connector.indexesProcessed);
+    assertEquals("JS_SUCCEEDED", snapshotCanonical.state);
+    assertEquals("JS_SUCCEEDED", tableCanonical.state);
+    assertEquals("JS_SUCCEEDED", connectorCanonical.state);
+    assertEquals("JS_SUCCEEDED", snapshotProjection.state());
+    assertEquals(1L, snapshotProjection.plannedFileGroups());
+    assertEquals(1L, snapshotProjection.completedFileGroups());
+    assertEquals(1L, snapshotProjection.completedFiles());
+    assertEquals(1L, snapshotProjection.failedFiles());
+    assertEquals(1L, snapshotProjection.indexesProcessed());
+    assertEquals(2L, snapshotProjection.statsProcessed());
+    assertEquals(1L, tableProjection.plannedFileGroups());
+    assertEquals(1L, tableProjection.completedFileGroups());
+    assertEquals(1L, tableProjection.completedFiles());
+    assertEquals(1L, tableProjection.failedFiles());
+    assertEquals(1L, tableProjection.indexesProcessed());
+    assertEquals(1L, connectorProjection.tablesScanned());
+    assertEquals(1L, connectorProjection.tablesChanged());
+    assertEquals(1L, connectorProjection.completedFileGroups());
+    assertEquals(1L, connectorProjection.completedFiles());
+    assertEquals(1L, connectorProjection.failedFiles());
+    assertEquals(1L, connectorProjection.indexesProcessed());
   }
 
   @Test
@@ -1859,6 +1840,10 @@ class DurableReconcileJobStoreTest {
 
   private void runMaintenance() {
     store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void runProjectionMaintenance() {
+    store.runProjectionMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
   private void expireLease(String jobId) {

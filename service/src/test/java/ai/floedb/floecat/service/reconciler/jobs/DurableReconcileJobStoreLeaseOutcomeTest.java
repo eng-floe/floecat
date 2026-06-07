@@ -38,6 +38,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.util.Map;
+import java.util.Optional;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -396,8 +397,32 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   private ReconcileJobStore.LeasedJob awaitLease(String description, String jobId) {
     String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    return waitForValue(
-        () -> tryLeaseCanonical(canonicalPointerKey), current -> current != null, description);
+    for (int attempt = 0; attempt < (isDynamoMode() ? 1200 : 100); attempt++) {
+      StoredReconcileJob readyRecord =
+          waitForValue(
+              () ->
+                  store
+                      .jobIndexStore
+                      .readCanonicalRecordByKey(canonicalPointerKey)
+                      .filter(current -> "JS_QUEUED".equals(current.state))
+                      .orElse(null),
+              current -> current != null,
+              description + " ready record");
+      Optional<ReconcileJobStore.LeasedJob> leased =
+          org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+              () ->
+                  store.leaseStore.leaseCanonical(
+                      canonicalPointerKey,
+                      "",
+                      System.currentTimeMillis(),
+                      store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElseThrow(),
+                      readyRecord));
+      if (leased.isPresent()) {
+        return leased.get();
+      }
+      runMaintenance();
+    }
+    throw new IllegalStateException("Unable to lease ready job " + jobId + " for " + description);
   }
 
   private <T> T waitForValue(
@@ -439,31 +464,6 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
 
   private void runMaintenance() {
     store.runMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
-  }
-
-  private ReconcileJobStore.LeasedJob tryLeaseCanonical(String canonicalPointerKey) {
-    StoredReconcileJob readyRecord =
-        tryGetValue(
-            () ->
-                store
-                    .jobIndexStore
-                    .readCanonicalRecordByKey(canonicalPointerKey)
-                    .filter(current -> "JS_QUEUED".equals(current.state))
-                    .orElse(null));
-    if (readyRecord == null) {
-      return null;
-    }
-    return tryGetValue(
-        () ->
-            store
-                .leaseStore
-                .leaseCanonical(
-                    canonicalPointerKey,
-                    "",
-                    System.currentTimeMillis(),
-                    store.jobIndexStore.loadCanonicalSnapshot(canonicalPointerKey).orElseThrow(),
-                    readyRecord)
-                .orElse(null));
   }
 
   private void expireLease(String jobId) {
