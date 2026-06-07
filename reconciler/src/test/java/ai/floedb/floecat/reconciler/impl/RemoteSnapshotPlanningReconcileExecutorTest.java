@@ -217,6 +217,53 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void executeCapsPlannedFileGroupsToAtomicSubmissionBudget() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(new FloecatConnector.SnapshotFilePlan(snapshotFiles(40), List.of())));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.success());
+    verify(workerClient)
+        .submitPlanSnapshotSuccess(
+            eq(remoteLease),
+            argThat(
+                plannedSnapshot ->
+                    plannedSnapshot != null
+                        && plannedSnapshot.fileGroups().size() == 14
+                        && plannedSnapshot.fileGroups().stream()
+                            .allMatch(group -> group.filePaths().size() <= 3)),
+            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 14),
+            argThat(stats -> stats != null && stats.isEmpty()));
+  }
+
+  @Test
   void executePersistsGrpcFailureDetailsForSnapshotPlanningErrors() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -348,6 +395,24 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
 
   private static ReconcileJobStore.LeasedJob lease(ReconcileScope scope) {
     return lease("job-1", "acct", scope);
+  }
+
+  private static List<FloecatConnector.SnapshotFileEntry> snapshotFiles(int count) {
+    java.util.ArrayList<FloecatConnector.SnapshotFileEntry> out = new java.util.ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      out.add(
+          new FloecatConnector.SnapshotFileEntry(
+              "s3://bucket/file-" + i + ".parquet",
+              "PARQUET",
+              10L,
+              1L,
+              ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+              "",
+              0,
+              List.of(),
+              null));
+    }
+    return List.copyOf(out);
   }
 
   private static ReconcileJobStore.LeasedJob lease(

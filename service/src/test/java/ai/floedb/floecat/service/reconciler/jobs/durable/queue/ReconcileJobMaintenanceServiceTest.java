@@ -29,6 +29,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -83,9 +84,7 @@ class ReconcileJobMaintenanceServiceTest {
     String payload = accountId + "\n" + parentJobId;
     long nextVersion = pointerStore.get(key).map(Pointer::getVersion).orElse(0L) + 1L;
     pointerStore.compareAndSet(
-        key,
-        nextVersion - 1L,
-        Pointer.newBuilder().setKey(key).setBlobUri(payload).setVersion(nextVersion).build());
+        key, nextVersion - 1L, PointerReferences.opaqueMarkerPointer(key, payload, nextVersion));
   }
 
   private static final class TestPointerStore implements PointerStore {

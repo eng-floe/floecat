@@ -161,4 +161,18 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name(),
                 ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name()));
   }
+
+  @Test
+  void registersPartialStateAnomalyMetricWithExpectedTags() {
+    TelemetryRegistry registry = new TelemetryRegistry();
+    registry.register(new ServiceTelemetryContributor());
+
+    MetricDef partialState = registry.metric(ServiceMetrics.Storage.PARTIAL_STATE.name());
+
+    assertThat(partialState).isNotNull();
+    assertThat(partialState.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.OPERATION, TagKey.RESOURCE);
+    assertThat(partialState.allowedTags())
+        .containsExactlyInAnyOrder(TagKey.OPERATION, TagKey.RESOURCE);
+  }
 }

@@ -18,9 +18,9 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.gc.TransactionGc;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -55,8 +55,7 @@ class TransactionGcTest {
     var txBlob = Keys.transactionBlobUri(accountId, txId, txSha);
     blobs.put(txBlob, tx.toByteArray(), "application/x-protobuf");
     String txPtr = Keys.transactionPointerById(accountId, txId);
-    pointers.compareAndSet(
-        txPtr, 0L, Pointer.newBuilder().setKey(txPtr).setBlobUri(txBlob).setVersion(1L).build());
+    pointers.compareAndSet(txPtr, 0L, PointerReferences.blobPointer(txPtr, txBlob, 1L));
 
     var intent =
         TransactionIntent.newBuilder()
@@ -72,13 +71,9 @@ class TransactionGcTest {
     blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
 
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
-    pointers.compareAndSet(
-        byTarget,
-        0L,
-        Pointer.newBuilder().setKey(byTarget).setBlobUri(intentBlob).setVersion(1L).build());
+    pointers.compareAndSet(byTarget, 0L, PointerReferences.blobPointer(byTarget, intentBlob, 1L));
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    pointers.compareAndSet(
-        byTx, 0L, Pointer.newBuilder().setKey(byTx).setBlobUri(intentBlob).setVersion(1L).build());
+    pointers.compareAndSet(byTx, 0L, PointerReferences.blobPointer(byTx, intentBlob, 1L));
 
     var gc = new TransactionGc();
     inject(gc, "pointerStore", pointers);
@@ -216,16 +211,12 @@ class TransactionGcTest {
     var activeIntentBlob = putIntentBlob(blobs, accountId, activeTxId, targetKey);
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
     pointers.compareAndSet(
-        byTarget,
-        0L,
-        Pointer.newBuilder().setKey(byTarget).setBlobUri(activeIntentBlob).setVersion(1L).build());
+        byTarget, 0L, PointerReferences.blobPointer(byTarget, activeIntentBlob, 1L));
 
     // Simulate stale by-tx row pointing to someone else's intent blob.
     String staleByTx = Keys.transactionIntentPointerByTx(accountId, staleTxId, targetKey);
     pointers.compareAndSet(
-        staleByTx,
-        0L,
-        Pointer.newBuilder().setKey(staleByTx).setBlobUri(activeIntentBlob).setVersion(1L).build());
+        staleByTx, 0L, PointerReferences.blobPointer(staleByTx, activeIntentBlob, 1L));
 
     var gc = new TransactionGc();
     inject(gc, "pointerStore", pointers);
@@ -283,8 +274,7 @@ class TransactionGcTest {
     var txBlob = Keys.transactionBlobUri(accountId, txId, txSha);
     blobs.put(txBlob, tx.toByteArray(), "application/x-protobuf");
     String txPtr = Keys.transactionPointerById(accountId, txId);
-    pointers.compareAndSet(
-        txPtr, 0L, Pointer.newBuilder().setKey(txPtr).setBlobUri(txBlob).setVersion(1L).build());
+    pointers.compareAndSet(txPtr, 0L, PointerReferences.blobPointer(txPtr, txBlob, 1L));
   }
 
   private void putIntent(
@@ -295,13 +285,9 @@ class TransactionGcTest {
       String targetKey) {
     String intentBlob = putIntentBlob(blobs, accountId, txId, targetKey);
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
-    pointers.compareAndSet(
-        byTarget,
-        0L,
-        Pointer.newBuilder().setKey(byTarget).setBlobUri(intentBlob).setVersion(1L).build());
+    pointers.compareAndSet(byTarget, 0L, PointerReferences.blobPointer(byTarget, intentBlob, 1L));
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    pointers.compareAndSet(
-        byTx, 0L, Pointer.newBuilder().setKey(byTx).setBlobUri(intentBlob).setVersion(1L).build());
+    pointers.compareAndSet(byTx, 0L, PointerReferences.blobPointer(byTx, intentBlob, 1L));
   }
 
   private String putIntentBlob(

@@ -241,6 +241,37 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public boolean bulkEnqueueAndApplyLeaseOutcome(
+      List<BulkEnqueueSpec> specs,
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    bulkEnqueue(specs);
+    return applyLeaseOutcome(
+        jobId,
+        leaseEpoch,
+        completionKind,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
+  }
+
+  @Override
   public Optional<ReconcileJob> get(String accountId, String jobId) {
     var job = jobs.get(jobId);
     if (job == null) {

@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.storage.kv.KvStore;
+import io.quarkus.arc.properties.IfBuildProperty;
 import java.lang.reflect.Proxy;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
@@ -77,6 +78,14 @@ public class KvStoreProducerTest {
     producer.onStart(null);
     assertNull(bootstrap.lastTable);
     assertEquals(0, bootstrap.calls);
+  }
+
+  @Test
+  void producer_is_only_enabled_for_dynamodb_mode() {
+    IfBuildProperty gate = KvStoreProducer.class.getAnnotation(IfBuildProperty.class);
+    assertNotNull(gate);
+    assertEquals("floecat.kv", gate.name());
+    assertEquals("dynamodb", gate.stringValue());
   }
 
   private static DynamoDbAsyncClient fakeDdb() {

@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -234,11 +235,7 @@ public class StatsRepository implements StatsStore {
 
     long expectedVersion = current.map(ActiveSnapshotStats::manifestVersion).orElse(0L);
     Pointer next =
-        Pointer.newBuilder()
-            .setKey(manifestPointer)
-            .setBlobUri(manifestBlobUri)
-            .setVersion(expectedVersion + 1L)
-            .build();
+        PointerReferences.blobPointer(manifestPointer, manifestBlobUri, expectedVersion + 1L);
     if (!pointerStore.compareAndSet(manifestPointer, expectedVersion, next)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "active target stats generation update conflicted for snapshot " + snapshotId);
@@ -268,12 +265,7 @@ public class StatsRepository implements StatsStore {
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
-    Pointer created =
-        Pointer.newBuilder()
-            .setKey(manifestPointer)
-            .setBlobUri(manifestBlobUri)
-            .setVersion(1L)
-            .build();
+    Pointer created = PointerReferences.blobPointer(manifestPointer, manifestBlobUri, 1L);
     if (pointerStore.compareAndSet(manifestPointer, 0L, created)) {
       return new ActiveSnapshotStats(
           tableId.getAccountId(),
@@ -437,8 +429,7 @@ public class StatsRepository implements StatsStore {
     private boolean createIfAbsent(String pointerKey, String blobUri, TargetStatsRecord value) {
       boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
-      Pointer reserve =
-          Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(1L).build();
+      Pointer reserve = PointerReferences.blobPointer(pointerKey, blobUri, 1L);
       if (!pointerStore.compareAndSet(pointerKey, 0L, reserve)) {
         cleanupCreateIfAbsentBlobOnCasMiss(pointerKey, blobUri, blobExistedBefore);
         return false;

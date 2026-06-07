@@ -25,7 +25,9 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.ProjectedPublicJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @ApplicationScoped
 public class ReconcileAncestorRollupService {
@@ -88,12 +90,13 @@ public class ReconcileAncestorRollupService {
       selfCompletedFiles = 0L;
       selfFailedFiles = 0L;
     }
+    List<StoredReconcileJob> effectiveDirectChildren =
+        dedupeDirectChildrenForRollup(parent, directChildren);
     ChildAggregate aggregate = ChildAggregate.empty();
     StoredReconcileJob representativeChild = null;
 
     long startedAtMs = Math.max(0L, parent.startedAtMs);
-    for (StoredReconcileJob child :
-        directChildren == null ? List.<StoredReconcileJob>of() : directChildren) {
+    for (StoredReconcileJob child : effectiveDirectChildren) {
       if (child == null) {
         continue;
       }
@@ -186,6 +189,44 @@ public class ReconcileAncestorRollupService {
     return candidate.updatedAtMs >= current.updatedAtMs ? candidate : current;
   }
 
+  private List<StoredReconcileJob> dedupeDirectChildrenForRollup(
+      StoredReconcileJob parent, List<StoredReconcileJob> directChildren) {
+    if (parent == null
+        || parent.jobKind() != ReconcileJobKind.PLAN_CONNECTOR
+        || directChildren == null
+        || directChildren.isEmpty()) {
+      return directChildren == null ? List.of() : directChildren;
+    }
+    Map<String, StoredReconcileJob> byLogicalTarget = new LinkedHashMap<>();
+    for (StoredReconcileJob child : directChildren) {
+      if (child == null) {
+        continue;
+      }
+      String logicalTarget = connectorDirectChildLogicalTarget(child);
+      StoredReconcileJob current = byLogicalTarget.get(logicalTarget);
+      byLogicalTarget.put(logicalTarget, chooseRepresentativeChild(current, child));
+    }
+    return List.copyOf(byLogicalTarget.values());
+  }
+
+  private String connectorDirectChildLogicalTarget(StoredReconcileJob child) {
+    if (child == null) {
+      return "";
+    }
+    if (child.jobKind() == ReconcileJobKind.PLAN_TABLE && child.definition != null) {
+      String destinationTableId = blankToEmpty(child.definition.taskDestinationTableId);
+      if (!destinationTableId.isBlank()) {
+        return "table|" + destinationTableId;
+      }
+      String sourceNamespace = blankToEmpty(child.definition.sourceNamespace);
+      String sourceTable = blankToEmpty(child.definition.sourceTable);
+      if (!sourceNamespace.isBlank() || !sourceTable.isBlank()) {
+        return "table-source|" + sourceNamespace + "|" + sourceTable;
+      }
+    }
+    return "job|" + blankToEmpty(child.jobId);
+  }
+
   private int childStatePriority(StoredReconcileJob child) {
     ProjectedPublicJob projected = projector.projectSelfPublicJobForRollup(child);
     return switch (blankToEmpty(projected.state())) {
@@ -213,9 +254,11 @@ public class ReconcileAncestorRollupService {
             aggregate.cancelledChildJobs(),
             aggregate.directChildObserved());
     long expectedDirectChildJobs =
-        Math.max(
-            Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
-            Math.max(0L, aggregate.directChildObserved()));
+        parent != null && parent.jobKind() == ReconcileJobKind.PLAN_CONNECTOR
+            ? Math.max(0L, aggregate.directChildObserved())
+            : Math.max(
+                Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
+                Math.max(0L, aggregate.directChildObserved()));
     boolean childSetFinalized = childSetFinalized(parent);
     boolean allSucceeded =
         childSetFinalized

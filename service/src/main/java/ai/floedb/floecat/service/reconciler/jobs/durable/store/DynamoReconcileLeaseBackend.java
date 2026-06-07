@@ -21,7 +21,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
-import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -160,11 +160,23 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               new CasUpsert(
                   upsert.pointerKey(),
                   upsert.expectedVersion(),
-                  Pointer.newBuilder()
-                      .setKey(upsert.pointerKey())
-                      .setBlobUri(upsert.blobUri())
-                      .setVersion(upsert.expectedVersion() + 1L)
-                      .build()));
+                  switch (upsert.referenceKind()) {
+                    case PRK_BLOB_URI ->
+                        PointerReferences.blobPointer(
+                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                    case PRK_INLINE_JSON ->
+                        PointerReferences.inlineJsonPointer(
+                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                    case PRK_POINTER_KEY ->
+                        PointerReferences.pointerKeyPointer(
+                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                    case PRK_OPAQUE_MARKER ->
+                        PointerReferences.opaqueMarkerPointer(
+                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                    case PRK_UNSPECIFIED, UNRECOGNIZED ->
+                        throw new IllegalStateException(
+                            "missing pointer reference kind for " + upsert.pointerKey());
+                  }));
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           appendJobIndexDelete(tx, new CasDelete(delete.pointerKey(), delete.expectedVersion()));
         }

@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.ResourceRepository;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -87,6 +88,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   public static class CorruptionException extends RepoException {
+    public CorruptionException(String msg) {
+      super(msg);
+    }
+
     public CorruptionException(String msg, Throwable cause) {
       super(msg, cause);
     }
@@ -113,29 +118,29 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
 
     var pointer = pointerStoreOpt.get();
+    String blobUri = requireBlobReference(pointer, key);
     byte[] bytes;
 
     try {
-      bytes = blobStore.get(pointer.getBlobUri());
+      bytes = blobStore.get(blobUri);
       if (bytes == null) {
         if (pointerChangedOrDeleted(key, pointer)) {
           return Optional.empty();
         }
-        throw new CorruptionException(
-            "dangling pointer, missing blob: " + pointer.getBlobUri(), null);
+        throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
       }
       return Optional.of(parser.parse(bytes));
     } catch (StorageNotFoundException snf) {
       if (pointerChangedOrDeleted(key, pointer)) {
         return Optional.empty();
       }
-      throw new CorruptionException("dangling pointer, missing blob: " + pointer.getBlobUri(), snf);
+      throw new CorruptionException("dangling pointer, missing blob: " + blobUri, snf);
     } catch (InvalidProtocolBufferException ipbe) {
-      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), ipbe);
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
     } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + pointer.getBlobUri());
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
     } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + blobUri, e);
     }
   }
 
@@ -145,7 +150,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri) {
-    var reserve = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+    var reserve = PointerReferences.blobPointer(key, blobUri, 1L);
 
     if (pointerStore.compareAndSet(key, 0L, reserve)) {
       return true;
@@ -227,7 +232,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         throw new PreconditionFailedException(
             "missing pointer: " + key + " expected=" + expectedVersion);
       }
-      var created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+      var created = PointerReferences.blobPointer(key, blobUri, 1L);
       if (pointerStore.compareAndSet(key, 0L, created)) {
         return;
       }
@@ -251,7 +256,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               + pointer.getVersion());
     }
 
-    var next = pointer.toBuilder().setBlobUri(blobUri).setVersion(pointer.getVersion() + 1).build();
+    var next =
+        pointer.toBuilder()
+            .setBlobUri(blobUri)
+            .setVersion(pointer.getVersion() + 1)
+            .setReferenceKind(ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_BLOB_URI)
+            .build();
     if (pointerStore.compareAndSet(key, expectedVersion, next)) {
       return;
     }
@@ -275,25 +285,26 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
     for (var row : rows) {
-      uris.add(row.getBlobUri());
+      uris.add(requireBlobReference(row, row.getKey()));
     }
 
     var blobsMap = blobStore.getBatch(uris);
     var blobs = new ArrayList<T>(rows.size());
     for (var row : rows) {
-      byte[] bytes = blobsMap.get(row.getBlobUri());
+      String blobUri = requireBlobReference(row, row.getKey());
+      byte[] bytes = blobsMap.get(blobUri);
       if (bytes == null) {
         var after = pointerStore.get(row.getKey()).orElse(null);
         if (after == null || !Objects.equals(after.getBlobUri(), row.getBlobUri())) {
           continue;
         }
-        throw new CorruptionException("dangling pointer, missing blob: " + row.getBlobUri(), null);
+        throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
       }
 
       try {
         blobs.add(parser.parse(bytes));
       } catch (Exception e) {
-        throw new CorruptionException("parse failed: " + row.getBlobUri(), e);
+        throw new CorruptionException("parse failed: " + blobUri, e);
       }
     }
     return blobs;
@@ -383,7 +394,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
       for (var r : rows) {
         rowNumber++;
-        var blobHeaderOpt = blobStore.head(r.getBlobUri());
+        String blobUri = requireBlobReference(r, r.getKey());
+        var blobHeaderOpt = blobStore.head(blobUri);
         String etag = blobHeaderOpt.map(BlobHeader::getEtag).orElse("-");
         String created =
             blobHeaderOpt.map(header -> Timestamps.toString(header.getCreatedAt())).orElse("-");
@@ -395,7 +407,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         stringBuilder.append(
             String.format(
                 "%-5d %-8d %-36s %-24s %-24s  %s -> %s%n",
-                rowNumber, r.getVersion(), etag, created, modified, r.getKey(), r.getBlobUri()));
+                rowNumber, r.getVersion(), etag, created, modified, r.getKey(), blobUri));
       }
 
       token = next.toString();
@@ -411,7 +423,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       return "pointer not found: " + key;
     }
 
-    var blobHeader = blobStore.head(pointer.getBlobUri());
+    String blobUri = requireBlobReference(pointer, key);
+    var blobHeader = blobStore.head(blobUri);
     String etag = blobHeader.map(BlobHeader::getEtag).orElse("-");
     String created = blobHeader.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
     String modified = blobHeader.map(h -> Timestamps.toString(h.getLastModifiedAt())).orElse("-");
@@ -426,12 +439,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     return String.format(
         "version=%d etag=%s created=%s modified=%s rid=%s %s -> %s",
-        pointer.getVersion(),
-        etag,
-        created,
-        modified,
-        resourceId,
-        pointer.getKey(),
-        pointer.getBlobUri());
+        pointer.getVersion(), etag, created, modified, resourceId, pointer.getKey(), blobUri);
+  }
+
+  protected String requireBlobReference(Pointer pointer, String pointerKey) {
+    if (PointerReferences.isBlobPointer(pointer)) {
+      return pointer.getBlobUri();
+    }
+    throw new CorruptionException(
+        "pointer does not reference a blob: "
+            + (pointerKey == null ? "" : pointerKey)
+            + " kind="
+            + (pointer == null ? "null" : pointer.getReferenceKind().name()));
   }
 }

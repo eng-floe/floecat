@@ -40,6 +40,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteReconcileExecutorPoller {
   private static final long DEFAULT_LEASE_HEARTBEAT_MS = 2_000L;
+  private static final long MAX_DEFAULT_LEASE_HEARTBEAT_MS = 10_000L;
   private static final long MIN_LEASE_HEARTBEAT_MS = 1_000L;
   private static final long MIN_CANCEL_CHECK_MS = 500L;
   private static final int DEFAULT_MAX_PARALLELISM = 1;
@@ -245,7 +246,10 @@ public class RemoteReconcileExecutorPoller {
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class)
                 .orElse(30_000L));
-    long suggestedHeartbeatMs = Math.max(MIN_LEASE_HEARTBEAT_MS, leaseMs / 3L);
+    long suggestedHeartbeatMs =
+        Math.max(
+            MIN_LEASE_HEARTBEAT_MS,
+            Math.min(MAX_DEFAULT_LEASE_HEARTBEAT_MS, Math.max(1L, leaseMs / 4L)));
     long heartbeatEveryMs =
         Math.max(
             MIN_LEASE_HEARTBEAT_MS,
@@ -873,7 +877,7 @@ public class RemoteReconcileExecutorPoller {
     while (current != null && seen.add(current)) {
       if (current instanceof StatusRuntimeException statusError) {
         return switch (statusError.getStatus().getCode()) {
-          case UNAVAILABLE, INTERNAL, UNKNOWN, DEADLINE_EXCEEDED -> true;
+          case UNAVAILABLE, INTERNAL, UNKNOWN, DEADLINE_EXCEEDED, CANCELLED -> true;
           default -> false;
         };
       }

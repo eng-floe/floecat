@@ -20,14 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -35,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
@@ -49,6 +48,9 @@ import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -132,14 +134,24 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void requireWorkerControlHostRejectsBlankValue() {
+    IllegalStateException ex =
+        assertThrows(
+            IllegalStateException.class,
+            () -> GrpcRemoteReconcileExecutorClient.requireWorkerControlHost(" "));
+
+    assertThat(ex).hasMessageContaining("Worker-control gRPC host must be configured");
+  }
+
+  @Test
   void planConnectorInputPreservesSnapshotSelection() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.getLeasedPlanConnectorInput(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.getLeasedPlanConnectorInput(any()))
         .thenReturn(
             GetLeasedPlanConnectorInputResponse.newBuilder()
                 .setInput(
@@ -167,13 +179,13 @@ class GrpcRemoteReconcileExecutorClientTest {
 
   @Test
   void planTableInputPreservesSnapshotSelection() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.getLeasedPlanTableInput(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.getLeasedPlanTableInput(any()))
         .thenReturn(
             GetLeasedPlanTableInputResponse.newBuilder()
                 .setInput(
@@ -202,16 +214,18 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitPlanSnapshotSuccessOmitsDuplicateSnapshotFileGroupsWhenFileGroupJobsArePresent() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+  void submitPlanSnapshotSuccessOmitsDuplicateSnapshotFileGroupsWhenFileGroupJobsArePresent()
+      throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.submitLeasedPlanSnapshotResult(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedPlanSnapshotResult(any()))
         .thenReturn(SubmitLeasedPlanSnapshotResultResponse.newBuilder().setAccepted(true).build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     ReconcileFileGroupTask fileGroupTask =
         ReconcileFileGroupTask.of(
@@ -247,7 +261,7 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedPlanSnapshotResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanSnapshotResultRequest.class);
-    verify(client.executorControl).submitLeasedPlanSnapshotResult(requestCaptor.capture());
+    verify(stub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
     assertThat(success.getSnapshotTask().getTableId()).isEqualTo("table-1");
     assertThat(success.getSnapshotTask().getSnapshotId()).isEqualTo(55L);
@@ -264,14 +278,20 @@ class GrpcRemoteReconcileExecutorClientTest {
 
   @Test
   void renewRetriesOnceOnTransportFailure() {
-    TransportLoggingClient client =
-        new TransportLoggingClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel1 = mock(ManagedChannel.class);
+    ManagedChannel channel2 = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub1 =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.renewReconcileLease(any()))
-        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE))
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub2 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel1, stub1);
+    client.enqueueTransport(channel2, stub2);
+    when(stub1.withInterceptors(any())).thenReturn(stub1);
+    when(stub2.withInterceptors(any())).thenReturn(stub2);
+    when(stub1.renewReconcileLease(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(stub2.renewReconcileLease(any()))
         .thenReturn(
             RenewReconcileLeaseResponse.newBuilder()
                 .setRenewed(true)
@@ -282,8 +302,39 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     assertThat(heartbeat.leaseValid()).isTrue();
     assertThat(heartbeat.cancellationRequested()).isFalse();
-    verify(client.executorControl, org.mockito.Mockito.times(2)).renewReconcileLease(any());
-    assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease#1");
+    verify(stub1).renewReconcileLease(any());
+    verify(stub2).renewReconcileLease(any());
+    assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease@cached#1");
+  }
+
+  @Test
+  void renewRetriesOnceOnCancelledTransportFailure() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel1 = mock(ManagedChannel.class);
+    ManagedChannel channel2 = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub1 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub2 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel1, stub1);
+    client.enqueueTransport(channel2, stub2);
+    when(stub1.withInterceptors(any())).thenReturn(stub1);
+    when(stub2.withInterceptors(any())).thenReturn(stub2);
+    when(stub1.renewReconcileLease(any())).thenThrow(new StatusRuntimeException(Status.CANCELLED));
+    when(stub2.renewReconcileLease(any()))
+        .thenReturn(
+            RenewReconcileLeaseResponse.newBuilder()
+                .setRenewed(true)
+                .setCancellationRequested(false)
+                .build());
+
+    RemoteReconcileExecutorClient.LeaseHeartbeat heartbeat = client.renew(remoteLease());
+
+    assertThat(heartbeat.leaseValid()).isTrue();
+    assertThat(heartbeat.cancellationRequested()).isFalse();
+    verify(stub1).renewReconcileLease(any());
+    verify(stub2).renewReconcileLease(any());
+    assertThat(client.transportFailureLogs()).containsExactly("renewReconcileLease@cached#1");
   }
 
   @Test
@@ -292,13 +343,13 @@ class GrpcRemoteReconcileExecutorClientTest {
         new GrpcRemoteReconcileExecutorClient(
             "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
     ManagedChannel channel = mock(ManagedChannel.class);
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     client.closeWorkerControlChannel(channel, false);
 
     verify(channel).shutdown();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
     org.mockito.Mockito.verify(channel, org.mockito.Mockito.never()).shutdownNow();
-    org.mockito.Mockito.verify(channel, org.mockito.Mockito.never())
-        .awaitTermination(anyLong(), any(TimeUnit.class));
   }
 
   @Test
@@ -317,15 +368,122 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessRetriesWhenResultIdIsStable() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+  void completeUsesDedicatedFreshChannel() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
-        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.completeLeasedReconcileJob(any()))
+        .thenReturn(CompleteLeasedReconcileJobResponse.newBuilder().setAccepted(true).build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    RemoteReconcileExecutorClient.CompletionResult result =
+        client.complete(
+            remoteLease(),
+            RemoteLeasedJob.CompletionState.SUCCEEDED,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            1L,
+            2L,
+            3L,
+            4L,
+            5L,
+            6L,
+            7L,
+            "done");
+
+    assertThat(result.accepted()).isTrue();
+    verify(stub).completeLeasedReconcileJob(any());
+    verify(channel).shutdown();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
+    org.mockito.Mockito.verify(channel, org.mockito.Mockito.never()).shutdownNow();
+  }
+
+  @Test
+  void completeTransportFailureDoesNotRetryAndClosesDedicatedChannel() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.completeLeasedReconcileJob(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            client.complete(
+                remoteLease(),
+                RemoteLeasedJob.CompletionState.SUCCEEDED,
+                ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+                ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+                1L,
+                2L,
+                3L,
+                4L,
+                5L,
+                6L,
+                7L,
+                "done"));
+
+    verify(stub).completeLeasedReconcileJob(any());
+    verify(channel).shutdown();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
+    assertThat(client.transportFailureLogs())
+        .containsExactly("completeLeasedReconcileJob@dedicated#1");
+  }
+
+  @Test
+  void submitPlanSnapshotTransportFailureDoesNotRetryAndClosesDedicatedChannel() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedPlanSnapshotResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.INTERNAL));
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(client.snapshotPlanBlobStore.persistPlan(any(), any(), any(), any()))
+        .thenReturn(ReconcileSnapshotTask.of("table-1", 55L, "db", "events"));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            client.submitPlanSnapshotSuccess(
+                remotePlanSnapshotLease(),
+                ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+                List.of(),
+                List.of()));
+
+    verify(stub).submitLeasedPlanSnapshotResult(any());
+    verify(channel).shutdown();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
+    assertThat(client.transportFailureLogs())
+        .containsExactly("submitLeasedPlanSnapshotResult@dedicated#1");
+  }
+
+  @Test
+  void submitFileGroupSuccessRetriesWhenResultIdIsStable() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel1 = mock(ManagedChannel.class);
+    ManagedChannel channel2 = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub1 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub2 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel1, stub1);
+    client.enqueueTransport(channel2, stub2);
+    when(stub1.withInterceptors(any())).thenReturn(stub1);
+    when(stub2.withInterceptors(any())).thenReturn(stub2);
+    when(stub1.submitLeasedFileGroupExecutionResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(stub2.submitLeasedFileGroupExecutionResult(any()))
         .thenReturn(
             SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
 
@@ -334,20 +492,21 @@ class GrpcRemoteReconcileExecutorClientTest {
             remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("result-1"));
 
     assertThat(accepted).isTrue();
-    verify(client.executorControl, org.mockito.Mockito.times(2))
-        .submitLeasedFileGroupExecutionResult(any());
+    verify(stub1).submitLeasedFileGroupExecutionResult(any());
+    verify(stub2).submitLeasedFileGroupExecutionResult(any());
   }
 
   @Test
-  void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+  void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedFileGroupExecutionResult(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     assertThrows(
         StatusRuntimeException.class,
@@ -355,20 +514,25 @@ class GrpcRemoteReconcileExecutorClientTest {
             client.submitSuccess(
                 remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("  ")));
 
-    verify(client.executorControl).submitLeasedFileGroupExecutionResult(any());
+    verify(stub).submitLeasedFileGroupExecutionResult(any());
+    verify(channel).shutdown();
+    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
+    assertThat(client.transportFailureLogs())
+        .containsExactly("submitLeasedFileGroupExecutionResult@dedicated#1");
   }
 
   @Test
-  void submitFileGroupSuccessSendsUploadedArtifactManifestWithoutInlineContent() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+  void submitFileGroupSuccessSendsUploadedArtifactManifestWithoutInlineContent() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedFileGroupExecutionResult(any()))
         .thenReturn(
             SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     var record =
         ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
@@ -388,7 +552,7 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(client.executorControl).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
     var artifact = requestCaptor.getValue().getSuccess().getIndexArtifacts(0);
     assertThat(artifact.getUploadedArtifactUri())
         .isEqualTo("s3://bucket/artifacts/file-1.parquet.idx");
@@ -396,16 +560,17 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessSendsFileStatsBlobManifestWithoutInlineStats() {
-    GrpcRemoteReconcileExecutorClient client =
-        new GrpcRemoteReconcileExecutorClient(
-            "authorization", ignored -> java.util.Optional.of("Bearer worker-token"));
-    client.executorControl =
+  void submitFileGroupSuccessSendsFileStatsBlobManifestWithoutInlineStats() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
-    when(client.executorControl.withInterceptors(any())).thenReturn(client.executorControl);
-    when(client.executorControl.submitLeasedFileGroupExecutionResult(any()))
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedFileGroupExecutionResult(any()))
         .thenReturn(
             SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     var result =
         new StandaloneFileGroupExecutionResult(
@@ -420,7 +585,7 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(client.executorControl).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getFileStatsBlobUri())
         .isEqualTo("/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json");
@@ -500,20 +665,45 @@ class GrpcRemoteReconcileExecutorClientTest {
             ""));
   }
 
-  private static final class TransportLoggingClient extends GrpcRemoteReconcileExecutorClient {
-    private final java.util.List<String> transportFailureLogs = new java.util.ArrayList<>();
+  private static final class ExplicitTransportClient extends GrpcRemoteReconcileExecutorClient {
+    private final List<String> transportFailureLogs = new ArrayList<>();
+    private final Deque<ManagedChannel> channels = new ArrayDeque<>();
+    private final Deque<ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub> stubs =
+        new ArrayDeque<>();
 
-    private TransportLoggingClient(
-        String workerAuthHeaderName, ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
-      super(workerAuthHeaderName, reconcileWorkerAuthProvider);
+    private ExplicitTransportClient() {
+      super(
+          "authorization",
+          "worker-host",
+          9100,
+          ignored -> java.util.Optional.of("Bearer worker-token"));
+    }
+
+    private void enqueueTransport(
+        ManagedChannel channel,
+        ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub) {
+      channels.addLast(channel);
+      stubs.addLast(stub);
     }
 
     @Override
-    void logWorkerControlTransportFailure(String operation, int attempt, RuntimeException error) {
-      transportFailureLogs.add(operation + "#" + attempt);
+    ManagedChannel newWorkerControlChannel() {
+      return channels.removeFirst();
     }
 
-    private java.util.List<String> transportFailureLogs() {
+    @Override
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub workerControlStub(
+        ManagedChannel channel) {
+      return stubs.removeFirst();
+    }
+
+    @Override
+    void logWorkerControlTransportFailure(
+        String operation, String path, int attempt, RuntimeException error) {
+      transportFailureLogs.add(operation + "@" + path + "#" + attempt);
+    }
+
+    private List<String> transportFailureLogs() {
       return transportFailureLogs;
     }
   }

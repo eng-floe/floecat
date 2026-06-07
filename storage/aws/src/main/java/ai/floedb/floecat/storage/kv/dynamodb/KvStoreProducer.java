@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
+import io.quarkus.arc.properties.IfBuildProperty;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -27,6 +28,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 
 @ApplicationScoped
+@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class KvStoreProducer {
   static final int BOOTSTRAP_PRIORITY = 1;
 

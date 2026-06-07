@@ -10,6 +10,7 @@ on:
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
+      - "tools/ci/list-changed-files.sh"
       - "tools/site/**"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, closed]
@@ -20,6 +21,7 @@ on:
       - ".markdownlint-cli2.yaml"
       - ".github/workflows/pages.yml"
       - "lighthouserc.json"
+      - "tools/ci/list-changed-files.sh"
       - "tools/site/**"
   workflow_dispatch:
 
@@ -83,7 +85,9 @@ jobs:
         id: detect
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
@@ -98,15 +102,13 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
-          if ! git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+          changed="$(./tools/ci/list-changed-files.sh)"
+          if [[ -z "${changed}" ]]; then
             site=true
             docs=true
           else
-            changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
-
             # Shared website/docs infrastructure -> run both area checks.
-            if echo "${changed}" | grep -qE '^(tools/site/|lighthouserc\.json$|\.github/workflows/pages\.yml$|\.markdownlint-cli2\.yaml$)'; then
+            if echo "${changed}" | grep -qE '^(tools/site/|tools/ci/list-changed-files\.sh$|lighthouserc\.json$|\.github/workflows/pages\.yml$|\.markdownlint-cli2\.yaml$)'; then
               site=true
               docs=true
             fi
@@ -195,7 +197,9 @@ jobs:
       - name: Resolve Site Validation Paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
@@ -204,10 +208,9 @@ jobs:
             echo "/floecat/blog/"
           } > /tmp/site-validation-paths.txt
 
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
-          if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- site-src \
-              | awk 'NF {print $NF}' > /tmp/site-changed-paths.txt
+          ./tools/ci/list-changed-files.sh \
+            | awk '/^site-src\// {print}' > /tmp/site-changed-paths.txt
+          if [[ -s /tmp/site-changed-paths.txt ]]; then
             {
               sed -nE 's#^site-src/_posts/([0-9]{4})-([0-9]{2})-([0-9]{2})-(.+)\.md$#/floecat/\1/\2/\3/\4.html#p' /tmp/site-changed-paths.txt
               sed -nE \
@@ -294,16 +297,17 @@ jobs:
       - name: Resolve Docs Validation Paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
           echo "/floecat/documentation/" > /tmp/docs-validation-paths.txt
 
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
-          if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-            git diff --name-status --find-renames --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}" -- docs mkdocs.yml \
-              | awk 'NF {print $NF}' > /tmp/docs-changed-paths.txt
+          ./tools/ci/list-changed-files.sh \
+            | awk '/^(docs\/|mkdocs\.yml$)/ {print}' > /tmp/docs-changed-paths.txt
+          if [[ -s /tmp/docs-changed-paths.txt ]]; then
             {
               sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/docs-changed-paths.txt
               sed -nE 's#^docs/(.+)/index\.md$#/floecat/documentation/\1/#p' /tmp/docs-changed-paths.txt

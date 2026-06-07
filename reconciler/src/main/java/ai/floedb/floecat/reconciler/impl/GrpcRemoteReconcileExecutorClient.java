@@ -62,7 +62,6 @@ import io.grpc.Metadata;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
-import io.quarkus.grpc.GrpcClient;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -91,7 +90,7 @@ class GrpcRemoteReconcileExecutorClient
   private final Optional<String> workerAuthHeaderName;
   private final boolean workerAuthRequired;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
-  private final Optional<String> workerControlHost;
+  private final String workerControlHost;
   private final int workerControlPort;
   private final boolean workerControlPlainText;
   private final int workerControlMaxInboundMessageSize;
@@ -110,6 +109,7 @@ class GrpcRemoteReconcileExecutorClient
           boolean workerAuthRequired,
       @ConfigProperty(name = "floecat.reconciler.worker-control.grpc.host")
           Optional<String> workerControlHost,
+      @ConfigProperty(name = "quarkus.grpc.clients.floecat.host") String defaultWorkerControlHost,
       @ConfigProperty(name = "floecat.reconciler.worker-control.grpc.port", defaultValue = "9100")
           int workerControlPort,
       @ConfigProperty(
@@ -126,6 +126,7 @@ class GrpcRemoteReconcileExecutorClient
         authorizationHeaderName,
         workerAuthRequired,
         workerControlHost,
+        defaultWorkerControlHost,
         workerControlPort,
         workerControlPlainText,
         workerControlMaxInboundMessageSize,
@@ -139,7 +140,8 @@ class GrpcRemoteReconcileExecutorClient
         Optional.ofNullable(workerAuthHeaderName),
         Optional.empty(),
         true,
-        Optional.empty(),
+        Optional.of("127.0.0.1"),
+        "127.0.0.1",
         9100,
         true,
         0,
@@ -155,8 +157,27 @@ class GrpcRemoteReconcileExecutorClient
         Optional.ofNullable(workerAuthHeaderName),
         Optional.empty(),
         workerAuthRequired,
-        Optional.empty(),
+        Optional.of("127.0.0.1"),
+        "127.0.0.1",
         9100,
+        true,
+        0,
+        reconcileWorkerAuthProvider,
+        true);
+  }
+
+  GrpcRemoteReconcileExecutorClient(
+      String workerAuthHeaderName,
+      String workerControlHost,
+      int workerControlPort,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
+    this(
+        Optional.ofNullable(workerAuthHeaderName),
+        Optional.empty(),
+        true,
+        Optional.ofNullable(workerControlHost),
+        "127.0.0.1",
+        workerControlPort,
         true,
         0,
         reconcileWorkerAuthProvider,
@@ -168,6 +189,7 @@ class GrpcRemoteReconcileExecutorClient
       Optional<String> authorizationHeaderName,
       boolean workerAuthRequired,
       Optional<String> workerControlHost,
+      String defaultWorkerControlHost,
       int workerControlPort,
       boolean workerControlPlainText,
       int workerControlMaxInboundMessageSize,
@@ -177,14 +199,15 @@ class GrpcRemoteReconcileExecutorClient
         ReconcileRpcAuthHeaderSupport.resolveHeaderName(sessionHeaderName, authorizationHeaderName);
     this.workerAuthRequired = workerAuthRequired;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
-    this.workerControlHost = workerControlHost.map(String::trim).filter(value -> !value.isBlank());
+    this.workerControlHost =
+        workerControlHost
+            .map(String::trim)
+            .filter(value -> !value.isBlank())
+            .orElseGet(() -> requireWorkerControlHost(defaultWorkerControlHost));
     this.workerControlPort = workerControlPort;
     this.workerControlPlainText = workerControlPlainText;
     this.workerControlMaxInboundMessageSize = Math.max(0, workerControlMaxInboundMessageSize);
   }
-
-  @GrpcClient("floecat")
-  ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub executorControl;
 
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
@@ -230,7 +253,7 @@ class GrpcRemoteReconcileExecutorClient
 
   @Override
   public void start(RemoteLeasedJob lease, String executorId) {
-    invokeWorkerControlOnce(
+    invokeWorkerControlMutationOnce(
         "startLeasedReconcileJob",
         correlationId(lease),
         lease.lease().accountId,
@@ -307,7 +330,7 @@ class GrpcRemoteReconcileExecutorClient
       long statsProcessed,
       String message) {
     var response =
-        invokeWorkerControlOnce(
+        invokeWorkerControlMutationOnce(
             "completeLeasedReconcileJob",
             correlationId(lease),
             lease.lease().accountId,
@@ -393,7 +416,7 @@ class GrpcRemoteReconcileExecutorClient
               .setViewTask(toProtoViewTask(viewJob.viewTask()))
               .build());
     }
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanConnectorResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -413,7 +436,7 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanConnectorResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -483,7 +506,7 @@ class GrpcRemoteReconcileExecutorClient
               .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
               .build());
     }
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanTableResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -503,7 +526,7 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanTableResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -564,7 +587,7 @@ class GrpcRemoteReconcileExecutorClient
               .build());
     }
     var response =
-        invokeWorkerControlOnce(
+        invokeWorkerControlMutationOnce(
             "submitLeasedPlanViewResult",
             correlationId(lease),
             lease.lease().accountId,
@@ -585,7 +608,7 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanViewResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -645,7 +668,7 @@ class GrpcRemoteReconcileExecutorClient
     SubmitLeasedPlanSnapshotResultRequest.Success.Builder success =
         SubmitLeasedPlanSnapshotResultRequest.Success.newBuilder();
     success.setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask));
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanSnapshotResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -665,7 +688,7 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlOnce(
+    return invokeWorkerControlMutationOnce(
         "submitLeasedPlanSnapshotResult",
         correlationId(lease),
         lease.lease().accountId,
@@ -773,11 +796,24 @@ class GrpcRemoteReconcileExecutorClient
               .build());
     }
     String resultId = result.resultId() == null ? "" : result.resultId().trim();
-    return invokeWorkerControl(
+    if (resultId.isBlank()) {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedFileGroupExecutionResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedFileGroupExecutionResult(
+                      SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build())
+                  .getAccepted());
+    }
+    return invokeWorkerControlRetryable(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
         lease.lease().accountId,
-        !resultId.isBlank(),
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
                     SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
@@ -790,11 +826,28 @@ class GrpcRemoteReconcileExecutorClient
 
   public boolean submitFailure(RemoteLeasedJob lease, String resultId, String message) {
     String stableResultId = resultId == null ? "" : resultId.trim();
-    return invokeWorkerControl(
+    if (stableResultId.isBlank()) {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedFileGroupExecutionResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedFileGroupExecutionResult(
+                      SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedFileGroupExecutionResultRequest.Failure.newBuilder()
+                                  .setResultId(stableResultId)
+                                  .setMessage(message == null ? "" : message)
+                                  .build())
+                          .build())
+                  .getAccepted());
+    }
+    return invokeWorkerControlRetryable(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
         lease.lease().accountId,
-        !stableResultId.isBlank(),
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
                     SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
@@ -1411,9 +1464,6 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub controlStub() {
-    if (workerControlHost.isEmpty()) {
-      return executorControl;
-    }
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub existing = workerControlStub;
     if (existing != null) {
       return existing;
@@ -1422,19 +1472,28 @@ class GrpcRemoteReconcileExecutorClient
       if (workerControlStub != null) {
         return workerControlStub;
       }
-      ManagedChannelBuilder<?> builder =
-          ManagedChannelBuilder.forAddress(workerControlHost.orElseThrow(), workerControlPort);
-      if (workerControlPlainText) {
-        builder.usePlaintext();
-      }
-      if (workerControlMaxInboundMessageSize > 0) {
-        builder.maxInboundMessageSize(workerControlMaxInboundMessageSize);
-      }
-      ManagedChannel channel = builder.build();
+      ManagedChannel channel = newWorkerControlChannel();
       workerControlChannel = channel;
-      workerControlStub = ReconcileExecutorControlGrpc.newBlockingStub(channel);
+      workerControlStub = workerControlStub(channel);
       return workerControlStub;
     }
+  }
+
+  ManagedChannel newWorkerControlChannel() {
+    ManagedChannelBuilder<?> builder =
+        ManagedChannelBuilder.forAddress(workerControlHost, workerControlPort);
+    if (workerControlPlainText) {
+      builder.usePlaintext();
+    }
+    if (workerControlMaxInboundMessageSize > 0) {
+      builder.maxInboundMessageSize(workerControlMaxInboundMessageSize);
+    }
+    return builder.build();
+  }
+
+  ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub workerControlStub(
+      ManagedChannel channel) {
+    return ReconcileExecutorControlGrpc.newBlockingStub(channel);
   }
 
   private void resetWorkerControlChannel() {
@@ -1444,9 +1503,6 @@ class GrpcRemoteReconcileExecutorClient
   private void resetWorkerControlChannel(boolean force) {
     ManagedChannel channel = null;
     synchronized (workerControlLock) {
-      if (workerControlHost.isEmpty()) {
-        return;
-      }
       channel = workerControlChannel;
       workerControlChannel = null;
       workerControlStub = null;
@@ -1468,6 +1524,15 @@ class GrpcRemoteReconcileExecutorClient
       return;
     }
     channel.shutdown();
+    try {
+      if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
+        channel.shutdownNow();
+        channel.awaitTermination(5, TimeUnit.SECONDS);
+      }
+    } catch (InterruptedException e) {
+      channel.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
   }
 
   private <T> T invokeWorkerControlRetryable(
@@ -1478,12 +1543,23 @@ class GrpcRemoteReconcileExecutorClient
     return invokeWorkerControl(operation, correlationId, accountId, true, invocation);
   }
 
-  private <T> T invokeWorkerControlOnce(
+  private <T> T invokeWorkerControlMutationOnce(
       String operation,
       String correlationId,
       String accountId,
       Function<ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub, T> invocation) {
-    return invokeWorkerControl(operation, correlationId, accountId, false, invocation);
+    ManagedChannel channel = null;
+    try {
+      channel = newWorkerControlChannel();
+      return invocation.apply(withHeaders(workerControlStub(channel), correlationId, accountId));
+    } catch (RuntimeException error) {
+      if (isTransportFailure(error)) {
+        logWorkerControlTransportFailure(operation, "dedicated", 1, error);
+      }
+      throw error;
+    } finally {
+      closeWorkerControlChannel(channel, false);
+    }
   }
 
   private <T> T invokeWorkerControl(
@@ -1501,7 +1577,7 @@ class GrpcRemoteReconcileExecutorClient
         lastError = error;
         boolean transportFailure = isTransportFailure(error);
         if (transportFailure) {
-          logWorkerControlTransportFailure(operation, attempt, error);
+          logWorkerControlTransportFailure(operation, "cached", attempt, error);
           resetWorkerControlChannel();
         }
         if (!retryOnTransportFailure || !transportFailure || attempt >= maxAttempts) {
@@ -1512,11 +1588,13 @@ class GrpcRemoteReconcileExecutorClient
     throw lastError == null ? new IllegalStateException("worker-control rpc failed") : lastError;
   }
 
-  void logWorkerControlTransportFailure(String operation, int attempt, RuntimeException error) {
+  void logWorkerControlTransportFailure(
+      String operation, String path, int attempt, RuntimeException error) {
     LOG.debugf(
         error,
-        "worker-control rpc transport failure op=%s attempt=%d; recreating channel",
+        "worker-control rpc transport failure op=%s path=%s attempt=%d",
         operation,
+        path,
         attempt);
   }
 
@@ -1526,7 +1604,7 @@ class GrpcRemoteReconcileExecutorClient
     while (current != null && seen.add(current)) {
       if (current instanceof StatusRuntimeException statusError) {
         return switch (statusError.getStatus().getCode()) {
-          case UNAVAILABLE, INTERNAL, UNKNOWN, DEADLINE_EXCEEDED -> true;
+          case UNAVAILABLE, INTERNAL, UNKNOWN, DEADLINE_EXCEEDED, CANCELLED -> true;
           default -> false;
         };
       }
@@ -1575,5 +1653,12 @@ class GrpcRemoteReconcileExecutorClient
 
   private static String correlationId(RemoteLeasedJob lease) {
     return "reconcile-job-" + lease.lease().jobId;
+  }
+
+  static String requireWorkerControlHost(String host) {
+    if (host == null || host.isBlank()) {
+      throw new IllegalStateException("Worker-control gRPC host must be configured");
+    }
+    return host.trim();
   }
 }

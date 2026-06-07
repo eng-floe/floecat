@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.telemetry;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.MetricId;
@@ -165,6 +166,9 @@ public class StorageUsageMetrics {
       for (Pointer pointer : pointers) {
         if (sampleCount >= sampleMax) {
           break;
+        }
+        if (!PointerReferences.isBlobPointer(pointer)) {
+          continue;
         }
 
         try {

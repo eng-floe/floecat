@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 @QuarkusTest
+@TestProfile(DynamoDbKvTestProfile.class)
 @EnabledIfSystemProperty(named = "floecat.kv", matches = "dynamodb")
 public class KvStoreContractTest {
 

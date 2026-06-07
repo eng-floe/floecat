@@ -36,6 +36,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -47,6 +48,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -298,6 +300,7 @@ class TableRepositoryTest {
     var start = new CountDownLatch(1);
     var unexpected = new ConcurrentLinkedQueue<Throwable>();
     var expectedCounts = new ConcurrentHashMap<String, LongAdder>();
+    var deleteClaimed = new AtomicBoolean(false);
     var seedDeleted = new AtomicBoolean(false);
 
     Runnable worker =
@@ -376,14 +379,23 @@ class TableRepositoryTest {
                   }
 
                 } else {
-                  if (seedDeleted.compareAndSet(false, true)) {
-                    var curMeta = tableRepo.metaFor(tblId);
-                    boolean ok =
-                        tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
-                    if (!ok) {
-                      seedDeleted.set(false);
-                      throw new BaseResourceRepository.PreconditionFailedException(
-                          "version mismatch");
+                  if (seedDeleted.get()) {
+                    continue;
+                  }
+                  if (deleteClaimed.compareAndSet(false, true)) {
+                    try {
+                      var curMeta = tableRepo.metaFor(tblId);
+                      boolean ok =
+                          tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                      if (!ok) {
+                        throw new BaseResourceRepository.PreconditionFailedException(
+                            "version mismatch");
+                      }
+                      seedDeleted.set(true);
+                    } finally {
+                      if (!seedDeleted.get()) {
+                        deleteClaimed.set(false);
+                      }
                     }
                   }
                 }
@@ -415,10 +427,13 @@ class TableRepositoryTest {
     assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
 
     var p = ptr.get(canonKey);
-    if (seedDeleted.get()) {
-      assertTrue(
-          p.isEmpty() || !tableRepo.getById(tblId).isPresent(),
-          "deleted table should not be resolvable");
+    if (p.isEmpty()) {
+      boolean deletedVisible =
+          await(
+              Duration.ofSeconds(5),
+              () -> ptr.get(canonKey).isEmpty() && tableRepo.getById(tblId).isEmpty(),
+              Duration.ofMillis(10));
+      assertTrue(deletedVisible, "deleted table should not be resolvable");
       assertDoesNotThrow(() -> tableRepo.metaForSafe(tblId));
     } else {
       long vN = p.orElseThrow().getVersion();
@@ -435,5 +450,17 @@ class TableRepositoryTest {
         .setId(UUID.randomUUID().toString())
         .setKind(kind)
         .build();
+  }
+
+  private static boolean await(Duration timeout, BooleanSupplier condition, Duration step)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      if (condition.getAsBoolean()) {
+        return true;
+      }
+      Thread.sleep(step.toMillis());
+    }
+    return condition.getAsBoolean();
   }
 }

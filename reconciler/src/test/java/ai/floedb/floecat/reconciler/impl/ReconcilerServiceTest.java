@@ -34,6 +34,7 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -1658,6 +1659,259 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
+  void captureOnlySnapshotPlanningIncludesKnownCurrentSnapshotWhenStatsAreMissing() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-capture-only-current-stats-missing")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(42L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+    }
+
+    class CurrentSnapshotConnector extends FakeConnector {
+      CurrentSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        if (options.selectionKind() != SnapshotSelectionKind.EXPLICIT) {
+          return List.of();
+        }
+        if (!options.selectionSnapshotIds().equals(Set.of(42L))) {
+          return List.of();
+        }
+        return List.of(
+            new SnapshotBundle(
+                42L, 41L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new CurrentSnapshotConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)),
+            ReconcileSnapshotSelection.current());
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            false,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
+  void fullCaptureOnlySnapshotPlanningUsesKnownLocalSnapshotIds() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-capture-only-full-known-snapshots")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(202744L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+    }
+
+    class CaptureOnlyFullConnector extends FakeConnector {
+      CaptureOnlyFullConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        assertThat(options.fullRescan()).isTrue();
+        assertThat(options.selectionKind()).isEqualTo(SnapshotSelectionKind.EXPLICIT);
+        assertThat(options.selectionSnapshotIds()).containsExactly(202744L);
+        return List.of(
+            new SnapshotBundle(
+                202744L,
+                202743L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null),
+            new SnapshotBundle(
+                202956L,
+                202744L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new CaptureOnlyFullConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            List.of(),
+            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            true,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(
+            ReconcileSnapshotTask.of(tableId.getId(), 202744L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
+  void metadataAndCaptureSnapshotPlanningIncludesKnownCurrentSnapshotWhenStatsAreMissing() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-metadata-and-capture-current-stats-missing")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(42L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+    }
+
+    class CurrentSnapshotConnector extends FakeConnector {
+      CurrentSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        if (options.selectionKind() != SnapshotSelectionKind.CURRENT) {
+          return List.of();
+        }
+        if (options.knownSnapshotIds().contains(42L)) {
+          return List.of();
+        }
+        return List.of(
+            new SnapshotBundle(
+                42L, 41L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new CurrentSnapshotConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)),
+            ReconcileSnapshotSelection.current());
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            false,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
             null);
 
     assertThat(tasks)

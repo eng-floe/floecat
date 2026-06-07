@@ -148,7 +148,6 @@ public class ReconcileJobCompleter {
               String op = operationName(completionKind);
               boolean allowExpiredWithinGrace =
                   completionKind == CompletionKind.SUCCEEDED
-                      || completionKind == CompletionKind.SUCCEEDED_WAITING
                       || completionKind == CompletionKind.FAILED_TERMINAL
                       || completionKind == CompletionKind.CANCELLED;
               if (!leaseManager.hasActiveLease(

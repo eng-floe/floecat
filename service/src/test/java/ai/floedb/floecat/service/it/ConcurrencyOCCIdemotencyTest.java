@@ -300,7 +300,7 @@ class ConcurrencyOCCIdempotencyIT {
       assertTrue(vSeed >= v0, "seed pointer version must be >= initial");
     }
 
-    Thread.sleep(1500);
+    Thread.sleep(TimeUnit.SECONDS.toMillis(2));
 
     final String accountId = cat.getResourceId().getAccountId();
 

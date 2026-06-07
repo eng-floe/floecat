@@ -13,27 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-package ai.floedb.floecat.service.it.profiles;
+package ai.floedb.floecat.storage.kv.dynamodb;
 
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-public class GcOnProfile implements QuarkusTestProfile {
+public class DynamoDbKvTestProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "quarkus.scheduler.enabled", "false",
-        "floecat.gc.idempotency.enabled", "true",
-        "floecat.gc.idempotency.tick-every", "1s",
-        "floecat.gc.idempotency.page-size", "500",
-        "floecat.gc.idempotency.batch-limit", "10000",
-        "floecat.gc.idempotency.slice-millis", "5000",
-        "floecat.idempotency.ttl-seconds", "1");
-  }
-
-  @Override
-  public String getConfigProfile() {
-    return "gc-on";
+        "floecat.kv", "dynamodb",
+        "floecat.kv.table", "floecat_pointers",
+        "floecat.storage.aws.region", "us-east-1",
+        "floecat.storage.aws.access-key-id", "test",
+        "floecat.storage.aws.secret-access-key", "test",
+        "floecat.storage.aws.dynamodb.endpoint-override", "http://localhost:4566");
   }
 }

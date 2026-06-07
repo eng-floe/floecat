@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
@@ -121,10 +122,11 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
               new CasUpsert(
                   key,
                   upsert.expectedVersion(),
-                  Pointer.newBuilder()
-                      .setKey(key)
-                      .setBlobUri(upsert.encodedLease())
-                      .setVersion(upsert.expectedVersion() + 1L)
+                  PointerReferences.asInlineJsonPointer(
+                          Pointer.newBuilder()
+                              .setKey(key)
+                              .setVersion(upsert.expectedVersion() + 1L),
+                          upsert.encodedLease())
                       .build()));
         } else if (write instanceof LeaseRecordDelete delete) {
           ops.add(
@@ -136,10 +138,11 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
               new CasUpsert(
                   upsert.leaseExpiryKey(),
                   upsert.expectedVersion(),
-                  Pointer.newBuilder()
-                      .setKey(upsert.leaseExpiryKey())
-                      .setBlobUri(upsert.canonicalPointerKey())
-                      .setVersion(upsert.expectedVersion() + 1L)
+                  PointerReferences.asPointerKeyPointer(
+                          Pointer.newBuilder()
+                              .setKey(upsert.leaseExpiryKey())
+                              .setVersion(upsert.expectedVersion() + 1L),
+                          upsert.canonicalPointerKey())
                       .build()));
         } else if (write instanceof LeaseExpiryDelete delete) {
           ops.add(new CasDelete(delete.leaseExpiryKey(), delete.expectedVersion()));
@@ -148,10 +151,11 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
               new CasUpsert(
                   upsert.ownerKey(),
                   upsert.expectedVersion(),
-                  Pointer.newBuilder()
-                      .setKey(upsert.ownerKey())
-                      .setBlobUri(upsert.canonicalPointerKey())
-                      .setVersion(upsert.expectedVersion() + 1L)
+                  PointerReferences.asPointerKeyPointer(
+                          Pointer.newBuilder()
+                              .setKey(upsert.ownerKey())
+                              .setVersion(upsert.expectedVersion() + 1L),
+                          upsert.canonicalPointerKey())
                       .build()));
         } else if (write instanceof LeaseOwnerDelete delete) {
           ops.add(new CasDelete(delete.ownerKey(), delete.expectedVersion()));

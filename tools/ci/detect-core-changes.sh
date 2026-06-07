@@ -19,11 +19,12 @@ set -euo pipefail
 #
 # Required env:
 #   EVENT_NAME  (github.event_name)
-#   HEAD_SHA    (github.sha)
+#   HEAD_SHA    (github.event.pull_request.head.sha for PRs, github.sha otherwise)
 #
 # Optional env:
 #   BASE_SHA    (github.event.pull_request.base.sha)
 #   BEFORE_SHA  (github.event.before)
+#   PR_NUMBER   (github.event.pull_request.number)
 #   CORE_NON_CORE_REGEX (override default non-core matcher)
 #
 # Output:
@@ -33,22 +34,13 @@ EVENT_NAME="${EVENT_NAME:-}"
 BASE_SHA="${BASE_SHA:-}"
 BEFORE_SHA="${BEFORE_SHA:-}"
 HEAD_SHA="${HEAD_SHA:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NON_CORE_RE="${CORE_NON_CORE_REGEX:-^(site-src/|docs/|mkdocs\.yml$|\.markdownlint-cli2\.yaml$|lighthouserc\.json$|tools/site/|\.github/workflows/pages\.yml$)}"
 
 core_changed=true
 changed_files=""
 
-if [[ "${EVENT_NAME}" == "pull_request" && -n "${BASE_SHA}" ]]; then
-  git fetch --no-tags --depth=1 origin "${BASE_SHA}" || true
-  if git cat-file -e "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
-    changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
-  fi
-elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
-  git fetch --no-tags --depth=1 origin "${BEFORE_SHA}" || true
-  if git cat-file -e "${BEFORE_SHA}^{commit}" >/dev/null 2>&1; then
-    changed_files="$(git diff --name-only "${BEFORE_SHA}...${HEAD_SHA}" || true)"
-  fi
-fi
+changed_files="$("${SCRIPT_DIR}/list-changed-files.sh")"
 
 if [[ -n "${changed_files}" ]]; then
   if echo "${changed_files}" | grep -qEv "${NON_CORE_RE}"; then
