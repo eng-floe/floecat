@@ -55,6 +55,8 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.it.profiles.ReconcilerWorkerLocalProfile;
+import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobMaintenanceService;
 import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -67,6 +69,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.io.IOException;
 import java.io.InputStream;
@@ -82,6 +85,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.example.data.Group;
@@ -96,6 +100,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
 
 @QuarkusTest
+@TestProfile(ReconcilerWorkerLocalProfile.class)
 public class ConnectorIT {
   private static final String YB_TPCDS_TABLE_DIR = "call_center-78092955d9dc452fbe14ab11d90a85ce";
   private static final String YB_TPCDS_METADATA_LOCATION =
@@ -137,6 +142,7 @@ public class ConnectorIT {
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
   @Inject BlobStore blobs;
+  @Inject ReconcileJobMaintenanceService reconcileJobMaintenance;
 
   private ResourceId seedAccountId;
 
@@ -1346,8 +1352,10 @@ public class ConnectorIT {
               .filter(job -> selectedSnapshotPlan.jobId.equals(job.parentJobId))
               .toList();
       var snapshotJobResponse =
-          reconcileControl.getReconcileJob(
-              GetReconcileJobRequest.newBuilder().setJobId(selectedSnapshotPlan.jobId).build());
+          awaitReconcileJobResponse(
+              selectedSnapshotPlan.jobId,
+              response -> response.getFileGroupsCompleted() == selectedSnapshotFileGroups.size(),
+              Duration.ofSeconds(10));
       assertEquals(
           selectedSnapshotPlan.snapshotTask.fileGroups().size(),
           snapshotJobResponse.getFileGroupsTotal(),
@@ -2832,6 +2840,26 @@ public class ConnectorIT {
       return null;
     }
     return jobs.getLeaseView(jobId).orElse(null);
+  }
+
+  private ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse awaitReconcileJobResponse(
+      String jobId,
+      Predicate<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> predicate,
+      Duration timeout)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse response = null;
+    do {
+      reconcileJobMaintenance.runProjectionMaintenanceOnce(10_000L);
+      response =
+          reconcileControl.getReconcileJob(
+              GetReconcileJobRequest.newBuilder().setJobId(jobId).build());
+      if (predicate.test(response)) {
+        return response;
+      }
+      Thread.sleep(200);
+    } while (System.nanoTime() < deadline);
+    return response;
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {
