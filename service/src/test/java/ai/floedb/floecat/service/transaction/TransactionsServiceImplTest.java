@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -394,11 +395,8 @@ class TransactionsServiceImplTest {
     when(pointerStore.get("/accounts/acct/custom/key-1"))
         .thenReturn(
             Optional.of(
-                Pointer.newBuilder()
-                    .setKey("/accounts/acct/custom/key-1")
-                    .setBlobUri("s3://bucket/blob-1")
-                    .setVersion(2L)
-                    .build()));
+                PointerReferences.blobPointer(
+                    "/accounts/acct/custom/key-1", "s3://bucket/blob-1", 2L)));
     when(txRepo.metaFor("acct", "tx-1"))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(21L).build());
     when(txRepo.update(
@@ -713,13 +711,7 @@ class TransactionsServiceImplTest {
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
     when(pointerStore.get(targetKey))
-        .thenReturn(
-            Optional.of(
-                Pointer.newBuilder()
-                    .setKey(targetKey)
-                    .setBlobUri(tableBlobUri)
-                    .setVersion(7L)
-                    .build()));
+        .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
     when(intentRepo.getByTarget(accountId, targetKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))

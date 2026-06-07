@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -208,6 +209,9 @@ public class ReconcileJobMaintenanceService {
   }
 
   private DirtyParentMarker parseDirtyParentMarker(Pointer pointer) {
+    if (!PointerReferences.isOpaqueMarkerPointer(pointer)) {
+      return null;
+    }
     String payload = pointer == null ? "" : pointer.getBlobUri();
     if (payload == null || payload.isBlank()) {
       return null;

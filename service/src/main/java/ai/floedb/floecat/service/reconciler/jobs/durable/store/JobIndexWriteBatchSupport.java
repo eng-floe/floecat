@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
@@ -42,11 +42,23 @@ public final class JobIndexWriteBatchSupport {
             new CasUpsert(
                 upsert.pointerKey(),
                 upsert.expectedVersion(),
-                Pointer.newBuilder()
-                    .setKey(upsert.pointerKey())
-                    .setBlobUri(upsert.blobUri())
-                    .setVersion(upsert.expectedVersion() + 1L)
-                    .build()));
+                switch (upsert.referenceKind()) {
+                  case PRK_BLOB_URI ->
+                      PointerReferences.blobPointer(
+                          upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                  case PRK_INLINE_JSON ->
+                      PointerReferences.inlineJsonPointer(
+                          upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                  case PRK_POINTER_KEY ->
+                      PointerReferences.pointerKeyPointer(
+                          upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                  case PRK_OPAQUE_MARKER ->
+                      PointerReferences.opaqueMarkerPointer(
+                          upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
+                  case PRK_UNSPECIFIED, UNRECOGNIZED ->
+                      throw new IllegalStateException(
+                          "missing pointer reference kind for " + upsert.pointerKey());
+                }));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
         ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
       }
@@ -59,11 +71,31 @@ public final class JobIndexWriteBatchSupport {
           new CasUpsert(
               readyUpsert.readyPointerKey(),
               expectedVersion,
-              Pointer.newBuilder()
-                  .setKey(readyUpsert.readyPointerKey())
-                  .setBlobUri(readyUpsert.canonicalPointerKey())
-                  .setVersion(expectedVersion + 1L)
-                  .build()));
+              switch (readyUpsert.referenceKind()) {
+                case PRK_BLOB_URI ->
+                    PointerReferences.blobPointer(
+                        readyUpsert.readyPointerKey(),
+                        readyUpsert.canonicalPointerKey(),
+                        expectedVersion + 1L);
+                case PRK_INLINE_JSON ->
+                    PointerReferences.inlineJsonPointer(
+                        readyUpsert.readyPointerKey(),
+                        readyUpsert.canonicalPointerKey(),
+                        expectedVersion + 1L);
+                case PRK_POINTER_KEY ->
+                    PointerReferences.pointerKeyPointer(
+                        readyUpsert.readyPointerKey(),
+                        readyUpsert.canonicalPointerKey(),
+                        expectedVersion + 1L);
+                case PRK_OPAQUE_MARKER ->
+                    PointerReferences.opaqueMarkerPointer(
+                        readyUpsert.readyPointerKey(),
+                        readyUpsert.canonicalPointerKey(),
+                        expectedVersion + 1L);
+                case PRK_UNSPECIFIED, UNRECOGNIZED ->
+                    throw new IllegalStateException(
+                        "missing pointer reference kind for " + readyUpsert.readyPointerKey());
+              }));
     }
     for (String readyDeleteKey : batch.readyMutation().deletes()) {
       JobIndexEntrySnapshot existing = loadStoredPointer.apply(readyDeleteKey).orElse(null);

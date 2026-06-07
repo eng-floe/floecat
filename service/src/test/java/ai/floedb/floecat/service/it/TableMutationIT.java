@@ -31,6 +31,7 @@ import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.gc.PointerGc;
 import ai.floedb.floecat.service.it.profiles.PointerGcMinAgeProfile;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -595,12 +596,7 @@ class TableMutationIT {
     String staleKey =
         Keys.tablePointerByName(
             tblId.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "stale");
-    Pointer stalePointer =
-        Pointer.newBuilder()
-            .setKey(staleKey)
-            .setBlobUri(before.getBlobUri())
-            .setVersion(1L)
-            .build();
+    Pointer stalePointer = PointerReferences.blobPointer(staleKey, before.getBlobUri(), 1L);
     assertTrue(ptr.compareAndSet(staleKey, 0L, stalePointer), "stale pointer should be created");
 
     pointerGc.runForAccount(tblId.getAccountId(), System.currentTimeMillis() + 5000L);

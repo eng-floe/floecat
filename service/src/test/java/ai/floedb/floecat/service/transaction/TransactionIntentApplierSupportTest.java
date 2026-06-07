@@ -20,10 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -178,9 +178,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
     pointers.compareAndSet(
-        targetKey,
-        0L,
-        Pointer.newBuilder().setKey(targetKey).setBlobUri("/blob/snap-7").setVersion(1L).build());
+        targetKey, 0L, PointerReferences.blobPointer(targetKey, "/blob/snap-7", 1L));
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -225,14 +223,8 @@ class TransactionIntentApplierSupportTest {
             .setDisplayName("orders")
             .build();
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
-    pointers.compareAndSet(
-        byIdKey,
-        0L,
-        Pointer.newBuilder().setKey(byIdKey).setBlobUri(blobUri).setVersion(1L).build());
-    pointers.compareAndSet(
-        byNameKey,
-        0L,
-        Pointer.newBuilder().setKey(byNameKey).setBlobUri(blobUri).setVersion(1L).build());
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, blobUri, 1L));
+    pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, blobUri, 1L));
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -279,13 +271,7 @@ class TransactionIntentApplierSupportTest {
 
     String tableAByIdKey = Keys.tablePointerById(accountId, tableAId);
     pointers.compareAndSet(
-        tableAByIdKey,
-        0L,
-        Pointer.newBuilder()
-            .setKey(tableAByIdKey)
-            .setBlobUri(tableAOriginalBlob)
-            .setVersion(1L)
-            .build());
+        tableAByIdKey, 0L, PointerReferences.blobPointer(tableAByIdKey, tableAOriginalBlob, 1L));
 
     String contestedName = "orders-contested";
     Table tableB =
@@ -301,13 +287,7 @@ class TransactionIntentApplierSupportTest {
     String contestedNameKey =
         Keys.tablePointerByName(accountId, catalogId, namespaceId, contestedName);
     pointers.compareAndSet(
-        contestedNameKey,
-        0L,
-        Pointer.newBuilder()
-            .setKey(contestedNameKey)
-            .setBlobUri(tableBBlob)
-            .setVersion(1L)
-            .build());
+        contestedNameKey, 0L, PointerReferences.blobPointer(contestedNameKey, tableBBlob, 1L));
 
     Table tableANext = tableAOriginal.toBuilder().setDisplayName(contestedName).build();
     String tableANextBlob = "s3://bucket/table-a-next";

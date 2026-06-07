@@ -86,11 +86,21 @@ message QueryInput {
 
 // ----- Pointers & Blobs -----
 
+enum PointerReferenceKind {
+  PRK_UNSPECIFIED = 0;
+  PRK_BLOB_URI = 1;
+  PRK_INLINE_JSON = 2;
+  PRK_POINTER_KEY = 3;
+  PRK_OPAQUE_MARKER = 4;
+}
+
 message Pointer {
   string key = 1;
+  // Generic pointer payload. The concrete meaning is determined by reference_kind.
   string blob_uri = 2;
   int64 version = 3;
   google.protobuf.Timestamp expires_at = 4;
+  PointerReferenceKind reference_kind = 5;
 }
 
 message BlobHeader {

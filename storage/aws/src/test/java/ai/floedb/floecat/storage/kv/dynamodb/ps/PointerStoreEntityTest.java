@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.kv.dynamodb.ps;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvTestProfile;
@@ -166,5 +167,22 @@ public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
 
     var p3 = pointers.listByPrefix("accounts/by-id/9/p/", 3, p2.nextToken()).await().indefinitely();
     assertEquals(1, p3.items().size());
+  }
+
+  @Test
+  void typed_pointer_round_trips_reference_kind() {
+    String key = "/accounts/by-id/10/reconcile/dirty-parent/x";
+    Pointer pointer =
+        Pointer.newBuilder()
+            .setKey(key)
+            .setBlobUri("acct-1\njob-1")
+            .setReferenceKind(PointerReferenceKind.PRK_OPAQUE_MARKER)
+            .build();
+
+    assertTrue(pointers.compareAndSet(key, 0L, pointer).await().indefinitely());
+
+    Pointer got = pointers.get(key).await().indefinitely().orElseThrow();
+    assertEquals(PointerReferenceKind.PRK_OPAQUE_MARKER, got.getReferenceKind());
+    assertEquals("acct-1\njob-1", got.getBlobUri());
   }
 }
