@@ -446,6 +446,7 @@ class ReconcileExecutorControlImplTest {
                 ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
                 "",
                 0,
+                4,
                 List.of(
                     new LeasedSnapshotFinalizeInputService.SnapshotFinalizeGroupManifest(
                         "plan-1",
@@ -470,6 +471,7 @@ class ReconcileExecutorControlImplTest {
     assertEquals(
         ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_FILE_GROUPS,
         response.getInput().getCompletionMode());
+    assertEquals(4, response.getInput().getSourceFileCount());
     assertEquals(1, response.getInput().getCompletedGroupsCount());
     assertEquals("plan-1", response.getInput().getCompletedGroups(0).getPlanId());
   }
@@ -491,6 +493,7 @@ class ReconcileExecutorControlImplTest {
                 ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
                 "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
                 3,
+                6,
                 List.of()));
 
     var response =
@@ -510,6 +513,7 @@ class ReconcileExecutorControlImplTest {
         "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
         response.getInput().getDirectStatsBlobUri());
     assertEquals(3, response.getInput().getDirectStatsRecordCount());
+    assertEquals(6, response.getInput().getSourceFileCount());
     assertEquals(0, response.getInput().getCompletedGroupsCount());
   }
 

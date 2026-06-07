@@ -962,6 +962,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     existing.snapshotTaskSourceTable = blankToEmpty(effective.sourceTable());
                     existing.snapshotTaskFileGroupPlanRecorded = effective.fileGroupPlanRecorded();
                     existing.snapshotTaskCompletionMode = effective.completionMode().name();
+                    existing.snapshotTaskSourceFileCount = effective.sourceFileCount();
                     existing.snapshotTaskDirectStatsBlobUri =
                         blankToEmpty(effective.directStatsBlobUri());
                     existing.snapshotTaskDirectStatsRecordCount =
@@ -1127,6 +1128,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && currentState.snapshotTaskFileGroupPlanRecorded == effective.fileGroupPlanRecorded()
         && blankToEmpty(currentState.snapshotTaskCompletionMode)
             .equals(effective.completionMode().name())
+        && currentState.snapshotTaskSourceFileCount == effective.sourceFileCount()
         && blankToEmpty(currentState.snapshotTaskDirectStatsBlobUri)
             .equals(blankToEmpty(effective.directStatsBlobUri()))
         && currentState.snapshotTaskDirectStatsRecordCount == effective.directStatsRecordCount()
@@ -1176,6 +1178,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         effective.completionMode(),
         manifestUri == null ? "" : manifestUri.trim(),
         adoptedFileGroupCount,
+        effective.sourceFileCount(),
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount());
   }

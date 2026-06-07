@@ -269,7 +269,7 @@ public interface FloecatConnector extends Closeable {
    * satisfied exclusively from snapshot-native metadata (for example missing file stats, delete
    * vectors, or any feature that requires file reads).
    */
-  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
@@ -286,7 +286,7 @@ public interface FloecatConnector extends Closeable {
         ColumnSelectorPolicy.defaults());
   }
 
-  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
@@ -343,6 +343,18 @@ public interface FloecatConnector extends Closeable {
 
     public static FileGroupCaptureResult empty() {
       return new FileGroupCaptureResult(List.of(), List.of());
+    }
+  }
+
+  record DirectSnapshotStatsCapture(List<TargetStatsRecord> records, int sourceFileCount) {
+    public DirectSnapshotStatsCapture {
+      records = records == null ? List.of() : List.copyOf(records);
+      sourceFileCount = Math.max(0, sourceFileCount);
+    }
+
+    public static DirectSnapshotStatsCapture of(
+        List<TargetStatsRecord> records, int sourceFileCount) {
+      return new DirectSnapshotStatsCapture(records, sourceFileCount);
     }
   }
 

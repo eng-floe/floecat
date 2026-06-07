@@ -368,7 +368,12 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             task.sourceTable(),
             fileGroupTasks,
             true,
-            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS),
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            fileGroupTasks.size(),
+            plannedSourceFileCount(fileGroupTasks),
+            "",
+            0),
         fileGroupTasks);
   }
 
@@ -387,7 +392,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             .setKind(ResourceKind.RK_TABLE)
             .build();
     ReconcileContext reconcileContext = reconcileContext(lease);
-    Optional<List<TargetStatsRecord>> directStats =
+    Optional<FloecatConnector.DirectSnapshotStatsCapture> directStats =
         backend.captureSnapshotTargetStatsDirect(
             reconcileContext,
             tableId,
@@ -410,9 +415,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                 ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
                 "",
                 0,
+                directStats.get().sourceFileCount(),
                 "",
-                directStats.get().size()),
-            directStats.get()));
+                directStats.get().records().size()),
+            directStats.get().records()));
   }
 
   private SnapshotDirectStatsRequest directStatsRequest(
@@ -679,5 +685,16 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return new SnapshotDirectStatsRequest(
           false, Set.of(), Set.of(), FloecatConnector.ColumnSelectorPolicy.defaults());
     }
+  }
+
+  private static int plannedSourceFileCount(List<ReconcileFileGroupTask> fileGroupTasks) {
+    if (fileGroupTasks == null || fileGroupTasks.isEmpty()) {
+      return 0;
+    }
+    return fileGroupTasks.stream()
+        .map(ReconcileFileGroupTask::filePaths)
+        .filter(paths -> paths != null)
+        .mapToInt(List::size)
+        .sum();
   }
 }

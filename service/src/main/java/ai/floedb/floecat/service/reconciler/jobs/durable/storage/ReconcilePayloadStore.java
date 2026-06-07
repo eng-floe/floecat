@@ -249,6 +249,7 @@ public class ReconcilePayloadStore {
         ReconcileSnapshotTask.CompletionMode.fromString(state.snapshotTaskCompletionMode),
         blankToEmpty(state.snapshotPlanBlobUri),
         fileGroupCount,
+        state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
         state.snapshotTaskDirectStatsRecordCount);
   }

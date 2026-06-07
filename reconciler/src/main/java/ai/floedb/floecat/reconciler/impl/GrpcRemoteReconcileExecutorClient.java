@@ -1206,6 +1206,7 @@ class GrpcRemoteReconcileExecutorClient
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setSourceFileCount(effective.sourceFileCount())
         .setDirectStatsBlobUri(effective.directStatsBlobUri())
         .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(
@@ -1412,6 +1413,7 @@ class GrpcRemoteReconcileExecutorClient
         },
         snapshotTask.getFileGroupPlanBlobUri(),
         snapshotTask.getFileGroupCount(),
+        snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
         snapshotTask.getDirectStatsRecordCount());
   }

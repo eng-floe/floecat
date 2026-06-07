@@ -658,6 +658,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.completionMode(),
                   effectiveManifestUri,
                   effective.fileGroupCount(),
+                  effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
                   effective.directStatsRecordCount());
           if (existing.snapshotTask.equals(adoptedTask)) {

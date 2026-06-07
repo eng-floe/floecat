@@ -1240,6 +1240,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setSourceFileCount(effective.sourceFileCount())
         .setDirectStatsBlobUri(effective.directStatsBlobUri())
         .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(

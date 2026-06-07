@@ -180,6 +180,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            6,
             "/accounts/acct/reconcile/jobs/parent-job/direct-stats/blob.json",
             2);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
@@ -200,6 +201,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         "/accounts/acct/reconcile/jobs/parent-job/direct-stats/blob.json",
         payload.directStatsBlobUri());
     assertEquals(2, payload.directStatsRecordCount());
+    assertEquals(6, payload.sourceFileCount());
     assertEquals(0, payload.completedGroups().size());
   }
 

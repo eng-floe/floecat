@@ -117,13 +117,19 @@ class SnapshotPlanBlobStoreTest {
             "events",
             List.of(),
             true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS);
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            7,
+            "",
+            0);
 
     ReconcileSnapshotTask persistedTask =
         store.persistDirectStats("acct", "job-1", snapshotTask, List.of(record));
 
     assertFalse(persistedTask.directStatsBlobUri().isBlank());
     assertEquals(1, persistedTask.directStatsRecordCount());
+    assertEquals(7, persistedTask.sourceFileCount());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.directStatsBlobUri()));
     assertEquals(List.of(record), store.loadDirectStats(persistedTask));
   }

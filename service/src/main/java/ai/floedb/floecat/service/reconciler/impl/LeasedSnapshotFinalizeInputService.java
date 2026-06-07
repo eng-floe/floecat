@@ -47,6 +47,7 @@ public class LeasedSnapshotFinalizeInputService {
       ReconcileSnapshotTask.CompletionMode completionMode,
       String directStatsBlobUri,
       int directStatsRecordCount,
+      int sourceFileCount,
       List<SnapshotFinalizeGroupManifest> completedGroups) {}
 
   public SnapshotFinalizeInput resolve(
@@ -75,6 +76,7 @@ public class LeasedSnapshotFinalizeInputService {
           ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
           requireDirectStatsBlobUri(snapshotTask),
           snapshotTask.directStatsRecordCount(),
+          snapshotTask.sourceFileCount(),
           List.of());
     }
     SnapshotFinalizeChildStateService.ChildState childState =
@@ -90,6 +92,7 @@ public class LeasedSnapshotFinalizeInputService {
         ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
         "",
         0,
+        snapshotTask.sourceFileCount(),
         completedGroupManifests(childState));
   }
 

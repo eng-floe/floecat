@@ -816,6 +816,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setSnapshotId(payload.snapshotId())
                       .setDirectStatsBlobUri(payload.directStatsBlobUri())
                       .setDirectStatsRecordCount(payload.directStatsRecordCount())
+                      .setSourceFileCount(payload.sourceFileCount())
                       .setCompletionMode(
                           switch (payload.completionMode()) {
                             case DIRECT_STATS ->
@@ -1075,6 +1076,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setSourceFileCount(effective.sourceFileCount())
         .setDirectStatsBlobUri(effective.directStatsBlobUri())
         .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(
@@ -1413,6 +1415,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         },
         snapshotTask.getFileGroupPlanBlobUri(),
         snapshotTask.getFileGroupCount(),
+        snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
         snapshotTask.getDirectStatsRecordCount());
   }

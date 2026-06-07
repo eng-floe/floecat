@@ -202,6 +202,8 @@ message ReconcileSnapshotTask {
   string file_group_plan_blob_uri = 8;
   // Number of grouped file executions in the persisted expanded file-group plan.
   uint32 file_group_count = 9;
+  // Number of source files expected to be represented for this snapshot capture.
+  uint32 source_file_count = 12;
   // Optional blob URI for persisted direct target stats results.
   string direct_stats_blob_uri = 10;
   // Number of direct target stats records persisted in the blob.
@@ -469,7 +471,8 @@ message LeasedSnapshotFinalizeInput {
   ReconcileSnapshotTask.CompletionMode completion_mode = 6;
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
-  repeated SnapshotFinalizeGroupManifest completed_groups = 9;
+  uint32 source_file_count = 9;
+  repeated SnapshotFinalizeGroupManifest completed_groups = 10;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {

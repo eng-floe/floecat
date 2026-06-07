@@ -343,7 +343,12 @@ class SnapshotFinalizeReconcileExecutorTest {
             "events",
             List.of(),
             true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS);
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            0,
+            "",
+            0);
     ReconcileScope scope = captureScope();
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -409,6 +414,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            4,
             blobUri,
             1);
     ReconcileScope scope = captureScope();
@@ -471,6 +477,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            4,
             "/accounts/acct/reconcile/jobs/plan-1/direct-stats/missing.json",
             1);
     ReconcileScope scope = captureScope();

@@ -29,6 +29,7 @@ public record ReconcileSnapshotTask(
     CompletionMode completionMode,
     String fileGroupPlanBlobUri,
     int fileGroupCount,
+    int sourceFileCount,
     String directStatsBlobUri,
     int directStatsRecordCount) {
 
@@ -60,6 +61,7 @@ public record ReconcileSnapshotTask(
     completionMode = completionMode == null ? CompletionMode.FILE_GROUPS : completionMode;
     fileGroupPlanBlobUri = fileGroupPlanBlobUri == null ? "" : fileGroupPlanBlobUri.trim();
     fileGroupCount = Math.max(0, fileGroupCount);
+    sourceFileCount = Math.max(0, sourceFileCount);
     directStatsBlobUri = directStatsBlobUri == null ? "" : directStatsBlobUri.trim();
     directStatsRecordCount = Math.max(0, directStatsRecordCount);
     if (fileGroupCount == 0 && !fileGroups.isEmpty()) {
@@ -77,6 +79,9 @@ public record ReconcileSnapshotTask(
         List.of(),
         false,
         CompletionMode.FILE_GROUPS,
+        "",
+        0,
+        0,
         "",
         0);
   }
@@ -96,6 +101,7 @@ public record ReconcileSnapshotTask(
         false,
         CompletionMode.FILE_GROUPS,
         "",
+        0,
         0,
         "",
         0);
@@ -118,6 +124,7 @@ public record ReconcileSnapshotTask(
         CompletionMode.FILE_GROUPS,
         "",
         fileGroups == null ? 0 : fileGroups.size(),
+        0,
         "",
         0);
   }
@@ -142,6 +149,7 @@ public record ReconcileSnapshotTask(
         completionMode,
         fileGroupPlanBlobUri,
         fileGroupCount,
+        0,
         "",
         0);
   }
@@ -164,6 +172,7 @@ public record ReconcileSnapshotTask(
         completionMode,
         "",
         fileGroups == null ? 0 : fileGroups.size(),
+        0,
         "",
         0);
   }
@@ -178,6 +187,7 @@ public record ReconcileSnapshotTask(
       CompletionMode completionMode,
       String fileGroupPlanBlobUri,
       int fileGroupCount,
+      int sourceFileCount,
       String directStatsBlobUri,
       int directStatsRecordCount) {
     if ((tableId == null || tableId.isBlank())
@@ -189,6 +199,7 @@ public record ReconcileSnapshotTask(
         && (completionMode == null || completionMode == CompletionMode.FILE_GROUPS)
         && (fileGroupPlanBlobUri == null || fileGroupPlanBlobUri.isBlank())
         && fileGroupCount <= 0
+        && sourceFileCount <= 0
         && (directStatsBlobUri == null || directStatsBlobUri.isBlank())
         && directStatsRecordCount <= 0) {
       return empty();
@@ -203,13 +214,14 @@ public record ReconcileSnapshotTask(
         completionMode,
         fileGroupPlanBlobUri,
         fileGroupCount,
+        sourceFileCount,
         directStatsBlobUri,
         directStatsRecordCount);
   }
 
   public static ReconcileSnapshotTask empty() {
     return new ReconcileSnapshotTask(
-        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, "", 0);
+        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, 0, "", 0);
   }
 
   @JsonIgnore
@@ -223,6 +235,7 @@ public record ReconcileSnapshotTask(
         && completionMode == CompletionMode.FILE_GROUPS
         && fileGroupPlanBlobUri.isBlank()
         && fileGroupCount <= 0
+        && sourceFileCount <= 0
         && directStatsBlobUri.isBlank()
         && directStatsRecordCount <= 0;
   }
