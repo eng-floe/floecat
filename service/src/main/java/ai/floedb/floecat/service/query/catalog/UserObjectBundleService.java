@@ -72,10 +72,8 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
-import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Context;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -92,7 +90,6 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1228,8 +1225,6 @@ public class UserObjectBundleService {
     private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final long streamStartNs = System.nanoTime();
-    private final long streamStartEpochNs =
-        TimeUnit.MILLISECONDS.toNanos(System.currentTimeMillis());
     private final Span parentSpan = Span.current();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
 
@@ -1566,7 +1561,7 @@ public class UserObjectBundleService {
                   - relationBuildNanos
                   - decorationNanos
                   - timings.statsLookupNanos());
-      emitPhaseSpans(totalNanos, schedulingNanos, outcome);
+      emitSummaryEvent(outcome);
 
       double totalMs = totalNanos / 1_000_000.0;
       if (totalMs >= slowRpcMs) {
@@ -1607,130 +1602,14 @@ public class UserObjectBundleService {
       }
     }
 
-    private void emitPhaseSpans(long totalNanos, long schedulingNanos, String outcome) {
+    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
+    // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
+    // timings remain available in the slow-query log; here we keep a single summary EVENT on the
+    // GetUserObjects RPC span itself (not a sub-span).
+    private void emitSummaryEvent(String outcome) {
       if (!parentSpan.getSpanContext().isValid()) {
         return;
       }
-      long cursorNs = 0L;
-      cursorNs = emitPhaseSpan(parentSpan, "resolve", 0L, cursorNs, resolveNanos, outcome, "");
-      cursorNs =
-          emitPhaseSpan(parentSpan, "base_inject", 0L, cursorNs, baseInjectNanos, outcome, "");
-      cursorNs =
-          emitPhaseSpan(parentSpan, "pin_collect", 0L, cursorNs, pinCollectNanos, outcome, "");
-      cursorNs = emitPhaseSpan(parentSpan, "pin_commit", 0L, cursorNs, pinCommitNanos, outcome, "");
-      cursorNs =
-          emitPhaseSpan(
-              parentSpan, "relation_build", 0L, cursorNs, relationBuildNanos, outcome, "");
-
-      long decorationStartNs = cursorNs;
-      Span decorationSpan =
-          startPhaseSpan(parentSpan, "decoration", 0L, decorationStartNs, outcome, "");
-      long decorationCursorNs = 0L;
-      decorationCursorNs =
-          emitPhaseSpan(
-              decorationSpan,
-              "decoration_relation",
-              decorationStartNs,
-              decorationCursorNs,
-              timings.decorateRelationNanos(),
-              outcome,
-              "decoration");
-      decorationCursorNs =
-          emitPhaseSpan(
-              decorationSpan,
-              "decoration_view",
-              decorationStartNs,
-              decorationCursorNs,
-              timings.decorateViewNanos(),
-              outcome,
-              "decoration");
-      long columnsStartNs = decorationCursorNs;
-      Span decorationColumnsSpan =
-          startPhaseSpan(
-              decorationSpan,
-              "decoration_columns",
-              decorationStartNs,
-              columnsStartNs,
-              outcome,
-              "decoration");
-      long columnsInvokeNanos = timings.decorateColumnInvokeNanos();
-      long columnsPostprocessNanos =
-          Math.max(0L, timings.decorateColumnsNanos() - timings.decorateColumnInvokeNanos());
-      long columnsCursorNs = 0L;
-      columnsCursorNs =
-          emitPhaseSpan(
-              decorationColumnsSpan,
-              "decoration_columns_invoke",
-              decorationStartNs + columnsStartNs,
-              columnsCursorNs,
-              columnsInvokeNanos,
-              outcome,
-              "decoration_columns");
-      columnsCursorNs =
-          emitPhaseSpan(
-              decorationColumnsSpan,
-              "decoration_columns_postprocess",
-              decorationStartNs + columnsStartNs,
-              columnsCursorNs,
-              columnsPostprocessNanos,
-              outcome,
-              "decoration_columns");
-      endPhaseSpan(
-          decorationColumnsSpan, decorationStartNs, columnsStartNs, timings.decorateColumnsNanos());
-      decorationCursorNs += timings.decorateColumnsNanos();
-      long completeStartNs = decorationCursorNs;
-      Span completeSpan =
-          startPhaseSpan(
-              decorationSpan,
-              "decoration_complete",
-              decorationStartNs,
-              completeStartNs,
-              outcome,
-              "decoration");
-      long completeCursorNs = 0L;
-      long relationPersistNanos = timings.decoratePersistRelationNanos();
-      long columnPersistNanos = timings.decoratePersistColumnsNanos();
-      completeCursorNs =
-          emitPhaseSpan(
-              completeSpan,
-              "decoration_persist_relation",
-              decorationStartNs + completeStartNs,
-              completeCursorNs,
-              relationPersistNanos,
-              outcome,
-              "decoration_complete");
-      completeCursorNs =
-          emitPhaseSpan(
-              completeSpan,
-              "decoration_persist_columns",
-              decorationStartNs + completeStartNs,
-              completeCursorNs,
-              columnPersistNanos,
-              outcome,
-              "decoration_complete");
-      long decorationCompleteOtherNanos =
-          Math.max(0L, timings.decorateCompleteNanos() - relationPersistNanos - columnPersistNanos);
-      completeCursorNs =
-          emitPhaseSpan(
-              completeSpan,
-              "decoration_complete_other",
-              decorationStartNs + completeStartNs,
-              completeCursorNs,
-              decorationCompleteOtherNanos,
-              outcome,
-              "decoration_complete");
-      endPhaseSpan(
-          completeSpan, decorationStartNs, completeStartNs, timings.decorateCompleteNanos());
-      decorationCursorNs += timings.decorateCompleteNanos();
-      endPhaseSpan(decorationSpan, 0L, decorationStartNs, decorationNanos);
-      cursorNs += decorationNanos;
-
-      cursorNs =
-          emitPhaseSpan(
-              parentSpan, "stats_lookup", 0L, cursorNs, timings.statsLookupNanos(), outcome, "");
-      cursorNs =
-          emitPhaseSpan(parentSpan, "scheduling", 0L, cursorNs, schedulingNanos, outcome, "");
-
       parentSpan.addEvent(
           "floecat.get_user_objects.summary",
           Attributes.builder()
@@ -1747,62 +1626,6 @@ public class UserObjectBundleService {
                       / 1_000_000.0)
               .put("outcome", safe(outcome))
               .build());
-    }
-
-    private Span startPhaseSpan(
-        Span parent,
-        String phase,
-        long baseOffsetNs,
-        long startOffsetNs,
-        String outcome,
-        String parentPhase) {
-      if (parent == null || !parent.getSpanContext().isValid()) {
-        return Span.getInvalid();
-      }
-      long safeBaseOffset = Math.max(0L, baseOffsetNs);
-      long safeStartOffset = Math.max(0L, startOffsetNs);
-      long startTimestampNs = streamStartEpochNs + safeBaseOffset + safeStartOffset;
-      var builder =
-          GlobalOpenTelemetry.getTracer("floecat.service")
-              .spanBuilder("floecat.get_user_objects.phase." + phase)
-              .setParent(Context.root().with(parent))
-              .setStartTimestamp(startTimestampNs, TimeUnit.NANOSECONDS)
-              .setAttribute("query_id", ctx.getQueryId())
-              .setAttribute("correlation_id", correlationId)
-              .setAttribute("phase", phase)
-              .setAttribute("outcome", safe(outcome));
-      if (parentPhase != null && !parentPhase.isBlank()) {
-        builder.setAttribute("parent_phase", parentPhase);
-      }
-      return builder.startSpan();
-    }
-
-    private void endPhaseSpan(
-        Span phaseSpan, long baseOffsetNs, long startOffsetNs, long elapsedNanos) {
-      if (phaseSpan == null || !phaseSpan.getSpanContext().isValid()) {
-        return;
-      }
-      long safeBaseOffset = Math.max(0L, baseOffsetNs);
-      long safeStartOffset = Math.max(0L, startOffsetNs);
-      long safeElapsed = Math.max(0L, elapsedNanos);
-      long endTimestampNs = streamStartEpochNs + safeBaseOffset + safeStartOffset + safeElapsed;
-      phaseSpan.setAttribute("elapsed_ns", safeElapsed);
-      phaseSpan.setAttribute("elapsed_ms", safeElapsed / 1_000_000.0);
-      phaseSpan.end(endTimestampNs, TimeUnit.NANOSECONDS);
-    }
-
-    private long emitPhaseSpan(
-        Span parent,
-        String phase,
-        long baseOffsetNs,
-        long startOffsetNs,
-        long elapsedNanos,
-        String outcome,
-        String parentPhase) {
-      Span phaseSpan =
-          startPhaseSpan(parent, phase, baseOffsetNs, startOffsetNs, outcome, parentPhase);
-      endPhaseSpan(phaseSpan, baseOffsetNs, startOffsetNs, elapsedNanos);
-      return Math.max(0L, startOffsetNs) + Math.max(0L, elapsedNanos);
     }
 
     private RelationCacheKey relationCacheKey(ResolvedRelation relation) {
