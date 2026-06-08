@@ -22,12 +22,13 @@ import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
 import software.amazon.awssdk.services.secretsmanager.model.DeleteSecretRequest;
@@ -87,20 +88,20 @@ public class ProdSecretsManager implements SecretsManager {
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
-    SdkBytes sdkBytes = SdkBytes.fromByteArray(payload == null ? new byte[0] : payload);
+    String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
     try {
       clientForAccount(accountId)
           .createSecret(
               CreateSecretRequest.builder()
                   .name(secretName)
-                  .secretBinary(sdkBytes)
+                  .secretString(encoded)
                   .tags(tags)
                   .build());
     } catch (ResourceExistsException exists) {
       clientForAccount(accountId)
           .putSecretValue(
-              PutSecretValueRequest.builder().secretId(secretName).secretBinary(sdkBytes).build());
+              PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
       tagSecret(accountId, secretName, tags);
     }
   }
@@ -113,10 +114,12 @@ public class ProdSecretsManager implements SecretsManager {
       var response =
           clientForAccount(accountId)
               .getSecretValue(GetSecretValueRequest.builder().secretId(secretName).build());
-      if (response == null || response.secretBinary() == null) {
+      if (response == null
+          || response.secretString() == null
+          || response.secretString().isBlank()) {
         return Optional.empty();
       }
-      return Optional.of(response.secretBinary().asByteArray());
+      return Optional.of(decodePayload(response.secretString()));
     } catch (ResourceNotFoundException missing) {
       return Optional.empty();
     }
@@ -126,19 +129,19 @@ public class ProdSecretsManager implements SecretsManager {
   public void update(String accountId, String secretType, String secretId, byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
-    SdkBytes sdkBytes = SdkBytes.fromByteArray(payload == null ? new byte[0] : payload);
+    String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
     try {
       clientForAccount(accountId)
           .putSecretValue(
-              PutSecretValueRequest.builder().secretId(secretName).secretBinary(sdkBytes).build());
+              PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
       tagSecret(accountId, secretName, tags);
     } catch (ResourceNotFoundException missing) {
       clientForAccount(accountId)
           .createSecret(
               CreateSecretRequest.builder()
                   .name(secretName)
-                  .secretBinary(sdkBytes)
+                  .secretString(encoded)
                   .tags(tags)
                   .build());
     }
@@ -210,5 +213,17 @@ public class ProdSecretsManager implements SecretsManager {
       return;
     }
     awsClients.ensureCredentialsAvailable();
+  }
+
+  private static String encodePayload(byte[] payload) {
+    return Base64.getEncoder().encodeToString(payload == null ? new byte[0] : payload);
+  }
+
+  private static byte[] decodePayload(String encoded) {
+    try {
+      return Base64.getDecoder().decode(encoded);
+    } catch (IllegalArgumentException ignored) {
+      return encoded.getBytes(StandardCharsets.UTF_8);
+    }
   }
 }

@@ -109,7 +109,7 @@ public class TableLoadSupport {
     return metadataLocation + "|snapshots=" + mode;
   }
 
-  private boolean deltaCompatEnabled(Table table) {
+  boolean deltaCompatEnabled(Table table) {
     if (config == null || tableFormatSupport == null || table == null) {
       return false;
     }

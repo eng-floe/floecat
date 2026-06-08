@@ -67,6 +67,9 @@ public interface IcebergGatewayConfig {
     @WithDefault("true")
     boolean readOnly();
 
+    @WithDefault("true")
+    boolean rewriteVariantAsStruct();
+
     @WithDefault("PT30S")
     Duration cacheTtl();
   }

@@ -16,27 +16,17 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
-import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.common.rpc.QueryInput;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
-import ai.floedb.floecat.execution.rpc.ScanFile;
-import ai.floedb.floecat.execution.rpc.ScanFileContent;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
-import ai.floedb.floecat.query.rpc.EndQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
+import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Scan;
@@ -46,6 +36,7 @@ import io.delta.kernel.data.Row;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.internal.InternalScanFileUtils;
+import io.delta.kernel.internal.ScanImpl;
 import io.delta.kernel.internal.actions.AddFile;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.deletionvectors.DeletionVectorUtils;
@@ -53,19 +44,22 @@ import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.math.BigDecimal;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.stream.StreamSupport;
 import org.apache.iceberg.BaseTable;
@@ -73,7 +67,6 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.FileMetadata;
 import org.apache.iceberg.LocationProviders;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.PartitionSpec;
@@ -81,7 +74,6 @@ import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.SortOrder;
-import org.apache.iceberg.StructLike;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
@@ -96,6 +88,21 @@ import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.jboss.logging.Logger;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 @ApplicationScoped
 public class DeltaManifestMaterializer {
@@ -103,23 +110,27 @@ public class DeltaManifestMaterializer {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final PartitionSpec UNPARTITIONED = PartitionSpec.unpartitioned();
   private static final String METADATA_DIR = "metadata";
+  private static final int DEFAULT_COMPAT_FORMAT_VERSION = 2;
 
   @Inject GrpcServiceFacade grpcClient;
   @Inject TableGatewaySupport tableGatewaySupport;
   @Inject ConnectorIntegrationConfig config;
+  @Inject IcebergGatewayConfig gatewayConfig;
+
+  protected record SourceTableAccess(Map<String, String> fileIoProperties, FileIO sourceFileIo) {}
 
   public List<Snapshot> materialize(Table table, List<Snapshot> snapshots) {
     if (table == null || !table.hasResourceId() || snapshots == null || snapshots.isEmpty()) {
       return snapshots == null ? List.of() : snapshots;
     }
-    String metadataRoot = metadataRoot(table);
-    if (metadataRoot == null || metadataRoot.isBlank()) {
-      return snapshots;
-    }
+    String sourceMetadataRoot = metadataRoot(table);
+    LOG.infof(
+        "Delta compat materialize setup table=%s sourceMetadataRoot=%s snapshotCount=%d",
+        table.getResourceId().getId(), sourceMetadataRoot, snapshots.size());
 
-    FileIO fileIo = null;
+    SourceTableAccess sourceAccess = null;
     try {
-      fileIo = newFileIo(table);
+      sourceAccess = newSourceTableAccess(table, sourceMetadataRoot);
       List<Snapshot> rewritten = new ArrayList<>(snapshots.size());
       for (Snapshot snapshot : snapshots) {
         if (snapshot == null || snapshot.getSnapshotId() < 0) {
@@ -130,8 +141,19 @@ public class DeltaManifestMaterializer {
           rewritten.add(snapshot);
           continue;
         }
+        CompatStorageContext compatStorage = null;
+        FileIO compatFileIo = null;
         try {
-          String manifestList = ensureCompatArtifacts(fileIo, table, snapshot, metadataRoot);
+          compatStorage = resolveCompatStorage(table, snapshot);
+          compatFileIo = newCompatFileIo(table, snapshot, compatStorage);
+          String manifestList =
+              ensureCompatArtifacts(
+                  compatFileIo,
+                  sourceAccess,
+                  table,
+                  snapshot,
+                  compatStorage.metadataRoot(),
+                  sourceMetadataRoot);
           if (manifestList != null && !manifestList.isBlank()) {
             rewritten.add(snapshot.toBuilder().setManifestList(manifestList).build());
           } else {
@@ -144,6 +166,8 @@ public class DeltaManifestMaterializer {
               table.getResourceId().getId(),
               snapshot.getSnapshotId());
           rewritten.add(snapshot);
+        } finally {
+          closeQuietly(compatFileIo);
         }
       }
       return List.copyOf(rewritten);
@@ -154,15 +178,44 @@ public class DeltaManifestMaterializer {
           table.getResourceId().getId());
       return snapshots;
     } finally {
-      closeQuietly(fileIo);
+      closeQuietly(sourceAccess == null ? null : sourceAccess.sourceFileIo());
     }
   }
+
+  protected FileIO newSourceFileIo(Table table, String metadataRoot) {
+    return newFileIo(table);
+  }
+
+  protected Map<String, String> newSourceFileIoProperties(Table table, String metadataRoot) {
+    if (tableGatewaySupport != null) {
+      return tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, metadataRoot);
+    }
+    LinkedHashMap<String, String> props = new LinkedHashMap<>();
+    if (table != null && table.getPropertiesCount() > 0) {
+      table
+          .getPropertiesMap()
+          .forEach(
+              (k, v) -> {
+                if (k != null && v != null && FileIoFactory.isFileIoProperty(k)) {
+                  props.put(k, v);
+                }
+              });
+    }
+    return props.isEmpty() ? Map.of() : Map.copyOf(props);
+  }
+
+  protected SourceTableAccess newSourceTableAccess(Table table, String metadataRoot) {
+    return new SourceTableAccess(
+        newSourceFileIoProperties(table, metadataRoot), newSourceFileIo(table, metadataRoot));
+  }
+
+  protected record CompatSnapshotFiles(List<DataFile> dataFiles, List<DeleteFile> deleteFiles) {}
 
   protected FileIO newFileIo(Table table) {
     Map<String, String> props = new LinkedHashMap<>();
     if (tableGatewaySupport != null) {
-      String location = metadataRoot(table);
-      props.putAll(tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, location));
+      props.putAll(
+          tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, metadataRoot(table)));
     } else if (table != null && table.getPropertiesCount() > 0) {
       table
           .getPropertiesMap()
@@ -177,50 +230,60 @@ public class DeltaManifestMaterializer {
   }
 
   private String writeManifestArtifacts(
-      FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
-    ScanBundle bundle = fetchScanBundle(table, snapshot.getSnapshotId());
+      FileIO compatFileIo,
+      SourceTableAccess sourceAccess,
+      Table table,
+      Snapshot snapshot,
+      String compatMetadataRoot,
+      String sourceMetadataRoot)
+      throws Exception {
     long snapshotId = snapshot.getSnapshotId();
-    String compatMetadataPath = compatMetadataPath(metadataRoot, snapshotId);
-    deleteIfExists(fileIo, compatMetadataPath);
+    String compatMetadataPath = compatMetadataPath(compatMetadataRoot, snapshotId);
+    deleteIfExists(compatFileIo, compatMetadataPath);
     PartitionSpec requestedSpec = resolveDataSpec(table, snapshot);
-    String tableLocation = tableRootFromMetadataRoot(metadataRoot);
-    if (tableLocation == null || tableLocation.isBlank()) {
-      tableLocation = metadataRoot;
-    }
+    String tableLocation = tableRootFromMetadataRoot(compatMetadataRoot);
     Schema schema = parseSnapshotSchema(snapshot, table);
     if (schema == null) {
       schema = new Schema();
     }
 
     CompatTableOperations tableOps =
-        new CompatTableOperations(fileIo, tableLocation, metadataRoot, compatMetadataPath);
+        new CompatTableOperations(
+            compatFileIo, tableLocation, compatMetadataRoot, compatMetadataPath);
+    int formatVersion = requiredFormatVersion(schema);
+    Map<String, String> initialProps =
+        formatVersion > DEFAULT_COMPAT_FORMAT_VERSION
+            ? Map.of("format-version", Integer.toString(formatVersion))
+            : Map.of();
     tableOps.initialize(
         TableMetadata.newTableMetadata(
             schema,
             requestedSpec == null ? UNPARTITIONED : requestedSpec,
             SortOrder.unsorted(),
             tableLocation,
-            Map.of()));
+            initialProps));
     PartitionSpec effectiveSpec =
         tableOps.current() == null || tableOps.current().spec() == null
             ? UNPARTITIONED
             : tableOps.current().spec();
-    List<DataFile> dataFiles = new ArrayList<>();
-    if (bundle != null) {
-      for (ScanFile dataFile : bundle.getDataFilesList()) {
-        dataFiles.add(toDataFile(dataFile, effectiveSpec));
-      }
-    }
-    List<DeleteFile> deleteFiles =
-        buildDeleteFiles(fileIo, table, snapshot, metadataRoot, bundle, effectiveSpec);
+    CompatSnapshotFiles snapshotFiles =
+        loadCompatSnapshotFiles(
+            compatFileIo,
+            sourceAccess,
+            table,
+            snapshot,
+            compatMetadataRoot,
+            sourceMetadataRoot,
+            effectiveSpec,
+            schema);
 
     BaseTable compatTable = new BaseTable(tableOps, "delta-compat-" + snapshotId);
     Transaction transaction = compatTable.newTransaction();
     RowDelta rowDelta = transaction.newRowDelta();
-    for (DataFile dataFile : dataFiles) {
+    for (DataFile dataFile : snapshotFiles.dataFiles()) {
       rowDelta.addRows(dataFile);
     }
-    for (DeleteFile deleteFile : deleteFiles) {
+    for (DeleteFile deleteFile : snapshotFiles.deleteFiles()) {
       rowDelta.addDeletes(deleteFile);
     }
     rowDelta.commit();
@@ -234,173 +297,167 @@ public class DeltaManifestMaterializer {
     return compatTable.currentSnapshot().manifestListLocation();
   }
 
-  private List<DeleteFile> buildDeleteFiles(
-      FileIO fileIo,
+  /**
+   * Returns the minimum Iceberg format version the schema can be expressed in. Types such as {@code
+   * variant} (carried over from Delta tables) are only valid from format version 3 onwards;
+   * building {@link TableMetadata} at v2 would otherwise fail {@code Schema.checkCompatibility} and
+   * leave the snapshot without a manifest list.
+   */
+  private static int requiredFormatVersion(Schema schema) {
+    if (schema == null) {
+      return DEFAULT_COMPAT_FORMAT_VERSION;
+    }
+    return requiresV3(schema.asStruct()) ? 3 : DEFAULT_COMPAT_FORMAT_VERSION;
+  }
+
+  private static boolean requiresV3(Type type) {
+    if (type == null) {
+      return false;
+    }
+    switch (type.typeId()) {
+      case VARIANT:
+      case GEOMETRY:
+      case GEOGRAPHY:
+      case TIMESTAMP_NANO:
+        return true;
+      default:
+        break;
+    }
+    if (type.isStructType()) {
+      for (Types.NestedField field : type.asStructType().fields()) {
+        if (requiresV3(field.type())) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (type.isListType()) {
+      return requiresV3(type.asListType().elementType());
+    }
+    if (type.isMapType()) {
+      return requiresV3(type.asMapType().keyType()) || requiresV3(type.asMapType().valueType());
+    }
+    return false;
+  }
+
+  protected CompatSnapshotFiles loadCompatSnapshotFiles(
+      FileIO compatFileIo,
+      SourceTableAccess sourceAccess,
       Table table,
       Snapshot snapshot,
-      String metadataRoot,
-      ScanBundle bundle,
-      PartitionSpec dataSpec) {
-    try {
-      List<DeleteFileEntry> entries =
-          new ArrayList<>(buildDeleteFilesFromScanBundle(bundle, dataSpec));
-      if (entries.isEmpty()) {
-        for (DeleteFile deleteFile :
-            loadDeltaPositionDeleteFiles(fileIo, table, snapshot, metadataRoot)) {
-          entries.add(new DeleteFileEntry(deleteFile, null));
-        }
-      }
-      return entries.stream().map(DeleteFileEntry::file).toList();
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Delta compat delete file generation failed table=%s snapshot=%d; continuing without delete files",
-          table.getResourceId().getId(),
-          snapshot.getSnapshotId());
-      return List.of();
-    }
-  }
-
-  private List<DeleteFileEntry> buildDeleteFilesFromScanBundle(
-      ScanBundle bundle, PartitionSpec dataSpec) {
-    if (bundle == null || bundle.getDeleteFilesCount() == 0) {
-      return List.of();
-    }
-    PartitionSpec spec = dataSpec == null ? UNPARTITIONED : dataSpec;
-    Map<Integer, List<String>> referencedDataPaths = referencedDataPathsByDeleteIndex(bundle);
-    List<DeleteFileEntry> out = new ArrayList<>(bundle.getDeleteFilesCount());
-    for (int i = 0; i < bundle.getDeleteFilesCount(); i++) {
-      ScanFile deleteScanFile = bundle.getDeleteFiles(i);
-      DeleteFile deleteFile = toDeleteFile(deleteScanFile, spec, referencedDataPaths.get(i));
-      if (deleteFile != null) {
-        Long seq =
-            deleteScanFile.hasSequenceNumber() && deleteScanFile.getSequenceNumber() > 0
-                ? deleteScanFile.getSequenceNumber()
-                : null;
-        out.add(new DeleteFileEntry(deleteFile, seq));
-      }
-    }
-    return out;
-  }
-
-  private Map<Integer, List<String>> referencedDataPathsByDeleteIndex(ScanBundle bundle) {
-    if (bundle == null || bundle.getDataFilesCount() == 0) {
-      return Map.of();
-    }
-    Map<Integer, List<String>> refs = new LinkedHashMap<>();
-    for (ScanFile dataFile : bundle.getDataFilesList()) {
-      if (dataFile == null || dataFile.getDeleteFileIndicesCount() == 0) {
-        continue;
-      }
-      for (int index : dataFile.getDeleteFileIndicesList()) {
-        if (index < 0 || index >= bundle.getDeleteFilesCount()) {
-          continue;
-        }
-        refs.computeIfAbsent(index, ignored -> new ArrayList<>()).add(dataFile.getFilePath());
-      }
-    }
-    return refs;
-  }
-
-  private DeleteFile toDeleteFile(
-      ScanFile file, PartitionSpec spec, List<String> referencedDataFiles) {
-    if (file == null || file.getFilePath() == null || file.getFilePath().isBlank()) {
-      return null;
-    }
-    FileMetadata.Builder builder = FileMetadata.deleteFileBuilder(spec);
-    if (file.getFileContent() == ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES) {
-      if (file.getEqualityFieldIdsCount() == 0) {
-        return null;
-      }
-      int[] equalityIds = new int[file.getEqualityFieldIdsCount()];
-      for (int i = 0; i < file.getEqualityFieldIdsCount(); i++) {
-        equalityIds[i] = file.getEqualityFieldIds(i);
-      }
-      builder.ofEqualityDeletes(equalityIds);
-    } else {
-      builder.ofPositionDeletes();
-    }
-    builder
-        .withPath(file.getFilePath())
-        .withFormat(resolveFileFormat(file.getFileFormat()))
-        .withFileSizeInBytes(file.getFileSizeInBytes())
-        .withRecordCount(file.getRecordCount());
-    if (spec.isPartitioned()) {
-      StructLike partition = parsePartitionStruct(file, spec);
-      if (partition != null) {
-        builder.withPartition(partition);
-      }
-    }
-    if (file.getFileContent() == ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES
-        && referencedDataFiles != null
-        && referencedDataFiles.size() == 1) {
-      builder.withReferencedDataFile(referencedDataFiles.get(0));
-    }
-    return builder.build();
-  }
-
-  protected List<DeleteFile> loadDeltaPositionDeleteFiles(
-      FileIO icebergFileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
+      String compatMetadataRoot,
+      String sourceMetadataRoot,
+      PartitionSpec dataSpec,
+      Schema schema)
+      throws Exception {
     long snapshotId = snapshot.getSnapshotId();
     if (snapshotId < 0) {
-      return List.of();
+      LOG.warnf(
+          "Delta compat snapshot skipped table=%s snapshot=%d because snapshot id is negative",
+          table != null && table.hasResourceId() ? table.getResourceId().getId() : "<unknown>",
+          snapshotId);
+      return new CompatSnapshotFiles(List.of(), List.of());
     }
 
-    String tableRoot = tableRootFromMetadataRoot(metadataRoot);
+    String tableRoot = tableRootFromMetadataRoot(sourceMetadataRoot);
+    LOG.infof(
+        "Delta compat loading snapshot files table=%s snapshot=%d sourceMetadataRoot=%s tableRoot=%s",
+        table != null && table.hasResourceId() ? table.getResourceId().getId() : "<unknown>",
+        snapshotId,
+        sourceMetadataRoot,
+        tableRoot);
     if (tableRoot == null || tableRoot.isBlank()) {
-      return List.of();
+      LOG.warnf(
+          "Delta compat snapshot skipped table=%s snapshot=%d because table root could not be derived from sourceMetadataRoot=%s",
+          table != null && table.hasResourceId() ? table.getResourceId().getId() : "<unknown>",
+          snapshotId,
+          sourceMetadataRoot);
+      return new CompatSnapshotFiles(List.of(), List.of());
     }
 
-    if (!deltaLogExists(icebergFileIo, tableRoot)) {
-      return List.of();
-    }
+    DeltaEngineContext deltaEngine = newDeltaEngineContext(sourceAccess, tableRoot);
+    try {
+      Engine engine = deltaEngine.engine();
+      io.delta.kernel.Table deltaTable = io.delta.kernel.Table.forPath(engine, tableRoot);
+      io.delta.kernel.Snapshot deltaSnapshot =
+          deltaTable.getSnapshotAsOfVersion(engine, snapshotId);
+      LOG.infof(
+          "Delta compat resolved upstream snapshot table=%s snapshot=%d tableRoot=%s",
+          table != null && table.hasResourceId() ? table.getResourceId().getId() : "<unknown>",
+          snapshotId,
+          tableRoot);
+      ScanBuilder scanBuilder = deltaSnapshot.getScanBuilder();
+      Scan scan = scanBuilder.build();
 
-    Engine engine = newDeltaEngine(icebergFileIo);
-    io.delta.kernel.Table deltaTable = io.delta.kernel.Table.forPath(engine, tableRoot);
-    io.delta.kernel.Snapshot deltaSnapshot = deltaTable.getSnapshotAsOfVersion(engine, snapshotId);
-    ScanBuilder scanBuilder = deltaSnapshot.getScanBuilder();
-    Scan scan = scanBuilder.build();
+      List<DataFile> dataFiles = new ArrayList<>();
+      List<DeleteFile> deletes = new ArrayList<>();
+      CloseableIterator<FilteredColumnarBatch> scanFiles =
+          scan instanceof ScanImpl scanImpl
+              ? scanImpl.getScanFiles(engine, true)
+              : scan.getScanFiles(engine);
+      try (CloseableIterator<FilteredColumnarBatch> batches = scanFiles) {
+        while (batches.hasNext()) {
+          FilteredColumnarBatch batch = batches.next();
+          try (CloseableIterator<Row> rows = batch.getRows()) {
+            while (rows.hasNext()) {
+              Row scanFileRow = rows.next();
+              AddFile add =
+                  new AddFile(scanFileRow.getStruct(InternalScanFileUtils.ADD_FILE_ORDINAL));
+              dataFiles.add(toDataFile(scanFileRow, add, dataSpec, schema));
 
-    List<DeleteFile> deletes = new ArrayList<>();
-    try (CloseableIterator<FilteredColumnarBatch> batches = scan.getScanFiles(engine)) {
-      while (batches.hasNext()) {
-        FilteredColumnarBatch batch = batches.next();
-        try (CloseableIterator<Row> rows = batch.getRows()) {
-          while (rows.hasNext()) {
-            Row scanFileRow = rows.next();
-            String dataPath = InternalScanFileUtils.getAddFileStatus(scanFileRow).getPath();
-            AddFile add =
-                new AddFile(scanFileRow.getStruct(InternalScanFileUtils.ADD_FILE_ORDINAL));
-            Optional<DeletionVectorDescriptor> maybeDv = add.getDeletionVector();
-            if (maybeDv.isEmpty()) {
-              continue;
+              String dataPath = InternalScanFileUtils.getAddFileStatus(scanFileRow).getPath();
+              Optional<DeletionVectorDescriptor> maybeDv = add.getDeletionVector();
+              if (maybeDv.isEmpty()) {
+                continue;
+              }
+              DeletionVectorDescriptor dv = maybeDv.get();
+              if (!dv.isOnDisk() || dv.isInline()) {
+                continue;
+              }
+              long[] positions =
+                  DeletionVectorUtils.loadNewDvAndBitmap(engine, tableRoot, dv)._2.toArray();
+              if (positions == null || positions.length == 0) {
+                continue;
+              }
+              deletes.add(
+                  writePositionDeleteFile(
+                      compatFileIo,
+                      compatMetadataRoot,
+                      snapshotId,
+                      dataPath,
+                      dv.getUniqueId(),
+                      positions));
             }
-            DeletionVectorDescriptor dv = maybeDv.get();
-            if (!dv.isOnDisk() || dv.isInline()) {
-              continue;
-            }
-            long[] positions =
-                DeletionVectorUtils.loadNewDvAndBitmap(engine, tableRoot, dv)._2.toArray();
-            if (positions == null || positions.length == 0) {
-              continue;
-            }
-            deletes.add(
-                writePositionDeleteFile(
-                    icebergFileIo,
-                    metadataRoot,
-                    snapshotId,
-                    dataPath,
-                    dv.getUniqueId(),
-                    positions));
           }
         }
       }
+      LOG.infof(
+          "Delta compat snapshot files loaded table=%s snapshot=%d dataFiles=%d deleteFiles=%d tableRoot=%s compatMetadataRoot=%s",
+          table != null && table.hasResourceId() ? table.getResourceId().getId() : "<unknown>",
+          snapshotId,
+          dataFiles.size(),
+          deletes.size(),
+          tableRoot,
+          compatMetadataRoot);
+      return new CompatSnapshotFiles(List.copyOf(dataFiles), List.copyOf(deletes));
+    } finally {
+      closeQuietly(deltaEngine);
     }
-    return List.copyOf(deletes);
   }
 
-  protected Engine newDeltaEngine(FileIO icebergFileIo) {
-    return DefaultEngine.create(new IcebergFileIoAdapter(icebergFileIo));
+  protected DeltaEngineContext newDeltaEngineContext(
+      SourceTableAccess sourceAccess, String tableRoot) {
+    if (tableRoot != null && tableRoot.toLowerCase(Locale.ROOT).startsWith("s3://")) {
+      S3Client s3 =
+          buildS3Client(sourceAccess == null ? Map.of() : sourceAccess.fileIoProperties());
+      return new DeltaEngineContext(DefaultEngine.create(new S3FileSystemClient(s3)), s3);
+    }
+    FileIO sourceFileIo = sourceAccess == null ? null : sourceAccess.sourceFileIo();
+    if (sourceFileIo == null) {
+      throw new IllegalArgumentException("Source FileIO is required for non-S3 Delta table roots");
+    }
+    return new DeltaEngineContext(
+        DefaultEngine.create(new IcebergFileIoAdapter(sourceFileIo)), null);
   }
 
   private DeleteFile writePositionDeleteFile(
@@ -437,13 +494,21 @@ public class DeltaManifestMaterializer {
   }
 
   private String ensureCompatArtifacts(
-      FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
+      FileIO compatFileIo,
+      SourceTableAccess sourceAccess,
+      Table table,
+      Snapshot snapshot,
+      String compatMetadataRoot,
+      String sourceMetadataRoot)
+      throws Exception {
     String manifestListPath =
-        readManifestListFromCompatMetadata(fileIo, metadataRoot, snapshot.getSnapshotId());
+        readManifestListFromCompatMetadata(
+            compatFileIo, compatMetadataRoot, snapshot.getSnapshotId());
     if (manifestListPath != null) {
       return manifestListPath;
     }
-    return writeManifestArtifacts(fileIo, table, snapshot, metadataRoot);
+    return writeManifestArtifacts(
+        compatFileIo, sourceAccess, table, snapshot, compatMetadataRoot, sourceMetadataRoot);
   }
 
   private String readManifestListFromCompatMetadata(
@@ -471,63 +536,19 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private ScanBundle fetchScanBundle(Table table, long snapshotId) {
-    String queryId = null;
-    try {
-      BeginQueryRequest.Builder begin = BeginQueryRequest.newBuilder();
-      if (table.hasCatalogId()) {
-        begin.setDefaultCatalogId(table.getCatalogId());
-      }
-      QueryDescriptor query = grpcClient.beginQuery(begin.build()).getQuery();
-      queryId = query == null ? null : query.getQueryId();
-      if (queryId == null || queryId.isBlank()) {
-        throw new IllegalStateException("BeginQuery returned empty query id");
-      }
-
-      QueryInput input =
-          snapshotId >= 0
-              ? QueryInput.newBuilder()
-                  .setTableId(table.getResourceId())
-                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                  .build()
-              : QueryInput.newBuilder()
-                  .setTableId(table.getResourceId())
-                  .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                  .build();
-      grpcClient.describeInputs(
-          DescribeInputsRequest.newBuilder().setQueryId(queryId).addInputs(input).build());
-
-      return grpcClient
-          .fetchScanBundle(
-              FetchScanBundleRequest.newBuilder()
-                  .setQueryId(queryId)
-                  .setTableId(table.getResourceId())
-                  .build())
-          .getBundle();
-    } finally {
-      if (queryId != null && !queryId.isBlank()) {
-        try {
-          grpcClient.endQuery(
-              EndQueryRequest.newBuilder().setQueryId(queryId).setCommit(false).build());
-        } catch (Exception e) {
-          LOG.debugf(e, "Failed to end compat query %s", queryId);
-        }
-      }
-    }
-  }
-
-  private DataFile toDataFile(ScanFile file, PartitionSpec dataSpec) {
+  private DataFile toDataFile(Row scanFileRow, AddFile add, PartitionSpec dataSpec, Schema schema) {
     PartitionSpec spec = dataSpec == null ? UNPARTITIONED : dataSpec;
+    FileStatus fileStatus = InternalScanFileUtils.getAddFileStatus(scanFileRow);
     DataFiles.Builder builder =
         DataFiles.builder(spec)
-            .withPath(file.getFilePath())
-            .withFormat(resolveFileFormat(file.getFileFormat()))
-            .withFileSizeInBytes(file.getFileSizeInBytes())
-            .withRecordCount(file.getRecordCount());
+            .withPath(fileStatus.getPath())
+            .withFormat(resolveFileFormat(fileStatus.getPath()))
+            .withFileSizeInBytes(fileStatus.getSize())
+            .withRecordCount(resolveRecordCount(add));
     if (spec.isPartitioned()) {
-      maybeApplyPartition(builder, file, spec);
+      maybeApplyPartition(builder, InternalScanFileUtils.getPartitionValues(scanFileRow), spec);
     }
-    Metrics metrics = toMetrics(file, spec.schema());
+    Metrics metrics = toMetrics(add, schema);
     if (metrics != null) {
       builder.withMetrics(metrics);
     }
@@ -583,7 +604,7 @@ public class DeltaManifestMaterializer {
     }
     String normalizedSchemaJson =
         DeltaSchemaNormalizer.normalizeSchemaJson(
-            schemaJson, snapshot == null ? 0 : snapshot.getSchemaId());
+            schemaJson, snapshot == null ? 0 : snapshot.getSchemaId(), rewriteVariantAsStruct());
     try {
       return SchemaParser.fromJson(
           normalizedSchemaJson == null || normalizedSchemaJson.isBlank()
@@ -593,6 +614,13 @@ public class DeltaManifestMaterializer {
       LOG.debugf(e, "Unable to parse schema JSON for compat partition spec construction");
       return null;
     }
+  }
+
+  private boolean rewriteVariantAsStruct() {
+    if (gatewayConfig == null || gatewayConfig.deltaCompat().isEmpty()) {
+      return true;
+    }
+    return gatewayConfig.deltaCompat().get().rewriteVariantAsStruct();
   }
 
   private String resolveSourceName(
@@ -675,187 +703,89 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private void maybeApplyPartition(DataFiles.Builder builder, ScanFile file, PartitionSpec spec) {
+  private void maybeApplyPartition(
+      DataFiles.Builder builder, Map<String, String> partitionValues, PartitionSpec spec) {
     if (builder == null
-        || file == null
+        || partitionValues == null
         || spec == null
         || !spec.isPartitioned()
-        || file.getPartitionDataJson().isBlank()) {
+        || partitionValues.isEmpty()) {
       return;
     }
-    List<String> values = extractPartitionValues(file.getPartitionDataJson(), spec);
+    List<String> values = extractPartitionValues(partitionValues, spec);
     if (values.size() != spec.fields().size()) {
       return;
     }
     builder.withPartitionValues(values);
   }
 
-  private StructLike parsePartitionStruct(ScanFile file, PartitionSpec spec) {
-    if (file == null || spec == null || !spec.isPartitioned()) {
-      return null;
-    }
-    List<String> values = extractPartitionValues(file.getPartitionDataJson(), spec);
-    if (values.size() != spec.fields().size()) {
-      return null;
-    }
-    String path = file.getFilePath();
-    if (path == null || path.isBlank()) {
-      path = "s3://compat/delete-placeholder.parquet";
-    }
-    FileFormat format = resolveFileFormat(file.getFileFormat());
-    return DataFiles.builder(spec)
-        .withPath(path)
-        .withFormat(format)
-        .withFileSizeInBytes(Math.max(0L, file.getFileSizeInBytes()))
-        .withRecordCount(Math.max(0L, file.getRecordCount()))
-        .withPartitionValues(values)
-        .build()
-        .partition();
-  }
-
-  private List<String> extractPartitionValues(String partitionDataJson, PartitionSpec spec) {
-    if (partitionDataJson == null || partitionDataJson.isBlank() || spec == null) {
+  private List<String> extractPartitionValues(
+      Map<String, String> partitionValues, PartitionSpec spec) {
+    if (partitionValues == null || partitionValues.isEmpty() || spec == null) {
       return List.of();
     }
     int fieldCount = spec.fields().size();
-    if (fieldCount == 0) {
-      return List.of();
-    }
     List<String> values = new ArrayList<>(fieldCount);
     for (int i = 0; i < fieldCount; i++) {
       values.add(null);
     }
     int assigned = 0;
-    try {
-      JsonNode root = JSON.readTree(partitionDataJson);
-      JsonNode partitionValues = root == null ? null : root.get("partitionValues");
-      if (partitionValues != null && partitionValues.isArray()) {
-        boolean hasObjectEntries =
-            partitionValues.size() > 0
-                && partitionValues.get(0) != null
-                && partitionValues.get(0).isObject();
-        if (hasObjectEntries) {
-          for (JsonNode entry : partitionValues) {
-            if (entry == null || !entry.isObject()) {
-              continue;
-            }
-            int index = findPartitionFieldIndex(spec, entry.get("id"));
-            if (index < 0 || index >= values.size()) {
-              continue;
-            }
-            values.set(index, jsonScalar(entry.get("value")));
-            assigned++;
-          }
-        } else {
-          int limit = Math.min(values.size(), partitionValues.size());
-          for (int i = 0; i < limit; i++) {
-            values.set(i, jsonScalar(partitionValues.get(i)));
-            assigned++;
-          }
-        }
+    for (int i = 0; i < spec.fields().size(); i++) {
+      org.apache.iceberg.PartitionField field = spec.fields().get(i);
+      String sourceName = spec.schema().findColumnName(field.sourceId());
+      String value = partitionValues.get(field.name());
+      if (value == null && sourceName != null) {
+        value = partitionValues.get(sourceName);
       }
-    } catch (Exception e) {
-      LOG.debugf(e, "Failed to parse partition_data_json for compat manifest");
-      return List.of();
+      if (value == null) {
+        continue;
+      }
+      values.set(i, value);
+      assigned++;
     }
     return assigned == 0 ? List.of() : values;
   }
 
-  private int findPartitionFieldIndex(PartitionSpec spec, JsonNode idNode) {
-    if (spec == null || idNode == null || idNode.isNull()) {
-      return -1;
-    }
-    Integer numericId = null;
-    if (idNode.isNumber()) {
-      numericId = idNode.asInt();
-    }
-    String id = idNode.asText();
-    if (numericId == null && id != null && !id.isBlank()) {
-      try {
-        numericId = Integer.parseInt(id.trim());
-      } catch (RuntimeException ignored) {
-        // non-numeric id strings are handled below.
-      }
-    }
-    if (numericId != null) {
-      for (int i = 0; i < spec.fields().size(); i++) {
-        org.apache.iceberg.PartitionField field = spec.fields().get(i);
-        if (field.sourceId() == numericId || field.fieldId() == numericId) {
-          return i;
-        }
-      }
-    }
-    if (id == null || id.isBlank()) {
-      return -1;
-    }
-    for (int i = 0; i < spec.fields().size(); i++) {
-      org.apache.iceberg.PartitionField field = spec.fields().get(i);
-      if (id.equals(field.name())) {
-        return i;
-      }
-      String sourceName = spec.schema().findColumnName(field.sourceId());
-      if (sourceName != null && id.equals(sourceName)) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
-  private String jsonScalar(JsonNode node) {
-    if (node == null || node.isNull()) {
+  private Metrics toMetrics(AddFile add, Schema schema) {
+    if (add == null || schema == null) {
       return null;
     }
-    if (node.isTextual() || node.isNumber() || node.isBoolean()) {
-      return node.asText();
-    }
-    return node.toString();
-  }
-
-  private record DeleteFileEntry(DeleteFile file, Long sequenceNumber) {}
-
-  private Metrics toMetrics(ScanFile file, Schema schema) {
-    if (file == null || file.getColumnsCount() == 0) {
+    Optional<String> maybeStatsJson = add.getStatsJson();
+    if (maybeStatsJson.isEmpty() || maybeStatsJson.get().isBlank()) {
       return null;
     }
     Map<Integer, Long> valueCounts = new LinkedHashMap<>();
     Map<Integer, Long> nullValueCounts = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> lowerBounds = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> upperBounds = new LinkedHashMap<>();
-    List<Types.NestedField> schemaFields = schema == null ? List.of() : schema.columns();
-    for (int i = 0; i < file.getColumnsCount(); i++) {
-      FileColumnStats entry = file.getColumns(i);
-      ScalarStats column = entry.getScalar();
-      if (column == null || schema == null) {
+    long recordCount;
+    JsonNode root;
+    try {
+      root = JSON.readTree(maybeStatsJson.get());
+      recordCount = root == null ? 0L : Math.max(0L, root.path("numRecords").asLong(0L));
+    } catch (Exception e) {
+      LOG.debugf(e, "Failed to parse Delta stats JSON for compat metrics");
+      return null;
+    }
+    JsonNode nullCounts = root.path("nullCount");
+    JsonNode minValues = root.path("minValues");
+    JsonNode maxValues = root.path("maxValues");
+    for (Types.NestedField field : schema.columns()) {
+      if (!field.type().isPrimitiveType()) {
         continue;
       }
-      Types.NestedField field = null;
-      if (entry.getColumnId() > 0) {
-        field = schema.findField((int) entry.getColumnId());
+      String fieldName = field.name();
+      if (nullCounts.has(fieldName)) {
+        valueCounts.put(field.fieldId(), recordCount);
+        nullValueCounts.put(field.fieldId(), Math.max(0L, nullCounts.path(fieldName).asLong(0L)));
       }
-      if (field == null && !column.getDisplayName().isBlank()) {
-        field = schema.findField(column.getDisplayName());
+      if (minValues.has(fieldName)) {
+        valueCounts.putIfAbsent(field.fieldId(), recordCount);
+        encodeBound(lowerBounds, field, minValues.get(fieldName));
       }
-      if (field == null && i < schemaFields.size()) {
-        field = schemaFields.get(i);
-      }
-      int fieldId;
-      if (field != null) {
-        fieldId = field.fieldId();
-      } else if (schemaFields.isEmpty()) {
-        // Fall back to deterministic positional IDs when schema projection is unavailable.
-        fieldId = i + 1;
-      } else {
-        continue;
-      }
-      valueCounts.put(fieldId, Math.max(0L, column.getRowCount()));
-      if (column.hasNullCount()) {
-        nullValueCounts.put(fieldId, Math.max(0L, column.getNullCount()));
-      }
-      if (column.hasMin()) {
-        encodeBound(lowerBounds, fieldId, column.getLogicalType(), column.getMin());
-      }
-      if (column.hasMax()) {
-        encodeBound(upperBounds, fieldId, column.getLogicalType(), column.getMax());
+      if (maxValues.has(fieldName)) {
+        valueCounts.putIfAbsent(field.fieldId(), recordCount);
+        encodeBound(upperBounds, field, maxValues.get(fieldName));
       }
     }
     if (valueCounts.isEmpty()
@@ -865,7 +795,7 @@ public class DeltaManifestMaterializer {
       return null;
     }
     return new Metrics(
-        file.getRecordCount(),
+        recordCount,
         null,
         valueCounts.isEmpty() ? null : valueCounts,
         nullValueCounts.isEmpty() ? null : nullValueCounts,
@@ -874,96 +804,69 @@ public class DeltaManifestMaterializer {
         upperBounds.isEmpty() ? null : upperBounds);
   }
 
+  private long resolveRecordCount(AddFile add) {
+    if (add == null) {
+      return 0L;
+    }
+    Optional<Long> count = add.getNumRecords();
+    if (count.isPresent()) {
+      return Math.max(0L, count.get());
+    }
+    Optional<String> statsJson = add.getStatsJson();
+    if (statsJson.isEmpty() || statsJson.get().isBlank()) {
+      return 0L;
+    }
+    try {
+      return Math.max(0L, JSON.readTree(statsJson.get()).path("numRecords").asLong(0L));
+    } catch (Exception e) {
+      LOG.debugf(e, "Failed to parse Delta stats JSON for compat record count");
+      return 0L;
+    }
+  }
+
   private void encodeBound(
-      Map<Integer, ByteBuffer> out, int fieldId, String rawLogicalType, String encodedValue) {
-    if (encodedValue == null || encodedValue.isBlank()) {
+      Map<Integer, ByteBuffer> out, Types.NestedField field, JsonNode valueNode) {
+    if (field == null
+        || valueNode == null
+        || valueNode.isNull()
+        || !field.type().isPrimitiveType()) {
       return;
     }
-    Type.PrimitiveType icebergType = toIcebergType(rawLogicalType);
-    if (icebergType == null) {
-      return;
-    }
-    Object decoded = decodeValue(icebergType, encodedValue);
+    Object decoded = decodeValue(field.type().asPrimitiveType(), valueNode);
     if (decoded == null) {
       return;
     }
     try {
-      out.put(fieldId, Conversions.toByteBuffer(icebergType, decoded));
+      out.put(field.fieldId(), Conversions.toByteBuffer(field.type().asPrimitiveType(), decoded));
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
           "Skipping compat metrics bound for field=%d type=%s value=%s",
-          fieldId,
-          rawLogicalType,
-          encodedValue);
+          field.fieldId(),
+          field.type(),
+          valueNode);
     }
   }
 
-  private Type.PrimitiveType toIcebergType(String rawLogicalType) {
-    if (rawLogicalType == null || rawLogicalType.isBlank()) {
-      return null;
-    }
-    String normalized = rawLogicalType.trim().toUpperCase(Locale.ROOT);
-    if (normalized.startsWith("DECIMAL(")) {
-      int open = normalized.indexOf('(');
-      int comma = normalized.indexOf(',', open + 1);
-      int close = normalized.indexOf(')', comma + 1);
-      if (open < 0 || comma < 0 || close < 0) {
-        return null;
-      }
-      try {
-        int precision = Integer.parseInt(normalized.substring(open + 1, comma).trim());
-        int scale = Integer.parseInt(normalized.substring(comma + 1, close).trim());
-        return Types.DecimalType.of(precision, scale);
-      } catch (RuntimeException ignored) {
-        return null;
-      }
-    }
-    return switch (normalized) {
-      case "BOOLEAN" -> Types.BooleanType.get();
-      // Canonical INT is 64-bit; all source-format integer aliases collapse here.
-      case "INT" -> Types.LongType.get();
-      case "FLOAT" -> Types.FloatType.get();
-      case "DOUBLE" -> Types.DoubleType.get();
-      case "DATE" -> Types.DateType.get();
-      case "TIME" -> Types.TimeType.get();
-      // Canonical TIMESTAMP = timezone-naive (no UTC normalisation) → Iceberg withoutZone().
-      // Canonical TIMESTAMPTZ = UTC-normalised → Iceberg withZone().
-      case "TIMESTAMP" -> Types.TimestampType.withoutZone();
-      case "TIMESTAMPTZ" -> Types.TimestampType.withZone();
-      case "STRING" -> Types.StringType.get();
-      case "BINARY" -> Types.BinaryType.get();
-      case "UUID" -> Types.UUIDType.get();
-      // INTERVAL, JSON, and complex types have no direct Iceberg primitive equivalent.
-      case "INTERVAL", "JSON", "ARRAY", "MAP", "STRUCT", "VARIANT" -> Types.BinaryType.get();
-      default -> null;
-    };
-  }
-
-  private Object decodeValue(Type.PrimitiveType type, String encodedValue) {
+  private Object decodeValue(Type.PrimitiveType type, JsonNode value) {
     try {
       return switch (type.typeId()) {
-        case BOOLEAN -> Boolean.parseBoolean(encodedValue);
-        case INTEGER -> Integer.parseInt(encodedValue);
-        case LONG -> Long.parseLong(encodedValue);
-        case FLOAT -> Float.parseFloat(encodedValue);
-        case DOUBLE -> Double.parseDouble(encodedValue);
-        case DATE -> (int) LocalDate.parse(encodedValue).toEpochDay();
-        case TIME -> LocalTime.parse(encodedValue).toNanoOfDay() / 1_000L;
-        case TIMESTAMP -> {
-          Instant instant = Instant.parse(encodedValue);
-          long micros = Math.multiplyExact(instant.getEpochSecond(), 1_000_000L);
-          yield Math.addExact(micros, instant.getNano() / 1_000L);
-        }
-        case STRING -> encodedValue;
-        case BINARY -> Base64.getDecoder().decode(encodedValue);
-        case DECIMAL -> new BigDecimal(encodedValue);
-        case UUID -> java.util.UUID.fromString(encodedValue);
+        case BOOLEAN -> value.asBoolean();
+        case INTEGER -> value.asInt();
+        case LONG -> value.asLong();
+        case FLOAT -> (float) value.asDouble();
+        case DOUBLE -> value.asDouble();
+        case DATE -> (int) LocalDate.parse(value.asText()).toEpochDay();
+        case TIME -> value.asLong();
+        case TIMESTAMP -> java.time.Instant.parse(value.asText()).toEpochMilli() * 1000L;
+        case STRING -> value.asText();
+        case BINARY -> value.binaryValue();
+        case DECIMAL -> new java.math.BigDecimal(value.asText());
+        case UUID -> java.util.UUID.fromString(value.asText());
         default -> null;
       };
-    } catch (RuntimeException e) {
-      LOG.debugf(
-          e, "Skipping compat metrics bound decode type=%s value=%s", type.typeId(), encodedValue);
+    } catch (Exception e) {
+      LOG.debugf(e, "Skipping compat metrics bound decode type=%s value=%s", type.typeId(), value);
       return null;
     }
   }
@@ -971,6 +874,16 @@ public class DeltaManifestMaterializer {
   private FileFormat resolveFileFormat(String raw) {
     if (raw == null || raw.isBlank()) {
       return FileFormat.PARQUET;
+    }
+    String normalized = raw.toLowerCase(Locale.ROOT);
+    if (normalized.endsWith(".parquet")) {
+      return FileFormat.PARQUET;
+    }
+    if (normalized.endsWith(".avro")) {
+      return FileFormat.AVRO;
+    }
+    if (normalized.endsWith(".orc")) {
+      return FileFormat.ORC;
     }
     try {
       return FileFormat.fromString(raw);
@@ -1004,15 +917,15 @@ public class DeltaManifestMaterializer {
   }
 
   private String metadataRoot(Table table) {
-    String location = firstNonBlank(table.getPropertiesMap().get("location"));
-    if (location == null) {
-      location = firstNonBlank(table.getPropertiesMap().get("storage_location"));
-    }
+    String location = firstNonBlank(table.getPropertiesMap().get("storage_location"));
     if (location == null) {
       location = firstNonBlank(table.getPropertiesMap().get("delta.table-root"));
     }
     if (location == null) {
       location = firstNonBlank(table.getPropertiesMap().get("external.location"));
+    }
+    if (location == null) {
+      location = firstNonBlank(table.getPropertiesMap().get("location"));
     }
     if (location == null && table.hasUpstream()) {
       location = firstNonBlank(table.getUpstream().getUri());
@@ -1026,6 +939,33 @@ public class DeltaManifestMaterializer {
       return trimmed;
     }
     return trimmed + "/" + METADATA_DIR;
+  }
+
+  protected CompatStorageContext resolveCompatStorage(Table table, Snapshot snapshot) {
+    ResolveSnapshotCompatStorageResponse response =
+        grpcClient.resolveSnapshotCompatStorage(
+            ResolveSnapshotCompatStorageRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshotId(snapshot.getSnapshotId())
+                .setIncludeCredentials(true)
+                .build());
+    if (response == null || response.getLocationPrefix().isBlank()) {
+      throw new IllegalStateException("Compat storage resolution returned no writable location");
+    }
+    Map<String, String> fileIoProps = new LinkedHashMap<>();
+    if (response.hasStorage() && response.getStorage().getClientSafeConfigCount() > 0) {
+      fileIoProps.putAll(response.getStorage().getClientSafeConfigMap());
+    }
+    if (response.hasStorage() && response.getStorage().getStorageCredentialsCount() > 0) {
+      fileIoProps.putAll(response.getStorage().getStorageCredentials(0).getConfigMap());
+    }
+    String location = trimTrailingSlash(response.getLocationPrefix());
+    return new CompatStorageContext(location + "/" + METADATA_DIR, Map.copyOf(fileIoProps));
+  }
+
+  protected FileIO newCompatFileIo(
+      Table table, Snapshot snapshot, CompatStorageContext compatStorage) {
+    return FileIoFactory.createFileIo(compatStorage.fileIoProperties(), config, true);
   }
 
   private String firstNonBlank(String value) {
@@ -1050,18 +990,11 @@ public class DeltaManifestMaterializer {
     return normalized.substring(0, normalized.length() - (METADATA_DIR.length() + 1));
   }
 
-  private boolean deltaLogExists(FileIO fileIo, String tableRoot) {
-    String prefix = tableRoot + "/_delta_log/";
-    if (fileIo instanceof SupportsPrefixOperations prefixOps) {
-      try {
-        Iterable<org.apache.iceberg.io.FileInfo> files = prefixOps.listPrefix(prefix);
-        return files.iterator().hasNext();
-      } catch (Exception ignored) {
-        // Fall through to direct object checks below.
-      }
+  private String trimTrailingSlash(String value) {
+    if (value == null) {
+      return null;
     }
-    return inputExists(fileIo, prefix + "00000000000000000000.json")
-        || inputExists(fileIo, prefix + "_last_checkpoint");
+    return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
   }
 
   private void closeQuietly(FileIO fileIo) {
@@ -1072,6 +1005,74 @@ public class DeltaManifestMaterializer {
         LOG.debugf(e, "Failed to close compat FileIO %s", fileIo.getClass().getName());
       }
     }
+  }
+
+  private void closeQuietly(DeltaEngineContext deltaEngine) {
+    if (deltaEngine == null || deltaEngine.closeable() == null) {
+      return;
+    }
+    try {
+      deltaEngine.closeable().close();
+    } catch (Exception e) {
+      LOG.debugf(e, "Failed to close Delta engine resource %s", deltaEngine.closeable());
+    }
+  }
+
+  private S3Client buildS3Client(Map<String, String> props) {
+    Map<String, String> sourceProps = props == null ? Map.of() : props;
+    Region region = Region.of(resolveOption(sourceProps, "s3.region", "aws.region", "us-east-1"));
+    boolean pathStyle =
+        Boolean.parseBoolean(resolveOption(sourceProps, "s3.path-style-access", "false"));
+    software.amazon.awssdk.services.s3.S3ClientBuilder builder =
+        S3Client.builder()
+            .region(region)
+            .serviceConfiguration(
+                S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+            .credentialsProvider(resolveCredentials(sourceProps));
+    String endpoint = resolveOption(sourceProps, "s3.endpoint", null);
+    if (endpoint != null && !endpoint.isBlank()) {
+      builder.endpointOverride(URI.create(endpoint));
+    }
+    return builder.build();
+  }
+
+  private AwsCredentialsProvider resolveCredentials(Map<String, String> props) {
+    String access = resolveOption(props, "s3.access-key-id", null);
+    String secret = resolveOption(props, "s3.secret-access-key", null);
+    String token = resolveOption(props, "s3.session-token", null);
+    if (access != null && !access.isBlank() && secret != null && !secret.isBlank()) {
+      AwsCredentials creds =
+          token != null && !token.isBlank()
+              ? AwsSessionCredentials.create(access, secret, token)
+              : AwsBasicCredentials.create(access, secret);
+      return StaticCredentialsProvider.create(creds);
+    }
+    return DefaultCredentialsProvider.builder().build();
+  }
+
+  private String resolveOption(Map<String, String> props, String key, String defaultValue) {
+    if (props != null) {
+      String value = props.get(key);
+      if (value != null && !value.isBlank()) {
+        return value;
+      }
+    }
+    return defaultValue;
+  }
+
+  private String resolveOption(
+      Map<String, String> props, String key, String fallbackKey, String defaultValue) {
+    if (props != null) {
+      String value = props.get(key);
+      if (value != null && !value.isBlank()) {
+        return value;
+      }
+      String fallback = props.get(fallbackKey);
+      if (fallback != null && !fallback.isBlank()) {
+        return fallback;
+      }
+    }
+    return defaultValue;
   }
 
   private static final class IcebergFileIoAdapter
@@ -1283,6 +1284,489 @@ public class DeltaManifestMaterializer {
     @Override
     public LocationProvider locationProvider() {
       return locationProvider;
+    }
+  }
+
+  protected static record CompatStorageContext(
+      String metadataRoot, Map<String, String> fileIoProperties) {}
+
+  protected record DeltaEngineContext(Engine engine, AutoCloseable closeable) {}
+
+  private static final class S3FileSystemClient
+      implements io.delta.kernel.defaults.engine.fileio.FileIO {
+    private final S3Client s3;
+
+    private S3FileSystemClient(S3Client s3) {
+      this.s3 = s3;
+    }
+
+    @Override
+    public io.delta.kernel.defaults.engine.fileio.InputFile newInputFile(
+        String path, long fileSize) {
+      String resolved = resolvePath(path);
+      if (isMissingCheckpoint(resolved)) {
+        return new MissingInputFile(resolved);
+      }
+      return new S3InputFile(s3, resolved);
+    }
+
+    @Override
+    public io.delta.kernel.defaults.engine.fileio.OutputFile newOutputFile(String path) {
+      throw new UnsupportedOperationException(
+          "Writing files not implemented for read-only S3 FileIO");
+    }
+
+    @Override
+    public boolean delete(String path) {
+      throw new UnsupportedOperationException(
+          "Deleting files not implemented for read-only S3 FileIO");
+    }
+
+    @Override
+    public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
+      throw new UnsupportedOperationException(
+          "Copying files not implemented for read-only S3 FileIO");
+    }
+
+    @Override
+    public String resolvePath(String path) {
+      if (path.startsWith("s3a://")) {
+        return "s3://" + path.substring(6);
+      }
+      if (path.startsWith("s3://")) {
+        return path;
+      }
+      throw new IllegalArgumentException("Unsupported file system path: " + path);
+    }
+
+    @Override
+    public FileStatus getFileStatus(String path) throws IOException {
+      URI uri = URI.create(resolvePath(path));
+      String bucket = uri.getHost();
+      String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
+      try {
+        HeadObjectResponse head =
+            s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+        return FileStatus.of(path, head.contentLength(), Instant.now().toEpochMilli());
+      } catch (S3Exception e) {
+        if (e.statusCode() == 404) {
+          throw new IOException("File not found: " + path, e);
+        }
+        throw new IOException("Failed to get file status for: " + path, e);
+      }
+    }
+
+    @Override
+    public CloseableIterator<FileStatus> listFrom(String filePath) throws IOException {
+      String resolved = resolvePath(filePath);
+      URI uri = URI.create(resolved);
+      String bucket = uri.getHost();
+      if (bucket == null || bucket.isEmpty()) {
+        throw new IOException("Invalid S3 path for listFrom: " + filePath);
+      }
+      String fullKey = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
+      int lastSlash = fullKey.lastIndexOf('/');
+      String dirPrefix = lastSlash < 0 ? "" : fullKey.substring(0, lastSlash + 1);
+      String startKey = fullKey;
+
+      FileStatus probedFirstStatus;
+      try {
+        HeadObjectResponse head =
+            s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(startKey).build());
+        probedFirstStatus =
+            FileStatus.of(
+                filePath,
+                head.contentLength(),
+                head.lastModified() != null
+                    ? head.lastModified().toEpochMilli()
+                    : Instant.now().toEpochMilli());
+      } catch (S3Exception e) {
+        probedFirstStatus = null;
+      }
+      final FileStatus firstStatus = probedFirstStatus;
+
+      return new CloseableIterator<>() {
+        private String continuationToken = null;
+        private Iterator<S3Object> pageIter = null;
+        private boolean yieldedFirst = firstStatus == null;
+        private FileStatus bufferedNext = null;
+        private boolean closed = false;
+
+        @Override
+        public boolean hasNext() {
+          if (closed) {
+            return false;
+          }
+          return ensureBufferedNext();
+        }
+
+        @Override
+        public FileStatus next() {
+          if (closed) {
+            throw new NoSuchElementException("Iterator closed");
+          }
+          if (!ensureBufferedNext()) {
+            throw new NoSuchElementException();
+          }
+          FileStatus out = bufferedNext;
+          bufferedNext = null;
+          return out;
+        }
+
+        @Override
+        public void close() {
+          closed = true;
+          pageIter = null;
+          bufferedNext = null;
+        }
+
+        private boolean ensureBufferedNext() {
+          if (bufferedNext != null) {
+            return true;
+          }
+          if (!yieldedFirst && firstStatus != null) {
+            yieldedFirst = true;
+            bufferedNext = firstStatus;
+            return true;
+          }
+          while (true) {
+            if (pageIter != null && pageIter.hasNext()) {
+              S3Object object = pageIter.next();
+              String key = object.key();
+              if (key == null || key.endsWith("/") || !key.startsWith(dirPrefix)) {
+                continue;
+              }
+              bufferedNext =
+                  FileStatus.of(
+                      "s3://" + bucket + "/" + key,
+                      object.size() == null ? 0L : object.size(),
+                      object.lastModified() == null
+                          ? Instant.now().toEpochMilli()
+                          : object.lastModified().toEpochMilli());
+              return true;
+            }
+            if (continuationToken == null && pageIter != null) {
+              return false;
+            }
+            fetchNextPage();
+          }
+        }
+
+        private void fetchNextPage() {
+          ListObjectsV2Request.Builder request =
+              ListObjectsV2Request.builder().bucket(bucket).prefix(dirPrefix).maxKeys(1000);
+          request = request.startAfter(startKey);
+          if (continuationToken != null) {
+            request = request.continuationToken(continuationToken);
+          }
+          ListObjectsV2Response response = s3.listObjectsV2(request.build());
+          continuationToken = response.isTruncated() ? response.nextContinuationToken() : null;
+          List<S3Object> objects = response.contents();
+          pageIter = (objects == null ? Collections.<S3Object>emptyList() : objects).iterator();
+        }
+      };
+    }
+
+    @Override
+    public boolean mkdirs(String path) {
+      return true;
+    }
+
+    @Override
+    public Optional<String> getConf(String confKey) {
+      return Optional.empty();
+    }
+
+    private boolean isMissingCheckpoint(String resolvedPath) {
+      if (!resolvedPath.endsWith("/_last_checkpoint")) {
+        return false;
+      }
+      URI uri = URI.create(resolvedPath);
+      String bucket = uri.getHost();
+      String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
+      try {
+        s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+        return false;
+      } catch (S3Exception e) {
+        if (e.statusCode() == 404) {
+          return true;
+        }
+        throw e;
+      }
+    }
+  }
+
+  private static final class S3InputFile
+      implements io.delta.kernel.defaults.engine.fileio.InputFile {
+    private final S3Client s3;
+    private final String resolvedPath;
+    private final String bucket;
+    private final String key;
+    private final long length;
+
+    private S3InputFile(S3Client s3, String resolvedPath) {
+      this.s3 = s3;
+      this.resolvedPath = resolvedPath;
+      URI uri = URI.create(resolvedPath);
+      this.bucket = uri.getHost();
+      this.key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
+      try {
+        this.length = new S3RangeReader(s3, bucket, key).length();
+      } catch (IOException e) {
+        throw new RuntimeException("Failed to initialize S3RangeReader for " + resolvedPath, e);
+      }
+    }
+
+    @Override
+    public io.delta.kernel.defaults.engine.fileio.SeekableInputStream newStream() {
+      try {
+        return new S3SeekableInputStream(new S3RangeReader(s3, bucket, key, length));
+      } catch (IOException e) {
+        throw new RuntimeException("Failed to open stream for " + resolvedPath, e);
+      }
+    }
+
+    @Override
+    public long length() {
+      return length;
+    }
+
+    @Override
+    public String path() {
+      return resolvedPath;
+    }
+  }
+
+  private static final class S3SeekableInputStream
+      extends io.delta.kernel.defaults.engine.fileio.SeekableInputStream {
+    private final S3RangeReader rangeReader;
+    private long pos = 0L;
+
+    private S3SeekableInputStream(S3RangeReader rangeReader) {
+      this.rangeReader = rangeReader;
+    }
+
+    @Override
+    public long getPos() {
+      return pos;
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      if (newPos < 0) {
+        throw new IOException("negative seek");
+      }
+      pos = newPos;
+    }
+
+    @Override
+    public void readFully(byte[] bytes, int off, int len) throws IOException {
+      int remaining = len;
+      while (remaining > 0) {
+        int read = read(bytes, off + (len - remaining), remaining);
+        if (read < 0) {
+          throw new IOException("Unexpected EOF");
+        }
+        remaining -= read;
+      }
+    }
+
+    @Override
+    public int read() throws IOException {
+      byte[] one = new byte[1];
+      int read = read(one, 0, 1);
+      return read < 0 ? -1 : one[0] & 0xFF;
+    }
+
+    @Override
+    public int read(byte[] bytes, int off, int len) throws IOException {
+      int read = rangeReader.readAt(pos, bytes, off, len);
+      if (read > 0) {
+        pos += read;
+      }
+      return read;
+    }
+
+    @Override
+    public void close() {
+      rangeReader.close();
+    }
+  }
+
+  private static final class S3RangeReader {
+    private static final int DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
+
+    private final S3Client s3;
+    private final String bucket;
+    private final String key;
+    private final long fileLength;
+    private final byte[] buffer;
+    private long bufferStart = 0L;
+    private int bufferLength = 0;
+    private boolean closed = false;
+
+    private S3RangeReader(S3Client s3, String bucket, String key) throws IOException {
+      this(s3, bucket, key, DEFAULT_CHUNK_SIZE);
+    }
+
+    private S3RangeReader(S3Client s3, String bucket, String key, long fileLength)
+        throws IOException {
+      this(s3, bucket, key, DEFAULT_CHUNK_SIZE, fileLength);
+    }
+
+    private S3RangeReader(S3Client s3, String bucket, String key, int chunkSize)
+        throws IOException {
+      this(s3, bucket, key, chunkSize, null);
+    }
+
+    private S3RangeReader(S3Client s3, String bucket, String key, int chunkSize, Long knownLength)
+        throws IOException {
+      this.s3 = s3;
+      this.bucket = bucket;
+      this.key = key;
+      this.buffer = new byte[Math.max(1024, chunkSize)];
+      if (knownLength != null) {
+        this.fileLength = knownLength;
+      } else {
+        try {
+          HeadObjectResponse head =
+              s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+          this.fileLength = head.contentLength();
+        } catch (S3Exception e) {
+          throw new IOException("Failed to get S3 object length for " + bucket + "/" + key, e);
+        }
+      }
+    }
+
+    private synchronized void close() {
+      closed = true;
+    }
+
+    private long length() {
+      return fileLength;
+    }
+
+    private int readAt(long position, byte[] dest, int off, int len) throws IOException {
+      if (closed) {
+        throw new IOException("reader closed");
+      }
+      if (len == 0) {
+        return 0;
+      }
+      if (position >= fileLength) {
+        return -1;
+      }
+      ensureBufferFor(position);
+      if (bufferLength <= 0) {
+        return -1;
+      }
+      long bufferEnd = bufferStart + bufferLength;
+      if (position < bufferStart || position >= bufferEnd) {
+        ensureBufferFor(position);
+        if (bufferLength <= 0) {
+          return -1;
+        }
+        bufferEnd = bufferStart + bufferLength;
+      }
+      int available = (int) Math.min(bufferEnd - position, (long) len);
+      int bufferOffset = (int) (position - bufferStart);
+      System.arraycopy(buffer, bufferOffset, dest, off, available);
+      return available;
+    }
+
+    private void ensureBufferFor(long position) throws IOException {
+      if (position >= bufferStart && position < bufferStart + bufferLength) {
+        return;
+      }
+      long start = position;
+      long end = Math.min(start + buffer.length - 1L, fileLength - 1L);
+      if (start > end) {
+        bufferLength = 0;
+        return;
+      }
+      String range = "bytes=" + start + "-" + end;
+      try (var object =
+          s3.getObject(
+              software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
+                  .bucket(bucket)
+                  .key(key)
+                  .range(range)
+                  .build())) {
+        int offset = 0;
+        int read;
+        while (offset < buffer.length
+            && (read = object.read(buffer, offset, buffer.length - offset)) > 0) {
+          offset += read;
+        }
+        bufferStart = start;
+        bufferLength = offset;
+      } catch (S3Exception e) {
+        if (e.statusCode() == 416) {
+          bufferLength = 0;
+          return;
+        }
+        throw new IOException("S3 read error for " + bucket + "/" + key + " at range " + range, e);
+      }
+    }
+  }
+
+  private static final class MissingInputFile
+      implements io.delta.kernel.defaults.engine.fileio.InputFile {
+    private final String path;
+
+    private MissingInputFile(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public io.delta.kernel.defaults.engine.fileio.SeekableInputStream newStream() {
+      return new MissingSeekableInputStream(path);
+    }
+
+    @Override
+    public long length() {
+      return 0L;
+    }
+
+    @Override
+    public String path() {
+      return path;
+    }
+  }
+
+  private static final class MissingSeekableInputStream
+      extends io.delta.kernel.defaults.engine.fileio.SeekableInputStream {
+    private final String path;
+
+    private MissingSeekableInputStream(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public long getPos() {
+      return 0;
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      if (newPos != 0) {
+        throw new FileNotFoundException(path);
+      }
+    }
+
+    @Override
+    public void readFully(byte[] bytes, int off, int len) throws IOException {
+      throw new FileNotFoundException(path);
+    }
+
+    @Override
+    public int read() throws IOException {
+      throw new FileNotFoundException(path);
+    }
+
+    @Override
+    public int read(byte[] bytes, int off, int len) throws IOException {
+      throw new FileNotFoundException(path);
     }
   }
 }

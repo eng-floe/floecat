@@ -17,910 +17,365 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
-import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
-import ai.floedb.floecat.execution.rpc.ScanFile;
-import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.query.rpc.BeginQueryResponse;
-import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
-import ai.floedb.floecat.query.rpc.QueryDescriptor;
-import io.delta.kernel.engine.Engine;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.nio.channels.Channels;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileContent;
-import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.FileMetadata;
-import org.apache.iceberg.ManifestContent;
-import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.ManifestFiles;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.hadoop.HadoopFileIO;
+import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
-import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class DeltaManifestMaterializerTest {
+  private static final String UNPARTITIONED_SCHEMA_JSON =
+      "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false},{\"id\":2,\"name\":\"v\",\"type\":\"string\",\"required\":false}],\"last-column-id\":2}";
+  private static final String PARTITIONED_SCHEMA_JSON =
+      "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false},{\"id\":2,\"name\":\"region\",\"type\":\"string\",\"required\":false},{\"id\":3,\"name\":\"dt\",\"type\":\"date\",\"required\":false},{\"id\":4,\"name\":\"payload\",\"type\":\"string\",\"required\":false}],\"last-column-id\":4}";
+  private static final String TRANSFORMED_SCHEMA_JSON =
+      "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false},{\"id\":2,\"name\":\"name\",\"type\":\"string\",\"required\":false},{\"id\":3,\"name\":\"ts\",\"type\":\"timestamp\",\"required\":false},{\"id\":4,\"name\":\"bucket16\",\"type\":\"int\",\"required\":false},{\"id\":5,\"name\":\"name_trunc4\",\"type\":\"string\",\"required\":false},{\"id\":6,\"name\":\"ts_year\",\"type\":\"int\",\"required\":false}],\"last-column-id\":6}";
+  private static final String VARIANT_SCHEMA_JSON =
+      "{\"type\":\"struct\",\"fields\":[{\"name\":\"payload\",\"type\":\"variant\",\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":4}}]}";
 
   private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
-  private final TestDeltaManifestMaterializer materializer = new TestDeltaManifestMaterializer();
 
   @BeforeEach
-  void setUp() {
+  void setUp() {}
+
+  @Test
+  void materializeReadsDataFilesDirectlyFromDeltaLog() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
     materializer.grpcClient = grpcClient;
+    String tableRoot = materializer.stageFixture("delta-fixtures/01_unpartitioned_append_only");
+    Table table = deltaTable(tableRoot, UNPARTITIONED_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(1L, UNPARTITIONED_SCHEMA_JSON, null);
+    DeltaManifestMaterializer.CompatSnapshotFiles snapshotFiles =
+        materializer.loadSnapshotFiles(
+            table,
+            snapshot,
+            PartitionSpec.unpartitioned(),
+            SchemaParser.fromJson(UNPARTITIONED_SCHEMA_JSON));
 
-    when(grpcClient.beginQuery(any()))
-        .thenReturn(
-            BeginQueryResponse.newBuilder()
-                .setQuery(QueryDescriptor.newBuilder().setQueryId("q-1").build())
-                .build());
-    when(grpcClient.describeInputs(any())).thenReturn(DescribeInputsResponse.newBuilder().build());
+    List<DataFile> dataFiles = snapshotFiles.dataFiles();
+    assertEquals(2, dataFiles.size());
+    long totalRecordCount = dataFiles.stream().mapToLong(DataFile::recordCount).sum();
+    assertEquals(40L, totalRecordCount);
 
-    ScanFile scanFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/part-00000.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(256)
-            .setRecordCount(42)
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(scanFile).build())
-                .build());
-  }
-
-  @Test
-  void materializeReusesCompatManifestListWhenSnapshotUnchanged() {
-    Table table = deltaTable("reuse");
-    Snapshot snapshot = snapshot(7L, 7L);
-
-    List<Snapshot> first = materializer.materialize(table, List.of(snapshot));
-    String firstManifestList = first.get(0).getManifestList();
-    assertFalse(firstManifestList.isBlank());
-    assertTrue(materializer.fileIo().newInputFile(firstManifestList).exists());
-
-    List<Snapshot> second = materializer.materialize(table, List.of(snapshot));
-    String secondManifestList = second.get(0).getManifestList();
-    assertEquals(firstManifestList, secondManifestList);
-
-    verify(grpcClient, times(1)).fetchScanBundle(any());
-  }
-
-  @Test
-  void materializeRegeneratesCompatManifestListWhenSnapshotChanges() {
-    Table table = deltaTable("regenerate");
-    Snapshot oldSnapshot = snapshot(7L, 7L);
-    Snapshot newSnapshot = snapshot(8L, 8L);
-
-    String oldManifestList =
-        materializer.materialize(table, List.of(oldSnapshot)).get(0).getManifestList();
-    String newManifestList =
-        materializer.materialize(table, List.of(newSnapshot)).get(0).getManifestList();
-
-    assertFalse(oldManifestList.isBlank());
-    assertFalse(newManifestList.isBlank());
-    assertNotEquals(oldManifestList, newManifestList);
-    assertTrue(materializer.fileIo().newInputFile(newManifestList).exists());
-
-    verify(grpcClient, times(2)).fetchScanBundle(any());
-  }
-
-  @Test
-  void materializePopulatesManifestListForAllReturnedSnapshots() {
-    Table table = deltaTable("all-snapshots");
-    Snapshot firstSnapshot = snapshot(7L, 7L);
-    Snapshot secondSnapshot = snapshot(8L, 8L);
-
-    List<Snapshot> first = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    String firstManifestList = first.get(0).getManifestList();
-    String secondManifestList = first.get(1).getManifestList();
-    assertFalse(firstManifestList.isBlank());
-    assertFalse(secondManifestList.isBlank());
-    assertTrue(materializer.fileIo().newInputFile(firstManifestList).exists());
-    assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
-
-    List<Snapshot> second = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    assertEquals(firstManifestList, second.get(0).getManifestList());
-    assertEquals(secondManifestList, second.get(1).getManifestList());
-
-    verify(grpcClient, times(2)).fetchScanBundle(any());
-  }
-
-  @Test
-  void materializeTreatsSnapshotZeroAsExplicitDeltaSnapshotId() {
-    Table table = deltaTable("snapshot-zero");
-    Snapshot zeroSnapshot = snapshot(0L, 0L);
-
-    List<Snapshot> out = materializer.materialize(table, List.of(zeroSnapshot));
-
-    assertFalse(out.get(0).getManifestList().isBlank());
-    verify(grpcClient)
-        .describeInputs(
-            argThat(
-                request ->
-                    request.getInputsCount() == 1
-                        && request.getInputs(0).getSnapshot().getSnapshotId() == 0L
-                        && request.getInputs(0).getSnapshot().getSpecial()
-                            != SpecialSnapshot.SS_CURRENT));
-  }
-
-  @Test
-  void materializeWritesDeleteManifestWhenDeleteFilesPresent() throws Exception {
-    TestDeltaManifestMaterializerWithDeletes withDeletes =
-        new TestDeltaManifestMaterializerWithDeletes();
-    withDeletes.grpcClient = grpcClient;
-
-    Table table = deltaTable("with-deletes");
-    Snapshot snapshot = snapshot(9L, 9L);
-
-    List<Snapshot> out = withDeletes.materialize(table, List.of(snapshot));
-    String manifestList = out.get(0).getManifestList();
-    assertFalse(manifestList.isBlank());
-    ManifestFile deleteManifest =
-        readManifestList(withDeletes.fileIo().newInputFile(manifestList)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
+    DataFile firstFile =
+        dataFiles.stream()
+            .filter(file -> file.location().contains("part-00000"))
             .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-    assertTrue(withDeletes.fileIo().newInputFile(deleteManifest.path()).exists());
-  }
-
-  @Test
-  void newFileIoUsesServerSideStorageConfig() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("examples:delta:call_center").build())
-            .putProperties("storage_location", "s3://floecat-delta/call_center")
-            .putProperties("s3.endpoint", "http://table-override:4566")
-            .build();
-    TableGatewaySupport tableGatewaySupport = mock(TableGatewaySupport.class);
-    when(tableGatewaySupport.defaultFileIoProperties(table))
-        .thenReturn(Map.of("io-impl", CaptureFileIo.class.getName()));
-    when(tableGatewaySupport.serverSideFileIoPropertiesForLocation(
-            table, "s3://floecat-delta/call_center/metadata"))
-        .thenReturn(
-            Map.of(
-                "io-impl", CaptureFileIo.class.getName(),
-                "s3.endpoint", "http://localstack:4566",
-                "s3.path-style-access", "true"));
-    ConnectorIntegrationConfig config = mock(ConnectorIntegrationConfig.class);
-    when(config.metadataFileIoRoot()).thenReturn(java.util.Optional.empty());
-    when(config.metadataFileIo()).thenReturn(java.util.Optional.of(CaptureFileIo.class.getName()));
-
-    CapturingDeltaManifestMaterializer materializer = new CapturingDeltaManifestMaterializer();
-    materializer.tableGatewaySupport = tableGatewaySupport;
-    materializer.config = config;
-
-    FileIO fileIo = materializer.newFileIo(table);
-
-    assertTrue(fileIo instanceof CaptureFileIo);
-    assertEquals("http://localstack:4566", CaptureFileIo.lastInitializedProps.get("s3.endpoint"));
-    assertEquals("true", CaptureFileIo.lastInitializedProps.get("s3.path-style-access"));
-    assertFalse(CaptureFileIo.lastInitializedProps.containsValue("http://table-override:4566"));
-  }
-
-  @Test
-  void materializePersistsColumnStatsAsIcebergMetrics() throws Exception {
-    ScanFile scanFileWithStats =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/part-00001.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(512)
-            .setRecordCount(50)
-            .addColumns(
-                FileColumnStats.newBuilder()
-                    .setColumnId(1)
-                    .setScalar(
-                        ScalarStats.newBuilder()
-                            .setLogicalType("INT")
-                            .setRowCount(50)
-                            .setNullCount(2)
-                            .setMin("10")
-                            .setMax("200")
-                            .build())
-                    .build())
-            .addColumns(
-                FileColumnStats.newBuilder()
-                    .setColumnId(2)
-                    .setScalar(
-                        ScalarStats.newBuilder()
-                            .setLogicalType("STRING")
-                            .setRowCount(50)
-                            .setMin("alpha")
-                            .setMax("omega")
-                            .build())
-                    .build())
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(scanFileWithStats).build())
-                .build());
-
-    Table table = deltaTable("column-metrics");
-    Snapshot snapshot = snapshot(11L, 11L);
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    DataFile dataFile = readSingleDataFileFromManifestList(materializer.fileIo(), manifestListPath);
-    assertEquals(50L, dataFile.valueCounts().get(1));
-    assertEquals(2L, dataFile.nullValueCounts().get(1));
+            .orElseThrow();
+    assertEquals(20L, firstFile.recordCount());
     assertEquals(
-        10L,
-        (Long) Conversions.fromByteBuffer(Types.LongType.get(), dataFile.lowerBounds().get(1)));
+        0,
+        (int) Conversions.fromByteBuffer(Types.IntegerType.get(), firstFile.lowerBounds().get(1)));
     assertEquals(
-        200L,
-        (Long) Conversions.fromByteBuffer(Types.LongType.get(), dataFile.upperBounds().get(1)));
+        19,
+        (int) Conversions.fromByteBuffer(Types.IntegerType.get(), firstFile.upperBounds().get(1)));
     assertEquals(
-        "alpha",
-        Conversions.fromByteBuffer(Types.StringType.get(), dataFile.lowerBounds().get(2))
+        "val-0",
+        Conversions.fromByteBuffer(Types.StringType.get(), firstFile.lowerBounds().get(2))
             .toString());
+    verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void materializePropagatesIdentityPartitionValuesFromDeltaLog() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    materializer.grpcClient = grpcClient;
+    String tableRoot =
+        materializer.stageFixture("delta-fixtures/02_partitioned_identity_region_date");
+    Table table = deltaTable(tableRoot, PARTITIONED_SCHEMA_JSON);
+    Snapshot snapshot =
+        snapshot(
+            1L,
+            PARTITIONED_SCHEMA_JSON,
+            PartitionSpecInfo.newBuilder()
+                .setSpecId(7)
+                .addFields(
+                    ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
+                        .setFieldId(2)
+                        .setName("region")
+                        .setTransform("identity")
+                        .build())
+                .addFields(
+                    ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
+                        .setFieldId(3)
+                        .setName("dt")
+                        .setTransform("identity")
+                        .build())
+                .build());
+
+    DeltaManifestMaterializer.CompatSnapshotFiles snapshotFiles =
+        materializer.loadSnapshotFiles(
+            table,
+            snapshot,
+            specFromSnapshot(PARTITIONED_SCHEMA_JSON, snapshot.getPartitionSpec()),
+            SchemaParser.fromJson(PARTITIONED_SCHEMA_JSON));
+    List<DataFile> dataFiles = snapshotFiles.dataFiles();
+
+    assertEquals(12, dataFiles.size());
+    assertTrue(
+        dataFiles.stream()
+            .anyMatch(
+                file ->
+                    "us-east".equals(file.partition().get(0, String.class))
+                        && (int) LocalDate.of(2026, 2, 1).toEpochDay()
+                            == file.partition().get(1, Integer.class)));
+    verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void materializePropagatesPartitionColumnsFromTransformedFixture() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    materializer.grpcClient = grpcClient;
+    String tableRoot =
+        materializer.stageFixture("delta-fixtures/03_partitioned_transformed_emulated");
+    Table table = deltaTable(tableRoot, TRANSFORMED_SCHEMA_JSON);
+    Snapshot snapshot =
+        snapshot(
+            1L,
+            TRANSFORMED_SCHEMA_JSON,
+            PartitionSpecInfo.newBuilder()
+                .setSpecId(8)
+                .addFields(
+                    ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
+                        .setFieldId(4)
+                        .setName("bucket16")
+                        .setTransform("identity")
+                        .build())
+                .addFields(
+                    ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
+                        .setFieldId(5)
+                        .setName("name_trunc4")
+                        .setTransform("identity")
+                        .build())
+                .addFields(
+                    ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
+                        .setFieldId(6)
+                        .setName("ts_year")
+                        .setTransform("identity")
+                        .build())
+                .build());
+
+    DeltaManifestMaterializer.CompatSnapshotFiles snapshotFiles =
+        materializer.loadSnapshotFiles(
+            table,
+            snapshot,
+            specFromSnapshot(TRANSFORMED_SCHEMA_JSON, snapshot.getPartitionSpec()),
+            SchemaParser.fromJson(TRANSFORMED_SCHEMA_JSON));
+    List<DataFile> dataFiles = snapshotFiles.dataFiles();
+
+    assertEquals(31, dataFiles.size());
+    assertTrue(
+        dataFiles.stream()
+            .anyMatch(
+                file ->
+                    file.partition().get(0, Integer.class) == 15
+                        && "name".equals(file.partition().get(1, String.class))
+                        && file.partition().get(2, Integer.class) == 2026));
+    verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void materializeWritesDeleteManifestFromDeltaDeletionVectors() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    materializer.grpcClient = grpcClient;
+    String tableRoot = materializer.stageFixture("delta-fixtures/10_deletion_vectors");
+    Table table = deltaTable(tableRoot, UNPARTITIONED_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(3L, UNPARTITIONED_SCHEMA_JSON, null);
+
+    DeltaManifestMaterializer.CompatSnapshotFiles snapshotFiles =
+        materializer.loadSnapshotFiles(
+            table,
+            snapshot,
+            PartitionSpec.unpartitioned(),
+            SchemaParser.fromJson(UNPARTITIONED_SCHEMA_JSON));
+    List<DeleteFile> deleteFiles = snapshotFiles.deleteFiles();
+    assertEquals(1, deleteFiles.size());
+    assertEquals(FileContent.POSITION_DELETES, deleteFiles.get(0).content());
+    assertTrue(deleteFiles.get(0).location().contains("compat-pd-"));
+    verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void materializeLeavesSnapshotUnchangedWhenDeltaLogMissing() {
+    NoDeltaLogMaterializer materializer = new NoDeltaLogMaterializer();
+    materializer.grpcClient = grpcClient;
+    Table table = deltaTable("file:///tmp/no-delta-log", UNPARTITIONED_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(10L, UNPARTITIONED_SCHEMA_JSON, null);
+
+    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
+    assertTrue(out.get(0).getManifestList().isBlank());
+    verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void parseSnapshotSchemaPreservesVariantWhenFallbackDisabled() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    IcebergGatewayConfig gatewayConfig = mock(IcebergGatewayConfig.class);
+    IcebergGatewayConfig.DeltaCompatConfig deltaCompatConfig =
+        mock(IcebergGatewayConfig.DeltaCompatConfig.class);
+    when(gatewayConfig.deltaCompat()).thenReturn(java.util.Optional.of(deltaCompatConfig));
+    when(deltaCompatConfig.rewriteVariantAsStruct()).thenReturn(false);
+    materializer.gatewayConfig = gatewayConfig;
+
+    Table table = deltaTable("file:///tmp/variant-table", VARIANT_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(1L, VARIANT_SCHEMA_JSON, null);
+
+    Method method =
+        DeltaManifestMaterializer.class.getDeclaredMethod(
+            "parseSnapshotSchema", Snapshot.class, Table.class);
+    method.setAccessible(true);
+    Schema schema = (Schema) method.invoke(materializer, snapshot, table);
+
     assertEquals(
-        "omega",
-        Conversions.fromByteBuffer(Types.StringType.get(), dataFile.upperBounds().get(2))
-            .toString());
+        org.apache.iceberg.types.Type.TypeID.VARIANT, schema.findField("payload").type().typeId());
   }
 
   @Test
-  void materializePropagatesPartitionSpecAndValuesToDataManifest() throws Exception {
-    String schemaJson =
-        "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"region\",\"type\":\"string\",\"required\":false}],\"last-column-id\":1}";
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(12L)
-            .setSequenceNumber(12L)
-            .setSchemaJson(schemaJson)
-            .setPartitionSpec(
-                PartitionSpecInfo.newBuilder()
-                    .setSpecId(7)
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(1)
-                            .setName("region")
-                            .setTransform("identity")
-                            .build())
-                    .build())
-            .build();
+  void metadataRootPrefersStorageLocationOverWorkspaceLocation() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    String tableRoot = materializer.stageFixture("delta-fixtures/01_unpartitioned_append_only");
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-            .setSchemaJson(schemaJson)
-            .putProperties("storage_location", "s3://floecat-delta/call_center/partitioned")
-            .build();
-    ScanFile partitionedFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/part-00002.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(1024)
-            .setRecordCount(10)
-            .setPartitionSpecId(7)
-            .setPartitionDataJson(
-                "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-east-1\"}]}")
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(partitionedFile).build())
-                .build());
-
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    ManifestFile dataManifest =
-        readManifestList(materializer.fileIo().newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DATA)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Data manifest not found in manifest list"));
-    assertEquals(0, dataManifest.partitionSpecId());
-    DataFile dataFile = readSingleDataFileFromManifest(materializer.fileIo(), dataManifest);
-    assertEquals(0, dataFile.specId());
-    assertEquals("us-east-1", dataFile.partition().get(0, String.class));
-  }
-
-  @Test
-  void materializeResolvesPartitionIdsFromSourceNameAndNumericIds() throws Exception {
-    String schemaJson =
-        "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"region\",\"type\":\"string\",\"required\":false},{\"id\":2,\"name\":\"customer_id\",\"type\":\"int\",\"required\":false}],\"last-column-id\":2}";
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(17L)
-            .setSequenceNumber(17L)
-            .setSchemaJson(schemaJson)
-            .setPartitionSpec(
-                PartitionSpecInfo.newBuilder()
-                    .setSpecId(8)
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(1)
-                            .setName("region_part")
-                            .setTransform("identity")
-                            .build())
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(2)
-                            .setName("cid_bucket")
-                            .setTransform("bucket[8]")
-                            .build())
-                    .build())
-            .build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-            .setSchemaJson(schemaJson)
-            .putProperties(
-                "storage_location", "s3://floecat-delta/call_center/partition-id-encodings")
-            .build();
-    ScanFile dataFileWithMixedIds =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/part-mixed-ids.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(222)
-            .setRecordCount(9)
-            .setPartitionSpecId(8)
-            .setPartitionDataJson(
-                "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-west-2\"},{\"id\":\"2\",\"value\":5}]}")
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(dataFileWithMixedIds).build())
-                .build());
-
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-    DataFile dataFile = readSingleDataFileFromManifestList(materializer.fileIo(), manifestListPath);
-    assertEquals("us-west-2", dataFile.partition().get(0, String.class));
-    assertEquals(5, dataFile.partition().get(1, Integer.class));
-  }
-
-  @Test
-  void materializeBuildsDeleteManifestFromScanBundleDeleteFiles() throws Exception {
-    ScanFile dataFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/data-000.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(100)
-            .setRecordCount(5)
-            .addDeleteFileIndices(0)
-            .build();
-    ScanFile positionDelete =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/deletes-pos-000.avro")
-            .setFileFormat("AVRO")
-            .setFileContent(
-                ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
-            .setFileSizeInBytes(10)
-            .setRecordCount(2)
-            .build();
-    ScanFile equalityDelete =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/deletes-eq-000.parquet")
-            .setFileFormat("PARQUET")
-            .setFileContent(
-                ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES)
-            .addEqualityFieldIds(2)
-            .addEqualityFieldIds(3)
-            .setFileSizeInBytes(20)
-            .setRecordCount(3)
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(positionDelete)
-                        .addDeleteFiles(equalityDelete)
-                        .build())
-                .build());
-
-    Table table = deltaTable("bundle-deletes");
-    Snapshot snapshot = snapshot(13L, 13L);
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    ManifestFile deleteManifest =
-        readManifestList(materializer.fileIo().newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-    List<DeleteFile> deleteFiles =
-        readDeleteFilesFromManifest(
-            materializer.fileIo(),
-            deleteManifest,
-            Map.of(deleteManifest.partitionSpecId(), PartitionSpec.unpartitioned()));
-    assertEquals(2, deleteFiles.size());
-
-    DeleteFile posDelete =
-        deleteFiles.stream()
-            .filter(df -> df.content() == FileContent.POSITION_DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Position delete file missing"));
-    assertEquals("s3://floecat-delta/call_center/data-000.parquet", posDelete.referencedDataFile());
-
-    DeleteFile eqDelete =
-        deleteFiles.stream()
-            .filter(df -> df.content() == FileContent.EQUALITY_DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Equality delete file missing"));
-    assertEquals(List.of(2, 3), eqDelete.equalityFieldIds());
-  }
-
-  @Test
-  void materializePersistsDataAndDeleteSequenceNumbersInManifestEntries() throws Exception {
-    ScanFile dataFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/data-seq.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(100)
-            .setRecordCount(5)
-            .setSequenceNumber(101)
-            .addDeleteFileIndices(0)
-            .build();
-    ScanFile positionDelete =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/deletes-seq.avro")
-            .setFileFormat("AVRO")
-            .setFileContent(
-                ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
-            .setFileSizeInBytes(10)
-            .setRecordCount(2)
-            .setSequenceNumber(202)
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(positionDelete)
-                        .build())
-                .build());
-
-    Table table = deltaTable("manifest-sequences");
-    Snapshot snapshot = snapshot(18L, 18L);
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    List<ManifestFile> manifests =
-        readManifestList(materializer.fileIo().newInputFile(manifestListPath));
-    ManifestFile dataManifest =
-        manifests.stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DATA)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Data manifest not found in manifest list"));
-    ManifestFile deleteManifest =
-        manifests.stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-
-    EntrySequences dataEntry = readSingleDataEntrySequences(materializer.fileIo(), dataManifest);
-    assertEquals(1L, dataEntry.dataSequenceNumber());
-    assertEquals(1L, dataEntry.fileSequenceNumber());
-
-    EntrySequences deleteEntry =
-        readSingleDeleteEntrySequences(
-            materializer.fileIo(),
-            deleteManifest,
-            Map.of(deleteManifest.partitionSpecId(), PartitionSpec.unpartitioned()));
-    assertEquals(1L, deleteEntry.dataSequenceNumber());
-    assertEquals(1L, deleteEntry.fileSequenceNumber());
-  }
-
-  @Test
-  void materializePropagatesTransformedPartitionToDeleteFiles() throws Exception {
-    String schemaJson =
-        "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false}],\"last-column-id\":1}";
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(14L)
-            .setSequenceNumber(14L)
-            .setSchemaJson(schemaJson)
-            .setPartitionSpec(
-                PartitionSpecInfo.newBuilder()
-                    .setSpecId(9)
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(1)
-                            .setName("id_bucket")
-                            .setTransform("bucket[8]")
-                            .build())
-                    .build())
-            .build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-            .setSchemaJson(schemaJson)
-            .putProperties("storage_location", "s3://floecat-delta/call_center/delete-partitioned")
-            .build();
-    ScanFile dataFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/data-bucket.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(111)
-            .setRecordCount(7)
-            .setPartitionSpecId(9)
-            .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id\",\"value\":3}]}")
-            .addDeleteFileIndices(0)
-            .build();
-    ScanFile deleteFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/deletes-bucket.avro")
-            .setFileFormat("AVRO")
-            .setFileContent(
-                ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
-            .setFileSizeInBytes(12)
-            .setRecordCount(2)
-            .setPartitionSpecId(9)
-            .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id\",\"value\":3}]}")
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(deleteFile)
-                        .build())
-                .build());
-
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    ManifestFile deleteManifest =
-        readManifestList(materializer.fileIo().newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-    Schema schema = org.apache.iceberg.SchemaParser.fromJson(schemaJson);
-    PartitionSpec spec =
-        PartitionSpec.builderFor(schema).withSpecId(9).bucket("id", 8, "id_bucket").build();
-    List<DeleteFile> deleteFiles =
-        readDeleteFilesFromManifest(
-            materializer.fileIo(), deleteManifest, Map.of(deleteManifest.partitionSpecId(), spec));
-    assertEquals(1, deleteFiles.size());
-    assertEquals(3, deleteFiles.get(0).partition().get(0, Integer.class));
-  }
-
-  @Test
-  void materializeUsesUnpartitionedDeleteManifestSpecForFallbackDvDeletes() throws Exception {
-    TestDeltaManifestMaterializerWithDeletes withDeletes =
-        new TestDeltaManifestMaterializerWithDeletes();
-    withDeletes.grpcClient = grpcClient;
-    String schemaJson =
-        "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"region\",\"type\":\"string\",\"required\":false}],\"last-column-id\":1}";
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-            .setSchemaJson(schemaJson)
-            .putProperties("storage_location", "s3://floecat-delta/call_center/fallback-dv")
-            .build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(15L)
-            .setSequenceNumber(15L)
-            .setSchemaJson(schemaJson)
-            .setPartitionSpec(
-                PartitionSpecInfo.newBuilder()
-                    .setSpecId(7)
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(1)
-                            .setName("region")
-                            .setTransform("identity")
-                            .build())
-                    .build())
-            .build();
-
-    List<Snapshot> out = withDeletes.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-    ManifestFile deleteManifest =
-        readManifestList(withDeletes.fileIo().newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-    assertEquals(0, deleteManifest.partitionSpecId());
-  }
-
-  @Test
-  void materializeSkipsDeletePartitionAssignmentOnPartitionSpecMismatch() throws Exception {
-    String schemaJson =
-        "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false}],\"last-column-id\":1}";
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(16L)
-            .setSequenceNumber(16L)
-            .setSchemaJson(schemaJson)
-            .setPartitionSpec(
-                PartitionSpecInfo.newBuilder()
-                    .setSpecId(9)
-                    .addFields(
-                        ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                            .setFieldId(1)
-                            .setName("id_bucket")
-                            .setTransform("bucket[8]")
-                            .build())
-                    .build())
-            .build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-            .setSchemaJson(schemaJson)
-            .putProperties(
-                "storage_location", "s3://floecat-delta/call_center/delete-spec-mismatch")
-            .build();
-    ScanFile dataFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/data-bucket-2.parquet")
-            .setFileFormat("PARQUET")
-            .setFileSizeInBytes(111)
-            .setRecordCount(7)
-            .setPartitionSpecId(9)
-            .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id_bucket\",\"value\":3}]}")
-            .addDeleteFileIndices(0)
-            .build();
-    ScanFile deleteFile =
-        ScanFile.newBuilder()
-            .setFilePath("s3://floecat-delta/call_center/deletes-bucket-2.avro")
-            .setFileFormat("AVRO")
-            .setFileContent(
-                ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
-            .setFileSizeInBytes(12)
-            .setRecordCount(2)
-            .setPartitionSpecId(99)
-            .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id_bucket\",\"value\":3}]}")
-            .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(deleteFile)
-                        .build())
-                .build());
-
-    List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
-    assertFalse(manifestListPath.isBlank());
-
-    ManifestFile deleteManifest =
-        readManifestList(materializer.fileIo().newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DELETES)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Delete manifest not found in manifest list"));
-    Schema schema = org.apache.iceberg.SchemaParser.fromJson(schemaJson);
-    PartitionSpec spec =
-        PartitionSpec.builderFor(schema).withSpecId(9).bucket("id", 8, "id_bucket").build();
-    List<DeleteFile> deleteFiles =
-        readDeleteFilesFromManifest(
-            materializer.fileIo(), deleteManifest, Map.of(deleteManifest.partitionSpecId(), spec));
-    assertEquals(1, deleteFiles.size());
-    assertEquals(3, deleteFiles.get(0).partition().get(0, Integer.class));
-  }
-
-  @Test
-  void materializeSkipsDeltaEngineWhenDeltaLogMissing() {
-    TestDeltaManifestMaterializerWithoutDeltaLog noDeltaLog =
-        new TestDeltaManifestMaterializerWithoutDeltaLog();
-    noDeltaLog.grpcClient = grpcClient;
-
-    Table table = deltaTable("no-delta-log");
-    Snapshot snapshot = snapshot(10L, 10L);
-
-    List<Snapshot> out = noDeltaLog.materialize(table, List.of(snapshot));
-    assertFalse(out.get(0).getManifestList().isBlank());
-  }
-
-  @Test
-  void loadDeltaPositionDeleteFilesIgnoresUnreferencedFixtureDeletionVectorFile() throws Exception {
-    TestDeltaManifestMaterializerWithFixture fixtureMaterializer =
-        new TestDeltaManifestMaterializerWithFixture();
-    fixtureMaterializer.grpcClient = grpcClient;
-
-    String tableRoot = fixtureMaterializer.stageFixture("delta-fixtures/dv_demo_delta");
-
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
+            .putProperties("location", "https://dbc-d6b5397e-c401.cloud.databricks.com")
             .putProperties("storage_location", tableRoot)
             .build();
-    Snapshot snapshot = snapshot(3L, 3L);
 
-    List<DeleteFile> deleteFiles = fixtureMaterializer.loadDeleteFiles(table, snapshot);
-    assertTrue(deleteFiles.isEmpty());
+    String metadataRoot = materializer.metadataRootForTest(table);
+    assertEquals(tableRoot + "/metadata", metadataRoot);
   }
 
-  private Table deltaTable(String testName) {
+  private static Table deltaTable(String tableRoot, String schemaJson) {
     return Table.newBuilder()
         .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
-        .putProperties("storage_location", "s3://floecat-delta/call_center/" + testName)
+        .setSchemaJson(schemaJson)
+        .putProperties("storage_location", tableRoot)
         .build();
   }
 
-  private Snapshot snapshot(long snapshotId, long sequence) {
-    return Snapshot.newBuilder().setSnapshotId(snapshotId).setSequenceNumber(sequence).build();
-  }
-
-  private static DataFile readSingleDataFileFromManifestList(
-      ReopenableInMemoryFileIO fileIo, String manifestListPath) throws Exception {
-    ManifestFile dataManifest =
-        readManifestList(fileIo.newInputFile(manifestListPath)).stream()
-            .filter(manifest -> manifest.content() == ManifestContent.DATA)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("Data manifest not found in manifest list"));
-    return readSingleDataFileFromManifest(fileIo, dataManifest);
-  }
-
-  private static DataFile readSingleDataFileFromManifest(
-      ReopenableInMemoryFileIO fileIo, ManifestFile dataManifest) throws Exception {
-    try (var reader = ManifestFiles.read(dataManifest, fileIo);
-        var files = reader.iterator()) {
-      assertTrue(files.hasNext(), "Expected one data file entry in compat manifest");
-      DataFile out = files.next().copy();
-      assertFalse(files.hasNext(), "Expected exactly one data file entry in compat manifest");
-      return out;
+  private static Snapshot snapshot(
+      long snapshotId, String schemaJson, PartitionSpecInfo partitionSpec) {
+    Snapshot.Builder builder =
+        Snapshot.newBuilder()
+            .setSnapshotId(snapshotId)
+            .setSequenceNumber(snapshotId)
+            .setSchemaJson(schemaJson);
+    if (partitionSpec != null) {
+      builder.setPartitionSpec(partitionSpec);
     }
+    return builder.build();
   }
 
-  @SuppressWarnings("unchecked")
-  private static List<ManifestFile> readManifestList(InputFile inputFile) throws Exception {
-    Class<?> manifestLists = Class.forName("org.apache.iceberg.ManifestLists");
-    var read = manifestLists.getDeclaredMethod("read", InputFile.class);
-    read.setAccessible(true);
-    return (List<ManifestFile>) read.invoke(null, inputFile);
-  }
-
-  private static List<DeleteFile> readDeleteFilesFromManifest(
-      ReopenableInMemoryFileIO fileIo, ManifestFile manifest, Map<Integer, PartitionSpec> specsById)
-      throws Exception {
-    try (var reader = ManifestFiles.readDeleteManifest(manifest, fileIo, specsById);
-        var iter = reader.iterator()) {
-      List<DeleteFile> files = new java.util.ArrayList<>();
-      while (iter.hasNext()) {
-        files.add(iter.next().copy());
+  private static PartitionSpec specFromSnapshot(String schemaJson, PartitionSpecInfo specInfo) {
+    if (specInfo == null || specInfo.getFieldsCount() == 0) {
+      return PartitionSpec.unpartitioned();
+    }
+    Schema schema = SchemaParser.fromJson(schemaJson);
+    PartitionSpec.Builder builder =
+        PartitionSpec.builderFor(schema).withSpecId(specInfo.getSpecId());
+    for (ai.floedb.floecat.catalog.rpc.PartitionField field : specInfo.getFieldsList()) {
+      String sourceName = schema.findColumnName(field.getFieldId());
+      assertNotNull(sourceName);
+      String transform = field.getTransform();
+      if ("identity".equals(transform)) {
+        builder.identity(sourceName, field.getName());
+        continue;
       }
-      return files;
+      throw new IllegalArgumentException("Unsupported test transform: " + transform);
     }
+    return builder.build();
   }
 
-  private static EntrySequences readSingleDataEntrySequences(
-      ReopenableInMemoryFileIO fileIo, ManifestFile manifest) throws Exception {
-    try (var reader = ManifestFiles.read(manifest, fileIo)) {
-      return readSingleEntrySequences(reader);
-    }
-  }
+  private static class FixtureDeltaManifestMaterializer extends DeltaManifestMaterializer {
+    private final LocalFixtureFileIO sourceFileIo = new LocalFixtureFileIO();
+    private final NonClosingInMemoryFileIO compatFileIo = new NonClosingInMemoryFileIO();
 
-  private static EntrySequences readSingleDeleteEntrySequences(
-      ReopenableInMemoryFileIO fileIo, ManifestFile manifest, Map<Integer, PartitionSpec> specsById)
-      throws Exception {
-    try (var reader = ManifestFiles.readDeleteManifest(manifest, fileIo, specsById)) {
-      return readSingleEntrySequences(reader);
-    }
-  }
-
-  private static EntrySequences readSingleEntrySequences(Object manifestReader) throws Exception {
-    Method entries = manifestReader.getClass().getDeclaredMethod("entries");
-    entries.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    CloseableIterable<Object> entryIterable =
-        (CloseableIterable<Object>) entries.invoke(manifestReader);
-    try (entryIterable) {
-      try (var iterator = entryIterable.iterator()) {
-        assertTrue(iterator.hasNext(), "Expected one manifest entry");
-        Object entry = iterator.next();
-        Method dataSequenceNumber = entry.getClass().getDeclaredMethod("dataSequenceNumber");
-        Method fileSequenceNumber = entry.getClass().getDeclaredMethod("fileSequenceNumber");
-        dataSequenceNumber.setAccessible(true);
-        fileSequenceNumber.setAccessible(true);
-        Long dataSeq = (Long) dataSequenceNumber.invoke(entry);
-        Long fileSeq = (Long) fileSequenceNumber.invoke(entry);
-        assertFalse(iterator.hasNext(), "Expected exactly one manifest entry");
-        return new EntrySequences(dataSeq, fileSeq);
-      }
-    }
-  }
-
-  private record EntrySequences(Long dataSequenceNumber, Long fileSequenceNumber) {}
-
-  private static class TestDeltaManifestMaterializer extends DeltaManifestMaterializer {
-    private final ReopenableInMemoryFileIO fileIo = new ReopenableInMemoryFileIO();
-
-    @Override
-    protected FileIO newFileIo(Table table) {
-      return fileIo;
-    }
-
-    protected ReopenableInMemoryFileIO fileIo() {
-      return fileIo;
-    }
-  }
-
-  private static final class TestDeltaManifestMaterializerWithDeletes
-      extends TestDeltaManifestMaterializer {
-    @Override
-    protected List<DeleteFile> loadDeltaPositionDeleteFiles(
-        FileIO icebergFileIo, Table table, Snapshot snapshot, String metadataRoot) {
-      DeleteFile deleteFile =
-          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-              .ofPositionDeletes()
-              .withPath(metadataRoot + "/" + snapshot.getSnapshotId() + "-compat-pd-test.avro")
-              .withFormat(FileFormat.AVRO)
-              .withFileSizeInBytes(1L)
-              .withRecordCount(1L)
-              .withReferencedDataFile("s3://floecat-delta/call_center/data/part-00000.parquet")
-              .build();
-      return List.of(deleteFile);
-    }
-  }
-
-  private static final class TestDeltaManifestMaterializerWithoutDeltaLog
-      extends TestDeltaManifestMaterializer {
-    @Override
-    protected Engine newDeltaEngine(FileIO icebergFileIo) {
-      throw new AssertionError("newDeltaEngine must not be called when _delta_log is absent");
-    }
-  }
-
-  private static final class TestDeltaManifestMaterializerWithFixture
-      extends DeltaManifestMaterializer {
-    private final HadoopFileIO fileIo = new HadoopFileIO();
-
-    private TestDeltaManifestMaterializerWithFixture() {
-      fileIo.initialize(Map.of());
+    private FixtureDeltaManifestMaterializer() {
+      sourceFileIo.initialize(Map.of());
+      compatFileIo.initialize(Map.of());
     }
 
     @Override
     protected FileIO newFileIo(Table table) {
-      return fileIo;
+      return sourceFileIo;
     }
 
-    List<DeleteFile> loadDeleteFiles(Table table, Snapshot snapshot) throws Exception {
-      String metadataRoot = table.getPropertiesMap().get("storage_location") + "/metadata";
-      return loadDeltaPositionDeleteFiles(fileIo, table, snapshot, metadataRoot);
+    @Override
+    protected FileIO newSourceFileIo(Table table, String metadataRoot) {
+      return sourceFileIo;
+    }
+
+    @Override
+    protected CompatStorageContext resolveCompatStorage(Table table, Snapshot snapshot) {
+      return new CompatStorageContext(
+          "s3://delta-compat-tests/" + snapshot.getSnapshotId() + "/metadata", Map.of());
+    }
+
+    @Override
+    protected FileIO newCompatFileIo(Table table, Snapshot snapshot, CompatStorageContext compat) {
+      return compatFileIo;
+    }
+
+    FileIO fileIo() {
+      return compatFileIo;
+    }
+
+    String metadataRootForTest(Table table) throws Exception {
+      Method method =
+          DeltaManifestMaterializer.class.getDeclaredMethod("metadataRoot", Table.class);
+      method.setAccessible(true);
+      return (String) method.invoke(this, table);
+    }
+
+    CompatSnapshotFiles loadSnapshotFiles(
+        Table table, Snapshot snapshot, PartitionSpec spec, Schema schema) throws Exception {
+      return loadCompatSnapshotFiles(
+          compatFileIo,
+          new SourceTableAccess(Map.of(), sourceFileIo),
+          table,
+          snapshot,
+          "s3://delta-compat-tests/" + snapshot.getSnapshotId() + "/metadata",
+          table.getPropertiesMap().get("storage_location") + "/metadata",
+          spec,
+          schema);
     }
 
     String stageFixture(String resourceDir) throws Exception {
@@ -944,7 +399,7 @@ class DeltaManifestMaterializerTest {
       } else {
         fixtureRoot = Path.of(resourceUri);
       }
-      Path stagedRoot = Files.createTempDirectory("delta-dv-fixture-");
+      Path stagedRoot = Files.createTempDirectory("delta-fixture-");
       try {
         try (var paths = Files.walk(fixtureRoot)) {
           for (Path source : (Iterable<Path>) paths.filter(Files::isRegularFile)::iterator) {
@@ -962,40 +417,135 @@ class DeltaManifestMaterializerTest {
           resourceFs.close();
         }
       }
-      return stagedRoot.toUri().toString().replaceAll("/$", "");
+      return toUri(stagedRoot);
     }
   }
 
-  private static final class ReopenableInMemoryFileIO extends InMemoryFileIO {
+  private static final class NoDeltaLogMaterializer extends FixtureDeltaManifestMaterializer {}
+
+  private static final class NonClosingInMemoryFileIO extends InMemoryFileIO {
     @Override
-    public void close() {
-      // Keep files available across multiple materialize() calls in the same test.
+    public void close() {}
+  }
+
+  private static final class LocalFixtureFileIO implements SupportsPrefixOperations {
+    @Override
+    public InputFile newInputFile(String location) {
+      Path path = toLocalPath(location);
+      return new InputFile() {
+        @Override
+        public long getLength() {
+          try {
+            return Files.size(path);
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          }
+        }
+
+        @Override
+        public SeekableInputStream newStream() {
+          try {
+            SeekableByteChannel channel = Files.newByteChannel(path);
+            java.io.InputStream in = Channels.newInputStream(channel);
+            return new SeekableInputStream() {
+              @Override
+              public int read() throws java.io.IOException {
+                return in.read();
+              }
+
+              @Override
+              public int read(byte[] b, int off, int len) throws java.io.IOException {
+                return in.read(b, off, len);
+              }
+
+              @Override
+              public long getPos() throws java.io.IOException {
+                return channel.position();
+              }
+
+              @Override
+              public void seek(long newPos) throws java.io.IOException {
+                channel.position(newPos);
+              }
+
+              @Override
+              public void close() throws java.io.IOException {
+                in.close();
+              }
+            };
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          }
+        }
+
+        @Override
+        public String location() {
+          return normalizeFileUri(path.toUri().toString());
+        }
+
+        @Override
+        public boolean exists() {
+          return Files.exists(path);
+        }
+      };
+    }
+
+    @Override
+    public OutputFile newOutputFile(String location) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void deleteFile(String location) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Iterable<FileInfo> listPrefix(String prefix) {
+      try {
+        Path root = toLocalPath(prefix);
+        if (!Files.exists(root)) {
+          return List.of();
+        }
+        try (var paths = Files.list(root)) {
+          return paths
+              .filter(Files::isRegularFile)
+              .map(
+                  path -> {
+                    try {
+                      return new FileInfo(
+                          normalizeFileUri(path.toUri().toString()),
+                          Files.size(path),
+                          Files.getLastModifiedTime(path).toMillis());
+                    } catch (Exception e) {
+                      throw new RuntimeException(e);
+                    }
+                  })
+              .toList();
+        }
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {
+      throw new UnsupportedOperationException();
+    }
+
+    private Path toLocalPath(String location) {
+      if (location.startsWith("file:")) {
+        return Path.of(URI.create(location));
+      }
+      return Path.of(location);
     }
   }
 
-  private static final class CapturingDeltaManifestMaterializer extends DeltaManifestMaterializer {}
+  private static String toUri(Path path) {
+    return normalizeFileUri(path.toUri().toString()).replaceAll("/$", "");
+  }
 
-  public static final class CaptureFileIo implements FileIO {
-    static Map<String, String> lastInitializedProps = Map.of();
-
-    @Override
-    public void initialize(Map<String, String> properties) {
-      lastInitializedProps = Map.copyOf(properties);
-    }
-
-    @Override
-    public InputFile newInputFile(String path) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public org.apache.iceberg.io.OutputFile newOutputFile(String path) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void deleteFile(String path) {
-      throw new UnsupportedOperationException();
-    }
+  private static String normalizeFileUri(String value) {
+    return value.replace("file:///", "file:/");
   }
 }

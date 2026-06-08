@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
@@ -52,8 +53,12 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityServiceImpl;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -95,6 +100,7 @@ public class SeedRunner {
               ReconcileCapturePolicy.Output.COLUMN_STATS));
 
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
+  private static final String SEEDED_STORAGE_AUTHORITY_NAME = "floecat-managed-storage";
   private static final String EXAMPLES_CATALOG = "examples";
   private static final List<String> ICEBERG_NAMESPACE = List.of("iceberg");
   private static final List<String> DELTA_NAMESPACE = List.of("delta");
@@ -113,7 +119,9 @@ public class SeedRunner {
   @Inject ViewRepository views;
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
+  @Inject StorageAuthorityRepository storageAuthorities;
   @Inject ConnectorRepository connectorRepo;
+  @Inject SecretsManager secretsManager;
 
   @GrpcClient("floecat")
   ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
@@ -147,6 +155,30 @@ public class SeedRunner {
 
   @ConfigProperty(name = "floecat.seed.sync.poll-interval", defaultValue = "250ms")
   Duration seedSyncPollInterval;
+
+  @ConfigProperty(name = "floecat.blob", defaultValue = "memory")
+  String blobStoreType;
+
+  @ConfigProperty(name = "floecat.blob.s3.bucket", defaultValue = "floecat-dev")
+  String blobBucket;
+
+  @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
+  String storageAwsRegion;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.endpoint")
+  java.util.Optional<String> storageAwsS3Endpoint;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "true")
+  boolean storageAwsPathStyleAccess;
+
+  @ConfigProperty(name = "floecat.storage.aws.access-key-id")
+  java.util.Optional<String> storageAwsAccessKeyId;
+
+  @ConfigProperty(name = "floecat.storage.aws.secret-access-key")
+  java.util.Optional<String> storageAwsSecretAccessKey;
+
+  @ConfigProperty(name = "floecat.storage.aws.session-token")
+  java.util.Optional<String> storageAwsSessionToken;
 
   private volatile java.util.Optional<String> seedAuthorizationHeader;
 
@@ -203,6 +235,7 @@ public class SeedRunner {
     final long now = clock.millis();
 
     var accountId = seedAccount("t-0001", "First account", now);
+    seedManagedStorageAuthority(accountId, now);
 
     var examplesId = seedCatalog(accountId.getId(), EXAMPLES_CATALOG, "Examples catalog", now);
 
@@ -237,6 +270,7 @@ public class SeedRunner {
     final long now = clock.millis();
 
     var accountId = seedAccount("t-0001", "First account", now);
+    seedManagedStorageAuthority(accountId, now);
 
     var examplesId = seedCatalog(accountId.getId(), EXAMPLES_CATALOG, "Examples catalog", now);
     var icebergNsId =
@@ -326,6 +360,110 @@ public class SeedRunner {
             .build();
     catalogs.create(cat);
     return rid;
+  }
+
+  private ResourceId seedManagedStorageAuthority(ResourceId accountId, long now) {
+    if (accountId == null || accountId.getAccountId().isBlank()) {
+      return null;
+    }
+    String locationPrefix = seededManagedStorageLocationPrefix();
+    if (locationPrefix == null) {
+      LOG.infov(
+          "Skipping seeded storage authority {0}; unsupported floecat.blob={1}",
+          SEEDED_STORAGE_AUTHORITY_NAME, blobStoreType);
+      return null;
+    }
+
+    var existing =
+        storageAuthorities.getByName(accountId.getAccountId(), SEEDED_STORAGE_AUTHORITY_NAME);
+    String authorityId =
+        existing
+            .map(authority -> authority.getResourceId().getId())
+            .orElseGet(
+                () ->
+                    uuidFor(
+                        accountId.getAccountId()
+                            + "/storage-authority:"
+                            + SEEDED_STORAGE_AUTHORITY_NAME));
+    ResourceId rid =
+        ResourceId.newBuilder()
+            .setAccountId(accountId.getAccountId())
+            .setId(authorityId)
+            .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+            .build();
+
+    StorageAuthority.Builder desired =
+        StorageAuthority.newBuilder()
+            .setResourceId(rid)
+            .setDisplayName(SEEDED_STORAGE_AUTHORITY_NAME)
+            .setDescription("Seeded managed storage authority for Floecat-owned compat artifacts")
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix(locationPrefix)
+            .setRegion(
+                storageAwsRegion == null || storageAwsRegion.isBlank()
+                    ? "us-east-1"
+                    : storageAwsRegion)
+            .setCreatedAt(
+                existing.map(StorageAuthority::getCreatedAt).orElse(Timestamps.fromMillis(now)))
+            .setUpdatedAt(Timestamps.fromMillis(now))
+            .setPathStyleAccess(storageAwsPathStyleAccess);
+    trimmed(storageAwsS3Endpoint).ifPresent(desired::setEndpoint);
+    StorageAuthority materialized = desired.build();
+
+    if (existing.isPresent()) {
+      long expectedVersion =
+          storageAuthorities.metaFor(existing.get().getResourceId()).getPointerVersion();
+      storageAuthorities.update(materialized, expectedVersion);
+    } else {
+      storageAuthorities.create(materialized);
+    }
+    storeSeededStorageAuthorityCredentials(accountId.getAccountId(), authorityId);
+    return rid;
+  }
+
+  private void storeSeededStorageAuthorityCredentials(String accountId, String authorityId) {
+    String accessKeyId = trimmed(storageAwsAccessKeyId).orElse("");
+    String secretAccessKey = trimmed(storageAwsSecretAccessKey).orElse("");
+    if (accessKeyId.isBlank() || secretAccessKey.isBlank()) {
+      LOG.infov(
+          "Skipping seeded storage authority credentials for {0}; no AWS credentials configured",
+          SEEDED_STORAGE_AUTHORITY_NAME);
+      return;
+    }
+    AuthCredentials creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId(accessKeyId)
+                    .setSecretAccessKey(secretAccessKey)
+                    .setSessionToken(trimmed(storageAwsSessionToken).orElse(""))
+                    .build())
+            .build();
+    StorageAuthorityServiceImpl.storeCredentials(secretsManager, accountId, authorityId, creds);
+  }
+
+  private String seededManagedStorageLocationPrefix() {
+    String normalizedBlobType = trimmed(blobStoreType).orElse("");
+    if ("memory".equalsIgnoreCase(normalizedBlobType)
+        || "s3".equalsIgnoreCase(normalizedBlobType)) {
+      return trimmed(blobBucket).map(bucket -> "s3://" + bucket + "/").orElse(null);
+    }
+    return null;
+  }
+
+  private static java.util.Optional<String> trimmed(String value) {
+    if (value == null) {
+      return java.util.Optional.empty();
+    }
+    String normalized = value.trim();
+    return normalized.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(normalized);
+  }
+
+  private static java.util.Optional<String> trimmed(java.util.Optional<String> value) {
+    return value == null
+        ? java.util.Optional.empty()
+        : value.map(String::trim).filter(v -> !v.isBlank());
   }
 
   private ResourceId seedNamespace(

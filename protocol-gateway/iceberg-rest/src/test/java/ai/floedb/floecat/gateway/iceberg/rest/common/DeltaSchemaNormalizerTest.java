@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -80,5 +81,35 @@ class DeltaSchemaNormalizerTest {
     List<Map<String, Object>> nestedFields = (List<Map<String, Object>>) metaType.get("fields");
     assertEquals(5, nestedFields.get(0).get("id"));
     assertEquals(6, nestedFields.get(1).get("id"));
+  }
+
+  @Test
+  void normalizeRewritesVariantToStructWhenEnabled() {
+    String deltaSchemaJson =
+        "{\"type\":\"struct\",\"fields\":["
+            + "{\"name\":\"payload\",\"type\":\"variant\",\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":4}},"
+            + "{\"name\":\"items\",\"type\":{\"type\":\"array\",\"elementType\":\"variant\",\"containsNull\":true},\"nullable\":true,\"metadata\":{}}]}";
+
+    Map<String, Object> normalized =
+        DeltaSchemaNormalizer.normalizeSchemaMap(deltaSchemaJson, 0, true);
+    assertNotNull(normalized);
+
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> fields = (List<Map<String, Object>>) normalized.get("fields");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> payloadType = (Map<String, Object>) fields.get(0).get("type");
+    assertEquals("struct", payloadType.get("type"));
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> payloadFields = (List<Map<String, Object>>) payloadType.get("fields");
+    assertEquals(
+        List.of("metadata", "value"), payloadFields.stream().map(f -> f.get("name")).toList());
+    assertTrue(payloadFields.stream().allMatch(f -> Boolean.TRUE.equals(f.get("required"))));
+    assertTrue(payloadFields.stream().allMatch(f -> "binary".equals(f.get("type"))));
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> itemsType = (Map<String, Object>) fields.get(1).get("type");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> elementType = (Map<String, Object>) itemsType.get("element");
+    assertEquals("struct", elementType.get("type"));
   }
 }

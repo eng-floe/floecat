@@ -27,6 +27,7 @@ public final class Keys {
   public static final String SEG_TABLE = "/table/";
   public static final String SEG_SNAPSHOTS = "/snapshots/";
   public static final String SEG_SNAPSHOT = "/snapshot/";
+  public static final String SEG_COMPAT = "/compat/";
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
   public static final String SEG_STORAGE_AUTHORITY = "/storage-authority/";
@@ -671,6 +672,20 @@ public final class Keys {
 
   public static String snapshotFileStatsPrefix(String accountId, String tableId, long snapshotId) {
     return snapshotFileStatsDirectoryPointer(accountId, tableId, snapshotId);
+  }
+
+  public static String snapshotCompatDirectoryPointer(
+      String accountId, String tableId, long snapshotId) {
+    return String.format(
+        "/accounts/%s/tables/%s/snapshots/%019d/compat/",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        reqNonNegative("snapshot_id", snapshotId));
+  }
+
+  public static String snapshotCompatIcebergRestPrefix(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotCompatDirectoryPointer(accountId, tableId, snapshotId) + "iceberg-rest/";
   }
 
   public static String snapshotConstraintsStatsPointer(
