@@ -18,11 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 interface RemoteSnapshotFinalizeWorkerClient {
   boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease,
-      String resultId,
-      String statsBlobUri,
-      int statsRecordCount,
-      ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode);
+      RemoteLeasedJob lease, String resultId, String statsBlobUri, int statsRecordCount);
 
   boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
 }

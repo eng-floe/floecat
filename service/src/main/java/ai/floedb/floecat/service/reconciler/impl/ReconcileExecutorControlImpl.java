@@ -814,18 +814,22 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setParentJobId(payload.parentJobId())
                       .setTableId(payload.tableId())
                       .setSnapshotId(payload.snapshotId())
+                      .setFinalizeMode(
+                          switch (payload.finalizeMode()) {
+                            case FILE_GROUPS_NON_EMPTY ->
+                                ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput
+                                    .FinalizeMode.FZM_FILE_GROUPS_NON_EMPTY;
+                            case DIRECT_STATS ->
+                                ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput
+                                    .FinalizeMode.FZM_DIRECT_STATS;
+                            case EXPLICIT_EMPTY ->
+                                ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput
+                                    .FinalizeMode.FZM_EXPLICIT_EMPTY;
+                          })
                       .setDirectStatsBlobUri(payload.directStatsBlobUri())
                       .setDirectStatsRecordCount(payload.directStatsRecordCount())
                       .setSourceFileCount(payload.sourceFileCount())
-                      .setCompletionMode(
-                          switch (payload.completionMode()) {
-                            case DIRECT_STATS ->
-                                ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask
-                                    .CompletionMode.RSCM_DIRECT_STATS;
-                            case FILE_GROUPS ->
-                                ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask
-                                    .CompletionMode.RSCM_FILE_GROUPS;
-                          });
+                      .setFullRescan(payload.fullRescan());
               for (var group : payload.completedGroups()) {
                 inputBuilder.addCompletedGroups(
                     SnapshotFinalizeGroupManifest.newBuilder()
@@ -929,8 +933,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         leaseEpoch,
                         request.getSuccess().getResultId(),
                         request.getSuccess().getStatsBlobUri(),
-                        request.getSuccess().getStatsRecordCount(),
-                        request.getSuccess().getMode());
+                        request.getSuccess().getStatsRecordCount());
                 return SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

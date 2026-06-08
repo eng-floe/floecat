@@ -463,16 +463,24 @@ message SnapshotFinalizeGroupManifest {
 }
 
 message LeasedSnapshotFinalizeInput {
+  enum FinalizeMode {
+    FZM_UNSPECIFIED = 0;
+    FZM_FILE_GROUPS_NON_EMPTY = 1;
+    FZM_DIRECT_STATS = 2;
+    FZM_EXPLICIT_EMPTY = 3;
+  }
+
   string job_id = 1;
   string lease_epoch = 2;
   string parent_job_id = 3;
   ai.floedb.floecat.common.ResourceId table_id = 4;
   uint64 snapshot_id = 5;
-  ReconcileSnapshotTask.CompletionMode completion_mode = 6;
+  FinalizeMode finalize_mode = 6;
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
   repeated SnapshotFinalizeGroupManifest completed_groups = 10;
+  bool full_rescan = 11;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
@@ -739,19 +747,10 @@ message SubmitLeasedFileGroupExecutionResultResponse {
 }
 
 message SubmitLeasedSnapshotFinalizeResultRequest {
-  enum SuccessMode {
-    SFM_UNSPECIFIED = 0;
-    SFM_REPLACE_ALL = 1;
-    SFM_INCREMENTAL_DELTA = 2;
-    SFM_DIRECT_STATS = 3;
-    SFM_EMPTY_SNAPSHOT = 4;
-  }
-
   message Success {
     string result_id = 1;
     string stats_blob_uri = 2;
     uint32 stats_record_count = 3;
-    SuccessMode mode = 4;
   }
 
   message Failure {

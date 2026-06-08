@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -38,8 +39,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import io.grpc.StatusRuntimeException;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -73,67 +74,51 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessRejectsMissingMode() {
-    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+  void persistSuccessRejectsStatsPayloadForExplicitEmptyCoverage() {
+    ReconcileSnapshotTask explicitEmptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(coverageService.expectedCoverage(explicitEmptyTask))
         .thenReturn(
-            Optional.of(
-                new ReconcileJobStore.ReconcileJob(
-                    FINALIZE_JOB_ID,
-                    ACCOUNT_ID,
-                    "connector",
-                    "JS_RUNNING",
-                    "",
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    false,
-                    CaptureMode.METADATA_AND_CAPTURE,
-                    0L,
-                    0L,
-                    ReconcileScope.empty(),
-                    ReconcileExecutionPolicy.defaults(),
-                    "",
-                    ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
-                    ReconcileTableTask.empty(),
-                    ReconcileViewTask.empty(),
-                    ReconcileSnapshotTask.of(
-                        TABLE_ID,
-                        SNAPSHOT_ID,
-                        "db",
-                        "events",
-                        List.of(),
-                        true,
-                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                        0),
-                    ReconcileFileGroupTask.empty(),
-                    "parent-job")));
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
 
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                service.persistSuccess(
-                    principal,
-                    FINALIZE_JOB_ID,
-                    LEASE_EPOCH,
-                    "result-1",
+                service.persistSuccessOutputBlob(
+                    leasedJobWithStatsOutputs(false),
+                    explicitEmptyTask,
+                    tableId,
+                    SNAPSHOT_ID,
                     "/accounts/acct/reconcile/jobs/finalize-job/snapshot-finalize-stats/result.json",
-                    7,
-                    ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
-                        .SuccessMode.SFM_UNSPECIFIED));
+                    7));
 
     assertEquals(
-        "INVALID_ARGUMENT: snapshot finalize success mode is required", error.getMessage());
+        "INVALID_ARGUMENT: snapshot finalize success payload must not include stats blob metadata for this submission",
+        error.getMessage());
   }
 
   @Test
-  void persistSuccessOutputBlobRejectsReplaceAllCoverageMismatchBeforeWrite() {
+  void persistSuccessOutputBlobRejectsStatsPayloadWhenNoStatsOutputsRequested() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -145,7 +130,46 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
             1);
-    ReconcileJobStore.LeasedJob lease = leasedJob(false);
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.NON_EMPTY,
+                List.of(),
+                List.of("s3://bucket/file-1.parquet"),
+                ""));
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.persistSuccessOutputBlob(
+                    leasedJob(false), snapshotTask, tableId, SNAPSHOT_ID, "blob://result", 1));
+
+    assertEquals(
+        "INVALID_ARGUMENT: snapshot finalize success payload must not include stats blob metadata for this submission",
+        error.getMessage());
+  }
+
+  @Test
+  void persistSuccessOutputBlobRejectsFullReplaceCoverageMismatchBeforeWrite() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
+    ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(true);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(ACCOUNT_ID)
@@ -179,14 +203,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             StatusRuntimeException.class,
             () ->
                 service.persistSuccessOutputBlob(
-                    lease,
-                    snapshotTask,
-                    tableId,
-                    SNAPSHOT_ID,
-                    "blob://result",
-                    1,
-                    ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
-                        .SuccessMode.SFM_REPLACE_ALL));
+                    lease, snapshotTask, tableId, SNAPSHOT_ID, "blob://result", 1));
 
     assertEquals(
         "FAILED_PRECONDITION: Snapshot finalization coverage mismatch"
@@ -204,6 +221,31 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         fullRescan,
         CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        LEASE_EPOCH,
+        "",
+        "",
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-job");
+  }
+
+  private static ReconcileJobStore.LeasedJob leasedJobWithStatsOutputs(boolean fullRescan) {
+    return new ReconcileJobStore.LeasedJob(
+        FINALIZE_JOB_ID,
+        ACCOUNT_ID,
+        "connector",
+        fullRescan,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(
+            List.of(),
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), EnumSet.of(ReconcileCapturePolicy.Output.FILE_STATS))),
         ReconcileExecutionPolicy.defaults(),
         LEASE_EPOCH,
         "",

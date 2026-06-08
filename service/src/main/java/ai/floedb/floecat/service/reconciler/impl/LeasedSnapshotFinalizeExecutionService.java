@@ -52,19 +52,16 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String resultId,
       String statsBlobUri,
-      int statsRecordCount,
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode) {
+      int statsRecordCount) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
     ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
     ResourceId tableId = tableId(lease, snapshotTask);
     String requiredResultId = requireResultId(resultId);
-    SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode effectiveMode = requireMode(mode);
-    String effectiveBlobUri = effectiveStatsBlobUri(effectiveMode, statsBlobUri);
+    String effectiveBlobUri = statsBlobUri == null ? "" : statsBlobUri.trim();
     int effectiveRecordCount = requireStatsRecordCount(statsRecordCount);
     byte[] requestBytes =
-        successPayload(requiredResultId, effectiveBlobUri, effectiveRecordCount, effectiveMode)
-            .toByteArray();
+        successPayload(requiredResultId, effectiveBlobUri, effectiveRecordCount).toByteArray();
     return runIdempotentCreate(
             () ->
                 MutationOps.createProto(
@@ -79,8 +76,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                           tableId,
                           snapshotTask.snapshotId(),
                           effectiveBlobUri,
-                          effectiveRecordCount,
-                          effectiveMode);
+                          effectiveRecordCount);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                               .setAccepted(true)
@@ -139,40 +135,47 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       ResourceId tableId,
       long snapshotId,
       String statsBlobUri,
-      int statsRecordCount,
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode) {
+      int statsRecordCount) {
     SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
         coverageService.expectedCoverage(snapshotTask);
     requireKnownCoverage(coverage);
-    switch (mode) {
-      case SFM_REPLACE_ALL -> {
-        List<TargetStatsRecord> records = loadStatsBlob(statsBlobUri, statsRecordCount);
-        List<TargetStatsRecord> replacement =
-            persistence.validateReplacementStats(records, tableId, snapshotId);
-        requireValidCoverage(
-            coverageService.validateCoverage(coverage.expectedFiles(), replacement));
-        persistence.replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
-      }
-      case SFM_INCREMENTAL_DELTA -> {
-        List<TargetStatsRecord> records = loadStatsBlob(statsBlobUri, statsRecordCount);
-        List<TargetStatsRecord> deltaFileStats =
-            persistence.validateIncrementalDeltaFileStats(records, tableId, snapshotId);
-        persistence.persistStats(deltaFileStats);
-        List<TargetStatsRecord> fileStats = persistence.listFileStats(tableId, snapshotId);
-        requireValidCoverage(coverageService.validateCoverage(coverage.expectedFiles(), fileStats));
-        Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
-        if (!aggregateKinds.isEmpty()) {
-          List<TargetStatsRecord> aggregateStats =
-              persistence.buildAggregateStats(tableId, snapshotId, aggregateKinds, fileStats);
-          persistence.persistStats(aggregateStats);
-        }
-      }
-      case SFM_DIRECT_STATS -> {
-        requireDirectStatsCoverage(coverage);
-        if (!requestsStatsOutputs(lease)) {
+    boolean requestsStatsOutputs = requestsStatsOutputs(lease);
+    switch (coverage.state()) {
+      case NON_EMPTY -> {
+        if (!requestsStatsOutputs) {
+          requireNoStatsPayload(statsBlobUri, statsRecordCount);
           return;
         }
-        List<TargetStatsRecord> records = loadStatsBlob(statsBlobUri, statsRecordCount);
+        String requiredBlobUri = requireStatsBlobUri(statsBlobUri);
+        List<TargetStatsRecord> records = loadStatsBlob(requiredBlobUri, statsRecordCount);
+        if (lease.fullRescan) {
+          List<TargetStatsRecord> replacement =
+              persistence.validateReplacementStats(records, tableId, snapshotId);
+          requireValidCoverage(
+              coverageService.validateCoverage(coverage.expectedFiles(), replacement));
+          persistence.replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
+        } else {
+          List<TargetStatsRecord> deltaFileStats =
+              persistence.validateIncrementalDeltaFileStats(records, tableId, snapshotId);
+          persistence.persistStats(deltaFileStats);
+          List<TargetStatsRecord> fileStats = persistence.listFileStats(tableId, snapshotId);
+          requireValidCoverage(
+              coverageService.validateCoverage(coverage.expectedFiles(), fileStats));
+          Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
+          if (!aggregateKinds.isEmpty()) {
+            List<TargetStatsRecord> aggregateStats =
+                persistence.buildAggregateStats(tableId, snapshotId, aggregateKinds, fileStats);
+            persistence.persistStats(aggregateStats);
+          }
+        }
+      }
+      case DIRECT_STATS -> {
+        if (!requestsStatsOutputs) {
+          requireNoStatsPayload(statsBlobUri, statsRecordCount);
+          return;
+        }
+        String requiredBlobUri = requireStatsBlobUri(statsBlobUri);
+        List<TargetStatsRecord> records = loadStatsBlob(requiredBlobUri, statsRecordCount);
         List<TargetStatsRecord> directStats =
             persistence.validateReplacementStats(records, tableId, snapshotId);
         if (lease.fullRescan) {
@@ -181,16 +184,14 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           persistence.persistStats(directStats);
         }
       }
-      case SFM_EMPTY_SNAPSHOT -> {
-        requireExplicitEmptyCoverage(coverage);
-        if (requestsStatsOutputs(lease)) {
+      case EXPLICIT_EMPTY -> {
+        requireNoStatsPayload(statsBlobUri, statsRecordCount);
+        if (requestsStatsOutputs) {
           persistence.persistEmptySnapshotCompletionMarker(tableId, snapshotId, lease.fullRescan);
         }
       }
       default ->
-          throw Status.INVALID_ARGUMENT
-              .withDescription("snapshot finalize success mode is required")
-              .asRuntimeException();
+          throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
     }
   }
 
@@ -268,15 +269,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   }
 
   private static SubmitLeasedSnapshotFinalizeResultRequest.Success successPayload(
-      String resultId,
-      String statsBlobUri,
-      int statsRecordCount,
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode) {
+      String resultId, String statsBlobUri, int statsRecordCount) {
     return SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
         .setResultId(resultId)
         .setStatsBlobUri(statsBlobUri == null ? "" : statsBlobUri)
         .setStatsRecordCount(Math.max(0, statsRecordCount))
-        .setMode(mode)
         .build();
   }
 
@@ -310,16 +307,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return statsBlobUri.trim();
   }
 
-  private static String effectiveStatsBlobUri(
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode, String statsBlobUri) {
-    return switch (mode) {
-      case SFM_EMPTY_SNAPSHOT -> statsBlobUri == null ? "" : statsBlobUri.trim();
-      case SFM_REPLACE_ALL, SFM_INCREMENTAL_DELTA, SFM_DIRECT_STATS ->
-          requireStatsBlobUri(statsBlobUri);
-      default -> statsBlobUri == null ? "" : statsBlobUri.trim();
-    };
-  }
-
   private static int requireStatsRecordCount(int statsRecordCount) {
     if (statsRecordCount < 0) {
       throw Status.INVALID_ARGUMENT
@@ -327,17 +314,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           .asRuntimeException();
     }
     return statsRecordCount;
-  }
-
-  private static SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode requireMode(
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode) {
-    if (mode == null
-        || mode == SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode.SFM_UNSPECIFIED) {
-      throw Status.INVALID_ARGUMENT
-          .withDescription("snapshot finalize success mode is required")
-          .asRuntimeException();
-    }
-    return mode;
   }
 
   private static Set<FloecatConnector.StatsTargetKind> requestedAggregateKinds(
@@ -408,21 +384,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
   }
 
-  private static void requireDirectStatsCoverage(
-      SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
-    if (coverage.state() != SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
-      throw Status.FAILED_PRECONDITION
+  private static void requireNoStatsPayload(String statsBlobUri, int statsRecordCount) {
+    if ((statsBlobUri != null && !statsBlobUri.isBlank()) || statsRecordCount > 0) {
+      throw Status.INVALID_ARGUMENT
           .withDescription(
-              "snapshot finalize direct-stats submission requires direct-stats coverage")
-          .asRuntimeException();
-    }
-  }
-
-  private static void requireExplicitEmptyCoverage(
-      SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
-    if (coverage.state() != SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("snapshot finalize empty submission requires explicit-empty coverage")
+              "snapshot finalize success payload must not include stats blob metadata for this submission")
           .asRuntimeException();
     }
   }

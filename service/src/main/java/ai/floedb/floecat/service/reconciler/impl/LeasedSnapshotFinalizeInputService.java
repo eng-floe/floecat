@@ -44,11 +44,18 @@ public class LeasedSnapshotFinalizeInputService {
       String parentJobId,
       ResourceId tableId,
       long snapshotId,
-      ReconcileSnapshotTask.CompletionMode completionMode,
+      FinalizeMode finalizeMode,
+      boolean fullRescan,
       String directStatsBlobUri,
       int directStatsRecordCount,
       int sourceFileCount,
       List<SnapshotFinalizeGroupManifest> completedGroups) {}
+
+  enum FinalizeMode {
+    FILE_GROUPS_NON_EMPTY,
+    DIRECT_STATS,
+    EXPLICIT_EMPTY
+  }
 
   public SnapshotFinalizeInput resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -73,9 +80,25 @@ public class LeasedSnapshotFinalizeInputService {
           lease.parentJobId,
           tableId(lease, snapshotTask),
           snapshotTask.snapshotId(),
-          ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+          FinalizeMode.DIRECT_STATS,
+          lease.fullRescan,
           requireDirectStatsBlobUri(snapshotTask),
           snapshotTask.directStatsRecordCount(),
+          snapshotTask.sourceFileCount(),
+          List.of());
+    }
+    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
+      requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
+      return new SnapshotFinalizeInput(
+          lease.jobId,
+          lease.leaseEpoch,
+          lease.parentJobId,
+          tableId(lease, snapshotTask),
+          snapshotTask.snapshotId(),
+          FinalizeMode.EXPLICIT_EMPTY,
+          lease.fullRescan,
+          "",
+          0,
           snapshotTask.sourceFileCount(),
           List.of());
     }
@@ -89,7 +112,8 @@ public class LeasedSnapshotFinalizeInputService {
         lease.parentJobId,
         tableId(lease, snapshotTask),
         snapshotTask.snapshotId(),
-        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+        FinalizeMode.FILE_GROUPS_NON_EMPTY,
+        lease.fullRescan,
         "",
         0,
         snapshotTask.sourceFileCount(),
@@ -233,6 +257,28 @@ public class LeasedSnapshotFinalizeInputService {
           .withDescription(
               "snapshot finalization missing EXEC_FILE_GROUP children for planned groups "
                   + childState.missingGroups())
+          .asRuntimeException();
+    }
+  }
+
+  private void requireNoUnexpectedChildren(
+      String accountId, String parentJobId, String finalizerJobId) {
+    List<String> unexpectedChildren = new java.util.ArrayList<>();
+    for (ReconcileJobStore.ReconcileJob child :
+        childStateService.childJobs(accountId, parentJobId)) {
+      if (child == null
+          || child.jobId == null
+          || child.jobId.equals(finalizerJobId)
+          || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
+        continue;
+      }
+      unexpectedChildren.add(SnapshotFinalizeChildStateService.describeGroup(child.fileGroupTask));
+    }
+    if (!unexpectedChildren.isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization found EXEC_FILE_GROUP children for explicit-empty coverage "
+                  + unexpectedChildren)
           .asRuntimeException();
     }
   }

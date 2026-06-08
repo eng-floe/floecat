@@ -107,7 +107,7 @@ public class SnapshotFinalizeChildStateService {
         List.copyOf(completedGroupTasks));
   }
 
-  private List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+  List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
     if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
       return List.of();
     }

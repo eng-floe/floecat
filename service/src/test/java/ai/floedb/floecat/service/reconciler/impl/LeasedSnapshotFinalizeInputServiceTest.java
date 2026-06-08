@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -160,6 +161,10 @@ class LeasedSnapshotFinalizeInputServiceTest {
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
     assertEquals(FINALIZE_JOB_ID, payload.jobId());
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
+        payload.finalizeMode());
+    assertFalse(payload.fullRescan());
     assertEquals(1, payload.completedGroups().size());
     assertEquals(
         "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
@@ -196,7 +201,9 @@ class LeasedSnapshotFinalizeInputServiceTest {
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
-    assertEquals(ReconcileSnapshotTask.CompletionMode.DIRECT_STATS, payload.completionMode());
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.DIRECT_STATS, payload.finalizeMode());
+    assertFalse(payload.fullRescan());
     assertEquals(
         "/accounts/acct/reconcile/jobs/parent-job/direct-stats/blob.json",
         payload.directStatsBlobUri());
@@ -249,9 +256,46 @@ class LeasedSnapshotFinalizeInputServiceTest {
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
+        payload.finalizeMode());
     assertEquals(1, payload.completedGroups().size());
     assertEquals("plan-1", payload.completedGroups().getFirst().planId());
     assertEquals("group-1", payload.completedGroups().getFirst().groupId());
+  }
+
+  @Test
+  void resolveReturnsExplicitEmptyModeAndFullRescan() {
+    ReconcileSnapshotTask emptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask)));
+    when(coverageService.expectedCoverage(emptyTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
+
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.EXPLICIT_EMPTY, payload.finalizeMode());
+    assertTrue(payload.fullRescan());
+    assertEquals(0, payload.completedGroups().size());
   }
 
   private static ReconcileJobStore.ReconcileJob finalizeJob(

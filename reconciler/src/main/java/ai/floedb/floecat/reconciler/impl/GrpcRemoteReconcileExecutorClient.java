@@ -864,11 +864,7 @@ class GrpcRemoteReconcileExecutorClient
 
   @Override
   public boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease,
-      String resultId,
-      String statsBlobUri,
-      int statsRecordCount,
-      SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode mode) {
+      RemoteLeasedJob lease, String resultId, String statsBlobUri, int statsRecordCount) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     return invokeWorkerControl(
         "submitLeasedSnapshotFinalizeResult",
@@ -885,11 +881,6 @@ class GrpcRemoteReconcileExecutorClient
                                 .setResultId(stableResultId)
                                 .setStatsBlobUri(statsBlobUri == null ? "" : statsBlobUri)
                                 .setStatsRecordCount(Math.max(0, statsRecordCount))
-                                .setMode(
-                                    mode == null
-                                        ? SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode
-                                            .SFM_UNSPECIFIED
-                                        : mode)
                                 .build())
                         .build())
                 .getAccepted());

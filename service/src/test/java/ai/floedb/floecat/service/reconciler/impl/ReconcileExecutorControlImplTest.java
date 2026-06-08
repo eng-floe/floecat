@@ -443,7 +443,8 @@ class ReconcileExecutorControlImplTest {
                     .setId("table-1")
                     .build(),
                 55L,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
+                false,
                 "",
                 0,
                 4,
@@ -469,8 +470,10 @@ class ReconcileExecutorControlImplTest {
     assertEquals("table-1", response.getInput().getTableId().getId());
     assertEquals(55L, response.getInput().getSnapshotId());
     assertEquals(
-        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_FILE_GROUPS,
-        response.getInput().getCompletionMode());
+        ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+            .FZM_FILE_GROUPS_NON_EMPTY,
+        response.getInput().getFinalizeMode());
+    assertEquals(false, response.getInput().getFullRescan());
     assertEquals(4, response.getInput().getSourceFileCount());
     assertEquals(1, response.getInput().getCompletedGroupsCount());
     assertEquals("plan-1", response.getInput().getCompletedGroups(0).getPlanId());
@@ -490,7 +493,8 @@ class ReconcileExecutorControlImplTest {
                     .setId("table-1")
                     .build(),
                 55L,
-                ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+                LeasedSnapshotFinalizeInputService.FinalizeMode.DIRECT_STATS,
+                true,
                 "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
                 3,
                 6,
@@ -507,8 +511,9 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertEquals(
-        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_DIRECT_STATS,
-        response.getInput().getCompletionMode());
+        ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode.FZM_DIRECT_STATS,
+        response.getInput().getFinalizeMode());
+    assertTrue(response.getInput().getFullRescan());
     assertEquals(
         "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
         response.getInput().getDirectStatsBlobUri());
@@ -525,8 +530,7 @@ class ReconcileExecutorControlImplTest {
             eq("lease-1"),
             eq("result-1"),
             eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
-            eq(7),
-            eq(SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode.SFM_INCREMENTAL_DELTA)))
+            eq(7)))
         .thenReturn(true);
 
     var response =
@@ -541,9 +545,6 @@ class ReconcileExecutorControlImplTest {
                             .setStatsBlobUri(
                                 "/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json")
                             .setStatsRecordCount(7)
-                            .setMode(
-                                SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode
-                                    .SFM_INCREMENTAL_DELTA)
                             .build())
                     .build())
             .await()
@@ -557,8 +558,7 @@ class ReconcileExecutorControlImplTest {
             eq("lease-1"),
             eq("result-1"),
             eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
-            eq(7),
-            eq(SubmitLeasedSnapshotFinalizeResultRequest.SuccessMode.SFM_INCREMENTAL_DELTA));
+            eq(7));
   }
 
   @Test
