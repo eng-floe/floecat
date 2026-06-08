@@ -45,6 +45,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   private static final int LIST_SCAN_MAX_PAGES = 1_000;
   private static final String LIST_TOKEN_V1_PREFIX = "v1:";
   private static final String STATE_LIST_TOKEN_V1_PREFIX = "v1s:";
+  private static final int MAX_BATCH_WRITE_ITEMS = 100;
 
   private ReconcileJobIndexBackend jobIndexBackend;
   private ReconcilePayloadStore payloadStore;
@@ -274,12 +275,23 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           ancestorMutationsBuilder == null
               ? List.of()
               : ancestorMutationsBuilder.apply(nextPending);
-      JobIndexWriteBatch batch =
-          combineWriteBatches(prependInsertBatches(insertBatches, ancestorMutations));
-      if (jobIndexBackend.compareAndSetBatch(batch)) {
+      List<CommitBatch> commitBatches =
+          buildCommitBatches(nextPending, insertBatches, ancestorMutations);
+      boolean committed = true;
+      int firstFailedBatch = -1;
+      for (int batchIndex = 0; batchIndex < commitBatches.size(); batchIndex++) {
+        CommitBatch commitBatch = commitBatches.get(batchIndex);
+        if (jobIndexBackend.compareAndSetBatch(commitBatch.batch())) {
+          continue;
+        }
+        committed = false;
+        firstFailedBatch = batchIndex;
+        break;
+      }
+      if (committed) {
         return results;
       }
-      pending = nextPending;
+      pending = remainingInserts(commitBatches, firstFailedBatch);
     }
     for (QueuedJobInsert insert : pending) {
       results.add(
@@ -733,6 +745,159 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
     return batches;
   }
+
+  private List<CommitBatch> buildCommitBatches(
+      List<QueuedJobInsert> inserts,
+      List<JobIndexWriteBatch> insertBatches,
+      List<CanonicalRecordMutation> ancestorMutations) {
+    List<JobIndexWriteBatch> ancestorBatches = ancestorWriteBatches(ancestorMutations);
+    int ancestorItemCount = totalWriteItems(ancestorBatches);
+    if (ancestorItemCount > MAX_BATCH_WRITE_ITEMS) {
+      throw new IllegalStateException(
+          "ancestor reconcile mutation requires more than "
+              + MAX_BATCH_WRITE_ITEMS
+              + " write items");
+    }
+
+    int trailingInsertStart = trailingInsertStart(insertBatches, ancestorItemCount);
+    List<CommitBatch> commitBatches = new ArrayList<>();
+    appendCommitBatches(
+        commitBatches,
+        inserts.subList(0, Math.min(trailingInsertStart, inserts.size())),
+        insertBatches.subList(0, Math.min(trailingInsertStart, insertBatches.size())),
+        MAX_BATCH_WRITE_ITEMS);
+
+    List<QueuedJobInsert> trailingInserts = inserts.subList(trailingInsertStart, inserts.size());
+    List<JobIndexWriteBatch> trailingInsertBatches =
+        insertBatches.subList(trailingInsertStart, insertBatches.size());
+    if (trailingInserts.isEmpty() && !ancestorBatches.isEmpty() && !inserts.isEmpty()) {
+      throw new IllegalStateException(
+          "unable to reserve space for ancestor reconcile mutation within a "
+              + MAX_BATCH_WRITE_ITEMS
+              + "-item batch");
+    }
+    List<JobIndexWriteBatch> finalBatches =
+        new ArrayList<>(trailingInsertBatches.size() + ancestorBatches.size());
+    finalBatches.addAll(trailingInsertBatches);
+    finalBatches.addAll(ancestorBatches);
+    JobIndexWriteBatch finalBatch = combineWriteBatches(finalBatches);
+    if (writeItemCount(finalBatch) > MAX_BATCH_WRITE_ITEMS) {
+      throw new IllegalStateException(
+          "reconcile enqueue batch requires more than " + MAX_BATCH_WRITE_ITEMS + " write items");
+    }
+    commitBatches.add(new CommitBatch(List.copyOf(trailingInserts), finalBatch));
+    return commitBatches;
+  }
+
+  private void appendCommitBatches(
+      List<CommitBatch> out,
+      List<QueuedJobInsert> inserts,
+      List<JobIndexWriteBatch> batches,
+      int maxWriteItems) {
+    if (inserts.isEmpty()) {
+      return;
+    }
+    List<QueuedJobInsert> chunkInserts = new ArrayList<>();
+    List<JobIndexWriteBatch> chunkBatches = new ArrayList<>();
+    int chunkItems = 0;
+    for (int i = 0; i < inserts.size(); i++) {
+      JobIndexWriteBatch batch = batches.get(i);
+      int batchItems = writeItemCount(batch);
+      if (batchItems > maxWriteItems) {
+        throw new IllegalStateException(
+            "single reconcile enqueue batch requires more than " + maxWriteItems + " write items");
+      }
+      if (chunkItems > 0 && chunkItems + batchItems > maxWriteItems) {
+        out.add(new CommitBatch(List.copyOf(chunkInserts), combineWriteBatches(chunkBatches)));
+        chunkInserts = new ArrayList<>();
+        chunkBatches = new ArrayList<>();
+        chunkItems = 0;
+      }
+      chunkInserts.add(inserts.get(i));
+      chunkBatches.add(batch);
+      chunkItems += batchItems;
+    }
+    if (!chunkInserts.isEmpty()) {
+      out.add(new CommitBatch(List.copyOf(chunkInserts), combineWriteBatches(chunkBatches)));
+    }
+  }
+
+  private int trailingInsertStart(List<JobIndexWriteBatch> insertBatches, int reservedWriteItems) {
+    if (insertBatches == null || insertBatches.isEmpty()) {
+      return 0;
+    }
+    int finalCapacity = MAX_BATCH_WRITE_ITEMS - reservedWriteItems;
+    if (finalCapacity <= 0) {
+      return insertBatches.size();
+    }
+    int used = 0;
+    int split = insertBatches.size();
+    while (split > 0) {
+      int batchItems = writeItemCount(insertBatches.get(split - 1));
+      if (batchItems > finalCapacity) {
+        return insertBatches.size();
+      }
+      if (used > 0 && used + batchItems > finalCapacity) {
+        break;
+      }
+      used += batchItems;
+      split--;
+    }
+    return split;
+  }
+
+  private List<JobIndexWriteBatch> ancestorWriteBatches(
+      List<CanonicalRecordMutation> ancestorMutations) {
+    if (ancestorMutations == null || ancestorMutations.isEmpty()) {
+      return List.of();
+    }
+    List<JobIndexWriteBatch> batches = new ArrayList<>(ancestorMutations.size());
+    for (CanonicalRecordMutation mutation : ancestorMutations) {
+      if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+        continue;
+      }
+      batches.add(
+          buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
+    }
+    return batches;
+  }
+
+  private int totalWriteItems(List<JobIndexWriteBatch> batches) {
+    int total = 0;
+    if (batches == null) {
+      return 0;
+    }
+    for (JobIndexWriteBatch batch : batches) {
+      total += writeItemCount(batch);
+    }
+    return total;
+  }
+
+  private int writeItemCount(JobIndexWriteBatch batch) {
+    if (batch == null) {
+      return 0;
+    }
+    return batch.writes().size()
+        + batch.readyMutation().upserts().size()
+        + batch.readyMutation().deletes().size();
+  }
+
+  private List<QueuedJobInsert> remainingInserts(
+      List<CommitBatch> commitBatches, int firstFailedBatch) {
+    if (commitBatches == null
+        || commitBatches.isEmpty()
+        || firstFailedBatch < 0
+        || firstFailedBatch >= commitBatches.size()) {
+      return List.of();
+    }
+    List<QueuedJobInsert> remaining = new ArrayList<>();
+    for (int i = firstFailedBatch; i < commitBatches.size(); i++) {
+      remaining.addAll(commitBatches.get(i).inserts());
+    }
+    return remaining;
+  }
+
+  private record CommitBatch(List<QueuedJobInsert> inserts, JobIndexWriteBatch batch) {}
 
   private StoredJobPage listAccountWide(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
