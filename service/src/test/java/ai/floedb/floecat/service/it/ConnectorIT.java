@@ -718,6 +718,7 @@ public class ConnectorIT {
 
     int snapshotCountAfterFull = snaps.count(table.getResourceId());
     assertTrue(snapshotCountAfterFull > 0, "expected snapshots to be materialized after full run");
+    awaitCurrentSnapshotStatsComplete(table.getResourceId(), Duration.ofSeconds(30));
 
     var incrementalJob = runReconcile(conn.getResourceId(), false);
     assertNotNull(incrementalJob);
@@ -2789,6 +2790,38 @@ public class ConnectorIT {
   private List<FileTargetStats> listCurrentFileStats(ResourceId tableId, int pageSize) {
     return listFileStats(
         tableId, SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(), pageSize);
+  }
+
+  private List<TargetStatsRecord> listTargetStats(
+      ResourceId tableId, SnapshotRef snapshot, StatsTargetKind targetKind, int pageSize) {
+    return statsService
+        .listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(snapshot)
+                .addTargetKinds(targetKind)
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize))
+                .build())
+        .getRecordsList();
+  }
+
+  private void awaitCurrentSnapshotStatsComplete(ResourceId tableId, Duration timeout)
+      throws InterruptedException {
+    SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() <= deadline) {
+      boolean hasTableStats =
+          listTargetStats(tableId, current, StatsTargetKind.STK_TABLE, 10).stream()
+              .anyMatch(TargetStatsRecord::hasTable);
+      boolean hasFileStats =
+          listTargetStats(tableId, current, StatsTargetKind.STK_FILE, 10).stream()
+              .anyMatch(TargetStatsRecord::hasFile);
+      if (hasTableStats && hasFileStats) {
+        return;
+      }
+      Thread.sleep(200);
+    }
+    fail("Timed out waiting for current snapshot table+file stats");
   }
 
   private List<FileTargetStats> awaitFileStats(
