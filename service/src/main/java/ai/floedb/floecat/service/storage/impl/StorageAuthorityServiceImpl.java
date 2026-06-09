@@ -296,7 +296,10 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                 throw GrpcErrors.invalidArgument(
                     correlationId(), null, Map.of("field", "location_prefix"));
               }
-              String locationPrefix = resolvedLocationPrefix;
+              String locationPrefix =
+                  requestedLocationPrefix != null
+                      ? requestedLocationPrefix
+                      : resolvedLocationPrefix;
               List<StorageAuthority> authorities =
                   repo.list(tableId.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =

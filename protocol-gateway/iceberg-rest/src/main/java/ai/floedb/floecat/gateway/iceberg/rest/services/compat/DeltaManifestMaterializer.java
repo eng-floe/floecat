@@ -81,6 +81,7 @@ import org.apache.iceberg.Transaction;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.io.SupportsPrefixOperations;
@@ -183,7 +184,7 @@ public class DeltaManifestMaterializer {
   }
 
   protected FileIO newSourceFileIo(Table table, String metadataRoot) {
-    return newFileIo(table);
+    return FileIoFactory.createFileIo(newSourceFileIoProperties(table, metadataRoot), config, true);
   }
 
   protected Map<String, String> newSourceFileIoProperties(Table table, String metadataRoot) {
@@ -239,7 +240,6 @@ public class DeltaManifestMaterializer {
       throws Exception {
     long snapshotId = snapshot.getSnapshotId();
     String compatMetadataPath = compatMetadataPath(compatMetadataRoot, snapshotId);
-    deleteIfExists(compatFileIo, compatMetadataPath);
     PartitionSpec requestedSpec = resolveDataSpec(table, snapshot);
     String tableLocation = tableRootFromMetadataRoot(compatMetadataRoot);
     Schema schema = parseSnapshotSchema(snapshot, table);
@@ -887,11 +887,17 @@ public class DeltaManifestMaterializer {
     }
     try {
       return FileFormat.fromString(raw);
-    } catch (IllegalArgumentException ignored) {
-      return FileFormat.fromString(raw.toLowerCase(Locale.ROOT));
     } catch (RuntimeException ignored) {
-      return FileFormat.PARQUET;
+      try {
+        return FileFormat.fromString(normalized);
+      } catch (RuntimeException ignoredAgain) {
+        return FileFormat.PARQUET;
+      }
     }
+  }
+
+  protected FileFormat fileFormatForPath(String raw) {
+    return resolveFileFormat(raw);
   }
 
   private String compatMetadataPath(String metadataRoot, long snapshotId) {
@@ -1267,8 +1273,16 @@ public class DeltaManifestMaterializer {
 
     @Override
     public void commit(TableMetadata base, TableMetadata metadata) {
-      TableMetadataParser.write(metadata, fileIo.newOutputFile(compatMetadataPath));
-      current = metadata;
+      try {
+        TableMetadataParser.write(metadata, fileIo.newOutputFile(compatMetadataPath));
+        current = metadata;
+      } catch (AlreadyExistsException e) {
+        TableMetadata existing = readCommittedMetadata();
+        if (existing == null) {
+          throw e;
+        }
+        current = existing;
+      }
     }
 
     @Override
@@ -1284,6 +1298,20 @@ public class DeltaManifestMaterializer {
     @Override
     public LocationProvider locationProvider() {
       return locationProvider;
+    }
+
+    private TableMetadata readCommittedMetadata() {
+      if (!fileIo.newInputFile(compatMetadataPath).exists()) {
+        return null;
+      }
+      TableMetadata metadata = TableMetadataParser.read(fileIo, compatMetadataPath);
+      if (metadata == null
+          || metadata.currentSnapshot() == null
+          || metadata.currentSnapshot().manifestListLocation() == null
+          || metadata.currentSnapshot().manifestListLocation().isBlank()) {
+        return null;
+      }
+      return metadata;
     }
   }
 

@@ -110,6 +110,7 @@ public class TransactionCommitTablePlanningSupport {
               namespace,
               tableName,
               tableId,
+              currentResponse != null && currentResponse.hasTable(),
               plan.table(),
               requirements == null ? List.of() : List.copyOf(requirements),
               updates == null ? List.of() : List.copyOf(updates),
@@ -181,6 +182,7 @@ public class TransactionCommitTablePlanningSupport {
       String namespace,
       String tableName,
       ResourceId tableId,
+      boolean tableExists,
       Table plannedTable,
       List<Map<String, Object>> requirements,
       List<Map<String, Object>> updates,
@@ -225,7 +227,8 @@ public class TransactionCommitTablePlanningSupport {
             tableName,
             canonicalizedTable,
             commitMetadata,
-            commitView.metadataLocation());
+            commitView.metadataLocation(),
+            tableExists);
     if (result == null) {
       return new PreMaterializedTable(canonicalizedTable, null, null);
     }

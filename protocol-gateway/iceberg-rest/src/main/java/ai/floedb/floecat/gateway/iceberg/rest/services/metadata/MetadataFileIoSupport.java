@@ -41,22 +41,27 @@ public class MetadataFileIoSupport {
 
   FileIO newMaterializationFileIo(Map<String, String> metadataProperties) {
     return FileIoFactory.createFileIo(
-        materializationIoProperties(null, metadataProperties), config, true);
+        materializationIoProperties(null, metadataProperties, false), config, true);
   }
 
-  FileIO newMaterializationFileIo(Table table, Map<String, String> metadataProperties) {
+  FileIO newMaterializationFileIo(
+      Table table, Map<String, String> metadataProperties, boolean useTableScopedIo) {
     return FileIoFactory.createFileIo(
-        materializationIoProperties(table, metadataProperties), config, true);
+        materializationIoProperties(table, metadataProperties, useTableScopedIo), config, true);
   }
 
   Map<String, String> materializationIoProperties(
-      Table table, Map<String, String> metadataProperties) {
+      Table table, Map<String, String> metadataProperties, boolean useTableScopedIo) {
+    String materializationLocation = resolveMaterializationLocation(table, metadataProperties);
     Map<String, String> props =
         new LinkedHashMap<>(
             tableGatewaySupport == null
                 ? Map.of()
-                : tableGatewaySupport.serverSideFileIoPropertiesForLocation(
-                    table, resolveMaterializationLocation(table, metadataProperties)));
+                : useTableScopedIo
+                    ? tableGatewaySupport.serverSideFileIoPropertiesForLocation(
+                        table, materializationLocation)
+                    : tableGatewaySupport.serverSideFileIoPropertiesForLocation(
+                        materializationLocation));
     if (metadataProperties != null && !metadataProperties.isEmpty()) {
       metadataProperties.forEach(
           (key, value) -> {

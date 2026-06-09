@@ -76,6 +76,12 @@ class StorageAuthorityServiceImplTest {
           .build();
   private static final ResourceId FOREIGN_TABLE_ID =
       TABLE_ID.toBuilder().setAccountId("foreign").build();
+  private static final ResourceId DATARBRICKS_AUTHORITY_ID =
+      ResourceId.newBuilder()
+          .setAccountId("acct")
+          .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+          .setId("sa-db")
+          .build();
 
   private StorageAuthorityServiceImpl service;
   private StorageAuthorityRepository repo;
@@ -208,6 +214,37 @@ class StorageAuthorityServiceImplTest {
     verify(repo).list(eq("acct"), anyInt(), any(), any());
     verify(tableRepo).getById(TABLE_ID);
     assertEquals(AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void resolveUsesRequestedLocationPrefixWhenItDiffersFromTableLocation() {
+    StorageAuthority databricksAuthority =
+        StorageAuthority.newBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setDisplayName("databricks")
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix("s3://floedb-databricks-metastore-367509577365")
+            .setRegion("us-east-1")
+            .setCreatedAt(Timestamps.fromSeconds(1))
+            .setUpdatedAt(Timestamps.fromSeconds(1))
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(currentAuthority(), databricksAuthority));
+    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(reconciledTable()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .resolveStorageAuthority(
+                ResolveStorageAuthorityRequest.newBuilder()
+                    .setTableId(TABLE_ID)
+                    .setLocationPrefix(
+                        "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
   }
 
   @Test
@@ -356,6 +393,16 @@ class StorageAuthorityServiceImplTest {
     return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
         .setResourceId(TABLE_ID)
         .putProperties("location", "s3://warehouse/orders")
+        .build();
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.Table reconciledTable() {
+    return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+        .setResourceId(TABLE_ID)
+        .putProperties("location", "s3://floecat-dev/obs/floe_prod_otel_spans")
+        .putProperties(
+            "source_metadata_location",
+            "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
         .build();
   }
 

@@ -18,9 +18,13 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -31,7 +35,10 @@ class MetadataFileIoSupportTest {
   void materializationIoPropertiesUsesLocationScopedServerSideConfigWhenTablePresent() {
     MetadataFileIoSupport support = new MetadataFileIoSupport();
     TableGatewaySupport tableGatewaySupport = mock(TableGatewaySupport.class);
-    Table table = Table.newBuilder().build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setKind(ResourceKind.RK_TABLE).setId("tbl-1"))
+            .build();
     support.tableGatewaySupport = tableGatewaySupport;
 
     when(tableGatewaySupport.serverSideFileIoPropertiesForLocation(table, "s3://warehouse/orders"))
@@ -42,10 +49,66 @@ class MetadataFileIoSupportTest {
 
     Map<String, String> props =
         support.materializationIoProperties(
-            table, Map.of("location", "s3://warehouse/orders", "s3.region", "us-east-1"));
+            table, Map.of("location", "s3://warehouse/orders", "s3.region", "us-east-1"), true);
 
     assertEquals("http://localstack:4566", props.get("s3.endpoint"));
     assertEquals("true", props.get("s3.path-style-access"));
     assertEquals("us-east-1", props.get("s3.region"));
+  }
+
+  @Test
+  void materializationIoPropertiesUsesLocationOnlyForUnpersistedTableStub() {
+    MetadataFileIoSupport support = new MetadataFileIoSupport();
+    TableGatewaySupport tableGatewaySupport = mock(TableGatewaySupport.class);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setKind(ResourceKind.RK_NAMESPACE).setId("ns"))
+            .build();
+    support.tableGatewaySupport = tableGatewaySupport;
+
+    when(tableGatewaySupport.serverSideFileIoPropertiesForLocation("s3://warehouse/orders"))
+        .thenReturn(
+            Map.of(
+                "s3.endpoint", "http://localstack:4566",
+                "s3.path-style-access", "true"));
+
+    Map<String, String> props =
+        support.materializationIoProperties(
+            table, Map.of("location", "s3://warehouse/orders", "s3.region", "us-east-1"), false);
+
+    assertEquals("http://localstack:4566", props.get("s3.endpoint"));
+    assertEquals("true", props.get("s3.path-style-access"));
+    assertEquals("us-east-1", props.get("s3.region"));
+    verify(tableGatewaySupport).serverSideFileIoPropertiesForLocation("s3://warehouse/orders");
+    verify(tableGatewaySupport, never())
+        .serverSideFileIoPropertiesForLocation(table, "s3://warehouse/orders");
+  }
+
+  @Test
+  void materializationIoPropertiesUsesLocationOnlyWhenTableScopedIoIsDisabled() {
+    MetadataFileIoSupport support = new MetadataFileIoSupport();
+    TableGatewaySupport tableGatewaySupport = mock(TableGatewaySupport.class);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setKind(ResourceKind.RK_TABLE).setId("tbl-1"))
+            .build();
+    support.tableGatewaySupport = tableGatewaySupport;
+
+    when(tableGatewaySupport.serverSideFileIoPropertiesForLocation("s3://warehouse/orders"))
+        .thenReturn(
+            Map.of(
+                "s3.endpoint", "http://localstack:4566",
+                "s3.path-style-access", "true"));
+
+    Map<String, String> props =
+        support.materializationIoProperties(
+            table, Map.of("location", "s3://warehouse/orders", "s3.region", "us-east-1"), false);
+
+    assertEquals("http://localstack:4566", props.get("s3.endpoint"));
+    assertEquals("true", props.get("s3.path-style-access"));
+    assertEquals("us-east-1", props.get("s3.region"));
+    verify(tableGatewaySupport).serverSideFileIoPropertiesForLocation("s3://warehouse/orders");
+    verify(tableGatewaySupport, never())
+        .serverSideFileIoPropertiesForLocation(table, "s3://warehouse/orders");
   }
 }

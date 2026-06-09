@@ -154,7 +154,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void serverSideFileIoPropertiesForSourceLocationDoesNotLeakGlobalEndpoint() {
+  void serverSideFileIoPropertiesForAuthorityMatchedLocationUsesAuthorityConfigOnly() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
     StorageCredentialAuthority storageCredentialAuthority = mock(StorageCredentialAuthority.class);
     StorageAwsConfig storageAwsConfig = mock(StorageAwsConfig.class);
@@ -166,6 +166,12 @@ class TableGatewaySupportTest {
     when(grpcClient.resolveStorageAuthority(any()))
         .thenReturn(
             ResolveStorageAuthorityResponse.newBuilder()
+                .setAuthorityId(
+                    ResourceId.newBuilder()
+                        .setAccountId("acct-1")
+                        .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+                        .setId("sa-db")
+                        .build())
                 .addStorageCredentials(
                     VendedStorageCredential.newBuilder()
                         .setPrefix("s3://floedb-databricks-metastore-367509577365/")
@@ -191,9 +197,7 @@ class TableGatewaySupportTest {
                     .setKind(ResourceKind.RK_TABLE)
                     .setId("tbl-1")
                     .build())
-            .putProperties(
-                "storage_location",
-                "s3://floedb-databricks-metastore-367509577365/metastore/82a33d38/tables/9398a868")
+            .putProperties("storage_location", "s3://floecat-dev/obs/floe_prod_otel_spans")
             .build();
 
     Map<String, String> props =

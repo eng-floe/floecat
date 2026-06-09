@@ -303,8 +303,22 @@ public class TableGatewaySupport {
   }
 
   private Map<String, String> resolveServerSideFileIoProperties(Table table, String location) {
+    ResolveStorageAuthorityResponse authorityResponse =
+        resolveAuthorityFileIoResponse(table, location);
+    Map<String, String> authorityProps =
+        authorityResponse != null
+            ? mergeStorageAuthorityFileIoConfig(authorityResponse)
+            : (table != null
+                    && hasPersistedTableId(table)
+                    && StorageLocationResolver.resolveLocationPrefix(location) == null)
+                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table, false)
+                : Map.of();
+    if (hasResolvedAuthority(authorityResponse)) {
+      return authorityProps.isEmpty() ? Map.of() : Map.copyOf(authorityProps);
+    }
     LinkedHashMap<String, String> resolved =
-        new LinkedHashMap<>(table == null ? defaultFileIoProperties() : Map.<String, String>of());
+        new LinkedHashMap<>(
+            table == null ? defaultFileIoProperties() : defaultFileIoProperties(table));
     if (table != null && table.getPropertiesCount() > 0) {
       FileIoFactory.filterIoProperties(table.getPropertiesMap())
           .forEach(
@@ -314,33 +328,32 @@ public class TableGatewaySupport {
                 }
               });
     }
-    resolveAuthorityFileIoProperties(table, location)
-        .forEach(
-            (key, value) -> {
-              if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
-                resolved.put(key, value.trim());
-              }
-            });
+    authorityProps.forEach(
+        (key, value) -> {
+          if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
+            resolved.put(key, value.trim());
+          }
+        });
     return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
   }
 
-  private Map<String, String> resolveAuthorityFileIoProperties(Table table, String location) {
+  private ResolveStorageAuthorityResponse resolveAuthorityFileIoResponse(
+      Table table, String location) {
     if (table == null || !hasPersistedTableId(table)) {
-      return Map.of();
+      return null;
     }
     String resolvedLocation = StorageLocationResolver.resolveLocationPrefix(location);
     if (resolvedLocation != null) {
-      return mergeStorageAuthorityFileIoConfig(
-          grpcClient.resolveStorageAuthority(
-              ResolveStorageAuthorityRequest.newBuilder()
-                  .setTableId(table.getResourceId())
-                  .setLocationPrefix(resolvedLocation)
-                  .setIncludeCredentials(true)
-                  .setRequired(false)
-                  .setServerSide(true)
-                  .build()));
+      return grpcClient.resolveStorageAuthority(
+          ResolveStorageAuthorityRequest.newBuilder()
+              .setTableId(table.getResourceId())
+              .setLocationPrefix(resolvedLocation)
+              .setIncludeCredentials(true)
+              .setRequired(false)
+              .setServerSide(true)
+              .build());
     }
-    return storageCredentialAuthority.resolveServerSideFileIoConfig(table, false);
+    return null;
   }
 
   private static boolean hasPersistedTableId(Table table) {
@@ -362,6 +375,12 @@ public class TableGatewaySupport {
       merged.putAll(response.getStorageCredentials(0).getConfigMap());
     }
     return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+  }
+
+  private static boolean hasResolvedAuthority(ResolveStorageAuthorityResponse response) {
+    return response != null
+        && response.hasAuthorityId()
+        && !response.getAuthorityId().getId().isBlank();
   }
 
   // Snapshot metadata parsing lives in SnapshotMetadataUtil.

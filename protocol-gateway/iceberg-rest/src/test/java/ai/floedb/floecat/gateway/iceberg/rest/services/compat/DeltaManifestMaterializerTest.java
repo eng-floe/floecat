@@ -46,9 +46,14 @@ import java.util.Objects;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileContent;
+import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.SortOrder;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
@@ -243,6 +248,67 @@ class DeltaManifestMaterializerTest {
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
     assertTrue(out.get(0).getManifestList().isBlank());
     verifyNoInteractions(grpcClient);
+  }
+
+  @Test
+  void fileFormatForPathFallsBackToParquetForExtensionlessDeltaDataPath() {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+
+    FileFormat format =
+        materializer.fileFormatForPath(
+            "s3://floecat-delta/call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53");
+
+    assertEquals(FileFormat.PARQUET, format);
+  }
+
+  @Test
+  void compatCommitTreatsExistingCommittedMetadataAsSuccess() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    materializer.grpcClient = grpcClient;
+    String tableRoot = materializer.stageFixture("delta-fixtures/01_unpartitioned_append_only");
+    Table table = deltaTable(tableRoot, UNPARTITIONED_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(1L, UNPARTITIONED_SCHEMA_JSON, null);
+
+    List<Snapshot> materialized = materializer.materialize(table, List.of(snapshot));
+    assertTrue(!materialized.get(0).getManifestList().isBlank());
+
+    String metadataRoot = "s3://delta-compat-tests/1/metadata";
+    String metadataPath = metadataRoot + "/compat-1.metadata.json";
+    TableMetadata existing = TableMetadataParser.read(materializer.fileIo(), metadataPath);
+    assertNotNull(existing);
+    assertNotNull(existing.currentSnapshot());
+
+    Class<?> opsClass = null;
+    for (Class<?> candidate : DeltaManifestMaterializer.class.getDeclaredClasses()) {
+      if ("CompatTableOperations".equals(candidate.getSimpleName())) {
+        opsClass = candidate;
+        break;
+      }
+    }
+    assertNotNull(opsClass);
+    var ctor =
+        opsClass.getDeclaredConstructor(FileIO.class, String.class, String.class, String.class);
+    ctor.setAccessible(true);
+    TableOperations ops =
+        (TableOperations)
+            ctor.newInstance(
+                materializer.fileIo(), "s3://delta-compat-tests/1", metadataRoot, metadataPath);
+
+    TableMetadata replacement =
+        TableMetadata.newTableMetadata(
+            existing.schema(),
+            existing.spec(),
+            SortOrder.unsorted(),
+            "s3://delta-compat-tests/1",
+            Map.of());
+    ops.commit(existing, replacement);
+
+    TableMetadata current = ops.current();
+    assertNotNull(current);
+    assertNotNull(current.currentSnapshot());
+    assertEquals(
+        existing.currentSnapshot().manifestListLocation(),
+        current.currentSnapshot().manifestListLocation());
   }
 
   @Test
