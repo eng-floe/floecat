@@ -302,7 +302,7 @@ public class TableLoadService {
       return false;
     }
     if (config == null || config.deltaCompat().isEmpty()) {
-      return true;
+      return false;
     }
     return config.deltaCompat().get().rewriteVariantAsStruct();
   }

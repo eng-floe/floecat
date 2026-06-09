@@ -335,6 +335,26 @@ class DeltaManifestMaterializerTest {
   }
 
   @Test
+  void parseSnapshotSchemaPreservesVariantWhenDeltaCompatRewriteConfigMissing() throws Exception {
+    FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
+    IcebergGatewayConfig gatewayConfig = mock(IcebergGatewayConfig.class);
+    when(gatewayConfig.deltaCompat()).thenReturn(java.util.Optional.empty());
+    materializer.gatewayConfig = gatewayConfig;
+
+    Table table = deltaTable("file:///tmp/variant-table", VARIANT_SCHEMA_JSON);
+    Snapshot snapshot = snapshot(1L, VARIANT_SCHEMA_JSON, null);
+
+    Method method =
+        DeltaManifestMaterializer.class.getDeclaredMethod(
+            "parseSnapshotSchema", Snapshot.class, Table.class);
+    method.setAccessible(true);
+    Schema schema = (Schema) method.invoke(materializer, snapshot, table);
+
+    assertEquals(
+        org.apache.iceberg.types.Type.TypeID.VARIANT, schema.findField("payload").type().typeId());
+  }
+
+  @Test
   void metadataRootPrefersStorageLocationOverWorkspaceLocation() throws Exception {
     FixtureDeltaManifestMaterializer materializer = new FixtureDeltaManifestMaterializer();
     String tableRoot = materializer.stageFixture("delta-fixtures/01_unpartitioned_append_only");

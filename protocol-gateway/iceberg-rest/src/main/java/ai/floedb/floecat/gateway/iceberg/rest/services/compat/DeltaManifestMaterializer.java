@@ -618,7 +618,7 @@ public class DeltaManifestMaterializer {
 
   private boolean rewriteVariantAsStruct() {
     if (gatewayConfig == null || gatewayConfig.deltaCompat().isEmpty()) {
-      return true;
+      return false;
     }
     return gatewayConfig.deltaCompat().get().rewriteVariantAsStruct();
   }

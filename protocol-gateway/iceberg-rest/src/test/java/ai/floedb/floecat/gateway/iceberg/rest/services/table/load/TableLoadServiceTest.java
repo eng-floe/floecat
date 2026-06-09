@@ -211,4 +211,48 @@ class TableLoadServiceTest {
     assertEquals(
         List.of("metadata", "value"), payloadFields.stream().map(f -> f.get("name")).toList());
   }
+
+  @Test
+  void loadResolvedTablePreservesVariantMetadataWhenDeltaCompatRewriteConfigMissing() {
+    TableLoadService service = new TableLoadService();
+    service.tableLifecycleService = mock(TableLifecycleService.class);
+    service.loadSupport = mock(TableLoadSupport.class);
+    service.grpcClient = mock(GrpcServiceFacade.class);
+    service.config = mock(IcebergGatewayConfig.class);
+
+    when(service.config.deltaCompat()).thenReturn(java.util.Optional.empty());
+
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    String variantSchemaJson =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"payload\",\"type\":\"variant\",\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":4}}]}";
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct-1")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl-1")
+                    .build())
+            .setSchemaJson(variantSchemaJson)
+            .putProperties("storage_location", "s3://upstream-bucket/orders")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder().setSnapshotId(1L).setSchemaJson(variantSchemaJson).build();
+
+    when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
+        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+    when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
+    when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
+    when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());
+
+    Response response = service.loadResolvedTable("orders", table, "none", tableSupport);
+
+    LoadTableResultDto entity = (LoadTableResultDto) response.getEntity();
+    assertNotNull(entity);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> schema = entity.metadata().schemas().get(0);
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> fields = (List<Map<String, Object>>) schema.get("fields");
+    assertEquals("variant", fields.get(0).get("type"));
+  }
 }
