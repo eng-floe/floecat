@@ -320,6 +320,156 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
+  void applyLeaseOutcomeTreatsDuplicateSucceededCompletionAsIdempotentSuccess() {
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            2_000L,
+            "done",
+            1L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            2_000L,
+            "done",
+            1L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    assertEquals("JS_SUCCEEDED", store.getLeaseView(jobId).orElseThrow().state);
+  }
+
+  @Test
+  void applyLeaseOutcomeTreatsDuplicateFailedTerminalCompletionAsIdempotentSuccess() {
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+            2_000L,
+            "boom",
+            1L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+            2_000L,
+            "boom",
+            1L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    assertEquals("JS_FAILED", store.getLeaseView(jobId).orElseThrow().state);
+  }
+
+  @Test
+  void applyLeaseOutcomeRejectsDifferentDuplicateTerminalPayload() {
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            2_000L,
+            "done",
+            1L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    assertFalse(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            3_000L,
+            "done",
+            1L,
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+  }
+
+  @Test
+  void applyLeaseOutcomeTreatsDuplicateSucceededCompletionAsIdempotentWhenStoredProgressIsHigher() {
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+
+    store.markProgress(jobId, lease.leaseEpoch, 100L, 80L, 0L, 0L, 0L, 0L, 0L, "progress");
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            2_000L,
+            "done",
+            50L,
+            40L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED,
+            2_000L,
+            "done",
+            50L,
+            40L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+  }
+
+  @Test
   void applyLeaseOutcomeReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
@@ -345,14 +495,16 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
-  void renewLeaseReturnsTrueForExpiredLeaseWhenEpochStillMatches() {
+  void renewLeaseReturnsFalseForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
     expireLease(jobId);
 
-    assertTrue(store.renewLease(jobId, lease.leaseEpoch));
-    assertTrue(readStoredLease(ACCOUNT_ID, jobId).expiresAtMs > System.currentTimeMillis());
+    long previousExpiresAtMs = readStoredLease(ACCOUNT_ID, jobId).expiresAtMs;
+
+    assertFalse(store.renewLease(jobId, lease.leaseEpoch));
+    assertEquals(previousExpiresAtMs, readStoredLease(ACCOUNT_ID, jobId).expiresAtMs);
   }
 
   private String enqueueRoot() {

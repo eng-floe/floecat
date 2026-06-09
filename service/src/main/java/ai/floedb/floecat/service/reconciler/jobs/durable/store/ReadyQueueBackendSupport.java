@@ -172,10 +172,6 @@ final class ReadyQueueBackendSupport {
   static ReconcileReadyQueueBackend.ReadyQueueSlice sliceForReadyPointerKey(
       String readyPointerKey) {
     String normalized = normalizePointerKey(readyPointerKey);
-    if (normalized.startsWith(normalizePointerKey(Keys.reconcileReadyPointerPrefix()))) {
-      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
-    }
     String filterValue =
         extractEncodedFilterValue(
             normalized, normalizePointerKey(Keys.reconcileReadyByExecutionClassPointerPrefix()));
@@ -203,6 +199,10 @@ final class ReadyQueueBackendSupport {
     if (filterValue != null) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
           ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, filterValue);
+    }
+    if (normalized.startsWith(normalizePointerKey(Keys.reconcileReadyPointerPrefix()))) {
+      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
     }
     return null;
   }

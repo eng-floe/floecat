@@ -67,7 +67,7 @@ public interface IcebergGatewayConfig {
     @WithDefault("true")
     boolean readOnly();
 
-    @WithDefault("true")
+    @WithDefault("false")
     boolean rewriteVariantAsStruct();
 
     @WithDefault("PT30S")

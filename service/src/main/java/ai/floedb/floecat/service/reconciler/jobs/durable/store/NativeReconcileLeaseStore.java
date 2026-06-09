@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.IntToLongFunction;
@@ -260,17 +261,17 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (baseline == null || blank(canonicalPointerKey) || blank(leaseEpoch)) {
       return;
     }
-    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
-    clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
-    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
+    AtomicBoolean rollbackOwnedLease = new AtomicBoolean(false);
     mutateCanonicalJob.apply(
         canonicalPointerKey,
         existing -> {
           if (existing == null
               || !"JS_RUNNING".equals(existing.state)
-              || !"Leased".equals(blankToEmpty(existing.message))) {
+              || !"Leased".equals(blankToEmpty(existing.message))
+              || !loadLease(existing).map(lease -> leaseEpoch.equals(lease.epoch)).orElse(false)) {
             return existing;
           }
+          rollbackOwnedLease.set(true);
           existing.state = baseline.state;
           existing.message = baseline.message;
           existing.startedAtMs = baseline.startedAtMs;
@@ -282,6 +283,12 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           existing.readyPointerKey = baseline.readyPointerKey;
           return existing;
         });
+    if (!rollbackOwnedLease.get()) {
+      return;
+    }
+    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
+    clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
+    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
   }
 
   private void failLeaseCanonicalOnHydrationFailure(
@@ -289,16 +296,20 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (baseline == null || blank(canonicalPointerKey) || blank(leaseEpoch)) {
       return;
     }
-    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
+    AtomicBoolean failOwnedLease = new AtomicBoolean(false);
     Optional<ReconcileJobIndexStore.CanonicalEnvelope> updated =
         mutateCanonicalJob.apply(
             canonicalPointerKey,
             existing -> {
               if (existing == null
                   || !"JS_RUNNING".equals(existing.state)
-                  || !"Leased".equals(blankToEmpty(existing.message))) {
+                  || !"Leased".equals(blankToEmpty(existing.message))
+                  || !loadLease(existing)
+                      .map(lease -> leaseEpoch.equals(lease.epoch))
+                      .orElse(false)) {
                 return existing;
               }
+              failOwnedLease.set(true);
               existing.attempt = Math.max(0, existing.attempt) + 1;
               existing.lastError = "Missing required job definition";
               existing.state = "JS_FAILED";
@@ -310,6 +321,10 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
               existing.readyPointerKey = null;
               return existing;
             });
+    if (!failOwnedLease.get()) {
+      return;
+    }
+    clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
     clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
     clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
   }
@@ -558,7 +573,9 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                 return null;
               }
               long now = System.currentTimeMillis();
-              if (blank(current.epoch) || !leaseEpoch.equals(current.epoch)) {
+              if (blank(current.epoch)
+                  || !leaseEpoch.equals(current.epoch)
+                  || current.expiresAtMs <= now) {
                 return null;
               }
               previousExpiresAtMs.set(current.expiresAtMs);

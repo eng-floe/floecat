@@ -673,20 +673,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         parentJobId,
         "");
 
-    store.persistFileGroupResult(
-        childOneJobId,
-        groupOne.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.persistFileGroupResult(
-        childTwoJobId,
-        groupTwo.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
     ReconcileJobStore.LeasedJob childOneLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childOneLease.jobId,
+        childOneLease.leaseEpoch,
+        groupOne.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
         childOneLease.jobId, childOneLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
     ReconcileJobStore.LeasedJob childTwoLease =
@@ -695,6 +692,11 @@ class SnapshotFinalizeReconcileExecutorTest {
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childTwoLease.jobId,
+        childTwoLease.leaseEpoch,
+        groupTwo.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
     store.markSucceeded(
         childTwoLease.jobId, childTwoLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -799,6 +801,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(
                 ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L),
@@ -934,24 +937,19 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .build(),
                     null)));
 
-    store.persistFileGroupResult(
-        childOneJobId,
-        groupOne
-            .withFileStatsBlob(childOneBlobUri, 1)
-            .withFileResults(
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
-    store.persistFileGroupResult(
-        childTwoJobId,
-        groupTwo
-            .withFileStatsBlob(childTwoBlobUri, 1)
-            .withFileResults(
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     ReconcileJobStore.LeasedJob childOneLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childOneLease.jobId,
+        childOneLease.leaseEpoch,
+        groupOne
+            .withFileStatsBlob(childOneBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     store.markSucceeded(
         childOneLease.jobId, childOneLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
     ReconcileJobStore.LeasedJob childTwoLease =
@@ -960,6 +958,13 @@ class SnapshotFinalizeReconcileExecutorTest {
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childTwoLease.jobId,
+        childTwoLease.leaseEpoch,
+        groupTwo
+            .withFileStatsBlob(childTwoBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     store.markSucceeded(
         childTwoLease.jobId, childTwoLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1059,17 +1064,18 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .setSizeBytes(128L)
                         .build(),
                     null)));
-    store.persistFileGroupResult(
-        childJobId,
-        group
-            .withFileStatsBlob(fileStatsBlobUri, 1)
-            .withFileResults(List.of(ReconcileFileResult.succeeded(filePath, 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(List.of(ReconcileFileResult.succeeded(filePath, 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1174,20 +1180,21 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .setSizeBytes(128L)
                         .build(),
                     null)));
-    store.persistFileGroupResult(
-        childJobId,
-        group
-            .withFileStatsBlob(fileStatsBlobUri, 1)
-            .withFileResults(
-                List.of(
-                    ReconcileFileResult.succeeded(existingFilePath, 0L),
-                    ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(
+                List.of(
+                    ReconcileFileResult.succeeded(existingFilePath, 0L),
+                    ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1262,16 +1269,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutionPolicy.defaults(),
         parentJobId,
         "");
-    store.persistFileGroupResult(
-        childJobId,
-        group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1342,16 +1350,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutionPolicy.defaults(),
         parentJobId,
         "");
-    store.persistFileGroupResult(
-        childJobId,
-        group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -2068,6 +2077,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
@@ -2144,6 +2154,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
@@ -2252,6 +2263,7 @@ class SnapshotFinalizeReconcileExecutorTest {
         .put(fileStatsBlobUri, List.of(fileRecordWithColumnOrder("name", "id")));
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group
             .withFileStatsBlob(fileStatsBlobUri, 1)
             .withFileResults(

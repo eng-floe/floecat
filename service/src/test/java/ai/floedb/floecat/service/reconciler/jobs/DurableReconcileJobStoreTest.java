@@ -60,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
@@ -258,6 +259,72 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, parentRecord.expectedDirectChildren);
     assertTrue(parentRecord.projectionRequestedGeneration > 0L);
     assertEquals("JS_WAITING", parentRecord.state);
+    assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+  }
+
+  @Test
+  void bulkEnqueueAndApplyLeaseOutcomeTreatsDuplicateTerminalParentCompletionAsIdempotentSuccess() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+
+    ReconcileJobStore.BulkEnqueueSpec tableSpec =
+        ReconcileJobStore.BulkEnqueueSpec.of(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertTrue(
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            List.of(tableSpec),
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+            200L,
+            "planner failed",
+            1L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    assertTrue(
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            List.of(tableSpec),
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+            200L,
+            "planner failed",
+            1L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    assertEquals(
+        "JS_FAILED",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)).state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
   }
 
@@ -578,6 +645,89 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void refreshProjectedParentKeepsCanonicalTerminalChildStateWhenStoredProjectionIsStale() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                0L,
+                "JS_WAITING",
+                "Waiting on child work",
+                100L,
+                0L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                "",
+                true));
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "refreshProjectedParent",
+                new Class<?>[] {String.class, String.class},
+                ACCOUNT_ID,
+                connectorJobId));
+
+    StoredReconcileJobProjection connectorProjection =
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
+    assertEquals("JS_SUCCEEDED", connectorProjection.state());
+  }
+
+  @Test
   void childJobsPagePaginatesDirectChildrenOnly() {
     String parentJobId =
         store.enqueue(
@@ -887,6 +1037,44 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void requestProjectionRefreshRevertsGenerationAdvanceWhenMarkerWriteFails() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    StoredReconcileJob before =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
+    Optional<Pointer> markerBefore =
+        store.pointerStore.get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId));
+    PointerStore originalPointerStore = store.pointerStore;
+    store.pointerStore = new DirtyParentFailingPointerStore(originalPointerStore);
+
+    InvocationTargetException failure =
+        assertThrows(
+            InvocationTargetException.class,
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "requestProjectionRefresh",
+                    new Class<?>[] {String.class, String.class, long.class},
+                    ACCOUNT_ID,
+                    parentJobId,
+                    1L));
+
+    assertTrue(failure.getCause() instanceof IllegalStateException);
+    StoredReconcileJob after =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
+    assertEquals(before.projectionRequestedGeneration, after.projectionRequestedGeneration);
+    assertEquals(before.expectedDirectChildren, after.expectedDirectChildren);
+    assertEquals(
+        markerBefore,
+        store.pointerStore.get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId)));
+  }
+
+  @Test
   void leaseNextRespectsPinnedExecutorAndExecutionClass() {
     String jobId =
         store.enqueue(
@@ -917,6 +1105,166 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, lease.jobId);
     assertEquals("remote-executor", lease.pinnedExecutorId);
     assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+  }
+
+  @Test
+  void leaseNextStillFindsUnpinnedJobWhenExecutorIdsArePresent() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                    Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+                    Set.of("remote_planner_worker"),
+                    java.util.EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR)))
+            .orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals("", lease.pinnedExecutorId);
+    assertEquals(ReconcileExecutionClass.DEFAULT, lease.executionPolicy.executionClass());
+  }
+
+  @Test
+  void rollbackLeaseCanonicalOnHydrationFailureDoesNotRegressNewerLeaseOwner() {
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);
+    var oldLease = leaseJob(jobId);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob baseline = readStoredRecord(canonicalPointerKey);
+    AtomicBoolean injectedNewerLease = new AtomicBoolean(false);
+    Object leaseManager = leaseManager();
+    Object originalMutator =
+        assertDoesNotThrow(() -> getPrivateField(leaseManager, "mutateCanonicalJob"));
+
+    assertDoesNotThrow(
+        () ->
+            setPrivateField(
+                leaseManager,
+                "mutateCanonicalJob",
+                (ReconcileLeaseStore.CanonicalJobMutator)
+                    (key, mutator) -> {
+                      if (canonicalPointerKey.equals(key)
+                          && injectedNewerLease.compareAndSet(false, true)) {
+                        store.leaseStore.mutateLease(
+                            ACCOUNT_ID,
+                            jobId,
+                            lease ->
+                                ai.floedb.floecat.service.reconciler.jobs.durable.model
+                                    .StoredJobLease.active(
+                                    ACCOUNT_ID,
+                                    jobId,
+                                    "newer-lease",
+                                    System.currentTimeMillis() + 60_000L));
+                        store.jobIndexStore.mutateByJobIdReturningRecord(
+                            jobId,
+                            current -> {
+                              current.state = "JS_RUNNING";
+                              current.message = "Leased";
+                              current.executorId = "newer-executor";
+                              return current;
+                            });
+                      }
+                      return ((ReconcileLeaseStore.CanonicalJobMutator) originalMutator)
+                          .apply(key, mutator);
+                    }));
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                leaseManager,
+                "rollbackLeaseCanonicalOnHydrationFailure",
+                new Class<?>[] {String.class, StoredReconcileJob.class, String.class},
+                canonicalPointerKey,
+                baseline,
+                oldLease.leaseEpoch));
+
+    StoredReconcileJob current = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_RUNNING", current.state);
+    assertEquals("Leased", current.message);
+    assertEquals("newer-executor", current.executorId);
+    assertEquals("newer-lease", store.leaseStore.loadLease(ACCOUNT_ID, jobId).orElseThrow().epoch);
+
+    assertDoesNotThrow(() -> setPrivateField(leaseManager, "mutateCanonicalJob", originalMutator));
+  }
+
+  @Test
+  void failLeaseCanonicalOnHydrationFailureDoesNotFailNewerLeaseOwner() {
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);
+    var oldLease = leaseJob(jobId);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    StoredReconcileJob baseline = readStoredRecord(canonicalPointerKey);
+    AtomicBoolean injectedNewerLease = new AtomicBoolean(false);
+    Object leaseManager = leaseManager();
+    Object originalMutator =
+        assertDoesNotThrow(() -> getPrivateField(leaseManager, "mutateCanonicalJob"));
+
+    assertDoesNotThrow(
+        () ->
+            setPrivateField(
+                leaseManager,
+                "mutateCanonicalJob",
+                (ReconcileLeaseStore.CanonicalJobMutator)
+                    (key, mutator) -> {
+                      if (canonicalPointerKey.equals(key)
+                          && injectedNewerLease.compareAndSet(false, true)) {
+                        store.leaseStore.mutateLease(
+                            ACCOUNT_ID,
+                            jobId,
+                            lease ->
+                                ai.floedb.floecat.service.reconciler.jobs.durable.model
+                                    .StoredJobLease.active(
+                                    ACCOUNT_ID,
+                                    jobId,
+                                    "newer-lease",
+                                    System.currentTimeMillis() + 60_000L));
+                        store.jobIndexStore.mutateByJobIdReturningRecord(
+                            jobId,
+                            current -> {
+                              current.state = "JS_RUNNING";
+                              current.message = "Leased";
+                              current.executorId = "newer-executor";
+                              return current;
+                            });
+                      }
+                      return ((ReconcileLeaseStore.CanonicalJobMutator) originalMutator)
+                          .apply(key, mutator);
+                    }));
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                leaseManager,
+                "failLeaseCanonicalOnHydrationFailure",
+                new Class<?>[] {String.class, StoredReconcileJob.class, String.class, long.class},
+                canonicalPointerKey,
+                baseline,
+                oldLease.leaseEpoch,
+                System.currentTimeMillis()));
+
+    StoredReconcileJob current = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_RUNNING", current.state);
+    assertEquals("Leased", current.message);
+    assertEquals("newer-executor", current.executorId);
+    assertEquals("newer-lease", store.leaseStore.loadLease(ACCOUNT_ID, jobId).orElseThrow().epoch);
+
+    assertDoesNotThrow(() -> setPrivateField(leaseManager, "mutateCanonicalJob", originalMutator));
   }
 
   @Test
@@ -1206,6 +1554,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.persistFileGroupResult(
         execJobId,
+        execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-1",
@@ -1455,6 +1804,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
     store.persistFileGroupResult(
         firstExecJobId,
+        firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-1",
@@ -1474,6 +1824,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
     store.persistFileGroupResult(
         secondExecJobId,
+        secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-2",
@@ -1576,6 +1927,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
     store.persistFileGroupResult(
         firstExecJobId,
+        firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-1",
@@ -1589,6 +1941,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
     store.persistFileGroupResult(
         secondExecJobId,
+        secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-2",
@@ -1652,8 +2005,11 @@ class DurableReconcileJobStoreTest {
             snapshotJobId,
             "");
 
+    var execLease = leaseJob(execJobId);
+    store.markRunning(execJobId, execLease.leaseEpoch, 100L, "executor-exec");
     store.persistFileGroupResult(
         execJobId,
+        execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-1",
@@ -1861,6 +2217,12 @@ class DurableReconcileJobStoreTest {
     java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
     field.setAccessible(true);
     field.set(target, value);
+  }
+
+  private Object getPrivateField(Object target, String name) throws Exception {
+    java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    return field.get(target);
   }
 
   private static boolean isDynamoMode() {

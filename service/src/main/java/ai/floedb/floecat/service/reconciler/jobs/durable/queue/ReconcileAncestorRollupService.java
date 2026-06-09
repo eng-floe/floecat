@@ -254,11 +254,9 @@ public class ReconcileAncestorRollupService {
             aggregate.cancelledChildJobs(),
             aggregate.directChildObserved());
     long expectedDirectChildJobs =
-        parent != null && parent.jobKind() == ReconcileJobKind.PLAN_CONNECTOR
-            ? Math.max(0L, aggregate.directChildObserved())
-            : Math.max(
-                Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
-                Math.max(0L, aggregate.directChildObserved()));
+        Math.max(
+            Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
+            Math.max(0L, aggregate.directChildObserved()));
     boolean childSetFinalized = childSetFinalized(parent);
     boolean allSucceeded =
         childSetFinalized

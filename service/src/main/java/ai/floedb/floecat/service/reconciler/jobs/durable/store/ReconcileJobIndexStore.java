@@ -114,6 +114,10 @@ public interface ReconcileJobIndexStore {
       List<QueuedJobInsert> inserts,
       Function<List<QueuedJobInsert>, List<CanonicalRecordMutation>> ancestorMutationsBuilder);
 
+  // Contract: returned results are only non-created outcomes that the caller must resolve
+  // explicitly, currently store-side dedupe or failure. Successfully created inserts are omitted
+  // from the result list and are identified by their absence.
+
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 

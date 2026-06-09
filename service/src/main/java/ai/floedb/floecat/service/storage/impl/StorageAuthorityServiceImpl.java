@@ -492,6 +492,11 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (table == null) {
       return null;
     }
+    String sourceMetadataLocation =
+        resolveStorageUri(table.getPropertiesMap().get("source_metadata_location"));
+    if (sourceMetadataLocation != null) {
+      return sourceMetadataLocation;
+    }
     String location = resolveStorageUri(table.getPropertiesMap().get("location"));
     if (location != null) {
       return location;

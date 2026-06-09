@@ -688,7 +688,8 @@ public interface ReconcileJobStore {
       String manifestUri,
       boolean allowExpiredWithinGrace);
 
-  void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask);
+  void persistFileGroupResult(
+      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask);
 
   void markCancelled(
       String jobId,
