@@ -418,7 +418,7 @@ public class ConnectorIT {
                 .putAllProperties(props)
                 .build());
 
-    var planJob = runReconcile(conn.getResourceId(), true, null, true);
+    var planJob = runReconcile(conn.getResourceId(), false, null, true);
     assertNotNull(planJob);
     assertPlanJobInProgressOrSucceeded(planJob);
     awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -1151,6 +1151,21 @@ public class ConnectorIT {
         initialJob.state,
         () -> "initial aggregate job failed: " + initialJob.message);
 
+    var catId =
+        catalogs.getByName(accountId.getId(), "cat-plan-snapshots").orElseThrow().getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("analytics")).orElseThrow();
+    var eventsTable =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "events")
+            .orElseThrow();
+    var usersTable =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "users")
+            .orElseThrow();
+    awaitCurrentSnapshotStatsComplete(eventsTable.getResourceId(), Duration.ofSeconds(30));
+    awaitCurrentSnapshotStatsComplete(usersTable.getResourceId(), Duration.ofSeconds(30));
+
     var planJob = runReconcile(conn.getResourceId(), true, null, true);
     assertNotNull(planJob);
     assertPlanJobInProgressOrSucceeded(planJob);
@@ -1161,6 +1176,7 @@ public class ConnectorIT {
         "JS_SUCCEEDED",
         aggregatedJob.state,
         () -> "aggregate job failed: " + aggregatedJob.message);
+    assertFalse(planJob.fullRescan, "expected the second reconcile to be incremental");
     assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
     var childJobs = childJobs(accountId.getId(), planJob.jobId);
     assertEquals(2, childJobs.size(), "expected only table planning jobs under PLAN_CONNECTOR");
