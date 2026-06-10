@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
@@ -42,6 +43,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.rpc.DeleteStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.GetStorageAuthorityRequest;
+import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -89,6 +91,7 @@ class StorageAuthorityServiceImplTest {
   private Authorizer authz;
   private RecordingSecretsManager secretsManager;
   private TableRepository tableRepo;
+  private SnapshotRepository snapshotRepo;
   private AtomicReference<StorageAuthority> state;
   private AtomicLong version;
 
@@ -100,6 +103,7 @@ class StorageAuthorityServiceImplTest {
     authz = mock(Authorizer.class);
     secretsManager = new RecordingSecretsManager();
     tableRepo = mock(TableRepository.class);
+    snapshotRepo = mock(SnapshotRepository.class);
     state = new AtomicReference<>(currentAuthority());
     version = new AtomicLong(1L);
 
@@ -110,6 +114,12 @@ class StorageAuthorityServiceImplTest {
     service.resolver = new StorageAuthorityResolver();
     service.resolver.secretsManager = secretsManager;
     service.tableRepo = tableRepo;
+    service.snapshotRepo = snapshotRepo;
+    service.blobStoreType = "s3";
+    service.blobBucket = "floecat-dev";
+    service.storageAwsRegion = "us-east-1";
+    service.storageAwsS3Endpoint = Optional.of("http://localstack:4566");
+    service.storageAwsPathStyleAccess = true;
     installBasePrincipal(service, principalProvider);
 
     PrincipalContext principal =
@@ -140,6 +150,8 @@ class StorageAuthorityServiceImplTest {
     when(repo.list(eq("acct"), anyInt(), any(), any()))
         .thenReturn(java.util.List.of(currentAuthority()));
     when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentTable()));
+    when(snapshotRepo.getById(TABLE_ID, 77L))
+        .thenReturn(Optional.of(currentSnapshot(TABLE_ID, 77L)));
   }
 
   @Test
@@ -312,6 +324,53 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveSnapshotCompatStorageUsesConfigBackedSettings() {
+    var response =
+        service
+            .resolveSnapshotCompatStorage(
+                ResolveSnapshotCompatStorageRequest.newBuilder()
+                    .setTableId(TABLE_ID)
+                    .setSnapshotId(77L)
+                    .setIncludeCredentials(true)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(
+        "s3://floecat-dev"
+            + ai.floedb.floecat.service.repo.model.Keys.snapshotCompatIcebergRestPrefix(
+                "acct", "tbl-1", 77L),
+        response.getLocationPrefix());
+    assertEquals(
+        "http://localstack:4566",
+        response.getStorage().getClientSafeConfigMap().get("s3.endpoint"));
+    assertEquals(
+        "true", response.getStorage().getClientSafeConfigMap().get("s3.path-style-access"));
+    assertEquals("us-east-1", response.getStorage().getClientSafeConfigMap().get("s3.region"));
+    assertEquals(0, response.getStorage().getStorageCredentialsCount());
+    verify(repo, org.mockito.Mockito.never()).list(eq("acct"), anyInt(), any(), any());
+  }
+
+  @Test
+  void resolveSnapshotCompatStorageReturnsEmptyStorageConfigForMemoryBlobStore() {
+    service.blobStoreType = "memory";
+
+    var response =
+        service
+            .resolveSnapshotCompatStorage(
+                ResolveSnapshotCompatStorageRequest.newBuilder()
+                    .setTableId(TABLE_ID)
+                    .setSnapshotId(77L)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(0, response.getStorage().getClientSafeConfigCount());
+    assertEquals(0, response.getStorage().getStorageCredentialsCount());
+    verify(repo, org.mockito.Mockito.never()).list(eq("acct"), anyInt(), any(), any());
+  }
+
+  @Test
   void clientSideCredentialVendingRejectsUnscopedTemporaryAuthorityCredentials() {
     StorageAuthorityResolver resolver = new StorageAuthorityResolver();
     var authority = currentAuthority().toBuilder().clearAssumeRoleArn().build();
@@ -403,6 +462,14 @@ class StorageAuthorityServiceImplTest {
         .putProperties(
             "source_metadata_location",
             "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
+        .build();
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.Snapshot currentSnapshot(
+      ResourceId tableId, long snapshotId) {
+    return ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
         .build();
   }
 

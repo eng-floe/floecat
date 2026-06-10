@@ -97,6 +97,15 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @ConfigProperty(name = "floecat.blob.s3.bucket")
   String blobBucket;
 
+  @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
+  String storageAwsRegion;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.endpoint")
+  java.util.Optional<String> storageAwsS3Endpoint;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "true")
+  boolean storageAwsPathStyleAccess;
+
   @Override
   public Uni<ListStorageAuthoritiesResponse> listStorageAuthorities(
       ListStorageAuthoritiesRequest request) {
@@ -407,18 +416,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               if ("memory".equalsIgnoreCase(trimToNull(blobStoreType))) {
                 storage = ResolveStorageAuthorityResponse.getDefaultInstance();
               } else {
-                List<StorageAuthority> authorities =
-                    repo.list(tableId.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
-                StorageAuthority authority =
-                    StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
-                storage =
-                    resolver.buildResponse(
-                        authority,
-                        locationPrefix,
-                        tableId.getAccountId(),
-                        request.getIncludeCredentials(),
-                        true,
-                        true);
+                storage = resolveSnapshotCompatStorageSettings(locationPrefix);
               }
               return ResolveSnapshotCompatStorageResponse.newBuilder()
                   .setLocationPrefix(locationPrefix)
@@ -553,6 +551,26 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     String keyPrefix =
         Keys.snapshotCompatIcebergRestPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     return "s3://" + bucket + keyPrefix;
+  }
+
+  private ResolveStorageAuthorityResponse resolveSnapshotCompatStorageSettings(
+      String locationPrefix) {
+    StorageAuthority authority =
+        StorageAuthority.newBuilder()
+            .setType("s3")
+            .setLocationPrefix(locationPrefix == null ? "" : locationPrefix)
+            .setRegion(
+                trimToNull(storageAwsRegion) == null ? "us-east-1" : trimToNull(storageAwsRegion))
+            .setPathStyleAccess(storageAwsPathStyleAccess)
+            .build();
+    String endpoint =
+        storageAwsS3Endpoint == null ? null : trimToNull(storageAwsS3Endpoint.orElse(null));
+    if (endpoint != null) {
+      authority = authority.toBuilder().setEndpoint(endpoint).build();
+    }
+    return ResolveStorageAuthorityResponse.newBuilder()
+        .putAllClientSafeConfig(resolver.clientSafeConfig(authority))
+        .build();
   }
 
   private static String resolveStorageUri(String value) {
