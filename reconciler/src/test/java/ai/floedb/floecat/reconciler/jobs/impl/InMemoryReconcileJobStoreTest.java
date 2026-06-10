@@ -259,8 +259,11 @@ class InMemoryReconcileJobStoreTest {
             "parent-1",
             "");
 
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "executor-1");
     store.persistFileGroupResult(
         jobId,
+        lease.leaseEpoch,
         ReconcileFileGroupTask.of(
             "plan-1",
             "group-1",

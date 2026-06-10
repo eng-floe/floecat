@@ -61,7 +61,6 @@ import java.util.Optional;
 import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
-import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
@@ -72,11 +71,9 @@ import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
-import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.SupportsPrefixOperations;
@@ -262,12 +259,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : -1L;
       long createdMs = snapshot.timestampMillis();
 
-      Integer snapshotSchemaId = snapshot != null ? snapshot.schemaId() : null;
-      int schemaId =
-          snapshotSchemaId != null && snapshotSchemaId > 0
-              ? snapshotSchemaId
-              : table.schema().schemaId();
-      Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+      Schema schema = schemaForSnapshot(table, snapshot);
+      int schemaId = schema.schemaId();
       String schemaJson = SchemaParser.toJson(schema);
 
       Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
@@ -954,11 +947,9 @@ public abstract class IcebergConnector implements FloecatConnector {
 
     Map<Integer, PartitionSpec> specs = table.specs();
     Integer snapshotSpecId = null;
-    TableScan scan = table.newScan().useSnapshot(snapshot.snapshotId());
-    CloseableIterable<FileScanTask> tasks = scan.planFiles();
     Set<Integer> specSet = new LinkedHashSet<>();
-    for (FileScanTask task : tasks) {
-      specSet.add(task.file().specId());
+    for (var manifest : snapshot.allManifests(table.io())) {
+      specSet.add(manifest.partitionSpecId());
     }
 
     if (specSet.size() == 1) {
@@ -1162,7 +1153,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     Integer snapshotSchemaId = snapshot == null ? null : snapshot.schemaId();
     int schemaId =
-        snapshotSchemaId != null && snapshotSchemaId > 0
+        snapshotSchemaId != null && snapshotSchemaId >= 0
             ? snapshotSchemaId
             : table.schema().schemaId();
     return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());

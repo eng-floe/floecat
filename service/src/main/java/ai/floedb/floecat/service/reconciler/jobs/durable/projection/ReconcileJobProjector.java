@@ -214,6 +214,7 @@ public class ReconcileJobProjector {
         ReconcileSnapshotTask.CompletionMode.fromString(stored.snapshotTaskCompletionMode),
         blankToEmpty(stored.snapshotPlanBlobUri),
         0,
+        (int) Math.max(0L, stored.snapshotTaskSourceFileCount),
         blankToEmpty(stored.snapshotTaskDirectStatsBlobUri),
         (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount));
   }

@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -42,6 +43,8 @@ import ai.floedb.floecat.storage.rpc.GetStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.GetStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesResponse;
+import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
+import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageResponse;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForAccountLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
@@ -59,6 +62,7 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @GrpcService
 public class StorageAuthorityServiceImpl extends BaseServiceImpl implements StorageAuthorities {
@@ -86,6 +90,21 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject SecretsManager secretsManager;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
+
+  @ConfigProperty(name = "floecat.blob")
+  String blobStoreType;
+
+  @ConfigProperty(name = "floecat.blob.s3.bucket")
+  String blobBucket;
+
+  @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
+  String storageAwsRegion;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.endpoint")
+  java.util.Optional<String> storageAwsS3Endpoint;
+
+  @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "true")
+  boolean storageAwsPathStyleAccess;
 
   @Override
   public Uni<ListStorageAuthoritiesResponse> listStorageAuthorities(
@@ -286,7 +305,10 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                 throw GrpcErrors.invalidArgument(
                     correlationId(), null, Map.of("field", "location_prefix"));
               }
-              String locationPrefix = resolvedLocationPrefix;
+              String locationPrefix =
+                  requestedLocationPrefix != null
+                      ? requestedLocationPrefix
+                      : resolvedLocationPrefix;
               List<StorageAuthority> authorities =
                   repo.list(tableId.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =
@@ -365,6 +387,45 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         correlationId());
   }
 
+  @Override
+  public Uni<ResolveSnapshotCompatStorageResponse> resolveSnapshotCompatStorage(
+      ResolveSnapshotCompatStorageRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              PrincipalContext principal = principalProvider.get();
+              authz.require(principal, List.of("connector.read", "table.read", "catalog.read"));
+              ResourceId tableId =
+                  scopedTableId(principal.getAccountId(), request.getTableId(), correlationId());
+              long snapshotId = request.getSnapshotId();
+              if (snapshotId < 0) {
+                throw GrpcErrors.invalidArgument(
+                    correlationId(), null, Map.of("field", "snapshot_id"));
+              }
+              loadVisibleTable(tableId);
+              snapshotRepo
+                  .getById(tableId, snapshotId)
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(),
+                              GeneratedErrorMessages.MessageKey.SNAPSHOT,
+                              Map.of("id", Long.toString(snapshotId))));
+              String locationPrefix = resolveSnapshotCompatLocationPrefix(tableId, snapshotId);
+              ResolveStorageAuthorityResponse storage;
+              if ("memory".equalsIgnoreCase(trimToNull(blobStoreType))) {
+                storage = ResolveStorageAuthorityResponse.getDefaultInstance();
+              } else {
+                storage = resolveSnapshotCompatStorageSettings(locationPrefix);
+              }
+              return ResolveSnapshotCompatStorageResponse.newBuilder()
+                  .setLocationPrefix(locationPrefix)
+                  .setStorage(storage)
+                  .build();
+            }),
+        correlationId());
+  }
+
   private static void validateUpdateMask(FieldMask mask, String corr) {
     if (mask == null || mask.getPathsCount() == 0) {
       return;
@@ -429,6 +490,11 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (table == null) {
       return null;
     }
+    String sourceMetadataLocation =
+        resolveStorageUri(table.getPropertiesMap().get("source_metadata_location"));
+    if (sourceMetadataLocation != null) {
+      return sourceMetadataLocation;
+    }
     String location = resolveStorageUri(table.getPropertiesMap().get("location"));
     if (location != null) {
       return location;
@@ -472,6 +538,41 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     return resolveStorageUri(upstreamUri);
   }
 
+  private String resolveSnapshotCompatLocationPrefix(ResourceId tableId, long snapshotId) {
+    String normalizedBlobType = trimToNull(blobStoreType);
+    if (!"memory".equalsIgnoreCase(normalizedBlobType)
+        && !"s3".equalsIgnoreCase(normalizedBlobType)) {
+      throw new IllegalStateException("Snapshot compat storage requires floecat.blob=memory or s3");
+    }
+    String bucket = trimToNull(blobBucket);
+    if (bucket == null) {
+      throw new IllegalStateException("Snapshot compat storage requires floecat.blob.s3.bucket");
+    }
+    String keyPrefix =
+        Keys.snapshotCompatIcebergRestPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
+    return "s3://" + bucket + keyPrefix;
+  }
+
+  private ResolveStorageAuthorityResponse resolveSnapshotCompatStorageSettings(
+      String locationPrefix) {
+    StorageAuthority authority =
+        StorageAuthority.newBuilder()
+            .setType("s3")
+            .setLocationPrefix(locationPrefix == null ? "" : locationPrefix)
+            .setRegion(
+                trimToNull(storageAwsRegion) == null ? "us-east-1" : trimToNull(storageAwsRegion))
+            .setPathStyleAccess(storageAwsPathStyleAccess)
+            .build();
+    String endpoint =
+        storageAwsS3Endpoint == null ? null : trimToNull(storageAwsS3Endpoint.orElse(null));
+    if (endpoint != null) {
+      authority = authority.toBuilder().setEndpoint(endpoint).build();
+    }
+    return ResolveStorageAuthorityResponse.newBuilder()
+        .putAllClientSafeConfig(resolver.clientSafeConfig(authority))
+        .build();
+  }
+
   private static String resolveStorageUri(String value) {
     if (value == null || value.isBlank()) {
       return null;
@@ -500,7 +601,23 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (!hasCredentials(spec)) {
       return;
     }
-    byte[] payload = spec.getCredentials().toByteArray();
+    storeCredentials(secretsManager, accountId, authorityId, spec.getCredentials());
+  }
+
+  public static void storeCredentials(
+      SecretsManager secretsManager,
+      String accountId,
+      String authorityId,
+      AuthCredentials credentials) {
+    if (secretsManager == null
+        || accountId == null
+        || accountId.isBlank()
+        || authorityId == null
+        || authorityId.isBlank()
+        || credentials == null) {
+      return;
+    }
+    byte[] payload = credentials.toByteArray();
     boolean exists =
         secretsManager
             .get(accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId)

@@ -28,8 +28,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.metadata.TableCommitMetadataMutator;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
+import java.lang.reflect.Field;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,21 @@ import org.junit.jupiter.api.Test;
 
 class TablePropertyServiceTest {
   private final TablePropertyService service = new TablePropertyService();
+
+  TablePropertyServiceTest() {
+    injectMetadataMutator(service, new TableCommitMetadataMutator());
+  }
+
+  private static void injectMetadataMutator(
+      TablePropertyService service, TableCommitMetadataMutator metadataMutator) {
+    try {
+      Field field = TablePropertyService.class.getDeclaredField("metadataMutator");
+      field.setAccessible(true);
+      field.set(service, metadataMutator);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("Failed to initialize TablePropertyService test", e);
+    }
+  }
 
   @Test
   void stripMetadataLocationIsNoOp() {
@@ -206,6 +223,19 @@ class TablePropertyServiceTest {
 
     List<Map<String, Object>> updates =
         List.of(
+            Map.of(
+                "action",
+                "add-snapshot",
+                "snapshot",
+                Map.of(
+                    "snapshot-id",
+                    33L,
+                    "timestamp-ms",
+                    1772624629860L,
+                    "sequence-number",
+                    1L,
+                    "summary",
+                    Map.of("operation", "append"))),
             Map.of("action", "set-snapshot-ref", "ref-name", "main", "snapshot-id", 22L),
             Map.of("action", "remove-snapshot-ref", "ref-name", "main"),
             Map.of(
@@ -227,6 +257,72 @@ class TablePropertyServiceTest {
     assertEquals(1, refs.size());
     assertEquals(33L, ((Number) refs.get("main").get("snapshot-id")).longValue());
     assertEquals(7, ((Number) refs.get("main").get("min-snapshots-to-keep")).intValue());
+  }
+
+  @Test
+  void applyCommitPropertyUpdatesDoesNotRewindCurrentSnapshotFromAddedSnapshotWithoutMainRef() {
+    Table table =
+        Table.newBuilder()
+            .putProperties("current-snapshot-id", "1944648604358776794")
+            .putProperties("last-sequence-number", "0")
+            .build();
+
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of(
+                "action",
+                "add-snapshot",
+                "snapshot",
+                Map.of(
+                    "snapshot-id",
+                    4652753989274070009L,
+                    "timestamp-ms",
+                    1781027618000L,
+                    "sequence-number",
+                    1L,
+                    "summary",
+                    Map.of("operation", "append", "total-data-files", "0"))),
+            Map.of("action", "upgrade-format-version", "format-version", 2));
+
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+
+    assertNull(result.error());
+    assertEquals("1944648604358776794", result.properties().get("current-snapshot-id"));
+    assertEquals("1", result.properties().get("last-sequence-number"));
+  }
+
+  @Test
+  void applyCommitPropertyUpdatesIgnoresStaleMainRefWithoutAddedSnapshot() {
+    Map<String, Map<String, Object>> initialRefs = new LinkedHashMap<>();
+    initialRefs.put(
+        "main", new LinkedHashMap<>(Map.of("snapshot-id", 2193008915892245619L, "type", "branch")));
+    Table table =
+        Table.newBuilder()
+            .putProperties("current-snapshot-id", "2193008915892245619")
+            .putProperties("last-sequence-number", "0")
+            .putProperties(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(initialRefs))
+            .build();
+
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of("action", "upgrade-format-version", "format-version", 2),
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "snapshot-id",
+                9180431282726110998L,
+                "type",
+                "branch"));
+
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+
+    assertNull(result.error());
+    assertEquals("2193008915892245619", result.properties().get("current-snapshot-id"));
+    Map<String, Map<String, Object>> refs =
+        RefPropertyUtil.decode(result.properties().get(RefPropertyUtil.PROPERTY_KEY));
+    assertEquals(2193008915892245619L, ((Number) refs.get("main").get("snapshot-id")).longValue());
   }
 
   @Test

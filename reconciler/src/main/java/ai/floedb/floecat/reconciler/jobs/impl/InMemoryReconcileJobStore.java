@@ -658,6 +658,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.completionMode(),
                   effectiveManifestUri,
                   effective.fileGroupCount(),
+                  effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
                   effective.directStatsRecordCount());
           if (existing.snapshotTask.equals(adoptedTask)) {
@@ -694,38 +695,47 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void persistFileGroupResult(String jobId, ReconcileFileGroupTask fileGroupTask) {
+  public void persistFileGroupResult(
+      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask) {
     ReconcileFileGroupTask effective =
         fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
     jobs.computeIfPresent(
         jobId,
-        (id, existing) ->
-            new ReconcileJob(
-                existing.jobId,
-                existing.accountId,
-                existing.connectorId,
-                existing.state,
-                existing.message,
-                existing.startedAtMs,
-                existing.finishedAtMs,
-                existing.tablesScanned,
-                existing.tablesChanged,
-                existing.viewsScanned,
-                existing.viewsChanged,
-                existing.errors,
-                existing.fullRescan,
-                existing.captureMode,
-                existing.snapshotsProcessed,
-                existing.statsProcessed,
-                existing.scope,
-                existing.executionPolicy,
-                existing.executorId,
-                existing.jobKind,
-                existing.tableTask,
-                existing.viewTask,
-                existing.snapshotTask,
-                effective,
-                existing.parentJobId));
+        (id, existing) -> {
+          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
+          if (!"JS_RUNNING".equals(existing.state)
+              || leaseEpoch == null
+              || leaseEpoch.isBlank()
+              || !leaseEpoch.equals(currentLeaseEpoch)) {
+            return existing;
+          }
+          return new ReconcileJob(
+              existing.jobId,
+              existing.accountId,
+              existing.connectorId,
+              existing.state,
+              existing.message,
+              existing.startedAtMs,
+              existing.finishedAtMs,
+              existing.tablesScanned,
+              existing.tablesChanged,
+              existing.viewsScanned,
+              existing.viewsChanged,
+              existing.errors,
+              existing.fullRescan,
+              existing.captureMode,
+              existing.snapshotsProcessed,
+              existing.statsProcessed,
+              existing.scope,
+              existing.executionPolicy,
+              existing.executorId,
+              existing.jobKind,
+              existing.tableTask,
+              existing.viewTask,
+              existing.snapshotTask,
+              effective,
+              existing.parentJobId);
+        });
   }
 
   @Override

@@ -68,6 +68,13 @@ public class SnapshotPlanBlobStore {
     } catch (Exception e) {
       throw new IllegalStateException("Failed to persist snapshot plan blob", e);
     }
+    int sourceFileCount =
+        effective.sourceFileCount() > 0
+            ? effective.sourceFileCount()
+            : sanitizedJobs.stream()
+                .map(PlannedFileGroupJob::fileGroupTask)
+                .mapToInt(group -> group.filePaths().size())
+                .sum();
     return ReconcileSnapshotTask.of(
         effective.tableId(),
         effective.snapshotId(),
@@ -78,6 +85,7 @@ public class SnapshotPlanBlobStore {
         effective.completionMode(),
         blobUri,
         sanitizedJobs.size(),
+        sourceFileCount,
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount());
   }
@@ -117,6 +125,7 @@ public class SnapshotPlanBlobStore {
         effective.completionMode(),
         effective.fileGroupPlanBlobUri(),
         effective.fileGroupCount(),
+        effective.sourceFileCount(),
         blobUri,
         sanitizedStats.size());
   }
@@ -206,6 +215,14 @@ public class SnapshotPlanBlobStore {
   }
 
   public List<TargetStatsRecord> loadFileGroupStats(String blobUri) {
+    return loadTargetStatsBlob(blobUri, "file-group stats");
+  }
+
+  public List<TargetStatsRecord> loadTargetStatsBlob(String blobUri) {
+    return loadTargetStatsBlob(blobUri, "target stats");
+  }
+
+  private List<TargetStatsRecord> loadTargetStatsBlob(String blobUri, String description) {
     String effectiveBlobUri = blobUri == null ? "" : blobUri.trim();
     if (effectiveBlobUri.isBlank()) {
       return List.of();
@@ -219,7 +236,7 @@ public class SnapshotPlanBlobStore {
           .toList();
     } catch (Exception e) {
       throw new IllegalStateException(
-          "Failed to load file-group stats blob " + effectiveBlobUri, e);
+          "Failed to load " + description + " blob " + effectiveBlobUri, e);
     }
   }
 

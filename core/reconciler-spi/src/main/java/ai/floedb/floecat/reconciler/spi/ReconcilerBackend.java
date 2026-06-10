@@ -119,7 +119,7 @@ public interface ReconcilerBackend {
    * <p>Backends should return {@link Optional#empty()} when the connector cannot satisfy the
    * request without reading files.
    */
-  default Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+  default Optional<FloecatConnector.DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,

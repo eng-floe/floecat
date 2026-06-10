@@ -695,6 +695,7 @@ class LeasedPlannerWorkerServiceTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            9,
             "/accounts/acct/reconcile/jobs/job-1/direct-stats/stats.json",
             7);
 

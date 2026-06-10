@@ -403,7 +403,10 @@ public class LeasedPlannerWorkerService {
                 true,
                 baseSnapshotTask.completionMode(),
                 baseSnapshotTask.fileGroupPlanBlobUri(),
-                baseSnapshotTask.fileGroupCount())
+                baseSnapshotTask.fileGroupCount(),
+                baseSnapshotTask.sourceFileCount(),
+                baseSnapshotTask.directStatsBlobUri(),
+                baseSnapshotTask.directStatsRecordCount())
             : plannedSnapshotTask;
     List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
     ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(finalizedSnapshotTask);
@@ -646,6 +649,7 @@ public class LeasedPlannerWorkerService {
         effective.completionMode(),
         effective.fileGroupPlanBlobUri(),
         effective.fileGroupCount(),
+        effective.sourceFileCount(),
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount());
   }

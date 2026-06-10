@@ -76,6 +76,19 @@ public interface ReconcileJobIndexStore {
       String resultBlobUri,
       StoredReconcileJob record) {}
 
+  final class BulkEnqueueCommitException extends RuntimeException {
+    private final List<Integer> rollbackIndexes;
+
+    public BulkEnqueueCommitException(Throwable cause, List<Integer> rollbackIndexes) {
+      super(cause == null ? null : cause.getMessage(), cause);
+      this.rollbackIndexes = rollbackIndexes == null ? List.of() : List.copyOf(rollbackIndexes);
+    }
+
+    public List<Integer> rollbackIndexes() {
+      return rollbackIndexes;
+    }
+  }
+
   @FunctionalInterface
   interface TriConsumer<A, B, C> {
     void accept(A a, B b, C c);
@@ -138,4 +151,8 @@ public interface ReconcileJobIndexStore {
   boolean compareAndSetCanonicalMutations(List<CanonicalRecordMutation> mutations);
 
   StoredReconcileJob cloneStoredRecord(StoredReconcileJob source);
+
+  // Contract: returned results are only non-created outcomes that the caller must resolve
+  // explicitly, currently store-side dedupe or failure. Successfully created inserts are omitted
+  // from the result list and are identified by their absence.
 }

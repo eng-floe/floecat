@@ -74,12 +74,14 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(
             Optional.of(
-                List.of(
-                    TargetStatsRecords.tableRecord(
-                        tableId(),
-                        55L,
-                        TableValueStats.newBuilder().setRowCount(7L).build(),
-                        null))));
+                FloecatConnector.DirectSnapshotStatsCapture.of(
+                    List.of(
+                        TargetStatsRecords.tableRecord(
+                            tableId(),
+                            55L,
+                            TableValueStats.newBuilder().setRowCount(7L).build(),
+                            null)),
+                    5)));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -98,6 +100,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     snapshotTask != null
                         && snapshotTask.fileGroups().isEmpty()
                         && snapshotTask.fileGroupPlanRecorded()
+                        && snapshotTask.sourceFileCount() == 5
                         && snapshotTask.directStatsRecordCount() == 1
                         && snapshotTask.completionMode()
                             == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS),
@@ -256,6 +259,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             argThat(
                 plannedSnapshot ->
                     plannedSnapshot != null
+                        && plannedSnapshot.sourceFileCount() == 40
                         && plannedSnapshot.fileGroups().size() == 14
                         && plannedSnapshot.fileGroups().stream()
                             .allMatch(group -> group.filePaths().size() <= 3)),
@@ -325,7 +329,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 statsOnlyScope(),
                 snapshotTask()));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(List.of()));
+        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -365,7 +369,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                   snapshotTask());
             });
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(List.of()));
+        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     assertTrue(

@@ -218,7 +218,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
-  public Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+  public Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
@@ -235,7 +235,7 @@ abstract class DeltaConnector implements FloecatConnector {
             : EnumSet.copyOf(includeTargetKinds);
     requestedKinds.remove(StatsTargetKind.EXPRESSION);
     if (requestedKinds.isEmpty()) {
-      return Optional.of(List.of());
+      return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0));
     }
 
     final String tableRoot = storageLocation(namespaceFq, tableName);
@@ -307,17 +307,23 @@ abstract class DeltaConnector implements FloecatConnector {
             planner.checkpointStructRecoverySamplePaths());
       }
     }
+    int sourceFileCount =
+        planSnapshotFiles(namespaceFq, tableName, destinationTableId, snapshotId)
+            .map(plan -> plan.dataFiles().size() + plan.deleteFiles().size())
+            .orElse(0);
     return Optional.of(
-        buildTargetStats(
-            tableRoot,
-            destinationTableId,
-            includeColumns,
-            columnSelectorPolicy,
-            snapshotId,
-            snapshot,
-            requestedKinds,
-            Set.of(),
-            false));
+        DirectSnapshotStatsCapture.of(
+            buildTargetStats(
+                tableRoot,
+                destinationTableId,
+                includeColumns,
+                columnSelectorPolicy,
+                snapshotId,
+                snapshot,
+                requestedKinds,
+                Set.of(),
+                false),
+            sourceFileCount));
   }
 
   @Override

@@ -52,20 +52,31 @@ public final class DeltaSchemaNormalizer {
   }
 
   public static Map<String, Object> normalizeSchemaMap(String rawSchemaJson, int desiredSchemaId) {
+    return normalizeSchemaMap(rawSchemaJson, desiredSchemaId, false);
+  }
+
+  public static Map<String, Object> normalizeSchemaMap(
+      String rawSchemaJson, int desiredSchemaId, boolean rewriteVariantAsStruct) {
     if (rawSchemaJson == null || rawSchemaJson.isBlank()) {
       return null;
     }
     try {
       Map<String, Object> root =
           JSON.readValue(rawSchemaJson, new TypeReference<Map<String, Object>>() {});
-      return normalizeSchemaMap(root, desiredSchemaId);
+      return normalizeSchemaMap(root, desiredSchemaId, rewriteVariantAsStruct);
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
   }
 
   public static String normalizeSchemaJson(String rawSchemaJson, int desiredSchemaId) {
-    Map<String, Object> normalized = normalizeSchemaMap(rawSchemaJson, desiredSchemaId);
+    return normalizeSchemaJson(rawSchemaJson, desiredSchemaId, false);
+  }
+
+  public static String normalizeSchemaJson(
+      String rawSchemaJson, int desiredSchemaId, boolean rewriteVariantAsStruct) {
+    Map<String, Object> normalized =
+        normalizeSchemaMap(rawSchemaJson, desiredSchemaId, rewriteVariantAsStruct);
     if (normalized == null) {
       return null;
     }
@@ -77,13 +88,14 @@ public final class DeltaSchemaNormalizer {
   }
 
   private static Map<String, Object> normalizeSchemaMap(
-      Map<String, Object> root, int desiredSchemaId) {
+      Map<String, Object> root, int desiredSchemaId, boolean rewriteVariantAsStruct) {
     if (root == null) {
       return null;
     }
     int seed = Math.max(1, maxFieldIdInSchema(root.get("fields")) + 1);
     IdAllocator ids = new IdAllocator(seed);
-    List<Map<String, Object>> fields = normalizeFields(root.get("fields"), ids);
+    List<Map<String, Object>> fields =
+        normalizeFields(root.get("fields"), ids, rewriteVariantAsStruct);
     int schemaId = nonNegativeInt(root.get("schema-id"), Math.max(0, desiredSchemaId));
     int lastColumnId = Math.max(nonNegativeInt(root.get("last-column-id"), 0), maxFieldId(fields));
 
@@ -95,7 +107,8 @@ public final class DeltaSchemaNormalizer {
     return normalized;
   }
 
-  private static List<Map<String, Object>> normalizeFields(Object rawFields, IdAllocator ids) {
+  private static List<Map<String, Object>> normalizeFields(
+      Object rawFields, IdAllocator ids, boolean rewriteVariantAsStruct) {
     if (!(rawFields instanceof List<?> list)) {
       return List.of();
     }
@@ -115,15 +128,16 @@ public final class DeltaSchemaNormalizer {
       out.put("id", fieldId);
       out.put("name", fieldName);
       out.put("required", required(field));
-      out.put("type", normalizeType(field.get("type"), ids));
+      out.put("type", normalizeType(field.get("type"), ids, rewriteVariantAsStruct));
       normalized.add(out);
     }
     return normalized;
   }
 
-  private static Object normalizeType(Object rawType, IdAllocator ids) {
+  private static Object normalizeType(
+      Object rawType, IdAllocator ids, boolean rewriteVariantAsStruct) {
     if (rawType instanceof String typeName) {
-      return normalizePrimitiveType(typeName);
+      return normalizePrimitiveType(typeName, ids, rewriteVariantAsStruct);
     }
     if (!(rawType instanceof Map<?, ?> rawTypeMap)) {
       return "string";
@@ -135,29 +149,32 @@ public final class DeltaSchemaNormalizer {
     }
     String normalizedType = typeName.trim().toLowerCase(Locale.ROOT);
     return switch (normalizedType) {
-      case "struct" -> normalizeStructType(typeMap, ids);
-      case "array", "list" -> normalizeListType(typeMap, ids);
-      case "map" -> normalizeMapType(typeMap, ids);
-      default -> normalizePrimitiveType(typeName);
+      case "struct" -> normalizeStructType(typeMap, ids, rewriteVariantAsStruct);
+      case "array", "list" -> normalizeListType(typeMap, ids, rewriteVariantAsStruct);
+      case "map" -> normalizeMapType(typeMap, ids, rewriteVariantAsStruct);
+      default -> normalizePrimitiveType(typeName, ids, rewriteVariantAsStruct);
     };
   }
 
   private static Map<String, Object> normalizeStructType(
-      Map<String, Object> typeMap, IdAllocator ids) {
+      Map<String, Object> typeMap, IdAllocator ids, boolean rewriteVariantAsStruct) {
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("type", "struct");
-    out.put("fields", normalizeFields(typeMap.get("fields"), ids));
+    out.put("fields", normalizeFields(typeMap.get("fields"), ids, rewriteVariantAsStruct));
     return out;
   }
 
   private static Map<String, Object> normalizeListType(
-      Map<String, Object> typeMap, IdAllocator ids) {
+      Map<String, Object> typeMap, IdAllocator ids, boolean rewriteVariantAsStruct) {
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("type", "list");
     out.put("element-id", ids.assign(nonNegativeInt(typeMap.get("element-id"), 0)));
     out.put(
         "element",
-        normalizeType(firstNonNull(typeMap.get("element"), typeMap.get("elementType")), ids));
+        normalizeType(
+            firstNonNull(typeMap.get("element"), typeMap.get("elementType")),
+            ids,
+            rewriteVariantAsStruct));
     out.put(
         "element-required",
         !booleanValue(
@@ -166,14 +183,21 @@ public final class DeltaSchemaNormalizer {
   }
 
   private static Map<String, Object> normalizeMapType(
-      Map<String, Object> typeMap, IdAllocator ids) {
+      Map<String, Object> typeMap, IdAllocator ids, boolean rewriteVariantAsStruct) {
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("type", "map");
     out.put("key-id", ids.assign(nonNegativeInt(typeMap.get("key-id"), 0)));
-    out.put("key", normalizeType(firstNonNull(typeMap.get("key"), typeMap.get("keyType")), ids));
+    out.put(
+        "key",
+        normalizeType(
+            firstNonNull(typeMap.get("key"), typeMap.get("keyType")), ids, rewriteVariantAsStruct));
     out.put("value-id", ids.assign(nonNegativeInt(typeMap.get("value-id"), 0)));
     out.put(
-        "value", normalizeType(firstNonNull(typeMap.get("value"), typeMap.get("valueType")), ids));
+        "value",
+        normalizeType(
+            firstNonNull(typeMap.get("value"), typeMap.get("valueType")),
+            ids,
+            rewriteVariantAsStruct));
     out.put(
         "value-required",
         !booleanValue(
@@ -181,11 +205,15 @@ public final class DeltaSchemaNormalizer {
     return out;
   }
 
-  private static String normalizePrimitiveType(String rawType) {
+  private static Object normalizePrimitiveType(
+      String rawType, IdAllocator ids, boolean rewriteVariantAsStruct) {
     if (rawType == null || rawType.isBlank()) {
       return "string";
     }
     String normalized = rawType.trim().toLowerCase(Locale.ROOT);
+    if (rewriteVariantAsStruct && "variant".equals(normalized)) {
+      return variantStructType(ids);
+    }
     return switch (normalized) {
       case "byte", "short", "integer" -> "int";
       case "real" -> "float";
@@ -193,6 +221,25 @@ public final class DeltaSchemaNormalizer {
       case "timestamp_ntz" -> "timestamp";
       default -> normalized;
     };
+  }
+
+  private static Map<String, Object> variantStructType(IdAllocator ids) {
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("type", "struct");
+    List<Map<String, Object>> fields = new ArrayList<>(2);
+    fields.add(variantStructField(ids, "metadata"));
+    fields.add(variantStructField(ids, "value"));
+    out.put("fields", fields);
+    return out;
+  }
+
+  private static Map<String, Object> variantStructField(IdAllocator ids, String name) {
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", ids.assign(0));
+    field.put("name", name);
+    field.put("required", true);
+    field.put("type", "binary");
+    return field;
   }
 
   private static boolean required(Map<String, Object> field) {

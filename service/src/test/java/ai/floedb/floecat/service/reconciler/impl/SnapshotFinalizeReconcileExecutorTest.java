@@ -139,6 +139,32 @@ class SnapshotFinalizeReconcileExecutorTest {
     return store;
   }
 
+  private static SnapshotFinalizePersistenceService persistence(StatsStore statsStore) {
+    var persistence = new SnapshotFinalizePersistenceService();
+    persistence.statsStore = statsStore;
+    return persistence;
+  }
+
+  private static SnapshotFinalizeCoverageService coverageService(
+      SnapshotPlanBlobStore snapshotPlanBlobStore) {
+    var coverageService = new SnapshotFinalizeCoverageService();
+    coverageService.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    return coverageService;
+  }
+
+  private static SnapshotFinalizeReconcileExecutor executor(
+      ReconcileJobStore jobs, StatsStore statsStore, SnapshotPlanBlobStore snapshotPlanBlobStore) {
+    var executor = new SnapshotFinalizeReconcileExecutor();
+    var childStateService = new SnapshotFinalizeChildStateService();
+    executor.jobs = jobs;
+    executor.persistence = persistence(statsStore);
+    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    executor.coverageService = coverageService(snapshotPlanBlobStore);
+    childStateService.jobs = jobs;
+    executor.childStateService = childStateService;
+    return executor;
+  }
+
   private static ReconcileSnapshotTask persistedSnapshotPlan(
       SnapshotPlanBlobStore store, ReconcileScope scope, ReconcileFileGroupTask... groups) {
     String blobUri = "/accounts/acct/reconcile/jobs/plan-1/snapshot-plan/plan.json";
@@ -162,10 +188,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -234,10 +257,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -313,10 +333,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeSucceedsForDirectStatsCompletionWithoutFileCoverage() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
@@ -326,7 +343,12 @@ class SnapshotFinalizeReconcileExecutorTest {
             "events",
             List.of(),
             true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS);
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            0,
+            "",
+            0);
     ReconcileScope scope = captureScope();
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -368,10 +390,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     String blobUri = "/accounts/acct/reconcile/jobs/plan-1/direct-stats/stats.json";
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -395,6 +414,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            4,
             blobUri,
             1);
     ReconcileScope scope = captureScope();
@@ -444,10 +464,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
@@ -460,6 +477,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
             "",
             0,
+            4,
             "/accounts/acct/reconcile/jobs/plan-1/direct-stats/missing.json",
             1);
     ReconcileScope scope = captureScope();
@@ -508,10 +526,7 @@ class SnapshotFinalizeReconcileExecutorTest {
       var store = new InMemoryReconcileJobStore();
       var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
       var snapshotPlanBlobStore = snapshotPlanBlobStore();
-      var executor = new SnapshotFinalizeReconcileExecutor();
-      executor.jobs = store;
-      executor.statsStore = statsStore;
-      executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+      var executor = executor(store, statsStore, snapshotPlanBlobStore);
       ReconcileFileGroupTask group =
           ReconcileFileGroupTask.of(
               "plan-1",
@@ -597,10 +612,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask groupOne =
         ReconcileFileGroupTask.of(
@@ -661,20 +673,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         parentJobId,
         "");
 
-    store.persistFileGroupResult(
-        childOneJobId,
-        groupOne.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.persistFileGroupResult(
-        childTwoJobId,
-        groupTwo.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
     ReconcileJobStore.LeasedJob childOneLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childOneLease.jobId,
+        childOneLease.leaseEpoch,
+        groupOne.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
         childOneLease.jobId, childOneLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
     ReconcileJobStore.LeasedJob childTwoLease =
@@ -683,6 +692,11 @@ class SnapshotFinalizeReconcileExecutorTest {
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childTwoLease.jobId,
+        childTwoLease.leaseEpoch,
+        groupTwo.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
     store.markSucceeded(
         childTwoLease.jobId, childTwoLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -737,10 +751,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1",
@@ -790,6 +801,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(
                 ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L),
@@ -834,10 +846,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask groupOne =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -928,24 +937,19 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .build(),
                     null)));
 
-    store.persistFileGroupResult(
-        childOneJobId,
-        groupOne
-            .withFileStatsBlob(childOneBlobUri, 1)
-            .withFileResults(
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
-    store.persistFileGroupResult(
-        childTwoJobId,
-        groupTwo
-            .withFileStatsBlob(childTwoBlobUri, 1)
-            .withFileResults(
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     ReconcileJobStore.LeasedJob childOneLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childOneLease.jobId,
+        childOneLease.leaseEpoch,
+        groupOne
+            .withFileStatsBlob(childOneBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     store.markSucceeded(
         childOneLease.jobId, childOneLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
     ReconcileJobStore.LeasedJob childTwoLease =
@@ -954,6 +958,13 @@ class SnapshotFinalizeReconcileExecutorTest {
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childTwoLease.jobId,
+        childTwoLease.leaseEpoch,
+        groupTwo
+            .withFileStatsBlob(childTwoBlobUri, 1)
+            .withFileResults(
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     store.markSucceeded(
         childTwoLease.jobId, childTwoLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -981,10 +992,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     String filePath = "s3://bucket/data/file-1.parquet";
     ReconcileFileGroupTask group =
@@ -1056,17 +1064,18 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .setSizeBytes(128L)
                         .build(),
                     null)));
-    store.persistFileGroupResult(
-        childJobId,
-        group
-            .withFileStatsBlob(fileStatsBlobUri, 1)
-            .withFileResults(List.of(ReconcileFileResult.succeeded(filePath, 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(List.of(ReconcileFileResult.succeeded(filePath, 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1094,10 +1103,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
@@ -1174,20 +1180,21 @@ class SnapshotFinalizeReconcileExecutorTest {
                         .setSizeBytes(128L)
                         .build(),
                     null)));
-    store.persistFileGroupResult(
-        childJobId,
-        group
-            .withFileStatsBlob(fileStatsBlobUri, 1)
-            .withFileResults(
-                List.of(
-                    ReconcileFileResult.succeeded(existingFilePath, 0L),
-                    ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group
+            .withFileStatsBlob(fileStatsBlobUri, 1)
+            .withFileResults(
+                List.of(
+                    ReconcileFileResult.succeeded(existingFilePath, 0L),
+                    ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1223,10 +1230,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
@@ -1265,16 +1269,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutionPolicy.defaults(),
         parentJobId,
         "");
-    store.persistFileGroupResult(
-        childJobId,
-        group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 0L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1306,10 +1311,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
@@ -1348,16 +1350,17 @@ class SnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutionPolicy.defaults(),
         parentJobId,
         "");
-    store.persistFileGroupResult(
-        childJobId,
-        group.withFileResults(
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
+    store.persistFileGroupResult(
+        childLease.jobId,
+        childLease.leaseEpoch,
+        group.withFileResults(
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
         childLease.jobId, childLease.leaseEpoch, System.currentTimeMillis(), 0, 0, 0, 0);
 
@@ -1399,10 +1402,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executePersistsEmptySnapshotSentinelForFileStatsOnly() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1459,10 +1459,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executePersistsEmptySnapshotSentinelForColumnStatsOnly() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1519,10 +1516,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executePreservesExistingTableStatsWhenEmptyMarkerWouldRetry() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1588,10 +1582,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeDoesNotPersistEmptySnapshotSentinelForIndexOnly() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1646,10 +1637,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeFailsWhenSnapshotCoverageMetadataIsMissing() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
@@ -1697,10 +1685,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -1737,10 +1722,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeFailsWhenNoPlannedFileGroupsExist() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(TABLE_ID, SNAPSHOT_ID, "db", "events", List.of());
@@ -1776,10 +1758,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeSkipsWhenParentSnapshotPlanHasNoPlannedFileGroups() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1825,10 +1804,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   void executeFailsWhenParentSnapshotPlanHasUnrecordedEmptyFileGroups() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -1876,10 +1852,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     ReconcileJobStore jobs = mock(ReconcileJobStore.class);
     StatsStore statsStore = mock(StatsStore.class);
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = jobs;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(jobs, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
@@ -2007,10 +1980,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
@@ -2061,10 +2031,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new DuplicateFileStatsStore();
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -2110,6 +2077,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
@@ -2134,10 +2102,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -2189,6 +2154,7 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow();
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group.withFileResults(
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     store.markSucceeded(
@@ -2245,10 +2211,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
-    var executor = new SnapshotFinalizeReconcileExecutor();
-    executor.jobs = store;
-    executor.statsStore = statsStore;
-    executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
 
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
@@ -2300,6 +2263,7 @@ class SnapshotFinalizeReconcileExecutorTest {
         .put(fileStatsBlobUri, List.of(fileRecordWithColumnOrder("name", "id")));
     store.persistFileGroupResult(
         childLease.jobId,
+        childLease.leaseEpoch,
         group
             .withFileStatsBlob(fileStatsBlobUri, 1)
             .withFileResults(

@@ -202,6 +202,8 @@ message ReconcileSnapshotTask {
   string file_group_plan_blob_uri = 8;
   // Number of grouped file executions in the persisted expanded file-group plan.
   uint32 file_group_count = 9;
+  // Number of source files expected to be represented for this snapshot capture.
+  uint32 source_file_count = 12;
   // Optional blob URI for persisted direct target stats results.
   string direct_stats_blob_uri = 10;
   // Number of direct target stats records persisted in the blob.
@@ -446,6 +448,43 @@ message GetReconcileCancellationResponse {
 message GetLeasedFileGroupExecutionRequest {
   string job_id = 1;
   string lease_epoch = 2;
+}
+
+message GetLeasedSnapshotFinalizeInputRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message SnapshotFinalizeGroupManifest {
+  string plan_id = 1;
+  string group_id = 2;
+  string file_stats_blob_uri = 3;
+  uint32 file_stats_record_count = 4;
+}
+
+message LeasedSnapshotFinalizeInput {
+  enum FinalizeMode {
+    FZM_UNSPECIFIED = 0;
+    FZM_FILE_GROUPS_NON_EMPTY = 1;
+    FZM_DIRECT_STATS = 2;
+    FZM_EXPLICIT_EMPTY = 3;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+  string parent_job_id = 3;
+  ai.floedb.floecat.common.ResourceId table_id = 4;
+  uint64 snapshot_id = 5;
+  FinalizeMode finalize_mode = 6;
+  string direct_stats_blob_uri = 7;
+  uint32 direct_stats_record_count = 8;
+  uint32 source_file_count = 9;
+  repeated SnapshotFinalizeGroupManifest completed_groups = 10;
+  bool full_rescan = 11;
+}
+
+message GetLeasedSnapshotFinalizeInputResponse {
+  LeasedSnapshotFinalizeInput input = 1;
 }
 
 message GetLeasedPlanConnectorInputRequest {
@@ -707,6 +746,31 @@ message SubmitLeasedFileGroupExecutionResultResponse {
   bool accepted = 1;
 }
 
+message SubmitLeasedSnapshotFinalizeResultRequest {
+  message Success {
+    string result_id = 1;
+    string stats_blob_uri = 2;
+    uint32 stats_record_count = 3;
+  }
+
+  message Failure {
+    string result_id = 1;
+    string message = 2;
+  }
+
+  string job_id = 1;
+  string lease_epoch = 2;
+
+  oneof outcome {
+    Success success = 3;
+    Failure failure = 4;
+  }
+}
+
+message SubmitLeasedSnapshotFinalizeResultResponse {
+  bool accepted = 1;
+}
+
 message GetReconcileJobRequest {
   string job_id = 1;
 }
@@ -934,4 +998,10 @@ service ReconcileExecutorControl {
   // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
   rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
       returns (SubmitLeasedFileGroupExecutionResultResponse);
+  // Returns compact child-result manifests for one leased FINALIZE_SNAPSHOT_CAPTURE job.
+  rpc GetLeasedSnapshotFinalizeInput(GetLeasedSnapshotFinalizeInputRequest)
+      returns (GetLeasedSnapshotFinalizeInputResponse);
+  // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
+  rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
+      returns (SubmitLeasedSnapshotFinalizeResultResponse);
 }

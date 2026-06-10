@@ -148,7 +148,36 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     if (record == null || !Boolean.TRUE.equals(requiresReadyPointer.test(record))) {
       return List.of();
     }
-    return List.of(readyPointerKeyFor(record, readyPointerDueAt(record)));
+    long dueAtMs = readyPointerDueAt(record);
+    List<String> keys = new java.util.ArrayList<>();
+    keys.add(readyPointerKeyFor(record, dueAtMs));
+    String executionClassKey =
+        readyPointerKeyFor(
+            record,
+            ReadyIndexType.EXECUTION_CLASS,
+            dueAtMs,
+            record.executionPolicy().executionClass().name());
+    if (!executionClassKey.isBlank()) {
+      keys.add(executionClassKey);
+    }
+    String executionLaneKey =
+        readyPointerKeyFor(
+            record, ReadyIndexType.EXECUTION_LANE, dueAtMs, record.executionPolicy().lane());
+    if (!executionLaneKey.isBlank()) {
+      keys.add(executionLaneKey);
+    }
+    String pinnedExecutorKey =
+        readyPointerKeyFor(
+            record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, record.pinnedExecutorId());
+    if (!pinnedExecutorKey.isBlank()) {
+      keys.add(pinnedExecutorKey);
+    }
+    String jobKindKey =
+        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
+    if (!jobKindKey.isBlank()) {
+      keys.add(jobKindKey);
+    }
+    return List.copyOf(keys);
   }
 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
@@ -203,7 +232,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
         }
       }
 
-      String nextToken = page.nextPageToken();
+      String nextToken = blankToEmpty(page.nextPageToken());
       if (nextToken.isBlank()) {
         return Optional.empty();
       }
@@ -222,7 +251,65 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
   }
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
-    return List.of(
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    List<ReadyIndexSelection> pinnedSelections =
+        effective.executorIds.stream()
+            .map(
+                executorId ->
+                    new ReadyIndexSelection(
+                        new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                            ReadyIndexType.PINNED_EXECUTOR, executorId)))
+            .toList();
+    if (!effective.executorIds.isEmpty()) {
+      // Executor IDs identify workers that can accept pinned work; they must not exclude
+      // ordinary unpinned jobs from leasing.
+    }
+    if (!effective.lanes.isEmpty() && !effective.lanes.contains("*")) {
+      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
+      selections.addAll(
+          effective.lanes.stream()
+              .map(
+                  lane ->
+                      new ReadyIndexSelection(
+                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                              ReadyIndexType.EXECUTION_LANE, lane)))
+              .toList());
+      appendGlobalSelection(selections);
+      return List.copyOf(selections);
+    }
+    if (!effective.jobKinds.isEmpty()) {
+      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
+      selections.addAll(
+          effective.jobKinds.stream()
+              .map(
+                  jobKind ->
+                      new ReadyIndexSelection(
+                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                              ReadyIndexType.JOB_KIND, jobKind.name())))
+              .toList());
+      appendGlobalSelection(selections);
+      return List.copyOf(selections);
+    }
+    if (!effective.executionClasses.isEmpty()) {
+      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
+      selections.addAll(
+          effective.executionClasses.stream()
+              .map(
+                  executionClass ->
+                      new ReadyIndexSelection(
+                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                              ReadyIndexType.EXECUTION_CLASS, executionClass.name())))
+              .toList());
+      appendGlobalSelection(selections);
+      return List.copyOf(selections);
+    }
+    List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
+    appendGlobalSelection(selections);
+    return List.copyOf(selections);
+  }
+
+  private static void appendGlobalSelection(List<ReadyIndexSelection> selections) {
+    selections.add(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
   }

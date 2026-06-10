@@ -55,6 +55,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
@@ -75,7 +76,8 @@ import org.jboss.logging.Logger;
 class GrpcRemoteReconcileExecutorClient
     implements RemoteReconcileExecutorClient,
         RemotePlannerWorkerClient,
-        RemoteFileGroupWorkerClient {
+        RemoteFileGroupWorkerClient,
+        RemoteSnapshotFinalizeWorkerClient {
   private static final Logger LOG = Logger.getLogger(GrpcRemoteReconcileExecutorClient.class);
 
   private static final Metadata.Key<String> AUTHORIZATION =
@@ -860,6 +862,53 @@ class GrpcRemoteReconcileExecutorClient
                 .getAccepted());
   }
 
+  @Override
+  public boolean submitSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease, String resultId, String statsBlobUri, int statsRecordCount) {
+    String stableResultId = resultId == null ? "" : resultId.trim();
+    return invokeWorkerControl(
+        "submitLeasedSnapshotFinalizeResult",
+        correlationId(lease),
+        lease.lease().accountId,
+        !stableResultId.isBlank(),
+        stub ->
+            stub.submitLeasedSnapshotFinalizeResult(
+                    SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+                        .setJobId(lease.lease().jobId)
+                        .setLeaseEpoch(lease.lease().leaseEpoch)
+                        .setSuccess(
+                            SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
+                                .setResultId(stableResultId)
+                                .setStatsBlobUri(statsBlobUri == null ? "" : statsBlobUri)
+                                .setStatsRecordCount(Math.max(0, statsRecordCount))
+                                .build())
+                        .build())
+                .getAccepted());
+  }
+
+  @Override
+  public boolean submitSnapshotFinalizeFailure(
+      RemoteLeasedJob lease, String resultId, String message) {
+    String stableResultId = resultId == null ? "" : resultId.trim();
+    return invokeWorkerControl(
+        "submitLeasedSnapshotFinalizeResult",
+        correlationId(lease),
+        lease.lease().accountId,
+        !stableResultId.isBlank(),
+        stub ->
+            stub.submitLeasedSnapshotFinalizeResult(
+                    SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+                        .setJobId(lease.lease().jobId)
+                        .setLeaseEpoch(lease.lease().leaseEpoch)
+                        .setFailure(
+                            SubmitLeasedSnapshotFinalizeResultRequest.Failure.newBuilder()
+                                .setResultId(stableResultId)
+                                .setMessage(message == null ? "" : message)
+                                .build())
+                        .build())
+                .getAccepted());
+  }
+
   private static ai.floedb.floecat.reconciler.rpc.ExecutionClass toProtoExecutionClass(
       ReconcileExecutionClass executionClass) {
     return switch (executionClass) {
@@ -1148,6 +1197,7 @@ class GrpcRemoteReconcileExecutorClient
         .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
         .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
         .setFileGroupCount(effective.fileGroupCount())
+        .setSourceFileCount(effective.sourceFileCount())
         .setDirectStatsBlobUri(effective.directStatsBlobUri())
         .setDirectStatsRecordCount(effective.directStatsRecordCount())
         .setCompletionMode(
@@ -1354,6 +1404,7 @@ class GrpcRemoteReconcileExecutorClient
         },
         snapshotTask.getFileGroupPlanBlobUri(),
         snapshotTask.getFileGroupCount(),
+        snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
         snapshotTask.getDirectStatsRecordCount());
   }

@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
@@ -39,6 +40,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
@@ -231,22 +234,7 @@ public class TableGatewaySupport {
 
   public List<StorageCredentialDto> credentialsForAccessDelegation(
       Table table, String accessDelegationMode) {
-    if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
-      return null;
-    }
-    boolean vended = false;
-    for (String raw : accessDelegationMode.split(",")) {
-      String mode = raw == null ? "" : raw.trim();
-      if (mode.isEmpty()) {
-        continue;
-      }
-      if ("vended-credentials".equalsIgnoreCase(mode)) {
-        vended = true;
-        continue;
-      }
-      throw new IllegalArgumentException("Unsupported access delegation mode: " + mode);
-    }
-    if (!vended) {
+    if (!usesVendedCredentials(accessDelegationMode)) {
       return null;
     }
     List<StorageCredentialDto> credentials =
@@ -256,6 +244,26 @@ public class TableGatewaySupport {
           "Credential vending was requested but no credentials are available");
     }
     return credentials;
+  }
+
+  public boolean usesVendedCredentials(String accessDelegationMode) {
+    if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
+      return false;
+    }
+    boolean vended = false;
+    for (String raw : accessDelegationMode.split(",")) {
+      String mode = raw == null ? "" : raw.trim();
+      if (mode.isEmpty()) {
+        continue;
+      }
+      if ("vended-credentials".equalsIgnoreCase(mode)
+          || "vended_credentials".equalsIgnoreCase(mode)) {
+        vended = true;
+        continue;
+      }
+      throw new IllegalArgumentException("Unsupported access delegation mode: " + mode);
+    }
+    return vended;
   }
 
   public String loadCurrentMetadataLocation(Table table) {
@@ -295,6 +303,19 @@ public class TableGatewaySupport {
   }
 
   private Map<String, String> resolveServerSideFileIoProperties(Table table, String location) {
+    ResolveStorageAuthorityResponse authorityResponse =
+        resolveAuthorityFileIoResponse(table, location);
+    Map<String, String> authorityProps =
+        authorityResponse != null
+            ? mergeStorageAuthorityFileIoConfig(authorityResponse)
+            : (table != null
+                    && hasPersistedTableId(table)
+                    && StorageLocationResolver.resolveLocationPrefix(location) == null)
+                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table, false)
+                : Map.of();
+    if (hasResolvedAuthority(authorityResponse)) {
+      return authorityProps.isEmpty() ? Map.of() : Map.copyOf(authorityProps);
+    }
     LinkedHashMap<String, String> resolved =
         new LinkedHashMap<>(
             table == null ? defaultFileIoProperties() : defaultFileIoProperties(table));
@@ -307,21 +328,59 @@ public class TableGatewaySupport {
                 }
               });
     }
-    resolveAuthorityFileIoProperties(table, location)
-        .forEach(
-            (key, value) -> {
-              if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
-                resolved.put(key, value.trim());
-              }
-            });
+    authorityProps.forEach(
+        (key, value) -> {
+          if (FileIoFactory.isFileIoProperty(key) && isUsableIoValue(value)) {
+            resolved.put(key, value.trim());
+          }
+        });
     return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
   }
 
-  private Map<String, String> resolveAuthorityFileIoProperties(Table table, String location) {
-    if (table == null) {
+  private ResolveStorageAuthorityResponse resolveAuthorityFileIoResponse(
+      Table table, String location) {
+    if (table == null || !hasPersistedTableId(table)) {
+      return null;
+    }
+    String resolvedLocation = StorageLocationResolver.resolveLocationPrefix(location);
+    if (resolvedLocation != null) {
+      return grpcClient.resolveStorageAuthority(
+          ResolveStorageAuthorityRequest.newBuilder()
+              .setTableId(table.getResourceId())
+              .setLocationPrefix(resolvedLocation)
+              .setIncludeCredentials(true)
+              .setRequired(false)
+              .setServerSide(true)
+              .build());
+    }
+    return null;
+  }
+
+  private static boolean hasPersistedTableId(Table table) {
+    return table != null
+        && table.hasResourceId()
+        && table.getResourceId().getKind() == ResourceKind.RK_TABLE;
+  }
+
+  private static Map<String, String> mergeStorageAuthorityFileIoConfig(
+      ResolveStorageAuthorityResponse response) {
+    if (response == null) {
       return Map.of();
     }
-    return storageCredentialAuthority.resolveServerSideFileIoConfig(table, false);
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+    if (response.getClientSafeConfigCount() > 0) {
+      merged.putAll(response.getClientSafeConfigMap());
+    }
+    if (response.getStorageCredentialsCount() > 0) {
+      merged.putAll(response.getStorageCredentials(0).getConfigMap());
+    }
+    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+  }
+
+  private static boolean hasResolvedAuthority(ResolveStorageAuthorityResponse response) {
+    return response != null
+        && response.hasAuthorityId()
+        && !response.getAuthorityId().getId().isBlank();
   }
 
   // Snapshot metadata parsing lives in SnapshotMetadataUtil.

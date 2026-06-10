@@ -581,7 +581,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public Optional<List<TargetStatsRecord>> captureSnapshotTargetStatsDirect(
+  public Optional<FloecatConnector.DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,
@@ -594,7 +594,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return withSourceConnector(
         ctx,
         tableId,
-        Optional.<List<TargetStatsRecord>>empty(),
+        Optional.<FloecatConnector.DirectSnapshotStatsCapture>empty(),
         (source, sourceCtx) ->
             source.captureSnapshotTargetStatsDirect(
                 sourceCtx.sourceNamespace(),

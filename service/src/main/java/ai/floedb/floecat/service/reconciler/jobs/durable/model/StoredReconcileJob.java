@@ -41,6 +41,7 @@ public class StoredReconcileJob {
   public String snapshotTaskSourceTable;
   public boolean snapshotTaskFileGroupPlanRecorded;
   public String snapshotTaskCompletionMode;
+  public int snapshotTaskSourceFileCount;
   public String snapshotTaskDirectStatsBlobUri;
   public int snapshotTaskDirectStatsRecordCount;
   public String fileGroupPlanId;

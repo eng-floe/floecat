@@ -52,7 +52,7 @@ public class MaterializeMetadataService {
       String tableName,
       TableMetadataView metadata,
       String metadataLocationOverride) {
-    return materialize(namespaceFq, tableName, null, metadata, metadataLocationOverride);
+    return materialize(namespaceFq, tableName, null, metadata, metadataLocationOverride, false);
   }
 
   public MaterializeResult materialize(
@@ -60,7 +60,8 @@ public class MaterializeMetadataService {
       String tableName,
       Table tableRecord,
       TableMetadataView metadata,
-      String metadataLocationOverride) {
+      String metadataLocationOverride,
+      boolean useTableScopedIo) {
     if (metadata == null) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because commit metadata was empty",
@@ -78,7 +79,7 @@ public class MaterializeMetadataService {
     String resolvedLocation = null;
     FileIO fileIO = null;
     try {
-      fileIO = newFileIo(tableRecord, metadata.properties());
+      fileIO = newFileIo(tableRecord, metadata.properties(), useTableScopedIo);
       resolvedLocation =
           metadataVersionedLocationSupport.resolveVersionedLocation(
               fileIO, requestedLocation, metadata);
@@ -112,14 +113,25 @@ public class MaterializeMetadataService {
     }
   }
 
+  public MaterializeResult materialize(
+      String namespaceFq,
+      String tableName,
+      Table tableRecord,
+      TableMetadataView metadata,
+      String metadataLocationOverride) {
+    return materialize(
+        namespaceFq, tableName, tableRecord, metadata, metadataLocationOverride, true);
+  }
+
   protected FileIO newFileIo(Map<String, String> props) {
     return metadataFileIoSupport.newMaterializationFileIo(props);
   }
 
-  protected FileIO newFileIo(Table tableRecord, Map<String, String> props) {
+  protected FileIO newFileIo(
+      Table tableRecord, Map<String, String> props, boolean useTableScopedIo) {
     return tableRecord == null
         ? newFileIo(props)
-        : metadataFileIoSupport.newMaterializationFileIo(tableRecord, props);
+        : metadataFileIoSupport.newMaterializationFileIo(tableRecord, props, useTableScopedIo);
   }
 
   private boolean shouldMaterialize(String metadataLocation) {

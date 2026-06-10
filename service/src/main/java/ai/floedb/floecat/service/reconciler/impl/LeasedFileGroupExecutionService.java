@@ -237,6 +237,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                           effectivePreUploadedArtifacts);
                       jobs.persistFileGroupResult(
                           lease.jobId,
+                          lease.leaseEpoch,
                           plannedTask
                               .withFileStatsBlob(
                                   fileStatsBlobManifest.blobUri(),
@@ -291,6 +292,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     () -> {
                       jobs.persistFileGroupResult(
                           lease.jobId,
+                          lease.leaseEpoch,
                           plannedTask.withFileResults(
                               FileGroupExecutionSupport.fileResultsForFailure(
                                   plannedTask, effectiveMessage)));

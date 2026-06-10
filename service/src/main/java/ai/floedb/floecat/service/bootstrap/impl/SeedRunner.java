@@ -328,6 +328,20 @@ public class SeedRunner {
     return rid;
   }
 
+  private static java.util.Optional<String> trimmed(String value) {
+    if (value == null) {
+      return java.util.Optional.empty();
+    }
+    String normalized = value.trim();
+    return normalized.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(normalized);
+  }
+
+  private static java.util.Optional<String> trimmed(java.util.Optional<String> value) {
+    return value == null
+        ? java.util.Optional.empty()
+        : value.map(String::trim).filter(v -> !v.isBlank());
+  }
+
   private ResourceId seedNamespace(
       String account, ResourceId catalogId, List<String> path, String display, long now) {
     List<String> clean = (path == null) ? List.of() : path;

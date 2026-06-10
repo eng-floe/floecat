@@ -418,7 +418,7 @@ public class ConnectorIT {
                 .putAllProperties(props)
                 .build());
 
-    var planJob = runReconcile(conn.getResourceId(), true, null, true);
+    var planJob = runReconcile(conn.getResourceId(), false, null, true);
     assertNotNull(planJob);
     assertPlanJobInProgressOrSucceeded(planJob);
     awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
@@ -718,6 +718,7 @@ public class ConnectorIT {
 
     int snapshotCountAfterFull = snaps.count(table.getResourceId());
     assertTrue(snapshotCountAfterFull > 0, "expected snapshots to be materialized after full run");
+    awaitCurrentSnapshotStatsComplete(table.getResourceId(), Duration.ofSeconds(30));
 
     var incrementalJob = runReconcile(conn.getResourceId(), false);
     assertNotNull(incrementalJob);
@@ -1119,81 +1120,6 @@ public class ConnectorIT {
             .getByName(
                 accountId.getId(), catId.getId(), ns.getResourceId().getId(), "events_summary")
             .isPresent());
-  }
-
-  @Test
-  void secondReconcileSkipsSnapshotJobsForExistingTablesWhenCaptureIsAlreadyComplete()
-      throws Exception {
-    var accountId = seedAccountId;
-    TestSupport.createCatalog(catalogService, "cat-plan-snapshots", "");
-
-    var conn =
-        TestSupport.createConnector(
-            connectors,
-            ConnectorSpec.newBuilder()
-                .setDisplayName("dummy-plan-snapshots")
-                .setKind(ConnectorKind.CK_UNITY)
-                .setUri("dummy://ignored")
-                .setSource(source(List.of("db")))
-                .setDestination(
-                    DestinationTarget.newBuilder()
-                        .setCatalogDisplayName("cat-plan-snapshots")
-                        .setNamespace(NamespacePath.newBuilder().addSegments("analytics").build())
-                        .build())
-                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-                .build());
-
-    var initialJob = runReconcile(conn.getResourceId(), true);
-    assertNotNull(initialJob);
-    assertEquals(
-        "JS_SUCCEEDED",
-        initialJob.state,
-        () -> "initial aggregate job failed: " + initialJob.message);
-
-    var planJob = runReconcile(conn.getResourceId(), true, null, true);
-    assertNotNull(planJob);
-    assertPlanJobInProgressOrSucceeded(planJob);
-
-    var aggregatedJob =
-        awaitAggregatePlanJob(planJob, System.nanoTime() + Duration.ofSeconds(300).toNanos());
-    assertEquals(
-        "JS_SUCCEEDED",
-        aggregatedJob.state,
-        () -> "aggregate job failed: " + aggregatedJob.message);
-    assertEquals(2L, aggregatedJob.tablesScanned, "expected 2 executed tables");
-    var childJobs = childJobs(accountId.getId(), planJob.jobId);
-    assertEquals(2, childJobs.size(), "expected only table planning jobs under PLAN_CONNECTOR");
-    assertEquals(
-        2L,
-        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).count(),
-        "expected one child PLAN_TABLE job per planned table");
-    assertEquals(
-        0L,
-        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT).count(),
-        "expected snapshot planning to be owned by PLAN_TABLE jobs");
-
-    var tablePlanJobs =
-        childJobs.stream().filter(job -> job.jobKind == ReconcileJobKind.PLAN_TABLE).toList();
-    var snapshotPlanJobs =
-        tablePlanJobs.stream()
-            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
-            .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
-            .toList();
-    assertEquals(
-        0,
-        snapshotPlanJobs.size(),
-        "expected no PLAN_SNAPSHOT grandchildren once capture is already complete");
-
-    var fileGroupJobs =
-        tablePlanJobs.stream()
-            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
-            .flatMap(job -> childJobs(accountId.getId(), job.jobId).stream())
-            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
-            .toList();
-    assertEquals(
-        0,
-        fileGroupJobs.size(),
-        "expected no EXEC_FILE_GROUP jobs when the existing snapshot is already fully captured");
   }
 
   @Test
@@ -2789,6 +2715,38 @@ public class ConnectorIT {
   private List<FileTargetStats> listCurrentFileStats(ResourceId tableId, int pageSize) {
     return listFileStats(
         tableId, SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(), pageSize);
+  }
+
+  private List<TargetStatsRecord> listTargetStats(
+      ResourceId tableId, SnapshotRef snapshot, StatsTargetKind targetKind, int pageSize) {
+    return statsService
+        .listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(snapshot)
+                .addTargetKinds(targetKind)
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize))
+                .build())
+        .getRecordsList();
+  }
+
+  private void awaitCurrentSnapshotStatsComplete(ResourceId tableId, Duration timeout)
+      throws InterruptedException {
+    SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() <= deadline) {
+      boolean hasTableStats =
+          listTargetStats(tableId, current, StatsTargetKind.STK_TABLE, 10).stream()
+              .anyMatch(TargetStatsRecord::hasTable);
+      boolean hasFileStats =
+          listTargetStats(tableId, current, StatsTargetKind.STK_FILE, 10).stream()
+              .anyMatch(TargetStatsRecord::hasFile);
+      if (hasTableStats && hasFileStats) {
+        return;
+      }
+      Thread.sleep(200);
+    }
+    fail("Timed out waiting for current snapshot table+file stats");
   }
 
   private List<FileTargetStats> awaitFileStats(

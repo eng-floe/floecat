@@ -180,8 +180,12 @@ public class ReconcileJobEnqueuer {
     try {
       storeResults = jobIndexStore.commitQueuedJobInserts(inserts, ancestorMutationsBuilder);
     } catch (RuntimeException e) {
-      for (PendingBulkEnqueue entry : pending) {
+      for (PendingBulkEnqueue entry : rollbackEntriesForStoreFailure(pending, pendingByIndex, e)) {
         rollbackFailedBulkEnqueue(entry);
+      }
+      if (e instanceof ReconcileJobIndexStore.BulkEnqueueCommitException scoped
+          && scoped.getCause() instanceof RuntimeException runtimeCause) {
+        throw runtimeCause;
       }
       throw e;
     }
@@ -346,8 +350,7 @@ public class ReconcileJobEnqueuer {
             effectiveSnapshotTask,
             effectiveFileGroupTask,
             policy,
-            spec.parentJobId,
-            spec.pinnedExecutorId);
+            spec.parentJobId);
     String dedupeKeyHash = hashValue(dedupeKey);
     String canonicalKey = Keys.reconcileJobStateRowById(spec.accountId, jobId);
     String snapshotPlanBlobUri =
@@ -451,6 +454,7 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceTable = effectiveSnapshotTask.sourceTable();
     rec.snapshotTaskFileGroupPlanRecorded = effectiveSnapshotTask.fileGroupPlanRecorded();
     rec.snapshotTaskCompletionMode = effectiveSnapshotTask.completionMode().name();
+    rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
     rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
@@ -517,6 +521,23 @@ public class ReconcileJobEnqueuer {
     if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
       blobStore.delete(entry.resultBlobUri);
     }
+  }
+
+  private List<PendingBulkEnqueue> rollbackEntriesForStoreFailure(
+      List<PendingBulkEnqueue> pending,
+      java.util.Map<Integer, PendingBulkEnqueue> pendingByIndex,
+      RuntimeException failure) {
+    if (!(failure instanceof ReconcileJobIndexStore.BulkEnqueueCommitException scoped)) {
+      return pending;
+    }
+    List<PendingBulkEnqueue> rollback = new ArrayList<>();
+    for (Integer index : scoped.rollbackIndexes()) {
+      PendingBulkEnqueue entry = pendingByIndex.get(index);
+      if (entry != null) {
+        rollback.add(entry);
+      }
+    }
+    return rollback;
   }
 
   private BulkEnqueueItemResult failedBulkEnqueue(int index, RuntimeException error) {
@@ -695,8 +716,7 @@ public class ReconcileJobEnqueuer {
       ReconcileSnapshotTask snapshotTask,
       ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
-      String parentJobId,
-      String pinnedExecutorId) {
+      String parentJobId) {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
@@ -717,6 +737,10 @@ public class ReconcileJobEnqueuer {
             : (viewTask == null ? "" : viewTask.destinationViewDisplayName());
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+    boolean stableSnapshotWorkDedupe =
+        jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+            || jobKind == ReconcileJobKind.EXEC_FILE_GROUP
+            || jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
     Canonicalizer canonicalizer = new Canonicalizer();
     canonicalizer
         .scalar("account_id", accountId)
@@ -763,10 +787,13 @@ public class ReconcileJobEnqueuer {
         .list(
             "snapshot_task.file_groups",
             canonicalSnapshotFileGroups(
-                snapshotTask == null ? List.of() : snapshotTask.fileGroups()))
+                snapshotTask == null ? List.of() : snapshotTask.fileGroups(),
+                !stableSnapshotWorkDedupe))
         .scalar(
             "file_group_task.plan_id",
-            fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.planId()))
+            stableSnapshotWorkDedupe || fileGroupTask == null
+                ? ""
+                : blankToEmpty(fileGroupTask.planId()))
         .scalar(
             "file_group_task.group_id",
             fileGroupTask == null ? "" : blankToEmpty(fileGroupTask.groupId()))
@@ -787,8 +814,9 @@ public class ReconcileJobEnqueuer {
         .scalar("policy.execution_class", policy.executionClass().name())
         .scalar("policy.lane", policy.lane())
         .map("policy.attributes", policy.attributes())
-        .scalar("parent_job_id", parentJobId == null ? "" : parentJobId.trim())
-        .scalar("pinned_executor_id", pinnedExecutorId == null ? "" : pinnedExecutorId.trim());
+        .scalar(
+            "parent_job_id",
+            stableSnapshotWorkDedupe || parentJobId == null ? "" : parentJobId.trim());
     return new String(canonicalizer.bytes(), StandardCharsets.UTF_8);
   }
 
@@ -884,7 +912,8 @@ public class ReconcileJobEnqueuer {
         + policy.maxDefaultColumns();
   }
 
-  private static List<String> canonicalSnapshotFileGroups(List<ReconcileFileGroupTask> fileGroups) {
+  private static List<String> canonicalSnapshotFileGroups(
+      List<ReconcileFileGroupTask> fileGroups, boolean includePlanId) {
     if (fileGroups == null || fileGroups.isEmpty()) {
       return List.of();
     }
@@ -892,7 +921,7 @@ public class ReconcileJobEnqueuer {
         .filter(group -> group != null && !group.isEmpty())
         .map(
             group ->
-                blankToEmpty(group.planId())
+                (includePlanId ? blankToEmpty(group.planId()) : "")
                     + "|"
                     + blankToEmpty(group.groupId())
                     + "|"

@@ -93,10 +93,11 @@ public class TableCommitSnapshotMetadataSupport {
       List<Map<String, Object>> updatedSnapshots,
       Map<String, String> props) {
     Long requestedMainRefSnapshotId = parsed == null ? null : parsed.requestedMainRefSnapshotId();
-    if (requestedMainRefSnapshotId != null && requestedMainRefSnapshotId >= 0) {
+    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
+    if (shouldApplyRequestedMainSnapshotId(
+        parsed, propertyCurrentSnapshotId, requestedMainRefSnapshotId)) {
       return requestedMainRefSnapshotId;
     }
-    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
     if (propertyCurrentSnapshotId != null && propertyCurrentSnapshotId >= 0) {
       return propertyCurrentSnapshotId;
     }
@@ -217,5 +218,19 @@ public class TableCommitSnapshotMetadataSupport {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private boolean shouldApplyRequestedMainSnapshotId(
+      CommitUpdateInspector.Parsed parsed, Long existingCurrentSnapshotId, Long candidate) {
+    if (candidate == null || candidate < 0) {
+      return false;
+    }
+    if (existingCurrentSnapshotId == null || existingCurrentSnapshotId < 0) {
+      return true;
+    }
+    if (existingCurrentSnapshotId.equals(candidate)) {
+      return true;
+    }
+    return parsed != null && parsed.addedSnapshotIds().contains(candidate);
   }
 }

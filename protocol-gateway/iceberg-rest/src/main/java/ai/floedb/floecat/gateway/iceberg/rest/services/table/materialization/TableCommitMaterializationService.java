@@ -46,7 +46,8 @@ public class TableCommitMaterializationService {
       String table,
       Table tableRecord,
       TableMetadataView metadata,
-      String metadataLocation) {
+      String metadataLocation,
+      boolean useTableScopedIo) {
     if (metadata == null) {
       return MaterializeMetadataResult.failure(
           IcebergErrorResponses.validation("metadata is required for materialization"));
@@ -59,7 +60,7 @@ public class TableCommitMaterializationService {
     try {
       MaterializeMetadataService.MaterializeResult materializeResult =
           materializeMetadataService.materialize(
-              namespace, table, tableRecord, metadata, metadataLocation);
+              namespace, table, tableRecord, metadata, metadataLocation, useTableScopedIo);
       String resolvedLocation = materializeResult.metadataLocation();
       if (!hasText(resolvedLocation)) {
         if (!requestedLocation) {

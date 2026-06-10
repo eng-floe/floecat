@@ -305,56 +305,83 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       return List.of();
     }
     List<QueuedJobInsert> pending = new ArrayList<>(inserts);
-    List<BulkEnqueueItemResult> results = new ArrayList<>();
-    for (int attempt = 0; attempt < casMax; attempt++) {
-      if (pending.isEmpty()) {
-        return results;
-      }
-      List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
-      List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
-      for (QueuedJobInsert insert : pending) {
-        var existing = loadActiveFromDedupe(insert.dedupePointerKey());
-        if (existing.isPresent()) {
-          results.add(new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+    java.util.LinkedHashMap<Integer, BulkEnqueueItemResult> resultsByIndex =
+        new java.util.LinkedHashMap<>();
+    try {
+      for (int attempt = 0; attempt < casMax; attempt++) {
+        if (pending.isEmpty()) {
+          return new ArrayList<>(resultsByIndex.values());
+        }
+        List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
+        List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
+        for (QueuedJobInsert insert : pending) {
+          var existing = loadActiveFromDedupe(insert.dedupePointerKey());
+          if (existing.isPresent()) {
+            resultsByIndex.putIfAbsent(
+                insert.index(),
+                new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+            continue;
+          }
+          JobIndexEntrySnapshot existingDedupePointer =
+              jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
+          insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
+          nextPending.add(insert);
+        }
+        List<CanonicalRecordMutation> ancestorMutations =
+            ancestorMutationsBuilder == null
+                ? List.of()
+                : ancestorMutationsBuilder.apply(nextPending);
+        if (nextPending.isEmpty()) {
+          if (ancestorMutations.isEmpty()) {
+            return new ArrayList<>(resultsByIndex.values());
+          }
+          if (compareAndSetCanonicalMutations(ancestorMutations)) {
+            synchronized (state) {
+              for (CanonicalRecordMutation mutation : ancestorMutations) {
+                if (mutation == null || mutation.current() == null) {
+                  continue;
+                }
+                state.put(
+                    mutation.snapshot().canonicalPointerKey(),
+                    cloneStoredRecord(mutation.current()));
+              }
+            }
+            return new ArrayList<>(resultsByIndex.values());
+          }
           continue;
         }
-        JobIndexEntrySnapshot existingDedupePointer =
-            jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
-        insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
-        nextPending.add(insert);
-      }
-      if (nextPending.isEmpty()) {
-        return results;
-      }
-      List<CanonicalRecordMutation> ancestorMutations =
-          ancestorMutationsBuilder == null
-              ? List.of()
-              : ancestorMutationsBuilder.apply(nextPending);
-      JobIndexWriteBatch batch =
-          combineWriteBatches(prependInsertBatches(insertBatches, ancestorMutations));
-      if (jobIndexBackend.compareAndSetBatch(batch)) {
-        synchronized (state) {
-          for (QueuedJobInsert insert : nextPending) {
-            state.put(insert.canonicalKey(), cloneStoredRecord(insert.record()));
-          }
-          for (CanonicalRecordMutation mutation : ancestorMutations) {
-            if (mutation == null || mutation.current() == null) {
-              continue;
+        JobIndexWriteBatch batch =
+            combineWriteBatches(prependInsertBatches(insertBatches, ancestorMutations));
+        if (jobIndexBackend.compareAndSetBatch(batch)) {
+          synchronized (state) {
+            for (QueuedJobInsert insert : nextPending) {
+              state.put(insert.canonicalKey(), cloneStoredRecord(insert.record()));
             }
-            state.put(
-                mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+            for (CanonicalRecordMutation mutation : ancestorMutations) {
+              if (mutation == null || mutation.current() == null) {
+                continue;
+              }
+              state.put(
+                  mutation.snapshot().canonicalPointerKey(), cloneStoredRecord(mutation.current()));
+            }
           }
+          return new ArrayList<>(resultsByIndex.values());
         }
-        return results;
+        pending = nextPending;
       }
-      pending = nextPending;
+    } catch (RuntimeException e) {
+      if (e instanceof BulkEnqueueCommitException) {
+        throw e;
+      }
+      throw new BulkEnqueueCommitException(e, queuedInsertIndexes(pending));
     }
     for (QueuedJobInsert insert : pending) {
-      results.add(
+      resultsByIndex.putIfAbsent(
+          insert.index(),
           new BulkEnqueueItemResult(
               insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries"));
     }
-    return results;
+    return new ArrayList<>(resultsByIndex.values());
   }
 
   @Override
@@ -715,6 +742,19 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     return batches;
   }
 
+  private List<Integer> queuedInsertIndexes(List<QueuedJobInsert> inserts) {
+    if (inserts == null || inserts.isEmpty()) {
+      return List.of();
+    }
+    List<Integer> indexes = new ArrayList<>(inserts.size());
+    for (QueuedJobInsert insert : inserts) {
+      if (insert != null) {
+        indexes.add(insert.index());
+      }
+    }
+    return List.copyOf(indexes);
+  }
+
   private void appendReferenceUpsert(
       List<JobIndexWriteOp> ops, String pointerKey, String reference) {
     if (blank(pointerKey) || blank(reference)) {
@@ -745,7 +785,7 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     if (record == null || !requiresReadyPointer(record)) {
       return List.of();
     }
-    return List.of(readyPointerKeyFor(record, readyPointerDueAt(record)));
+    return readyPointerKeys(record, readyPointerDueAt(record));
   }
 
   private List<String> readyPointerKeysForCleanup(StoredReconcileJob record) {
@@ -767,7 +807,7 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
               : parseTimestampFromOrderedPointer(
                   blankToEmpty(record.readyPointerKey), Keys.reconcileReadyPointerPrefix());
       if (dueAtMs != INVALID_ORDERED_POINTER_MS && dueAtMs > 0L) {
-        readyKeys.add(readyPointerKeyFor(record, dueAtMs));
+        readyKeys.addAll(readyPointerKeys(record, dueAtMs));
       }
     }
     readyKeys.removeIf(InMemoryReconcileJobIndexStore::blank);
@@ -833,6 +873,51 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
     };
   }
 
+  private List<String> readyPointerKeys(StoredReconcileJob record, long dueAtMs) {
+    if (record == null || !requiresReadyPointer(record) || dueAtMs <= 0L) {
+      return List.of();
+    }
+    List<String> keys = new ArrayList<>();
+    keys.add(readyPointerKeyFor(record, dueAtMs));
+    String executionClassKey =
+        readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+            dueAtMs,
+            record.executionPolicy().executionClass().name());
+    if (!executionClassKey.isBlank()) {
+      keys.add(executionClassKey);
+    }
+    String executionLaneKey =
+        readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+            dueAtMs,
+            record.executionPolicy().lane());
+    if (!executionLaneKey.isBlank()) {
+      keys.add(executionLaneKey);
+    }
+    String pinnedExecutorKey =
+        readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+            dueAtMs,
+            record.pinnedExecutorId());
+    if (!pinnedExecutorKey.isBlank()) {
+      keys.add(pinnedExecutorKey);
+    }
+    String jobKindKey =
+        readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+            dueAtMs,
+            record.jobKind().name());
+    if (!jobKindKey.isBlank()) {
+      keys.add(jobKindKey);
+    }
+    return List.copyOf(keys);
+  }
+
   private long readyPointerDueAt(StoredReconcileJob record) {
     return record != null && record.nextAttemptAtMs > 0L
         ? record.nextAttemptAtMs
@@ -884,13 +969,14 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
           state.put(ptr.pointerKey(), cloneStoredRecord(stored));
         }
         if (out.size() >= limit) {
-          boolean hasMore = i + 1 < pointers.size() || !page.nextPageToken().isBlank();
+          boolean hasMore =
+              i + 1 < pointers.size() || !blankToEmpty(page.nextPageToken()).isBlank();
           nextToken =
               !hasMore
                   ? ""
                   : (i + 1 < pointers.size()
                       ? encodeListCursor(token, i + 1)
-                      : page.nextPageToken());
+                      : blankToEmpty(page.nextPageToken()));
           break;
         }
       }

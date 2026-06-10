@@ -152,6 +152,7 @@ public class TableResource {
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
     String path = String.format("/v1/%s/namespaces/%s/tables/%s", prefix, namespace, table);
+    commitTrafficLogger.logRequest("POST", path, req);
     NamespaceRef namespaceContext = resourceResolver.namespace(prefix, namespace);
     Response response =
         tableCommitService.commit(
