@@ -45,6 +45,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -498,13 +500,7 @@ class DurableReconcileJobStoreTest {
     FailingCompareAndSetBatchBackend failingBackend =
         new FailingCompareAndSetBatchBackend(delegateBackend);
 
-    store = new DurableReconcileJobStore();
-    store.blobStore = new InMemoryBlobStore();
-    store.mapper = new ObjectMapper();
-    store.config = ConfigProvider.getConfig();
-    store.pointerStore = pointerStore;
-    store.jobIndexBackend = failingBackend;
-    store.init();
+    store = newIsolatedInMemoryStore(pointerStore, new InMemoryBlobStore(), failingBackend);
 
     String connectorJobId =
         store.enqueue(
@@ -571,13 +567,7 @@ class DurableReconcileJobStoreTest {
         new FailingCompareAndSetBatchBackend(delegateBackend);
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
 
-    store = new DurableReconcileJobStore();
-    store.blobStore = blobStore;
-    store.mapper = new ObjectMapper();
-    store.config = ConfigProvider.getConfig();
-    store.pointerStore = pointerStore;
-    store.jobIndexBackend = failingBackend;
-    store.init();
+    store = newIsolatedInMemoryStore(pointerStore, blobStore, failingBackend);
 
     String tableJobId =
         store.enqueue(
@@ -1569,7 +1559,7 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      assertTrue(store.pointerStore.delete(readyKey));
+      assertTrue(deleteReadyEntry(readyKey));
     }
 
     var lease =
@@ -2510,6 +2500,27 @@ class DurableReconcileJobStoreTest {
                         snapshot,
                         readyRecord))
         .orElseThrow(() -> new IllegalStateException("Unable to lease ready job " + jobId));
+  }
+
+  private DurableReconcileJobStore newIsolatedInMemoryStore(
+      InMemoryPointerStore pointerStore,
+      InMemoryBlobStore blobStore,
+      ReconcileJobIndexBackend jobIndexBackend) {
+    DurableReconcileJobStore isolatedStore = new DurableReconcileJobStore();
+    isolatedStore.pointerStore = pointerStore;
+    isolatedStore.blobStore = blobStore;
+    isolatedStore.mapper = new ObjectMapper();
+    isolatedStore.config = ConfigProvider.getConfig();
+    isolatedStore.jobIndexBackend = jobIndexBackend;
+    isolatedStore.leaseBackend = new MemoryReconcileLeaseBackend(pointerStore);
+    isolatedStore.readyQueueBackend = new MemoryReconcileReadyQueueBackend(pointerStore);
+    isolatedStore.init();
+    return isolatedStore;
+  }
+
+  private boolean deleteReadyEntry(String readyPointerKey) {
+    assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
+    return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
   }
 
   private ReconcileLeaseStore leaseManager() {
