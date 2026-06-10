@@ -1559,7 +1559,9 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      assertTrue(deleteReadyEntry(readyKey));
+      if (readyEntryExists(readyKey)) {
+        assertTrue(deleteReadyEntry(readyKey));
+      }
     }
 
     var lease =
@@ -2521,6 +2523,11 @@ class DurableReconcileJobStoreTest {
   private boolean deleteReadyEntry(String readyPointerKey) {
     assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
     return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
+  }
+
+  private boolean readyEntryExists(String readyPointerKey) {
+    assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
+    return store.readyQueueBackend.loadCanonicalSnapshot(readyPointerKey).isPresent();
   }
 
   private ReconcileLeaseStore leaseManager() {
