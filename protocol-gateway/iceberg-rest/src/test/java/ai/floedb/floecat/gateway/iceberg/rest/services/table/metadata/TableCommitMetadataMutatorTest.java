@@ -330,4 +330,65 @@ class TableCommitMetadataMutatorTest {
     assertEquals(
         List.of(Map.of("snapshot-id", keepSnapshotId, "timestamp-ms", 1L)), merged.snapshots());
   }
+
+  @Test
+  void applyIgnoresStaleMainRefWithoutAddedSnapshot() {
+    long currentSnapshotId = 2193008915892245619L;
+    long staleSnapshotId = 9180431282726110998L;
+    TableMetadataView metadata =
+        new TableMetadataView(
+            1,
+            "tbl-uuid",
+            "s3://floecat/iceberg/trino_fmt_v1_smoke",
+            "s3://floecat/iceberg/trino_fmt_v1_smoke/metadata/00001-current.metadata.json",
+            1L,
+            Map.of(
+                "format-version", "1",
+                "current-snapshot-id", Long.toString(currentSnapshotId),
+                "last-sequence-number", "0"),
+            2,
+            0,
+            0,
+            0,
+            0,
+            currentSnapshotId,
+            0L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch")),
+            List.of(),
+            List.of(),
+            List.of(
+                Map.of("snapshot-id", currentSnapshotId, "timestamp-ms", 1781037645000L),
+                Map.of("snapshot-id", staleSnapshotId, "timestamp-ms", 1781037642000L)),
+            List.of(),
+            List.of(
+                Map.of("snapshot-id", currentSnapshotId, "timestamp-ms", 1781037645000L),
+                Map.of("snapshot-id", staleSnapshotId, "timestamp-ms", 1781037642000L)));
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of("action", "upgrade-format-version", "format-version", 2),
+                Map.of(
+                    "action",
+                    "set-snapshot-ref",
+                    "ref-name",
+                    "main",
+                    "snapshot-id",
+                    staleSnapshotId,
+                    "type",
+                    "branch")));
+
+    TableMetadataView merged = mutator.apply(metadata, request);
+
+    assertEquals(currentSnapshotId, merged.currentSnapshotId());
+    assertEquals(Long.toString(currentSnapshotId), merged.properties().get("current-snapshot-id"));
+    assertEquals(
+        currentSnapshotId,
+        ((Number) ((Map<?, ?>) merged.refs().get("main")).get("snapshot-id")).longValue());
+    assertEquals(2, merged.formatVersion());
+  }
 }

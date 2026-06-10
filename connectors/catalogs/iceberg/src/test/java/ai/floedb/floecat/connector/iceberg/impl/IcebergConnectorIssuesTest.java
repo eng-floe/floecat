@@ -33,9 +33,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.ManifestContent;
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
@@ -91,6 +95,66 @@ class IcebergConnectorIssuesTest {
             resolved,
             Set.of("old_col", "shared_col"),
             FloecatConnector.ColumnSelectorPolicy.defaults()));
+  }
+
+  @Test
+  void enumerateSnapshotsAcceptsSchemaIdZeroAndUsesManifestSpecIdsWithoutScanning() {
+    Schema schema =
+        new Schema(
+            0,
+            List.of(
+                Types.NestedField.optional(1, "id", Types.IntegerType.get()),
+                Types.NestedField.optional(2, "region", Types.StringType.get())));
+    PartitionSpec spec = PartitionSpec.builderFor(schema).withSpecId(7).identity("region").build();
+
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> schema;
+                      case "schemas" -> Map.of(0, schema);
+                      case "spec" -> spec;
+                      case "specs" -> Map.of(7, spec);
+                      case "currentSnapshot" -> null;
+                      case "snapshots" -> List.of(snapshotWithSchemaZeroAndManifestSpec(11L, 7));
+                      case "io" -> (FileIO) null;
+                      case "newScan" ->
+                          throw new AssertionError("enumerateSnapshots should not call newScan()");
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            return table;
+          }
+        };
+
+    List<FloecatConnector.SnapshotBundle> snapshots =
+        connector.enumerateSnapshots(
+            "iceberg",
+            "format_upgrade_smoke",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.full(true));
+
+    assertEquals(1, snapshots.size());
+    assertEquals(0, snapshots.get(0).schemaId());
+    assertEquals(7, snapshots.get(0).partitionSpec().getSpecId());
+    assertEquals("spec-7", snapshots.get(0).partitionSpec().getSpecName());
   }
 
   @Test
@@ -270,5 +334,82 @@ class IcebergConnectorIssuesTest {
                           && !fileColumn.getScalar().getLogicalType().isBlank()),
           () -> "file-column stats should preserve name/type: " + captured.statsRecords());
     }
+  }
+
+  private static Snapshot snapshotWithSchemaZeroAndManifestSpec(long snapshotId, int specId) {
+    ManifestFile manifest =
+        (ManifestFile)
+            Proxy.newProxyInstance(
+                ManifestFile.class.getClassLoader(),
+                new Class<?>[] {ManifestFile.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "partitionSpecId" -> specId;
+                      case "content" -> ManifestContent.DATA;
+                      case "path" -> "s3://test/manifest.avro";
+                      case "length", "sequenceNumber", "minSequenceNumber" -> 0L;
+                      case "snapshotId",
+                          "addedRowsCount",
+                          "existingRowsCount",
+                          "deletedRowsCount" ->
+                          null;
+                      case "addedFilesCount", "existingFilesCount", "deletedFilesCount" -> 0;
+                      case "partitions" -> List.of();
+                      case "copy" -> proxy;
+                      default -> defaultValue(method.getReturnType());
+                    });
+
+    return (Snapshot)
+        Proxy.newProxyInstance(
+            Snapshot.class.getClassLoader(),
+            new Class<?>[] {Snapshot.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "snapshotId" -> snapshotId;
+                  case "sequenceNumber", "timestampMillis" -> 1L;
+                  case "schemaId" -> 0;
+                  case "parentId" -> null;
+                  case "summary" -> Map.of();
+                  case "manifestListLocation" -> null;
+                  case "operation" -> "append";
+                  case "allManifests", "dataManifests", "deleteManifests" -> List.of(manifest);
+                  case "addedDataFiles",
+                      "removedDataFiles",
+                      "addedDeleteFiles",
+                      "removedDeleteFiles" ->
+                      List.of();
+                  default -> defaultValue(method.getReturnType());
+                });
+  }
+
+  private static Object defaultValue(Class<?> type) {
+    if (!type.isPrimitive()) {
+      return null;
+    }
+    if (type == boolean.class) {
+      return false;
+    }
+    if (type == int.class) {
+      return 0;
+    }
+    if (type == long.class) {
+      return 0L;
+    }
+    if (type == double.class) {
+      return 0.0d;
+    }
+    if (type == float.class) {
+      return 0.0f;
+    }
+    if (type == short.class) {
+      return (short) 0;
+    }
+    if (type == byte.class) {
+      return (byte) 0;
+    }
+    if (type == char.class) {
+      return (char) 0;
+    }
+    return null;
   }
 }

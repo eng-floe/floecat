@@ -644,9 +644,34 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           snapshotsProcessed,
           statsProcessed);
     }
-    clearExecutionLeasesIfOwned(completedParent.get(), jobId, leaseEpoch);
-    markDirtyParentForRecord(completedParent.get().record);
-    upsertRootSummaryForRecord(completedParent.get().record);
+    for (BulkEnqueueItemResult item : result.items) {
+      if (item == null || item.succeeded()) {
+        continue;
+      }
+      throw new IllegalStateException(
+          "Atomic planner enqueue failed index="
+              + item.index
+              + " error="
+              + blankToEmpty(item.error));
+    }
+    StoredEnvelope persistedParent = loadByAnyAccount(jobId).orElse(null);
+    if (!matchesLeaseOutcome(
+        persistedParent == null ? null : persistedParent.record,
+        completionKind,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed)) {
+      return false;
+    }
+    clearExecutionLeasesIfOwned(persistedParent, jobId, leaseEpoch);
+    markDirtyParentForRecord(persistedParent.record);
+    upsertRootSummaryForRecord(persistedParent.record);
     for (BulkEnqueueItemResult item : result.items) {
       if (item == null || !item.succeeded()) {
         continue;
@@ -668,16 +693,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       } else {
         markDirtyParent(spec.accountId, spec.parentJobId);
       }
-    }
-    for (BulkEnqueueItemResult item : result.items) {
-      if (item == null || item.succeeded()) {
-        continue;
-      }
-      throw new IllegalStateException(
-          "Atomic planner enqueue failed index="
-              + item.index
-              + " error="
-              + blankToEmpty(item.error));
     }
     return true;
   }
@@ -2524,14 +2539,54 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (loaded == null || loaded.record == null) {
       return false;
     }
-    StoredReconcileJob record = loaded.record;
-    if (!expectedTerminalState.equals(blankToEmpty(record.state))
-        || Math.max(0L, record.finishedAtMs) <= 0L) {
+    if (!expectedTerminalState.equals(blankToEmpty(loaded.record.state))
+        || Math.max(0L, loaded.record.finishedAtMs) <= 0L) {
+      return false;
+    }
+    return matchesLeaseOutcome(
+        loaded.record,
+        completionKind,
+        finishedAtMs,
+        message,
+        tablesScanned,
+        tablesChanged,
+        viewsScanned,
+        viewsChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed);
+  }
+
+  private boolean matchesLeaseOutcome(
+      StoredReconcileJob record,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    if (record == null) {
       return false;
     }
     return switch (completionKind) {
+      case SUCCEEDED_WAITING ->
+          "JS_WAITING".equals(blankToEmpty(record.state))
+              && record.finishedAtMs == 0L
+              && blankToEmpty(record.message)
+                  .equals(blank(message) ? "Waiting on child work" : message)
+              && record.tablesScanned >= Math.max(0L, tablesScanned)
+              && record.tablesChanged >= Math.max(0L, tablesChanged)
+              && record.viewsScanned >= Math.max(0L, viewsScanned)
+              && record.viewsChanged >= Math.max(0L, viewsChanged)
+              && record.snapshotsProcessed >= Math.max(0L, snapshotsProcessed)
+              && record.statsProcessed >= Math.max(0L, statsProcessed);
       case SUCCEEDED ->
-          record.finishedAtMs == finishedAtMs
+          "JS_SUCCEEDED".equals(blankToEmpty(record.state))
+              && record.finishedAtMs == finishedAtMs
               && record.tablesScanned >= Math.max(0L, tablesScanned)
               && record.tablesChanged >= Math.max(0L, tablesChanged)
               && record.viewsScanned >= Math.max(0L, viewsScanned)
@@ -2539,7 +2594,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               && record.snapshotsProcessed >= Math.max(0L, snapshotsProcessed)
               && record.statsProcessed >= Math.max(0L, statsProcessed);
       case FAILED_TERMINAL ->
-          record.finishedAtMs == finishedAtMs
+          "JS_FAILED".equals(blankToEmpty(record.state))
+              && record.finishedAtMs == finishedAtMs
               && blankToEmpty(record.message).equals(blank(message) ? "Failed" : message)
               && record.tablesScanned >= Math.max(0L, tablesScanned)
               && record.tablesChanged >= Math.max(0L, tablesChanged)
@@ -2549,7 +2605,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               && record.snapshotsProcessed >= Math.max(0L, snapshotsProcessed)
               && record.statsProcessed >= Math.max(0L, statsProcessed);
       case CANCELLED ->
-          record.finishedAtMs == finishedAtMs
+          "JS_CANCELLED".equals(blankToEmpty(record.state))
+              && record.finishedAtMs == finishedAtMs
               && blankToEmpty(record.message).equals(blank(message) ? "Cancelled" : message)
               && record.tablesScanned >= Math.max(0L, tablesScanned)
               && record.tablesChanged >= Math.max(0L, tablesChanged)

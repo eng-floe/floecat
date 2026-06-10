@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,6 +43,9 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjectionStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
@@ -61,6 +65,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
@@ -163,6 +168,229 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDedupesAcrossDifferentPinnedExecutors() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "executor-a");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "executor-b");
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueSnapshotPlanDedupesAcrossDifferentPlanTableParents() {
+    String firstParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_one", "parent-table-1", "parent_one"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String secondParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-2"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_two", "parent-table-2", "parent_two"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            firstParentJobId,
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            secondParentJobId,
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueExecFileGroupDedupesAcrossDifferentSnapshotPlanParents() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "table-1");
+    String firstParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_one", "parent-table-1", "parent_one"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String secondParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-2"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_two", "parent-table-2", "parent_two"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    ReconcileFileGroupTask firstPlanGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "snapshot-55-group-0", "table-1", 55L, List.of("s3://bucket/data/a.parquet"));
+    ReconcileFileGroupTask secondPlanGroup =
+        ReconcileFileGroupTask.of(
+            "plan-2", "snapshot-55-group-0", "table-1", 55L, List.of("s3://bucket/data/a.parquet"));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            firstPlanGroup,
+            ReconcileExecutionPolicy.defaults(),
+            firstParentJobId,
+            "");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            secondPlanGroup,
+            ReconcileExecutionPolicy.defaults(),
+            secondParentJobId,
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueSnapshotFinalizationDedupesAcrossDifferentSnapshotPlanParents() {
+    ReconcileFileGroupTask firstPlanGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "snapshot-55-group-0", "table-1", 55L, List.of("s3://bucket/data/a.parquet"));
+    ReconcileFileGroupTask secondPlanGroup =
+        ReconcileFileGroupTask.of(
+            "plan-2", "snapshot-55-group-0", "table-1", 55L, List.of("s3://bucket/data/a.parquet"));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(firstPlanGroup), true);
+    ReconcileSnapshotTask sameSnapshotDifferentPlanTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(secondPlanGroup), true);
+    String firstParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_one", "parent-table-1", "parent_one"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String secondParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-2"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_two", "parent-table-2", "parent_two"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    String first =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            firstParentJobId,
+            "");
+    String second =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            sameSnapshotDifferentPlanTask,
+            ReconcileExecutionPolicy.defaults(),
+            secondParentJobId,
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
   void bulkEnqueueAndApplyLeaseOutcomeDoesNotInsertChildrenWhenLeaseIsRejected() {
     String connectorJobId =
         store.enqueue(
@@ -260,6 +488,178 @@ class DurableReconcileJobStoreTest {
     assertTrue(parentRecord.projectionRequestedGeneration > 0L);
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+  }
+
+  @Test
+  void bulkEnqueueAndApplyLeaseOutcomeCommitsParentAfterChunkRetryDedupesChildren() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
+    delegateBackend.bind(pointerStore);
+    FailingCompareAndSetBatchBackend failingBackend =
+        new FailingCompareAndSetBatchBackend(delegateBackend);
+
+    store = new DurableReconcileJobStore();
+    store.blobStore = new InMemoryBlobStore();
+    store.mapper = new ObjectMapper();
+    store.config = ConfigProvider.getConfig();
+    store.pointerStore = pointerStore;
+    store.jobIndexBackend = failingBackend;
+    store.init();
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+
+    List<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        java.util.stream.IntStream.range(0, 24)
+            .mapToObj(
+                i ->
+                    ReconcileJobStore.BulkEnqueueSpec.of(
+                        ACCOUNT_ID,
+                        CONNECTOR_ID,
+                        false,
+                        CaptureMode.METADATA_AND_CAPTURE,
+                        ReconcileScope.of(List.of(), "table-" + i),
+                        ReconcileJobKind.PLAN_TABLE,
+                        ReconcileTableTask.of("db", "orders_" + i, "table-" + i, "orders_" + i),
+                        ReconcileViewTask.empty(),
+                        ReconcileSnapshotTask.empty(),
+                        ReconcileFileGroupTask.empty(),
+                        ReconcileExecutionPolicy.defaults(),
+                        connectorJobId,
+                        ""))
+            .toList();
+
+    failingBackend.failOnArmedCall(2);
+    boolean accepted =
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            childSpecs,
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Planned 24 table job(s)",
+            24L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L);
+
+    assertTrue(accepted);
+    assertTrue(failingBackend.armedCalls() > 1);
+    StoredReconcileJob parentRecord =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    assertEquals("JS_WAITING", parentRecord.state);
+    assertEquals(24L, parentRecord.expectedDirectChildren);
+    assertEquals(24, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+  }
+
+  @Test
+  void bulkEnqueueAndApplyLeaseOutcomePreservesCommittedChildPayloadsWhenRetryAborts() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
+    delegateBackend.bind(pointerStore);
+    FailingCompareAndSetBatchBackend failingBackend =
+        new FailingCompareAndSetBatchBackend(delegateBackend);
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+
+    store = new DurableReconcileJobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    store.config = ConfigProvider.getConfig();
+    store.pointerStore = pointerStore;
+    store.jobIndexBackend = failingBackend;
+    store.init();
+
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-parent"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-parent", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var tableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
+
+    List<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        java.util.stream.IntStream.range(0, 24)
+            .mapToObj(
+                i -> {
+                  long snapshotId = 10_000L + i;
+                  String tableId = "table-" + i;
+                  return ReconcileJobStore.BulkEnqueueSpec.of(
+                      ACCOUNT_ID,
+                      CONNECTOR_ID,
+                      false,
+                      CaptureMode.METADATA_AND_CAPTURE,
+                      ReconcileScope.of(List.of(), tableId),
+                      ReconcileJobKind.PLAN_SNAPSHOT,
+                      ReconcileTableTask.empty(),
+                      ReconcileViewTask.empty(),
+                      ReconcileSnapshotTask.of(
+                          tableId,
+                          snapshotId,
+                          "db",
+                          "orders_" + i,
+                          List.of(
+                              ReconcileFileGroupTask.of(
+                                  "plan-" + i,
+                                  "group-" + i,
+                                  tableId,
+                                  snapshotId,
+                                  List.of("s3://bucket/data/file-" + i + ".parquet"))),
+                          true),
+                      ReconcileFileGroupTask.empty(),
+                      ReconcileExecutionPolicy.defaults(),
+                      tableJobId,
+                      "");
+                })
+            .toList();
+
+    failingBackend.failOnArmedCall(2);
+    failingBackend.onFailedCompareAndSetBatch(
+        () -> pointerStore.delete(Keys.reconcileJobLookupPointerById(tableJobId)));
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            store.bulkEnqueueAndApplyLeaseOutcome(
+                childSpecs,
+                tableJobId,
+                tableLease.leaseEpoch,
+                ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+                200L,
+                "Planned 24 snapshot job(s)",
+                24L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L));
+
+    List<ReconcileJob> committedChildren = store.childJobs(ACCOUNT_ID, tableJobId);
+    assertFalse(committedChildren.isEmpty());
+    assertTrue(committedChildren.size() < childSpecs.size());
+    for (ReconcileJob child : committedChildren) {
+      StoredReconcileJob committed =
+          readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, child.jobId));
+      assertFalse(committed.snapshotPlanBlobUri.isBlank());
+      assertNotNull(blobStore.get(committed.snapshotPlanBlobUri));
+    }
   }
 
   @Test
@@ -1138,6 +1538,50 @@ class DurableReconcileJobStoreTest {
     assertEquals(jobId, lease.jobId);
     assertEquals("", lease.pinnedExecutorId);
     assertEquals(ReconcileExecutionClass.DEFAULT, lease.executionPolicy.executionClass());
+  }
+
+  @Test
+  void leaseNextFallsBackToGlobalReadyRowForFilteredRequests() throws Exception {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
+            "",
+            "");
+
+    StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    @SuppressWarnings("unchecked")
+    List<String> readyKeys =
+        (List<String>)
+            invokePrivateMethod(
+                store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
+    for (String readyKey : readyKeys) {
+      if (readyKey.equals(queued.readyPointerKey)) {
+        continue;
+      }
+      assertTrue(store.pointerStore.delete(readyKey));
+    }
+
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), Set.of("remote")))
+            .orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+    assertEquals("remote", lease.executionPolicy.lane());
   }
 
   @Test
@@ -2198,6 +2642,95 @@ class DurableReconcileJobStoreTest {
     @Override
     public boolean isEmpty() {
       return delegate.isEmpty();
+    }
+  }
+
+  private static final class FailingCompareAndSetBatchBackend implements ReconcileJobIndexBackend {
+    private final ReconcileJobIndexBackend delegate;
+    private final AtomicInteger armedCalls = new AtomicInteger();
+    private volatile int failOnCall = -1;
+    private volatile boolean failed;
+    private volatile Runnable onFailedCompareAndSetBatch = () -> {};
+
+    private FailingCompareAndSetBatchBackend(ReconcileJobIndexBackend delegate) {
+      this.delegate = delegate;
+    }
+
+    void failOnArmedCall(int callNumber) {
+      armedCalls.set(0);
+      failOnCall = Math.max(1, callNumber);
+      failed = false;
+    }
+
+    int armedCalls() {
+      return armedCalls.get();
+    }
+
+    void onFailedCompareAndSetBatch(Runnable callback) {
+      onFailedCompareAndSetBatch = callback == null ? () -> {} : callback;
+    }
+
+    @Override
+    public Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
+      return delegate.loadIndexEntry(pointerKey);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
+                .JobIndexWriteBatch
+            batch) {
+      int call = armedCalls.incrementAndGet();
+      if (!failed && failOnCall > 0 && call == failOnCall) {
+        failed = true;
+        onFailedCompareAndSetBatch.run();
+        return false;
+      }
+      return delegate.compareAndSetBatch(batch);
+    }
+
+    @Override
+    public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
+      return delegate.listCanonicalEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
+      return delegate.listDedupeEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listParentEntries(
+        String accountId, String parentJobId, int limit, String pageToken) {
+      return delegate.listParentEntries(accountId, parentJobId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorEntries(
+        String accountId, String connectorId, int limit, String pageToken) {
+      return delegate.listConnectorEntries(accountId, connectorId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listAccountStateEntries(
+        String accountId, String state, int limit, String pageToken) {
+      return delegate.listAccountStateEntries(accountId, state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorStateEntries(
+        String accountId, String connectorId, String state, int limit, String pageToken) {
+      return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
+      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 

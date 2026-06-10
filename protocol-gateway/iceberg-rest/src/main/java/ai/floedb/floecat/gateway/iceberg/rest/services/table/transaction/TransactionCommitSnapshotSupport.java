@@ -80,7 +80,7 @@ public class TransactionCommitSnapshotSupport {
     String requestedMetadataLocation =
         CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
     String resolvedMetadataLocation =
-        firstNonBlank(requestedMetadataLocation, trimToNull(metadataLocation));
+        firstNonBlank(trimToNull(metadataLocation), requestedMetadataLocation);
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     boolean writesNewSnapshot = false;
     if (updates != null && !updates.isEmpty()) {
@@ -304,9 +304,6 @@ public class TransactionCommitSnapshotSupport {
       long snapshotId,
       Map<String, Object> snapshotMap,
       String requestedMetadataLocation) {
-    String explicitMetadataLocation =
-        trimToNull(TableMappingUtil.asString(snapshotMap.get("metadata-location")));
-
     Snapshot.Builder builder = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
     Long upstreamCreated = TableMappingUtil.asLong(snapshotMap.get("timestamp-ms"));
     if (upstreamCreated != null && upstreamCreated > 0) {
@@ -341,8 +338,7 @@ public class TransactionCommitSnapshotSupport {
     if (!summary.isEmpty()) {
       builder.putAllSummary(summary);
     }
-    String metadataLocation =
-        firstNonBlank(explicitMetadataLocation, trimToNull(requestedMetadataLocation));
+    String metadataLocation = trimToNull(requestedMetadataLocation);
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
     }

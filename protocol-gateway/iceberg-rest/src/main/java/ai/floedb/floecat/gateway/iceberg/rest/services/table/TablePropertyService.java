@@ -210,6 +210,11 @@ public class TablePropertyService {
       Map<String, String> mergedProps,
       Supplier<Table> tableSupplier,
       CommitUpdateInspector.Parsed parsed) {
+    Long existingCurrentSnapshotId =
+        asLong(
+            mergedProps != null
+                ? mergedProps.get("current-snapshot-id")
+                : tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
     Map<String, Map<String, Object>> refs = loadStoredRefs(mergedProps, tableSupplier);
     boolean mutated = false;
     for (CommitUpdateInspector.SnapshotRefMutation mutation : parsed.snapshotRefMutations()) {
@@ -226,6 +231,10 @@ public class TablePropertyService {
       String refName = mutation.refName();
       Long snapshotId = mutation.snapshotId();
       if (refName == null || refName.isBlank() || snapshotId == null || snapshotId <= 0) {
+        continue;
+      }
+      if ("main".equals(refName)
+          && !shouldApplyRequestedMainSnapshotId(parsed, existingCurrentSnapshotId, snapshotId)) {
         continue;
       }
       Map<String, Object> refMap = new LinkedHashMap<>();
@@ -262,9 +271,9 @@ public class TablePropertyService {
       targetProps.put(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(refs));
     }
     Long mainSnapshotId = mainRefSnapshotId(refs);
-    if (mainSnapshotId != null && mainSnapshotId > 0) {
+    if (shouldApplyRequestedMainSnapshotId(parsed, existingCurrentSnapshotId, mainSnapshotId)) {
       targetProps.put("current-snapshot-id", Long.toString(mainSnapshotId));
-    } else {
+    } else if (mainSnapshotId == null || mainSnapshotId <= 0) {
       targetProps.remove("current-snapshot-id");
     }
     return targetProps;
@@ -274,16 +283,24 @@ public class TablePropertyService {
       Map<String, String> mergedProps,
       Supplier<Table> tableSupplier,
       CommitUpdateInspector.Parsed parsed) {
-    Long latestSnapshotId = parsed.latestAddedSnapshotId();
+    Long mainRefSnapshotId = parsed.requestedMainRefSnapshotId();
     Long latestSequence = parsed.maxSnapshotSequenceNumber();
-    if (latestSnapshotId == null || latestSnapshotId <= 0) {
+    Long existingCurrentSnapshotId =
+        asLong(
+            mergedProps != null
+                ? mergedProps.get("current-snapshot-id")
+                : tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
+    if (!shouldApplyRequestedMainSnapshotId(parsed, existingCurrentSnapshotId, mainRefSnapshotId)
+        && (latestSequence == null || latestSequence <= 0)) {
       return mergedProps;
     }
     Map<String, String> targetProps =
         mergedProps == null
             ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
             : mergedProps;
-    targetProps.put("current-snapshot-id", Long.toString(latestSnapshotId));
+    if (shouldApplyRequestedMainSnapshotId(parsed, existingCurrentSnapshotId, mainRefSnapshotId)) {
+      targetProps.put("current-snapshot-id", Long.toString(mainRefSnapshotId));
+    }
     if (latestSequence != null && latestSequence > 0) {
       Long existing = asLong(targetProps.get("last-sequence-number"));
       if (existing == null || existing < latestSequence) {
@@ -338,6 +355,20 @@ public class TablePropertyService {
       changed = true;
     }
     return changed ? targetProps : mergedProps;
+  }
+
+  private boolean shouldApplyRequestedMainSnapshotId(
+      CommitUpdateInspector.Parsed parsed, Long existingCurrentSnapshotId, Long candidate) {
+    if (candidate == null || candidate <= 0) {
+      return false;
+    }
+    if (existingCurrentSnapshotId == null || existingCurrentSnapshotId <= 0) {
+      return true;
+    }
+    if (existingCurrentSnapshotId.equals(candidate)) {
+      return true;
+    }
+    return parsed != null && parsed.addedSnapshotIds().contains(candidate);
   }
 
   private Map<String, Map<String, Object>> loadStoredRefs(

@@ -274,6 +274,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.EXECUTION_LANE, lane)))
               .toList());
+      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     if (!effective.jobKinds.isEmpty()) {
@@ -286,6 +287,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.JOB_KIND, jobKind.name())))
               .toList());
+      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     if (!effective.executionClasses.isEmpty()) {
@@ -298,13 +300,18 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.EXECUTION_CLASS, executionClass.name())))
               .toList());
+      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
+    appendGlobalSelection(selections);
+    return List.copyOf(selections);
+  }
+
+  private static void appendGlobalSelection(List<ReadyIndexSelection> selections) {
     selections.add(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
-    return List.copyOf(selections);
   }
 
   private boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record) {

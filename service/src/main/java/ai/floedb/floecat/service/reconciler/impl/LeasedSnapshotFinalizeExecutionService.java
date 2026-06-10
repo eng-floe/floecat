@@ -154,6 +154,12 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           requireValidCoverage(
               coverageService.validateCoverage(coverage.expectedFiles(), replacement));
           persistence.replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
+          Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
+          if (!aggregateKinds.isEmpty()) {
+            List<TargetStatsRecord> aggregateStats =
+                persistence.buildAggregateStats(tableId, snapshotId, aggregateKinds, replacement);
+            persistence.persistStats(aggregateStats);
+          }
         } else {
           List<TargetStatsRecord> deltaFileStats =
               persistence.validateIncrementalDeltaFileStats(records, tableId, snapshotId);
@@ -178,6 +184,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         List<TargetStatsRecord> records = loadStatsBlob(requiredBlobUri, statsRecordCount);
         List<TargetStatsRecord> directStats =
             persistence.validateReplacementStats(records, tableId, snapshotId);
+        requirePlannerDirectStatsRecordCount(snapshotTask, directStats.size());
         if (lease.fullRescan) {
           persistence.replaceAllStatsForSnapshot(tableId, snapshotId, directStats);
         } else {
@@ -389,6 +396,22 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       throw Status.INVALID_ARGUMENT
           .withDescription(
               "snapshot finalize success payload must not include stats blob metadata for this submission")
+          .asRuntimeException();
+    }
+  }
+
+  private static void requirePlannerDirectStatsRecordCount(
+      ReconcileSnapshotTask snapshotTask, int actualRecordCount) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.directStatsRecordCount() > 0
+        && actualRecordCount != effective.directStatsRecordCount()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalize direct stats record count mismatch expected="
+                  + effective.directStatsRecordCount()
+                  + " actual="
+                  + actualRecordCount)
           .asRuntimeException();
     }
   }

@@ -250,55 +250,72 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return List.of();
     }
     List<QueuedJobInsert> pending = new ArrayList<>(inserts);
-    List<BulkEnqueueItemResult> results = new ArrayList<>();
-    for (int attempt = 0; attempt < casMax; attempt++) {
-      if (pending.isEmpty()) {
-        return results;
-      }
-      List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
-      List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
-      for (QueuedJobInsert insert : pending) {
-        var existing = loadActiveFromDedupe(insert.dedupePointerKey());
-        if (existing.isPresent()) {
-          results.add(new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+    java.util.LinkedHashMap<Integer, BulkEnqueueItemResult> resultsByIndex =
+        new java.util.LinkedHashMap<>();
+    try {
+      for (int attempt = 0; attempt < casMax; attempt++) {
+        if (pending.isEmpty()) {
+          return new ArrayList<>(resultsByIndex.values());
+        }
+        List<QueuedJobInsert> nextPending = new ArrayList<>(pending.size());
+        List<JobIndexWriteBatch> insertBatches = new ArrayList<>(pending.size());
+        for (QueuedJobInsert insert : pending) {
+          var existing = loadActiveFromDedupe(insert.dedupePointerKey());
+          if (existing.isPresent()) {
+            resultsByIndex.putIfAbsent(
+                insert.index(),
+                new BulkEnqueueItemResult(insert.index(), existing.get().jobId, false, ""));
+            continue;
+          }
+          JobIndexEntrySnapshot existingDedupePointer =
+              jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
+          insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
+          nextPending.add(insert);
+        }
+        List<CanonicalRecordMutation> ancestorMutations =
+            ancestorMutationsBuilder == null
+                ? List.of()
+                : ancestorMutationsBuilder.apply(nextPending);
+        if (nextPending.isEmpty()) {
+          if (ancestorMutations.isEmpty()) {
+            return new ArrayList<>(resultsByIndex.values());
+          }
+          if (compareAndSetCanonicalMutations(ancestorMutations)) {
+            return new ArrayList<>(resultsByIndex.values());
+          }
           continue;
         }
-        JobIndexEntrySnapshot existingDedupePointer =
-            jobIndexBackend.loadIndexEntry(insert.dedupePointerKey()).orElse(null);
-        insertBatches.add(queuedJobInsertOps(insert, existingDedupePointer));
-        nextPending.add(insert);
-      }
-      if (nextPending.isEmpty()) {
-        return results;
-      }
-      List<CanonicalRecordMutation> ancestorMutations =
-          ancestorMutationsBuilder == null
-              ? List.of()
-              : ancestorMutationsBuilder.apply(nextPending);
-      List<CommitBatch> commitBatches =
-          buildCommitBatches(nextPending, insertBatches, ancestorMutations);
-      boolean committed = true;
-      int firstFailedBatch = -1;
-      for (int batchIndex = 0; batchIndex < commitBatches.size(); batchIndex++) {
-        CommitBatch commitBatch = commitBatches.get(batchIndex);
-        if (jobIndexBackend.compareAndSetBatch(commitBatch.batch())) {
-          continue;
+        List<CommitBatch> commitBatches =
+            buildCommitBatches(nextPending, insertBatches, ancestorMutations);
+        boolean committed = true;
+        int firstFailedBatch = -1;
+        for (int batchIndex = 0; batchIndex < commitBatches.size(); batchIndex++) {
+          CommitBatch commitBatch = commitBatches.get(batchIndex);
+          if (jobIndexBackend.compareAndSetBatch(commitBatch.batch())) {
+            continue;
+          }
+          committed = false;
+          firstFailedBatch = batchIndex;
+          break;
         }
-        committed = false;
-        firstFailedBatch = batchIndex;
-        break;
+        if (committed) {
+          return new ArrayList<>(resultsByIndex.values());
+        }
+        pending = remainingInserts(commitBatches, firstFailedBatch);
       }
-      if (committed) {
-        return results;
+    } catch (RuntimeException e) {
+      if (e instanceof BulkEnqueueCommitException) {
+        throw e;
       }
-      pending = remainingInserts(commitBatches, firstFailedBatch);
+      throw new BulkEnqueueCommitException(e, queuedInsertIndexes(pending));
     }
     for (QueuedJobInsert insert : pending) {
-      results.add(
+      resultsByIndex.putIfAbsent(
+          insert.index(),
           new BulkEnqueueItemResult(
               insert.index(), "", false, "Unable to enqueue reconcile job after CAS retries"));
     }
-    return results;
+    return new ArrayList<>(resultsByIndex.values());
   }
 
   @Override
@@ -895,6 +912,19 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       remaining.addAll(commitBatches.get(i).inserts());
     }
     return remaining;
+  }
+
+  private List<Integer> queuedInsertIndexes(List<QueuedJobInsert> inserts) {
+    if (inserts == null || inserts.isEmpty()) {
+      return List.of();
+    }
+    List<Integer> indexes = new ArrayList<>(inserts.size());
+    for (QueuedJobInsert insert : inserts) {
+      if (insert != null) {
+        indexes.add(insert.index());
+      }
+    }
+    return List.copyOf(indexes);
   }
 
   private record CommitBatch(List<QueuedJobInsert> inserts, JobIndexWriteBatch batch) {}
