@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.common;
+package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;

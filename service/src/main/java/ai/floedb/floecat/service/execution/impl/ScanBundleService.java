@@ -20,9 +20,11 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.resolver.DeltaSchemaNormalizer;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
@@ -156,11 +158,23 @@ public class ScanBundleService {
       schemaJson = table.getSchemaJson();
     }
     if (schemaJson != null && !schemaJson.isBlank()) {
+      // Delta/Unity tables store the raw Delta schema JSON (name/type/nullable), but the scan
+      // engine parses TableInfo.schema_json as an Iceberg schema (id/required). Convert it here,
+      // mirroring what the Iceberg REST gateway does for the same tables. Variant is left as a
+      // scalar type for the engine to rewrite into a struct.
+      if (DeltaSchemaNormalizer.isDeltaTable(table, table.getPropertiesMap())) {
+        schemaJson = DeltaSchemaNormalizer.normalizeSchemaJson(schemaJson, snapshot.getSchemaId());
+      }
       builder.setSchemaJson(schemaJson);
     }
 
     if (snapshot.hasPartitionSpec()) {
       builder.setPartitionSpecs(snapshot.getPartitionSpec());
+    } else {
+      // The scan engine requires a partition spec. Unpartitioned tables (e.g. Delta tables
+      // captured without a spec) get the canonical empty/unpartitioned spec (spec-id 0, no
+      // fields), mirroring the Iceberg REST gateway's defaultPartitionSpec().
+      builder.setPartitionSpecs(PartitionSpecInfo.newBuilder().setSpecId(0).build());
     }
 
     if (table.getPropertiesCount() > 0) {

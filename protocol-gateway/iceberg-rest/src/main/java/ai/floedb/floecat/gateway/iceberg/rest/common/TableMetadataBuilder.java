@@ -36,6 +36,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.nor
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.connector.common.resolver.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import com.fasterxml.jackson.core.JsonProcessingException;
