@@ -19,8 +19,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.connector.common.resolver.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.common.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -953,7 +953,7 @@ public class DeltaManifestMaterializer {
             ResolveSnapshotCompatStorageRequest.newBuilder()
                 .setTableId(table.getResourceId())
                 .setSnapshotId(snapshot.getSnapshotId())
-                .setIncludeCredentials(false)
+                .setIncludeCredentials(true)
                 .build());
     if (response == null || response.getLocationPrefix().isBlank()) {
       throw new IllegalStateException("Compat storage resolution returned no writable location");
