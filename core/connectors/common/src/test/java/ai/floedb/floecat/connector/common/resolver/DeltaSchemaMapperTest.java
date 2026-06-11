@@ -237,6 +237,21 @@ class DeltaSchemaMapperTest {
     assertThat(col.getLeaf()).isTrue();
   }
 
+  @Test
+  void variantScalarNodeMapsToVariantAndIsLeaf() {
+    // Databricks/Unity Delta schemas emit variant as a scalar type string ("type":"variant"),
+    // not the object node form. The fallback parser must recognise it.
+    String json =
+        """
+        {"fields":[
+          {"name":"v","type":"variant","nullable":true}
+        ]}
+        """;
+    SchemaColumn col = firstColumn(json);
+    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(col.getLeaf()).isTrue();
+  }
+
   // ---------------------------------------------------------------------------
   // Nested struct expands child columns
   // ---------------------------------------------------------------------------
