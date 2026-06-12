@@ -844,6 +844,67 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void execFileGroupLeaseExpiryRequeueCanBeLeasedAgain() throws Exception {
+    configureLeaseRenewGraceMs(0L);
+    configureRetryPolicy(3, 0L, 0L);
+
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var firstLease = leaseJob(execJobId);
+    store.markRunning(execJobId, firstLease.leaseEpoch, 100L, "executor-exec");
+
+    reclaimExpiredLease(execJobId);
+
+    StoredReconcileJob requeued =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
+    assertEquals("Lease expired; requeued", requeued.message);
+    assertEquals("JS_QUEUED", requeued.state);
+    assertTrue(requeued.nextAttemptAtMs > System.currentTimeMillis());
+
+    long deadlineMs = System.currentTimeMillis() + 2_000L;
+    java.util.Optional<ReconcileJobStore.LeasedJob> secondLease = java.util.Optional.empty();
+    while (System.currentTimeMillis() < deadlineMs && secondLease.isEmpty()) {
+      secondLease =
+          store.leaseNext(
+              ReconcileJobStore.LeaseRequest.of(
+                  java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                  Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+                  Set.of("floescan_ingest"),
+                  java.util.EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)));
+      if (secondLease.isEmpty()) {
+        Thread.sleep(10L);
+      }
+    }
+
+    assertTrue(secondLease.isPresent());
+
+    assertEquals(execJobId, secondLease.orElseThrow().jobId);
+    assertTrue(!secondLease.orElseThrow().leaseEpoch.isBlank());
+    assertNotEquals(firstLease.leaseEpoch, secondLease.orElseThrow().leaseEpoch);
+    assertEquals(ReconcileJobKind.EXEC_FILE_GROUP, secondLease.orElseThrow().jobKind);
+    assertEquals("plan-1", secondLease.orElseThrow().fileGroupTask.planId());
+    assertEquals("group-1", secondLease.orElseThrow().fileGroupTask.groupId());
+    assertEquals(
+        List.of("s3://bucket/data/file-1.parquet"),
+        secondLease.orElseThrow().fileGroupTask.filePaths());
+  }
+
+  @Test
   void enqueueUpsertsStoredRootSummaryImmediately() {
     String connectorJobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);

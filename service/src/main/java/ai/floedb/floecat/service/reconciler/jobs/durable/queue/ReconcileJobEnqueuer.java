@@ -403,9 +403,11 @@ public class ReconcileJobEnqueuer {
         record.connectorIndexPointerKey,
         snapshotPlanBlobUri,
         snapshotPlanBlob(snapshotPlanFileGroups),
-        effectiveFileGroupTask.fileResults().isEmpty()
-            ? ReconcileFileGroupTask.empty()
-            : effectiveFileGroupTask,
+        effectiveJobKind == ReconcileJobKind.EXEC_FILE_GROUP
+            ? effectiveFileGroupTask
+            : effectiveFileGroupTask.fileResults().isEmpty()
+                ? ReconcileFileGroupTask.empty()
+                : effectiveFileGroupTask,
         record);
   }
 
