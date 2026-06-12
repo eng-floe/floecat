@@ -117,13 +117,13 @@ final class NamespaceCliSupport {
       }
     }
 
-    List<Namespace> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> namespaces.listNamespaces(rb.setPage(pr).build()),
-            r -> r.getNamespacesList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printNamespaces(all, out);
+    printNamespacesHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> namespaces.listNamespaces(rb.setPage(pr).build()),
+        r -> r.getNamespacesList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> printNamespacesRows(rows, out));
   }
 
   // --- CRUD ---
@@ -387,9 +387,17 @@ final class NamespaceCliSupport {
   // --- output helpers ---
 
   private static void printNamespaces(List<Namespace> rows, PrintStream out) {
+    printNamespacesHeader(out);
+    printNamespacesRows(rows, out);
+  }
+
+  private static void printNamespacesHeader(PrintStream out) {
     out.printf(
         "%-36s  %-24s  %-26s  %-16s  %s%n",
         "NAMESPACE_ID", "CREATED_AT", "PARENTS", "LEAF", "DESCRIPTION");
+  }
+
+  private static void printNamespacesRows(List<Namespace> rows, PrintStream out) {
     for (var ns : rows) {
       var parentsList = ns.getParentsList();
       var leaf = ns.getDisplayName();

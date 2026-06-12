@@ -208,6 +208,26 @@ class StatsCliSupportTest {
     }
   }
 
+  @Test
+  void statsColumnsJsonPrintsRecordsArray() throws Exception {
+    try (Harness h = new Harness()) {
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("columns", "catalog.ns.tbl", "--json"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertTrue(buf.toString().contains("\"records\""));
+      assertTrue(!buf.toString().contains("CID"));
+    }
+  }
+
   // --- stats files ---
 
   @Test
@@ -230,6 +250,7 @@ class StatsCliSupportTest {
       assertEquals(
           StatsTargetKind.STK_FILE,
           h.statisticsService.lastListTargetStatsRequest.getTargetKinds(0));
+      assertEquals(100, h.statisticsService.lastListTargetStatsRequest.getPage().getPageSize());
     }
   }
 
@@ -331,6 +352,46 @@ class StatsCliSupportTest {
 
       assertTrue(buf.toString().contains("\"artifactUri\""));
       assertEquals(99L, h.indexService.lastListIndexArtifactsRequest.getSnapshot().getSnapshotId());
+    }
+  }
+
+  @Test
+  void statsIndexPrintsLimitNoticeWhenExplicitLimitTruncatesRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.indexService.recordsToReturn =
+          java.util.stream.IntStream.range(0, 1001)
+              .mapToObj(
+                  i ->
+                      IndexArtifactRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setSnapshotId(7L)
+                          .setTarget(
+                              IndexTarget.newBuilder()
+                                  .setFile(
+                                      IndexFileTarget.newBuilder()
+                                          .setFilePath("file-" + i + ".parquet")
+                                          .build())
+                                  .build())
+                          .setArtifactUri("file-" + i + ".idx")
+                          .setArtifactFormat("parquet")
+                          .setState(IndexArtifactState.IAS_READY)
+                          .build())
+              .toList();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("index", "catalog.ns.tbl", "--limit", "1000"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.snapshotStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertTrue(buf.toString().contains("Showing first 1000 index artifacts."));
     }
   }
 

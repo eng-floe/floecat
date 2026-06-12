@@ -86,13 +86,13 @@ final class CatalogCliSupport {
       CatalogServiceGrpc.CatalogServiceBlockingStub catalogs,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    List<Catalog> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> catalogs.listCatalogs(ListCatalogsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getCatalogsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printCatalogs(all, out);
+    printCatalogsHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> catalogs.listCatalogs(ListCatalogsRequest.newBuilder().setPage(pr).build()),
+        r -> r.getCatalogsList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> printCatalogsRows(rows, out));
   }
 
   // --- use ---
@@ -275,8 +275,16 @@ final class CatalogCliSupport {
   // --- output helpers ---
 
   private static void printCatalogs(List<Catalog> cats, PrintStream out) {
+    printCatalogsHeader(out);
+    printCatalogsRows(cats, out);
+  }
+
+  private static void printCatalogsHeader(PrintStream out) {
     out.printf(
         "%-40s  %-24s  %-24s  %s%n", "CATALOG_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
+  }
+
+  private static void printCatalogsRows(List<Catalog> cats, PrintStream out) {
     for (var c : cats) {
       out.printf(
           "%-40s  %-24s  %-24s  %s%n",

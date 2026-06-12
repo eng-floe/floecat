@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /** Shared CLI argument parsing and pagination utilities used by all command support classes. */
@@ -150,13 +151,34 @@ final class CliArgs {
       Function<R, String> next) {
 
     List<T> all = new ArrayList<>();
+    forEachPage(pageSize, fetch, items, next, all::addAll);
+    return all;
+  }
+
+  /**
+   * Visits each page from a paginated gRPC call without accumulating all rows in memory.
+   *
+   * @return total number of items seen across all pages
+   */
+  static <T, R> int forEachPage(
+      int pageSize,
+      Function<PageRequest, R> fetch,
+      Function<R, List<T>> items,
+      Function<R, String> next,
+      Consumer<List<T>> pageConsumer) {
+
+    int seen = 0;
     String token = "";
     do {
       R resp =
           fetch.apply(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token).build());
-      all.addAll(items.apply(resp));
+      List<T> pageItems = items.apply(resp);
+      if (pageItems != null && !pageItems.isEmpty()) {
+        seen += pageItems.size();
+        pageConsumer.accept(pageItems);
+      }
       token = Optional.ofNullable(next.apply(resp)).orElse("");
     } while (!token.isBlank());
-    return all;
+    return seen;
   }
 }

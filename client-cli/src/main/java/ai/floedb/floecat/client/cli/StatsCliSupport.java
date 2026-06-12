@@ -25,9 +25,7 @@ import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexCoverage;
 import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
-import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
@@ -53,6 +51,8 @@ import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import com.google.protobuf.Duration;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.MessageOrBuilder;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.function.Function;
@@ -61,6 +61,7 @@ import java.util.function.Function;
 final class StatsCliSupport {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int FILE_STATS_PAGE_SIZE = 100;
   private static final String TABLE_TARGET_SPEC = "table";
 
   private StatsCliSupport() {}
@@ -187,7 +188,9 @@ final class StatsCliSupport {
     }
     boolean json = CliArgs.hasFlag(args, "--json");
     String fq = args.get(0);
-    int limit = CliArgs.parseIntFlag(args, "--limit", 2000);
+    boolean hasLimit = CliArgs.hasFlag(args, "--limit");
+    int limit =
+        hasLimit ? Math.max(1, CliArgs.parseIntFlag(args, "--limit", 0)) : Integer.MAX_VALUE;
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
 
     ResourceId tableId = resolveTableId.apply(fq);
@@ -199,8 +202,48 @@ final class StatsCliSupport {
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
             .addTargetKinds(StatsTargetKind.STK_COLUMN);
 
-    List<TargetStatsRecord> all =
-        CliArgs.collectPages(
+    if (json) {
+      streamJsonRecords(
+          out,
+          writer -> {
+            var remaining = new int[] {limit};
+            CliArgs.forEachPage(
+                pageSize,
+                pr ->
+                    statistics.listTargetStats(
+                        rb.setPage(
+                                PageRequest.newBuilder()
+                                    .setPageSize(pr.getPageSize())
+                                    .setPageToken(pr.getPageToken())
+                                    .build())
+                            .build()),
+                r -> r.getRecordsList(),
+                r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+                records -> {
+                  if (remaining[0] <= 0) {
+                    return;
+                  }
+                  List<TargetStatsRecord> page =
+                      records.stream()
+                          .filter(TargetStatsRecord::hasScalar)
+                          .limit(remaining[0])
+                          .toList();
+                  if (!page.isEmpty()) {
+                    try {
+                      writer.write(page);
+                    } catch (InvalidProtocolBufferException e) {
+                      throw new JsonStreamRuntimeException(e);
+                    }
+                    remaining[0] -= page.size();
+                  }
+                });
+          });
+      return;
+    }
+    printColumnStatsHeader(out);
+    var remaining = new int[] {limit};
+    int seen =
+        CliArgs.forEachPage(
             pageSize,
             pr ->
                 statistics.listTargetStats(
@@ -211,16 +254,24 @@ final class StatsCliSupport {
                                 .build())
                         .build()),
             r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    all = all.stream().filter(TargetStatsRecord::hasScalar).toList();
-    if (all.size() > limit) {
-      all = all.subList(0, limit);
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            records -> {
+              if (remaining[0] <= 0) {
+                return;
+              }
+              List<TargetStatsRecord> page =
+                  records.stream()
+                      .filter(TargetStatsRecord::hasScalar)
+                      .limit(remaining[0])
+                      .toList();
+              if (!page.isEmpty()) {
+                printColumnStatsRows(page, out);
+                remaining[0] -= page.size();
+              }
+            });
+    if (hasLimit && seen > limit) {
+      printLimitNotice("column stats", limit, out);
     }
-    if (json) {
-      CliUtils.printJson(ListTargetStatsResponse.newBuilder().addAllRecords(all).build(), out);
-      return;
-    }
-    printColumnStats(all, out);
   }
 
   private static void statsFiles(
@@ -235,8 +286,10 @@ final class StatsCliSupport {
       return;
     }
     String fq = args.get(0);
-    int limit = CliArgs.parseIntFlag(args, "--limit", 1000);
-    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
+    boolean hasLimit = CliArgs.hasFlag(args, "--limit");
+    int limit =
+        hasLimit ? Math.max(1, CliArgs.parseIntFlag(args, "--limit", 0)) : Integer.MAX_VALUE;
+    int pageSize = Math.min(limit, FILE_STATS_PAGE_SIZE);
 
     ResourceId tableId = resolveTableId.apply(fq);
     ListTargetStatsRequest.Builder rb =
@@ -247,8 +300,10 @@ final class StatsCliSupport {
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
             .addTargetKinds(StatsTargetKind.STK_FILE);
 
-    List<TargetStatsRecord> all =
-        CliArgs.collectPages(
+    var remaining = new int[] {limit};
+    var printed = new int[] {0};
+    int seen =
+        CliArgs.forEachPage(
             pageSize,
             pr ->
                 statistics.listTargetStats(
@@ -259,12 +314,26 @@ final class StatsCliSupport {
                                 .build())
                         .build()),
             r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    all = all.stream().filter(TargetStatsRecord::hasFile).toList();
-    if (all.size() > limit) {
-      all = all.subList(0, limit);
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            records -> {
+              if (remaining[0] <= 0) {
+                return;
+              }
+              List<TargetStatsRecord> page =
+                  records.stream().filter(TargetStatsRecord::hasFile).limit(remaining[0]).toList();
+              if (!page.isEmpty()) {
+                printFileColumnStatsPage(page, printed[0], printed[0] == 0, out);
+                printed[0] += page.size();
+                remaining[0] -= page.size();
+              }
+            });
+    if (seen == 0 || printed[0] == 0) {
+      out.println("No file stats found.");
+      return;
     }
-    printFileColumnStats(all, out);
+    if (hasLimit && seen > limit) {
+      printLimitNotice("file stats", limit, out);
+    }
   }
 
   private static void statsIndexes(
@@ -283,7 +352,9 @@ final class StatsCliSupport {
     }
     boolean json = CliArgs.hasFlag(args, "--json");
     String fq = args.get(0);
-    int limit = CliArgs.parseIntFlag(args, "--limit", 1000);
+    boolean hasLimit = CliArgs.hasFlag(args, "--limit");
+    int limit =
+        hasLimit ? Math.max(1, CliArgs.parseIntFlag(args, "--limit", 0)) : Integer.MAX_VALUE;
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
 
     ResourceId tableId = resolveTableId.apply(fq);
@@ -294,8 +365,44 @@ final class StatsCliSupport {
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")));
 
-    List<IndexArtifactRecord> all =
-        CliArgs.collectPages(
+    if (json) {
+      streamJsonRecords(
+          out,
+          writer -> {
+            var remaining = new int[] {limit};
+            CliArgs.forEachPage(
+                pageSize,
+                pr ->
+                    indexes.listIndexArtifacts(
+                        rb.setPage(
+                                PageRequest.newBuilder()
+                                    .setPageSize(pr.getPageSize())
+                                    .setPageToken(pr.getPageToken())
+                                    .build())
+                            .build()),
+                r -> r.getRecordsList(),
+                r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+                records -> {
+                  if (remaining[0] <= 0) {
+                    return;
+                  }
+                  List<IndexArtifactRecord> page = records.stream().limit(remaining[0]).toList();
+                  if (!page.isEmpty()) {
+                    try {
+                      writer.write(page);
+                    } catch (InvalidProtocolBufferException e) {
+                      throw new JsonStreamRuntimeException(e);
+                    }
+                    remaining[0] -= page.size();
+                  }
+                });
+          });
+      return;
+    }
+    var remaining = new int[] {limit};
+    var printed = new int[] {0};
+    int seen =
+        CliArgs.forEachPage(
             pageSize,
             pr ->
                 indexes.listIndexArtifacts(
@@ -306,15 +413,28 @@ final class StatsCliSupport {
                                 .build())
                         .build()),
             r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    if (all.size() > limit) {
-      all = all.subList(0, limit);
-    }
-    if (json) {
-      CliUtils.printJson(ListIndexArtifactsResponse.newBuilder().addAllRecords(all).build(), out);
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            records -> {
+              if (remaining[0] <= 0) {
+                return;
+              }
+              List<IndexArtifactRecord> page = records.stream().limit(remaining[0]).toList();
+              if (!page.isEmpty()) {
+                if (printed[0] == 0) {
+                  printIndexArtifactsHeader(out);
+                }
+                printIndexArtifactsRows(page, printed[0], out);
+                printed[0] += page.size();
+                remaining[0] -= page.size();
+              }
+            });
+    if (seen == 0 || printed[0] == 0) {
+      out.println("No index artifacts found.");
       return;
     }
-    printIndexArtifacts(all, out);
+    if (hasLimit && seen > limit) {
+      printLimitNotice("index artifacts", limit, out);
+    }
   }
 
   // analyze runs a synchronous table-scoped CaptureNow call that defaults to stats-only capture.
@@ -475,9 +595,17 @@ final class StatsCliSupport {
   }
 
   private static void printColumnStats(List<TargetStatsRecord> cols, PrintStream out) {
+    printColumnStatsHeader(out);
+    printColumnStatsRows(cols, out);
+  }
+
+  private static void printColumnStatsHeader(PrintStream out) {
     out.printf(
         "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
         "CID", "NAME", "TYPE", "ROWS", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
+  }
+
+  private static void printColumnStatsRows(List<TargetStatsRecord> cols, PrintStream out) {
     for (var c : cols) {
       ScalarStats scalar = c.getScalar();
       long nullCount = scalar.hasNullCount() ? scalar.getNullCount() : 0L;
@@ -502,13 +630,20 @@ final class StatsCliSupport {
       out.println("No file stats found.");
       return;
     }
-    out.printf("%-4s %-10s %-12s %-20s %s%n", "IDX", "ROWS", "BYTES", "CONTENT", "PATH");
+    printFileColumnStatsPage(files, 0, true, out);
+  }
+
+  private static void printFileColumnStatsPage(
+      List<TargetStatsRecord> files, int startIndex, boolean includeHeader, PrintStream out) {
+    if (includeHeader) {
+      out.printf("%-4s %-10s %-12s %-20s %s%n", "IDX", "ROWS", "BYTES", "CONTENT", "PATH");
+    }
     for (int i = 0; i < files.size(); i++) {
       FileTargetStats fs = files.get(i).getFile();
       String content = fs.getFileContent().name().replaceFirst("^FC_", "");
       out.printf(
           "%-4d %-10d %-12d %-20s %s%n",
-          i, fs.getRowCount(), fs.getSizeBytes(), content, fs.getFilePath());
+          startIndex + i, fs.getRowCount(), fs.getSizeBytes(), content, fs.getFilePath());
       var cols = fs.getColumnsList();
       if (!cols.isEmpty()) {
         out.println("    columns:");
@@ -541,15 +676,24 @@ final class StatsCliSupport {
       out.println("No index artifacts found.");
       return;
     }
+    printIndexArtifactsHeader(out);
+    printIndexArtifactsRows(records, 0, out);
+  }
+
+  private static void printIndexArtifactsHeader(PrintStream out) {
     out.printf(
         "%-4s %-10s %-8s %-8s %-8s %-10s %-12s %s%n",
         "IDX", "STATE", "FORMAT", "ROWS", "LIVE", "PAGES", "ROW_GROUPS", "PATH");
+  }
+
+  private static void printIndexArtifactsRows(
+      List<IndexArtifactRecord> records, int startIndex, PrintStream out) {
     for (int i = 0; i < records.size(); i++) {
       IndexArtifactRecord record = records.get(i);
       IndexCoverage coverage = record.getCoverage();
       out.printf(
           "%-4d %-10s %-8s %-8s %-8s %-10s %-12s %s%n",
-          i,
+          startIndex + i,
           record.getState().name().replaceFirst("^IAS_", ""),
           CliUtils.trunc(record.getArtifactFormat(), 8),
           coverage.hasRowsIndexed() ? Long.toString(coverage.getRowsIndexed()) : "-",
@@ -559,5 +703,56 @@ final class StatsCliSupport {
           record.getTarget().hasFile() ? record.getTarget().getFile().getFilePath() : "-");
       out.printf("    uri=%s%n", record.getArtifactUri());
     }
+  }
+
+  @FunctionalInterface
+  private interface JsonPageEmitter {
+    void emit(JsonArrayWriter writer);
+  }
+
+  private static void streamJsonRecords(PrintStream out, JsonPageEmitter emitter) {
+    try {
+      JsonArrayWriter writer = new JsonArrayWriter("records", out);
+      emitter.emit(writer);
+      writer.finish();
+    } catch (JsonStreamRuntimeException e) {
+      throw new IllegalArgumentException("failed to render protobuf as json", e.getCause());
+    }
+  }
+
+  private static final class JsonArrayWriter {
+    private final PrintStream out;
+    private boolean first = true;
+
+    JsonArrayWriter(String fieldName, PrintStream out) {
+      this.out = out;
+      out.print("{\"");
+      out.print(fieldName);
+      out.print("\":[");
+    }
+
+    void write(List<? extends MessageOrBuilder> records) throws InvalidProtocolBufferException {
+      for (MessageOrBuilder record : records) {
+        if (!first) {
+          out.print(",");
+        }
+        out.print(CliUtils.jsonPrinter().print(record));
+        first = false;
+      }
+    }
+
+    void finish() {
+      out.println("]}");
+    }
+  }
+
+  private static final class JsonStreamRuntimeException extends RuntimeException {
+    JsonStreamRuntimeException(InvalidProtocolBufferException cause) {
+      super(cause);
+    }
+  }
+
+  private static void printLimitNotice(String subject, int limit, PrintStream out) {
+    out.printf("Showing first %d %s. Re-run with --limit <n> to fetch more.%n", limit, subject);
   }
 }

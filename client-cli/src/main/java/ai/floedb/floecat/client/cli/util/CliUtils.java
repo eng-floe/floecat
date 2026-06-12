@@ -308,10 +308,15 @@ public final class CliUtils {
   // JSON helpers
   // ---------------------------------------------------------------------------
 
+  /** Returns the standard protobuf JSON printer used by the CLI. */
+  public static JsonFormat.Printer jsonPrinter() {
+    return JsonFormat.printer().includingDefaultValueFields();
+  }
+
   /** Prints a protobuf message as pretty JSON to {@code out}, including default-valued fields. */
   public static void printJson(MessageOrBuilder message, PrintStream out) {
     try {
-      out.println(JsonFormat.printer().includingDefaultValueFields().print(message));
+      out.println(jsonPrinter().print(message));
     } catch (InvalidProtocolBufferException e) {
       throw new IllegalArgumentException("failed to render protobuf as json", e);
     }

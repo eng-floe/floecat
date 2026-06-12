@@ -803,6 +803,36 @@ class ConnectorCliSupportTest {
   }
 
   @Test
+  void connectorJobsJsonPrintsJobsArray() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-plan-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+                      .build())
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs", "--json"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertTrue(buf.toString().contains("\"jobs\""));
+      assertTrue(buf.toString().contains("job-plan-1"));
+      assertTrue(!buf.toString().contains("JOB_ID"));
+    }
+  }
+
+  @Test
   void connectorJobsRendersWaitingStateAndSanitizesUuidPrefixedMessage() throws Exception {
     try (Harness h = new Harness()) {
       h.reconcileControlService.listJobsResponse =

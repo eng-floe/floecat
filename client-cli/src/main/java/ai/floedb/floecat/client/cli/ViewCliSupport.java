@@ -86,15 +86,15 @@ final class ViewCliSupport {
     }
     ResourceId namespaceId =
         NamespaceCliSupport.resolveNamespaceIdFlexible(args.get(0), directory, getCurrentAccountId);
-    List<View> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr ->
-                viewService.listViews(
-                    ListViewsRequest.newBuilder().setNamespaceId(namespaceId).setPage(pr).build()),
-            ListViewsResponse::getViewsList,
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printViews(all, out);
+    printViewsHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr ->
+            viewService.listViews(
+                ListViewsRequest.newBuilder().setNamespaceId(namespaceId).setPage(pr).build()),
+        ListViewsResponse::getViewsList,
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> printViewsRows(rows, out));
   }
 
   // --- view CRUD ---
@@ -255,7 +255,15 @@ final class ViewCliSupport {
   // --- output helpers ---
 
   private static void printViews(List<View> views, PrintStream out) {
+    printViewsHeader(out);
+    printViewsRows(views, out);
+  }
+
+  private static void printViewsHeader(PrintStream out) {
     out.printf("%-40s  %-24s  %s%n", "VIEW_ID", "CREATED_AT", "DISPLAY_NAME");
+  }
+
+  private static void printViewsRows(List<View> views, PrintStream out) {
     for (var view : views) {
       out.printf(
           "%-40s  %-24s  %s%n",

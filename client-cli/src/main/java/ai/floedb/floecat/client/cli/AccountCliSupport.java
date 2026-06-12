@@ -82,13 +82,13 @@ final class AccountCliSupport {
 
   private static void accountList(
       PrintStream out, AccountServiceGrpc.AccountServiceBlockingStub accounts) {
-    List<Account> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getAccountsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printAccounts(all, out);
+    printAccountsHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
+        r -> r.getAccountsList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> printAccountsRows(rows, out));
   }
 
   private static void accountGet(
@@ -156,23 +156,38 @@ final class AccountCliSupport {
     if (CliUtils.looksLikeUuid(value)) {
       return value;
     }
-    List<Account> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getAccountsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    return all.stream()
-        .filter(a -> value.equals(a.getDisplayName()))
-        .map(a -> a.getResourceId().getId())
-        .findFirst()
-        .orElseThrow(
-            () -> new IllegalArgumentException("account not found by id/display name: " + value));
+    final String[] matchId = new String[1];
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
+        r -> r.getAccountsList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> {
+          if (matchId[0] != null) {
+            return;
+          }
+          rows.stream()
+              .filter(a -> value.equals(a.getDisplayName()))
+              .findFirst()
+              .ifPresent(a -> matchId[0] = a.getResourceId().getId());
+        });
+    if (matchId[0] == null) {
+      throw new IllegalArgumentException("account not found by id/display name: " + value);
+    }
+    return matchId[0];
   }
 
   private static void printAccounts(List<Account> rows, PrintStream out) {
+    printAccountsHeader(out);
+    printAccountsRows(rows, out);
+  }
+
+  private static void printAccountsHeader(PrintStream out) {
     out.printf(
         "%-40s  %-24s  %-24s  %s%n", "ACCOUNT_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
+  }
+
+  private static void printAccountsRows(List<Account> rows, PrintStream out) {
     for (var a : rows) {
       out.printf(
           "%-40s  %-24s  %-24s  %s%n",

@@ -104,13 +104,13 @@ final class TableCliSupport {
             .setPrefix(prefix)
             .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
-    List<ResolveFQTablesResponse.Entry> all =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> directory.resolveFQTables(rb.setPage(pr).build()),
-            ResolveFQTablesResponse::getTablesList,
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printResolvedTables(all, out);
+    printResolvedTablesHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> directory.resolveFQTables(rb.setPage(pr).build()),
+        ResolveFQTablesResponse::getTablesList,
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> printResolvedTablesRows(rows, out));
   }
 
   // --- table CRUD ---
@@ -476,7 +476,16 @@ final class TableCliSupport {
 
   private static void printResolvedTables(
       List<ResolveFQTablesResponse.Entry> entries, PrintStream out) {
+    printResolvedTablesHeader(out);
+    printResolvedTablesRows(entries, out);
+  }
+
+  private static void printResolvedTablesHeader(PrintStream out) {
     out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
+  }
+
+  private static void printResolvedTablesRows(
+      List<ResolveFQTablesResponse.Entry> entries, PrintStream out) {
     for (var e : entries) {
       String catalog = e.getName().getCatalog();
       List<String> path = e.getName().getPathList();

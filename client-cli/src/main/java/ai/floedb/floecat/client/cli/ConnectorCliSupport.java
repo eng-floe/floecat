@@ -74,6 +74,8 @@ import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
 import java.util.ArrayList;
@@ -90,6 +92,13 @@ final class ConnectorCliSupport {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
   private static final String TABLE_TARGET_SPEC = "table";
+  private static final int CONNECTOR_W_ID = 36;
+  private static final int CONNECTOR_W_KIND = 10;
+  private static final int CONNECTOR_W_DISPLAY = 28;
+  private static final int CONNECTOR_W_TS = 24;
+  private static final int CONNECTOR_W_DESTCAT = 24;
+  private static final int CONNECTOR_W_STATE = 10;
+  private static final int CONNECTOR_W_URI = 80;
   private static final boolean DEBUG_JOB_RENDER =
       Boolean.getBoolean("floecat.debug.job.render")
           || System.getenv("FLOECAT_DEBUG_JOB_RENDER") != null;
@@ -117,8 +126,13 @@ final class ConnectorCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     if ("connectors".equals(command)) {
-      var all = listAllConnectors(null, DEFAULT_PAGE_SIZE, connectors);
-      printConnectors(all, out, directory);
+      printConnectorsHeader(out);
+      CliArgs.forEachPage(
+          DEFAULT_PAGE_SIZE,
+          pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
+          r -> r.getConnectorsList(),
+          r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+          rows -> printConnectorsRows(rows, out, directory));
     } else {
       connectorCrud(
           args, out, connectors, reconcileControl, snapshots, directory, getCurrentAccountId);
@@ -160,8 +174,19 @@ final class ConnectorCliSupport {
         int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
         ConnectorKind filter = parseConnectorKind(kindStr);
         filter = (filter == ConnectorKind.CK_UNSPECIFIED && kindStr.isBlank()) ? null : filter;
-        var all = listAllConnectors(filter, pageSize, connectors);
-        printConnectors(all, out, directory);
+        final ConnectorKind kindFilter = filter;
+        printConnectorsHeader(out);
+        CliArgs.forEachPage(
+            pageSize,
+            pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
+            r ->
+                kindFilter == null
+                    ? r.getConnectorsList()
+                    : r.getConnectorsList().stream()
+                        .filter(c -> c.getKind() == kindFilter)
+                        .toList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            rows -> printConnectorsRows(rows, out, directory));
       }
       case "get" -> {
         if (args.size() < 2) {
@@ -680,35 +705,42 @@ final class ConnectorCliSupport {
         boolean printJson = args.contains("--json");
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", ""));
         String stateArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--state", ""));
-        var jobs =
-            childJobId.isBlank()
-                ? listReconcileJobs(
-                    pageSize,
-                    connectorRef,
-                    stateArg,
-                    true,
-                    connectors,
-                    reconcileControl,
-                    getCurrentAccountId)
-                : getReconcileJobTree(childJobId, reconcileControl);
-        List<GetReconcileJobResponse> filteredJobs = jobs;
-        if (filteredJobs.isEmpty()) {
-          out.println("no reconcile jobs");
-          return;
-        }
         if (printJson) {
-          CliUtils.printJson(
-              childJobId.isBlank()
-                  ? ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse.newBuilder()
-                      .addAllJobs(filteredJobs)
-                      .build()
-                  : GetReconcileJobTreeResponse.newBuilder().addAllJobs(filteredJobs).build(),
-              out);
+          if (childJobId.isBlank()) {
+            streamJsonJobs(
+                pageSize,
+                connectorRef,
+                stateArg,
+                connectors,
+                reconcileControl,
+                getCurrentAccountId,
+                out);
+          } else {
+            var jobs = getReconcileJobTree(childJobId, reconcileControl);
+            if (jobs.isEmpty()) {
+              out.println("no reconcile jobs");
+              return;
+            }
+            CliUtils.printJson(
+                GetReconcileJobTreeResponse.newBuilder().addAllJobs(jobs).build(), out);
+          }
         } else {
           if (childJobId.isBlank()) {
-            printReconcileJobsTable(filteredJobs, out);
+            streamReconcileJobsTable(
+                pageSize,
+                connectorRef,
+                stateArg,
+                connectors,
+                reconcileControl,
+                getCurrentAccountId,
+                out);
           } else {
-            printReconcileJobTree(filteredJobs, childJobId, out);
+            var jobs = getReconcileJobTree(childJobId, reconcileControl);
+            if (jobs.isEmpty()) {
+              out.println("no reconcile jobs");
+              return;
+            }
+            printReconcileJobTree(jobs, childJobId, out);
           }
         }
       }
@@ -802,14 +834,27 @@ final class ConnectorCliSupport {
       return rid(t, ResourceKind.RK_CONNECTOR, getCurrentAccountId);
     }
 
-    var all = listAllConnectors(null, DEFAULT_PAGE_SIZE, connectors);
+    List<Connector> exact = new ArrayList<>();
+    List<Connector> ci = new ArrayList<>();
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
+        r -> r.getConnectorsList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> {
+          for (Connector connector : rows) {
+            if (t.equals(connector.getDisplayName())) {
+              exact.add(connector);
+            } else if (t.equalsIgnoreCase(connector.getDisplayName())) {
+              ci.add(connector);
+            }
+          }
+        });
 
-    var exact = all.stream().filter(c -> t.equals(c.getDisplayName())).toList();
     if (exact.size() == 1) {
       return exact.get(0).getResourceId();
     }
 
-    var ci = all.stream().filter(c -> t.equalsIgnoreCase(c.getDisplayName())).toList();
     if (ci.size() == 1) {
       return ci.get(0).getResourceId();
     }
@@ -825,17 +870,6 @@ final class ConnectorCliSupport {
                 .collect(Collectors.joining(", "));
     throw new IllegalArgumentException(
         "Connector name is ambiguous: " + t + ". Candidates: " + alts);
-  }
-
-  private static List<Connector> listAllConnectors(
-      ConnectorKind kind, int pageSize, ConnectorsGrpc.ConnectorsBlockingStub connectors) {
-    List<Connector> all =
-        CliArgs.collectPages(
-            pageSize,
-            pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getConnectorsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    return (kind == null) ? all : all.stream().filter(c -> c.getKind() == kind).toList();
   }
 
   private static List<GetReconcileJobResponse> listReconcileJobs(
@@ -867,6 +901,90 @@ final class ConnectorCliSupport {
         },
         response -> response.getJobsList(),
         response -> response.hasPage() ? response.getPage().getNextPageToken() : "");
+  }
+
+  private static void streamReconcileJobsTable(
+      int pageSize,
+      String connectorRef,
+      String stateArg,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      Supplier<String> getCurrentAccountId,
+      PrintStream out) {
+    final boolean[] printedAny = {false};
+    final boolean[] printedHeader = {false};
+    CliArgs.forEachPage(
+        pageSize,
+        pageRequest -> {
+          var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest).setRootsOnly(true);
+          if (!connectorRef.isBlank()) {
+            req.setConnectorId(
+                CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
+          }
+          for (String token : CliUtils.csvList(stateArg)) {
+            JobState state = parseJobState(token);
+            if (state != JobState.JS_UNSPECIFIED) {
+              req.addStates(state);
+            }
+          }
+          return reconcileControl.listReconcileJobs(req.build());
+        },
+        response -> response.getJobsList(),
+        response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
+        jobs -> {
+          if (!jobs.isEmpty()) {
+            if (!printedHeader[0]) {
+              printReconcileJobsTableHeader(out);
+              printedHeader[0] = true;
+            }
+            printReconcileJobsTableRows(jobs, out);
+            printedAny[0] = true;
+          }
+        });
+    if (!printedAny[0]) {
+      out.println("no reconcile jobs");
+    }
+  }
+
+  private static void streamJsonJobs(
+      int pageSize,
+      String connectorRef,
+      String stateArg,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      Supplier<String> getCurrentAccountId,
+      PrintStream out) {
+    try {
+      JsonArrayWriter writer = new JsonArrayWriter("jobs", out);
+      CliArgs.forEachPage(
+          pageSize,
+          pageRequest -> {
+            var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest).setRootsOnly(true);
+            if (!connectorRef.isBlank()) {
+              req.setConnectorId(
+                  CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
+            }
+            for (String token : CliUtils.csvList(stateArg)) {
+              JobState state = parseJobState(token);
+              if (state != JobState.JS_UNSPECIFIED) {
+                req.addStates(state);
+              }
+            }
+            return reconcileControl.listReconcileJobs(req.build());
+          },
+          response -> response.getJobsList(),
+          response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
+          jobs -> {
+            try {
+              writer.write(jobs);
+            } catch (InvalidProtocolBufferException e) {
+              throw new JsonStreamRuntimeException(e);
+            }
+          });
+      writer.finish();
+    } catch (JsonStreamRuntimeException e) {
+      throw new IllegalArgumentException("failed to render protobuf as json", e.getCause());
+    }
   }
 
   private static List<GetReconcileJobResponse> getReconcileJobTree(
@@ -1012,17 +1130,27 @@ final class ConnectorCliSupport {
       List<Connector> list,
       PrintStream out,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    final int W_ID = 36;
-    final int W_KIND = 10;
-    final int W_DISPLAY = 28;
-    final int W_TS = 24;
-    final int W_DESTCAT = 24;
-    final int W_STATE = 10;
-    final int W_URI = 80;
+    printConnectorsHeader(out);
+    printConnectorsRows(list, out, directory);
+  }
 
+  private static void printConnectorsHeader(PrintStream out) {
     out.printf(
-        "%-" + W_ID + "s  %-" + W_KIND + "s  %-" + W_DISPLAY + "s  %-" + W_TS + "s  %-" + W_TS
-            + "s  %-" + W_DESTCAT + "s  %-" + W_STATE + "s  %s%n",
+        "%-"
+            + CONNECTOR_W_ID
+            + "s  %-"
+            + CONNECTOR_W_KIND
+            + "s  %-"
+            + CONNECTOR_W_DISPLAY
+            + "s  %-"
+            + CONNECTOR_W_TS
+            + "s  %-"
+            + CONNECTOR_W_TS
+            + "s  %-"
+            + CONNECTOR_W_DESTCAT
+            + "s  %-"
+            + CONNECTOR_W_STATE
+            + "s  %s%n",
         "CONNECTOR_ID",
         "KIND",
         "DISPLAY",
@@ -1031,7 +1159,12 @@ final class ConnectorCliSupport {
         "DEST_CATALOG",
         "STATE",
         "URI");
+  }
 
+  private static void printConnectorsRows(
+      List<Connector> list,
+      PrintStream out,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
     for (var c : list) {
       String id = CliUtils.rid(c.getResourceId());
       String kind = c.getKind().name().replaceFirst("^CK_", "");
@@ -1053,16 +1186,29 @@ final class ConnectorCliSupport {
       String uri = c.getUri();
 
       out.printf(
-          "%-" + W_ID + "s  %-" + W_KIND + "s  %-" + W_DISPLAY + "s  %-" + W_TS + "s  %-" + W_TS
-              + "s  %-" + W_DESTCAT + "s  %-" + W_STATE + "s  %s%n",
-          CliUtils.trunc(id, W_ID),
-          CliUtils.trunc(kind, W_KIND),
-          CliUtils.trunc(display, W_DISPLAY),
-          CliUtils.trunc(created, W_TS),
-          CliUtils.trunc(updated, W_TS),
-          CliUtils.trunc(destCat, W_DESTCAT),
-          CliUtils.trunc(state, W_STATE),
-          (W_URI > 0 ? CliUtils.trunc(uri, W_URI) : uri));
+          "%-"
+              + CONNECTOR_W_ID
+              + "s  %-"
+              + CONNECTOR_W_KIND
+              + "s  %-"
+              + CONNECTOR_W_DISPLAY
+              + "s  %-"
+              + CONNECTOR_W_TS
+              + "s  %-"
+              + CONNECTOR_W_TS
+              + "s  %-"
+              + CONNECTOR_W_DESTCAT
+              + "s  %-"
+              + CONNECTOR_W_STATE
+              + "s  %s%n",
+          CliUtils.trunc(id, CONNECTOR_W_ID),
+          CliUtils.trunc(kind, CONNECTOR_W_KIND),
+          CliUtils.trunc(display, CONNECTOR_W_DISPLAY),
+          CliUtils.trunc(created, CONNECTOR_W_TS),
+          CliUtils.trunc(updated, CONNECTOR_W_TS),
+          CliUtils.trunc(destCat, CONNECTOR_W_DESTCAT),
+          CliUtils.trunc(state, CONNECTOR_W_STATE),
+          (CONNECTOR_W_URI > 0 ? CliUtils.trunc(uri, CONNECTOR_W_URI) : uri));
 
       if (c.hasDestination()) {
         String destCatDisplay = "";
@@ -1172,6 +1318,11 @@ final class ConnectorCliSupport {
   }
 
   private static void printReconcileJobsTable(List<GetReconcileJobResponse> jobs, PrintStream out) {
+    printReconcileJobsTableHeader(out);
+    printReconcileJobsTableRows(jobs, out);
+  }
+
+  private static void printReconcileJobsTableHeader(PrintStream out) {
     final int W_JOB_ID = 36;
     final int W_STATE = 10;
     final int W_MODE = 12;
@@ -1219,6 +1370,20 @@ final class ConnectorCliSupport {
         "INDEXES",
         "ERRORS",
         "MESSAGE");
+  }
+
+  private static void printReconcileJobsTableRows(
+      List<GetReconcileJobResponse> jobs, PrintStream out) {
+    final int W_JOB_ID = 36;
+    final int W_STATE = 10;
+    final int W_MODE = 12;
+    final int W_STARTED = 24;
+    final int W_DURATION = 10;
+    final int W_CHANGES = 8;
+    final int W_SNAPSHOTS = 10;
+    final int W_STATS = 8;
+    final int W_INDEXES = 8;
+    final int W_ERRORS = 8;
     for (GetReconcileJobResponse job : jobs) {
       out.printf(
           "%-"
@@ -1256,6 +1421,38 @@ final class ConnectorCliSupport {
           job.getIndexesProcessed(),
           job.getErrors(),
           truncate(singleLineMessage(displayJobMessage(job.getMessage())), 60));
+    }
+  }
+
+  private static final class JsonArrayWriter {
+    private final PrintStream out;
+    private boolean first = true;
+
+    JsonArrayWriter(String fieldName, PrintStream out) {
+      this.out = out;
+      out.print("{\"");
+      out.print(fieldName);
+      out.print("\":[");
+    }
+
+    void write(List<? extends MessageOrBuilder> jobs) throws InvalidProtocolBufferException {
+      for (MessageOrBuilder job : jobs) {
+        if (!first) {
+          out.print(",");
+        }
+        out.print(CliUtils.jsonPrinter().print(job));
+        first = false;
+      }
+    }
+
+    void finish() {
+      out.println("]}");
+    }
+  }
+
+  private static final class JsonStreamRuntimeException extends RuntimeException {
+    JsonStreamRuntimeException(InvalidProtocolBufferException cause) {
+      super(cause);
     }
   }
 

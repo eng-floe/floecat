@@ -72,15 +72,15 @@ final class SnapshotCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    var snaps =
-        CliArgs.collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr ->
-                snapshotsService.listSnapshots(
-                    ListSnapshotsRequest.newBuilder().setTableId(tableId).setPage(pr).build()),
-            r -> r.getSnapshotsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printSnapshots(snaps, out);
+    printSnapshotsHeader(out);
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr ->
+            snapshotsService.listSnapshots(
+                ListSnapshotsRequest.newBuilder().setTableId(tableId).setPage(pr).build()),
+        r -> r.getSnapshotsList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        snaps -> printSnapshotsRows(snaps, out));
   }
 
   private static void snapshotCrud(
@@ -152,7 +152,15 @@ final class SnapshotCliSupport {
   }
 
   private static void printSnapshots(List<Snapshot> snaps, PrintStream out) {
+    printSnapshotsHeader(out);
+    printSnapshotsRows(snaps, out);
+  }
+
+  private static void printSnapshotsHeader(PrintStream out) {
     out.printf("%-20s  %-24s  %-20s%n", "SNAPSHOT_ID", "UPSTREAM_CREATED_AT", "PARENT_ID");
+  }
+
+  private static void printSnapshotsRows(List<Snapshot> snaps, PrintStream out) {
     for (var s : snaps) {
       out.printf(
           "%-20d  %-24s  %-20d%n",

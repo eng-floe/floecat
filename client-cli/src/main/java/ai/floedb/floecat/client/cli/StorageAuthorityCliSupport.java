@@ -47,7 +47,15 @@ final class StorageAuthorityCliSupport {
     switch (command) {
       case "storage-authorities" -> {
         int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
-        printAuthorities(listAll(pageSize, authorities), out);
+        printAuthoritiesHeader(out);
+        CliArgs.forEachPage(
+            pageSize,
+            pr ->
+                authorities.listStorageAuthorities(
+                    ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),
+            r -> r.getAuthoritiesList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            rows -> printAuthoritiesRows(rows, out));
       }
       case "storage-authority" -> crud(args, out, authorities, getCurrentAccountId);
       default ->
@@ -67,7 +75,15 @@ final class StorageAuthorityCliSupport {
     switch (args.get(0)) {
       case "list" -> {
         int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
-        printAuthorities(listAll(pageSize, authorities), out);
+        printAuthoritiesHeader(out);
+        CliArgs.forEachPage(
+            pageSize,
+            pr ->
+                authorities.listStorageAuthorities(
+                    ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),
+            r -> r.getAuthoritiesList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+            rows -> printAuthoritiesRows(rows, out));
       }
       case "get" -> {
         if (args.size() < 2) {
@@ -255,17 +271,6 @@ final class StorageAuthorityCliSupport {
     return com.google.protobuf.FieldMask.newBuilder().addAllPaths(paths).build();
   }
 
-  private static List<StorageAuthority> listAll(
-      int pageSize, StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub authorities) {
-    return CliArgs.collectPages(
-        pageSize,
-        pr ->
-            authorities.listStorageAuthorities(
-                ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),
-        r -> r.getAuthoritiesList(),
-        r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-  }
-
   static ResourceId resolveId(
       String token,
       StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub authorities,
@@ -274,12 +279,27 @@ final class StorageAuthorityCliSupport {
     if (CliUtils.looksLikeUuid(t)) {
       return rid(t, getCurrentAccountId);
     }
-    var all = listAll(DEFAULT_PAGE_SIZE, authorities);
-    var exact = all.stream().filter(a -> t.equals(a.getDisplayName())).toList();
+    List<StorageAuthority> exact = new ArrayList<>();
+    List<StorageAuthority> ci = new ArrayList<>();
+    CliArgs.forEachPage(
+        DEFAULT_PAGE_SIZE,
+        pr ->
+            authorities.listStorageAuthorities(
+                ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),
+        r -> r.getAuthoritiesList(),
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
+        rows -> {
+          for (StorageAuthority authority : rows) {
+            if (t.equals(authority.getDisplayName())) {
+              exact.add(authority);
+            } else if (t.equalsIgnoreCase(authority.getDisplayName())) {
+              ci.add(authority);
+            }
+          }
+        });
     if (exact.size() == 1) {
       return exact.get(0).getResourceId();
     }
-    var ci = all.stream().filter(a -> t.equalsIgnoreCase(a.getDisplayName())).toList();
     if (ci.size() == 1) {
       return ci.get(0).getResourceId();
     }
@@ -302,8 +322,16 @@ final class StorageAuthorityCliSupport {
   }
 
   private static void printAuthorities(List<StorageAuthority> authorities, PrintStream out) {
+    printAuthoritiesHeader(out);
+    printAuthoritiesRows(authorities, out);
+  }
+
+  private static void printAuthoritiesHeader(PrintStream out) {
     out.printf(
         "%-40s %-24s %-6s %-4s %s%n", "AUTHORITY_ID", "DISPLAY_NAME", "TYPE", "ON", "PREFIX");
+  }
+
+  private static void printAuthoritiesRows(List<StorageAuthority> authorities, PrintStream out) {
     for (StorageAuthority authority : authorities) {
       out.printf(
           "%-40s %-24s %-6s %-4s %s%n",
