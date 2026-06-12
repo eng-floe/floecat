@@ -286,6 +286,7 @@ final class DeltaSchemaMapper {
       case "timestamp" -> "TIMESTAMPTZ";
       case "timestamp_ntz" -> "TIMESTAMP";
       case "interval" -> "INTERVAL";
+      case "variant" -> "VARIANT";
       default -> {
         if (lowerRaw.startsWith("decimal")) {
           yield canonicalDeltaDecimal(raw);
