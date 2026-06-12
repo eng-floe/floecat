@@ -98,19 +98,28 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                   var pin = ctx.requireSnapshotPin(tableId, correlationId);
 
                   try {
-                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin);
-
-                    ScanBundle pruned =
-                        ScanPruningUtils.pruneBundle(
-                            raw.bundle(),
-                            request.getRequiredColumnsList(),
-                            request.getPredicatesList());
+                    ScanBundle pruned;
+                    var tableInfo =
+                        request.getMetadataOnly()
+                            ? scanBundles.fetchTableInfo(correlationId, request.getTableId(), pin)
+                            : null;
+                    if (request.getMetadataOnly()) {
+                      pruned = ScanBundle.getDefaultInstance();
+                    } else {
+                      var raw = scanBundles.fetch(correlationId, request.getTableId(), pin);
+                      pruned =
+                          ScanPruningUtils.pruneBundle(
+                              raw.bundle(),
+                              request.getRequiredColumnsList(),
+                              request.getPredicatesList());
+                      tableInfo = raw.tableInfo();
+                    }
 
                     ctx.markPlanningCompleted();
 
                     return FetchScanBundleResponse.newBuilder()
                         .setBundle(pruned)
-                        .setTableInfo(raw.tableInfo())
+                        .setTableInfo(tableInfo)
                         .build();
 
                   } catch (RuntimeException e) {

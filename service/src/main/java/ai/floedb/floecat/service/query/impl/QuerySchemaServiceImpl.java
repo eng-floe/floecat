@@ -33,6 +33,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
@@ -171,7 +172,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     SnapshotRef snapshotRef = snapshotRefFrom(pin);
     CatalogOverlay.SchemaResolution resolved =
         catalogOverlay.schemaFor(correlationId, rid, snapshotRef);
-    return schemaMapper.map(resolved.table(), resolved.schemaJson());
+    return UserObjectBundleUtils.qualifyNestedColumnNames(
+        schemaMapper.map(resolved.table(), resolved.schemaJson()));
   }
 
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {

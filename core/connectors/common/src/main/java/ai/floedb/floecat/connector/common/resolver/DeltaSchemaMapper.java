@@ -47,6 +47,7 @@ import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * DeltaSchemaMapper: Converts Delta Lake schema JSON to logical SchemaDescriptor.
@@ -68,16 +69,17 @@ final class DeltaSchemaMapper {
 
     try {
       Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
+      AtomicInteger ordinals = new AtomicInteger(0);
       try {
         StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
-        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys);
+        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys, ordinals);
       } catch (Exception kernelFailure) {
         JsonNode root = MAPPER.readTree(schemaJson);
         JsonNode fields = root.get("fields");
         if (fields == null || !fields.isArray()) {
           throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
         }
-        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys);
+        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys, ordinals);
       }
     } catch (Exception e) {
       throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
@@ -91,7 +93,8 @@ final class DeltaSchemaMapper {
       SchemaDescriptor.Builder sb,
       StructType structType,
       String prefix,
-      Set<String> partitionKeys) {
+      Set<String> partitionKeys,
+      AtomicInteger ordinals) {
     if (structType == null) {
       return;
     }
@@ -113,18 +116,18 @@ final class DeltaSchemaMapper {
                   .setNullable(field.isNullable())
                   .setPhysicalPath(physical)
                   .setPartitionKey(isPartition)
-                  .setOrdinal(i + 1)
+                  .setOrdinal(ordinals.incrementAndGet())
                   .setLeaf(!isContainerType(dataType))
                   .build()));
 
       if (dataType instanceof StructType nestedStruct) {
-        walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys);
+        walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys, ordinals);
       } else if (dataType instanceof ArrayType arrayType
           && arrayType.getElementType() instanceof StructType elementStruct) {
-        walkDeltaStruct(cid_algo, sb, elementStruct, physical + "[]", partitionKeys);
+        walkDeltaStruct(cid_algo, sb, elementStruct, physical + "[]", partitionKeys, ordinals);
       } else if (dataType instanceof MapType mapType
           && mapType.getValueType() instanceof StructType valueStruct) {
-        walkDeltaStruct(cid_algo, sb, valueStruct, physical + "{}", partitionKeys);
+        walkDeltaStruct(cid_algo, sb, valueStruct, physical + "{}", partitionKeys, ordinals);
       }
     }
   }
@@ -185,7 +188,8 @@ final class DeltaSchemaMapper {
       SchemaDescriptor.Builder sb,
       JsonNode node,
       String prefix,
-      Set<String> partitionKeys) {
+      Set<String> partitionKeys,
+      AtomicInteger ordinals) {
     if (node == null || !node.has("fields")) {
       return;
     }
@@ -208,7 +212,7 @@ final class DeltaSchemaMapper {
                   .setNullable(field.path("nullable").asBoolean(true))
                   .setPhysicalPath(physical)
                   .setPartitionKey(isPartition)
-                  .setOrdinal(i + 1)
+                  .setOrdinal(ordinals.incrementAndGet())
                   .setLeaf(!fallbackContainerType(typeNode))
                   .build()));
 
@@ -216,16 +220,16 @@ final class DeltaSchemaMapper {
         continue;
       }
       if ("struct".equals(typeNode.path("type").asText(""))) {
-        walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys);
+        walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys, ordinals);
       } else if ("array".equals(typeNode.path("type").asText(""))) {
         JsonNode elem = typeNode.get("elementType");
         if (elem != null && elem.isObject() && "struct".equals(elem.path("type").asText(""))) {
-          walkFallbackStruct(cid_algo, sb, elem, physical + "[]", partitionKeys);
+          walkFallbackStruct(cid_algo, sb, elem, physical + "[]", partitionKeys, ordinals);
         }
       } else if ("map".equals(typeNode.path("type").asText(""))) {
         JsonNode value = typeNode.get("valueType");
         if (value != null && value.isObject() && "struct".equals(value.path("type").asText(""))) {
-          walkFallbackStruct(cid_algo, sb, value, physical + "{}", partitionKeys);
+          walkFallbackStruct(cid_algo, sb, value, physical + "{}", partitionKeys, ordinals);
         }
       }
     }

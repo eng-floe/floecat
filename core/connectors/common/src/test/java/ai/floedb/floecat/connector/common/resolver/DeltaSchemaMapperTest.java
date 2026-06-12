@@ -313,7 +313,7 @@ class DeltaSchemaMapperTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Ordinals are 1-based within each struct
+  // Ordinals are 1-based across the flattened schema
   // ---------------------------------------------------------------------------
 
   @Test
@@ -331,6 +331,97 @@ class DeltaSchemaMapperTest {
     assertThat(desc.getColumns(0).getOrdinal()).isEqualTo(1);
     assertThat(desc.getColumns(1).getOrdinal()).isEqualTo(2);
     assertThat(desc.getColumns(2).getOrdinal()).isEqualTo(3);
+  }
+
+  @Test
+  void nestedOrdinalsAdvanceAcrossFlattenedSchema() {
+    String json =
+        """
+        {"fields":[
+          {"name":"id","type":"long","nullable":false},
+          {"name":"location","type":{
+            "type":"struct",
+            "fields":[
+              {"name":"lat","type":"double","nullable":true},
+              {"name":"lon","type":"double","nullable":true}
+            ]
+          },"nullable":true},
+          {"name":"name","type":"string","nullable":true}
+        ]}
+        """;
+
+    SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
+
+    assertThat(desc.getColumnsList().stream().map(SchemaColumn::getOrdinal))
+        .containsExactly(1, 2, 3, 4, 5);
+    assertThat(desc.getColumnsList().stream().map(SchemaColumn::getPhysicalPath))
+        .containsExactly("id", "location", "location.lat", "location.lon", "name");
+  }
+
+  @Test
+  void otelSchemaKeepsTopLevelColumnAfterNestedChildren() {
+    String json =
+        """
+        {"type":"struct","fields":[
+          {"name":"record_id","type":"string","nullable":true,"metadata":{}},
+          {"name":"time","type":"timestamp","nullable":true,"metadata":{}},
+          {"name":"date","type":"date","nullable":true,"metadata":{}},
+          {"name":"service_name","type":"string","nullable":true,"metadata":{}},
+          {"name":"trace_id","type":"string","nullable":true,"metadata":{}},
+          {"name":"span_id","type":"string","nullable":true,"metadata":{}},
+          {"name":"trace_state","type":"string","nullable":true,"metadata":{}},
+          {"name":"parent_span_id","type":"string","nullable":true,"metadata":{}},
+          {"name":"flags","type":"integer","nullable":true,"metadata":{}},
+          {"name":"name","type":"string","nullable":true,"metadata":{}},
+          {"name":"kind","type":"string","nullable":true,"metadata":{}},
+          {"name":"start_time_unix_nano","type":"long","nullable":true,"metadata":{}},
+          {"name":"end_time_unix_nano","type":"long","nullable":true,"metadata":{}},
+          {"name":"attributes","type":"variant","nullable":true,"metadata":{}},
+          {"name":"dropped_attributes_count","type":"integer","nullable":true,"metadata":{}},
+          {"name":"events","type":{"type":"array","elementType":{"type":"struct","fields":[
+            {"name":"time_unix_nano","type":"long","nullable":true,"metadata":{}},
+            {"name":"name","type":"string","nullable":true,"metadata":{}},
+            {"name":"attributes","type":"variant","nullable":true,"metadata":{}},
+            {"name":"dropped_attributes_count","type":"integer","nullable":true,"metadata":{}}
+          ]},"containsNull":true},"nullable":true,"metadata":{}},
+          {"name":"dropped_events_count","type":"integer","nullable":true,"metadata":{}},
+          {"name":"links","type":{"type":"array","elementType":{"type":"struct","fields":[
+            {"name":"trace_id","type":"string","nullable":true,"metadata":{}},
+            {"name":"span_id","type":"string","nullable":true,"metadata":{}},
+            {"name":"trace_state","type":"string","nullable":true,"metadata":{}},
+            {"name":"attributes","type":"variant","nullable":true,"metadata":{}},
+            {"name":"dropped_attributes_count","type":"integer","nullable":true,"metadata":{}},
+            {"name":"flags","type":"integer","nullable":true,"metadata":{}}
+          ]},"containsNull":true},"nullable":true,"metadata":{}},
+          {"name":"dropped_links_count","type":"integer","nullable":true,"metadata":{}},
+          {"name":"status","type":{"type":"struct","fields":[
+            {"name":"message","type":"string","nullable":true,"metadata":{}},
+            {"name":"code","type":"string","nullable":true,"metadata":{}}
+          ]},"nullable":true,"metadata":{}},
+          {"name":"resource","type":{"type":"struct","fields":[
+            {"name":"attributes","type":"variant","nullable":true,"metadata":{}},
+            {"name":"dropped_attributes_count","type":"integer","nullable":true,"metadata":{}}
+          ]},"nullable":true,"metadata":{}},
+          {"name":"resource_schema_url","type":"string","nullable":true,"metadata":{}},
+          {"name":"instrumentation_scope","type":{"type":"struct","fields":[
+            {"name":"name","type":"string","nullable":true,"metadata":{}},
+            {"name":"version","type":"string","nullable":true,"metadata":{}},
+            {"name":"attributes","type":"variant","nullable":true,"metadata":{}},
+            {"name":"dropped_attributes_count","type":"integer","nullable":true,"metadata":{}}
+          ]},"nullable":true,"metadata":{}},
+          {"name":"span_schema_url","type":"string","nullable":true,"metadata":{}}
+        ]}
+        """;
+
+    SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
+
+    SchemaColumn spanSchemaUrl =
+        desc.getColumnsList().stream()
+            .filter(col -> "span_schema_url".equals(col.getName()))
+            .findFirst()
+            .orElseThrow();
+
+    assertThat(spanSchemaUrl.getOrdinal()).isEqualTo(desc.getColumnsCount());
   }
 
   @Test

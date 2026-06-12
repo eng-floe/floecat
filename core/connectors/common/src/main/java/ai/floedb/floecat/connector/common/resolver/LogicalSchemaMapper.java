@@ -120,7 +120,11 @@ public class LogicalSchemaMapper {
         // Iterate through all columns (top-level and nested) and extract ordinals.
         for (var col : schemaDesc.getColumnsList()) {
           if (col.getOrdinal() > 0) {
-            ordinals.put(col.getName(), col.getOrdinal());
+            String key = col.getPhysicalPath();
+            if (key == null || key.isBlank()) {
+              key = col.getName();
+            }
+            ordinals.put(key, col.getOrdinal());
           }
         }
       }

@@ -33,11 +33,13 @@ import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,26 +51,46 @@ public class ScanBundleService {
   private final TableRepository tables;
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
+  private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
 
   @Inject
   public ScanBundleService(
-      TableRepository tables, SnapshotRepository snapshots, StatsStore statsStore) {
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      StatsStore statsStore,
+      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
+    this.fileIoPropertiesResolver = fileIoPropertiesResolver;
   }
 
   public ScanBundleWithInfo fetch(
       String correlationId, ResourceId tableId, SnapshotPin snapshotPin) {
+    Table table = requireTable(correlationId, tableId);
+    Snapshot snapshot = requireSnapshot(correlationId, tableId, snapshotPin.getSnapshotId());
+    FloecatConnector.ScanBundle bundle = buildFromStats(table, snapshotPin.getSnapshotId());
+    TableInfo info = buildTableInfo(table, snapshot, snapshotPin.getSnapshotId());
+    return new ScanBundleWithInfo(bundle, info);
+  }
 
+  public TableInfo fetchTableInfo(
+      String correlationId, ResourceId tableId, SnapshotPin snapshotPin) {
+    Table table = requireTable(correlationId, tableId);
+    Snapshot snapshot = requireSnapshot(correlationId, tableId, snapshotPin.getSnapshotId());
+    return buildTableInfo(table, snapshot, snapshotPin.getSnapshotId());
+  }
+
+  private Table requireTable(String correlationId, ResourceId tableId) {
     Table table =
         tables
             .getById(tableId)
             .orElseThrow(
                 () -> GrpcErrors.notFound(correlationId, TABLE, Map.of("id", tableId.getId())));
+    return table;
+  }
 
-    long snapshotId = snapshotPin.getSnapshotId();
-
+  private Snapshot requireSnapshot(String correlationId, ResourceId tableId, long snapshotId) {
     Snapshot snapshot =
         snapshots
             .getById(tableId, snapshotId)
@@ -82,11 +104,7 @@ public class ScanBundleService {
                             tableId.getId(),
                             "snapshot_id",
                             Long.toString(snapshotId))));
-
-    FloecatConnector.ScanBundle bundle = buildFromStats(table, snapshotId);
-
-    TableInfo info = buildTableInfo(table, snapshot, snapshotId);
-    return new ScanBundleWithInfo(bundle, info);
+    return snapshot;
   }
 
   private FloecatConnector.ScanBundle buildFromStats(Table table, long snapshotId) {
@@ -157,12 +175,14 @@ public class ScanBundleService {
     if (schemaJson == null || schemaJson.isBlank()) {
       schemaJson = table.getSchemaJson();
     }
+    String rawSchemaJson = schemaJson;
+    boolean deltaTable = DeltaSchemaNormalizer.isDeltaTable(table, table.getPropertiesMap());
     if (schemaJson != null && !schemaJson.isBlank()) {
       // Delta/Unity tables store the raw Delta schema JSON (name/type/nullable), but the scan
       // engine parses TableInfo.schema_json as an Iceberg schema (id/required). Convert it here,
       // mirroring what the Iceberg REST gateway does for the same tables. Variant is left as a
       // scalar type for the engine to rewrite into a struct.
-      if (DeltaSchemaNormalizer.isDeltaTable(table, table.getPropertiesMap())) {
+      if (deltaTable) {
         schemaJson = DeltaSchemaNormalizer.normalizeSchemaJson(schemaJson, snapshot.getSchemaId());
       }
       builder.setSchemaJson(schemaJson);
@@ -177,11 +197,23 @@ public class ScanBundleService {
       builder.setPartitionSpecs(PartitionSpecInfo.newBuilder().setSpecId(0).build());
     }
 
-    if (table.getPropertiesCount() > 0) {
-      builder.putAllProperties(table.getPropertiesMap());
-    }
-
     String metadataLocation = SnapshotRepository.metadataLocation(snapshot);
+    Map<String, String> tableProperties =
+        fileIoPropertiesResolver.applyToTableProperties(
+            table, metadataLocation, table.getPropertiesMap());
+    if (deltaTable
+        && rawSchemaJson != null
+        && !rawSchemaJson.isBlank()
+        && !tableProperties.containsKey(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY)) {
+      String nameMappingJson = DeltaSchemaNormalizer.defaultNameMappingJson(rawSchemaJson);
+      if (nameMappingJson != null && !nameMappingJson.isBlank()) {
+        tableProperties = new LinkedHashMap<>(tableProperties);
+        tableProperties.put(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY, nameMappingJson);
+      }
+    }
+    if (!tableProperties.isEmpty()) {
+      builder.putAllProperties(tableProperties);
+    }
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
     }

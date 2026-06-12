@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class UserObjectBundleUtilsTest {
@@ -41,5 +42,33 @@ class UserObjectBundleUtilsTest {
     assertThat(info.getName()).isEqualTo("ts");
     assertThat(info.getNullable()).isTrue();
     assertThat(info.getOrdinal()).isEqualTo(1);
+  }
+
+  @Test
+  void qualifyNestedColumnNamesUsesPhysicalPathForNestedLeaves() {
+    List<SchemaColumn> schema =
+        List.of(
+            SchemaColumn.newBuilder().setName("flags").setPhysicalPath("flags").build(),
+            SchemaColumn.newBuilder().setName("links").setPhysicalPath("links").build(),
+            SchemaColumn.newBuilder().setName("flags").setPhysicalPath("links[].flags").build(),
+            SchemaColumn.newBuilder()
+                .setName("span_schema_url")
+                .setPhysicalPath("span_schema_url")
+                .build(),
+            SchemaColumn.newBuilder().setName("message").setPhysicalPath("status.message").build());
+
+    assertThat(UserObjectBundleUtils.qualifyNestedColumnNames(schema))
+        .extracting(SchemaColumn::getName)
+        .containsExactly(
+            "flags", "links", "links.element.flags", "span_schema_url", "status.message");
+  }
+
+  @Test
+  void toCatalystPathRewritesCollectionSegments() {
+    assertThat(UserObjectBundleUtils.toCatalystPath("tags[]")).isEqualTo("tags.element");
+    assertThat(UserObjectBundleUtils.toCatalystPath("links[].flags"))
+        .isEqualTo("links.element.flags");
+    assertThat(UserObjectBundleUtils.toCatalystPath("props{}.value"))
+        .isEqualTo("props.value.value");
   }
 }

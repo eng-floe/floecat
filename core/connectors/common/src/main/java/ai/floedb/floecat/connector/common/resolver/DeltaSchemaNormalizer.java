@@ -31,6 +31,8 @@ import java.util.Set;
 
 public final class DeltaSchemaNormalizer {
   private static final ObjectMapper JSON = new ObjectMapper();
+  public static final String DEFAULT_NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
+  private static final String COLUMN_MAPPING_PHYSICAL_NAME_KEY = "delta.columnMapping.physicalName";
 
   private DeltaSchemaNormalizer() {}
 
@@ -87,6 +89,23 @@ public final class DeltaSchemaNormalizer {
     }
   }
 
+  public static String defaultNameMappingJson(String rawSchemaJson) {
+    if (rawSchemaJson == null || rawSchemaJson.isBlank()) {
+      return null;
+    }
+    try {
+      Map<String, Object> root =
+          JSON.readValue(rawSchemaJson, new TypeReference<Map<String, Object>>() {});
+      List<Map<String, Object>> fields = buildNameMappingFields(root.get("fields"));
+      if (fields.isEmpty()) {
+        return null;
+      }
+      return JSON.writeValueAsString(fields);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("Failed to build Delta name mapping JSON", e);
+    }
+  }
+
   private static Map<String, Object> normalizeSchemaMap(
       Map<String, Object> root, int desiredSchemaId, boolean rewriteVariantAsStruct) {
     if (root == null) {
@@ -105,6 +124,143 @@ public final class DeltaSchemaNormalizer {
     normalized.put("fields", fields);
     normalized.put("last-column-id", lastColumnId);
     return normalized;
+  }
+
+  private static List<Map<String, Object>> buildNameMappingFields(Object rawFields) {
+    if (!(rawFields instanceof List<?> list)) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(list.size());
+    for (Object entry : list) {
+      if (!(entry instanceof Map<?, ?> rawField)) {
+        continue;
+      }
+      Map<String, Object> field = asStringObjectMap(rawField);
+      Map<String, Object> mapped = buildNameMappingField(field);
+      if (mapped != null) {
+        out.add(mapped);
+      }
+    }
+    return out;
+  }
+
+  private static Map<String, Object> buildNameMappingField(Map<String, Object> field) {
+    int fieldId = fieldId(field);
+    String logicalName = stringValue(field.get("name"));
+    if (fieldId <= 0 || logicalName == null || logicalName.isBlank()) {
+      return null;
+    }
+
+    List<String> names = new ArrayList<>(2);
+    names.add(logicalName);
+    Object metadataObj = field.get("metadata");
+    if (metadataObj instanceof Map<?, ?> metadataMap) {
+      String physicalName = stringValue(metadataMap.get(COLUMN_MAPPING_PHYSICAL_NAME_KEY));
+      if (physicalName != null && !physicalName.isBlank() && !physicalName.equals(logicalName)) {
+        names.add(physicalName);
+      }
+    }
+
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", fieldId);
+    mapped.put("names", names);
+
+    Object rawType = field.get("type");
+    if (rawType instanceof Map<?, ?> rawTypeMap) {
+      Map<String, Object> typeMap = asStringObjectMap(rawTypeMap);
+      String typeName = stringValue(typeMap.get("type"));
+      if (typeName != null) {
+        String normalized = typeName.trim().toLowerCase(Locale.ROOT);
+        switch (normalized) {
+          case "struct" -> {
+            List<Map<String, Object>> children = buildNameMappingFields(typeMap.get("fields"));
+            if (!children.isEmpty()) {
+              mapped.put("fields", children);
+            }
+          }
+          case "array", "list" -> {
+            Map<String, Object> elementField = buildListElementNameMapping(typeMap);
+            if (elementField != null) {
+              mapped.put("fields", List.of(elementField));
+            }
+          }
+          case "map" -> {
+            List<Map<String, Object>> children = buildMapFieldNameMappings(typeMap);
+            if (!children.isEmpty()) {
+              mapped.put("fields", children);
+            }
+          }
+          default -> {}
+        }
+      }
+    }
+    return mapped;
+  }
+
+  private static Map<String, Object> buildListElementNameMapping(Map<String, Object> typeMap) {
+    Object element = firstNonNull(typeMap.get("element"), typeMap.get("elementType"));
+    if (!(element instanceof Map<?, ?> rawElementMap)) {
+      return null;
+    }
+    int elementId = nonNegativeInt(typeMap.get("element-id"), 0);
+    if (elementId <= 0) {
+      return null;
+    }
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", elementId);
+    mapped.put("names", List.of("element"));
+
+    Map<String, Object> elementType = asStringObjectMap(rawElementMap);
+    String typeName = stringValue(elementType.get("type"));
+    if (typeName != null && "struct".equalsIgnoreCase(typeName)) {
+      List<Map<String, Object>> nested = buildNameMappingFields(elementType.get("fields"));
+      if (!nested.isEmpty()) {
+        mapped.put("fields", nested);
+      }
+    }
+    return mapped;
+  }
+
+  private static List<Map<String, Object>> buildMapFieldNameMappings(Map<String, Object> typeMap) {
+    List<Map<String, Object>> mapped = new ArrayList<>(2);
+    Map<String, Object> keyField =
+        buildMapChildNameMapping(
+            typeMap.get("key"), typeMap.get("keyType"), typeMap.get("key-id"), "key");
+    if (keyField != null) {
+      mapped.add(keyField);
+    }
+    Map<String, Object> valueField =
+        buildMapChildNameMapping(
+            typeMap.get("value"), typeMap.get("valueType"), typeMap.get("value-id"), "value");
+    if (valueField != null) {
+      mapped.add(valueField);
+    }
+    return mapped;
+  }
+
+  private static Map<String, Object> buildMapChildNameMapping(
+      Object childTypeObj, Object fallbackTypeObj, Object childIdObj, String name) {
+    Object child = firstNonNull(childTypeObj, fallbackTypeObj);
+    if (!(child instanceof Map<?, ?> rawChildMap)) {
+      return null;
+    }
+    int childId = nonNegativeInt(childIdObj, 0);
+    if (childId <= 0) {
+      return null;
+    }
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", childId);
+    mapped.put("names", List.of(name));
+
+    Map<String, Object> childType = asStringObjectMap(rawChildMap);
+    String typeName = stringValue(childType.get("type"));
+    if (typeName != null && "struct".equalsIgnoreCase(typeName)) {
+      List<Map<String, Object>> nested = buildNameMappingFields(childType.get("fields"));
+      if (!nested.isEmpty()) {
+        mapped.put("fields", nested);
+      }
+    }
+    return mapped;
   }
 
   private static List<Map<String, Object>> normalizeFields(

@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -67,6 +68,44 @@ public final class UserObjectBundleUtils {
       columns.add(column);
     }
     return columns;
+  }
+
+  public static List<SchemaColumn> qualifyNestedColumnNames(List<SchemaColumn> schema) {
+    if (schema == null || schema.isEmpty()) {
+      return List.of();
+    }
+    return schema.stream().map(UserObjectBundleUtils::withQualifiedNestedName).toList();
+  }
+
+  public static SchemaDescriptor qualifyNestedColumnNames(SchemaDescriptor schema) {
+    if (schema == null || schema.getColumnsCount() == 0) {
+      return SchemaDescriptor.getDefaultInstance();
+    }
+    return schema.toBuilder()
+        .clearColumns()
+        .addAllColumns(qualifyNestedColumnNames(schema.getColumnsList()))
+        .build();
+  }
+
+  static SchemaColumn withQualifiedNestedName(SchemaColumn column) {
+    if (column == null) {
+      return null;
+    }
+    String path = column.getPhysicalPath();
+    if (path == null || path.isBlank()) {
+      path = column.getName();
+    }
+    if (!path.contains(".")) {
+      return column;
+    }
+    return column.toBuilder().setName(toCatalystPath(path)).build();
+  }
+
+  static String toCatalystPath(String path) {
+    if (path == null || path.isBlank()) {
+      return path;
+    }
+    return path.replace("[]", ".element").replace("{}", ".value");
   }
 
   public static ColumnInfo columnInfo(SchemaColumn column, Origin origin) {

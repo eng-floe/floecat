@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class LogicalSchemaMapperTest {
@@ -212,14 +213,14 @@ class LogicalSchemaMapperTest {
     assertEquals("lat", lat.getName());
     assertEquals("location.lat", lat.getPhysicalPath());
     assertEquals(0, lat.getFieldId());
-    assertEquals(1, lat.getOrdinal());
+    assertEquals(3, lat.getOrdinal());
     assertTrue(lat.getLeaf());
 
     SchemaColumn lon = desc.getColumns(3);
     assertEquals("lon", lon.getName());
     assertEquals("location.lon", lon.getPhysicalPath());
     assertEquals(0, lon.getFieldId());
-    assertEquals(2, lon.getOrdinal());
+    assertEquals(4, lon.getOrdinal());
     assertTrue(lon.getLeaf());
 
     assertNotEquals(lat.getId(), lon.getId());
@@ -359,6 +360,32 @@ class LogicalSchemaMapperTest {
       assertEquals(a.getOrdinal(), b.getOrdinal());
       assertEquals(a.getId(), b.getId(), "id must be deterministic");
     }
+  }
+
+  @Test
+  void buildColumnOrdinalsUsesPhysicalPathsForNestedFields() {
+    String deltaJson =
+        """
+        {"fields":[
+          {"name":"id","type":"long","nullable":false},
+          {"name":"location","type":{
+            "type":"struct",
+            "fields":[
+              {"name":"lat","type":"double","nullable":true},
+              {"name":"lon","type":"double","nullable":true}
+            ]
+          },"nullable":true}
+        ]}
+        """;
+
+    Map<String, Integer> ordinals =
+        LogicalSchemaMapper.buildColumnOrdinals(
+            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, deltaJson);
+
+    assertEquals(1, ordinals.get("id"));
+    assertEquals(2, ordinals.get("location"));
+    assertEquals(3, ordinals.get("location.lat"));
+    assertEquals(4, ordinals.get("location.lon"));
   }
 
   @Test

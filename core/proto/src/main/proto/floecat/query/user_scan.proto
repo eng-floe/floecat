@@ -50,6 +50,9 @@ message FetchScanBundleRequest {
 
   // Logical predicates used for file-level pruning.
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
+
+  // When true, return only table_info and omit scan bundle materialization.
+  bool metadata_only = 5;
 }
 
 message TableInfo {
