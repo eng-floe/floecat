@@ -477,7 +477,14 @@ public class UserObjectBundleService {
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : relation.node() instanceof UserTableNode userTable
-                ? logicalSchemaMapper.map(userTable).getColumnsList()
+                ? UserObjectBundleUtils.qualifyNestedColumnNames(
+                    logicalSchemaForRelation(
+                            correlationId,
+                            relation.relationId(),
+                            userTable,
+                            relation.selectedInput(),
+                            queryContext)
+                        .getColumnsList())
                 : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =
@@ -1075,6 +1082,48 @@ public class UserObjectBundleService {
       builder.setSnapshot(relation.selectedInput().getSnapshot());
     }
     return builder.build();
+  }
+
+  private ai.floedb.floecat.query.rpc.SchemaDescriptor logicalSchemaForRelation(
+      String correlationId,
+      ResourceId relationId,
+      UserTableNode userTable,
+      QueryInput selectedInput,
+      QueryContext queryContext) {
+    SnapshotRef snapshotRef = explicitSnapshotOverride(selectedInput);
+    if (snapshotRef == null) {
+      snapshotRef = snapshotRefFromPin(queryContext.findSnapshotPin(relationId, correlationId));
+    }
+    if (snapshotRef == null) {
+      return logicalSchemaMapper.map(userTable);
+    }
+    CatalogOverlay.SchemaResolution resolved =
+        overlay.schemaFor(correlationId, relationId, snapshotRef);
+    return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
+  }
+
+  private SnapshotRef explicitSnapshotOverride(QueryInput selectedInput) {
+    if (selectedInput == null || !selectedInput.hasSnapshot()) {
+      return null;
+    }
+    SnapshotRef snapshot = selectedInput.getSnapshot();
+    return switch (snapshot.getWhichCase()) {
+      case SNAPSHOT_ID, AS_OF -> snapshot;
+      default -> null;
+    };
+  }
+
+  private SnapshotRef snapshotRefFromPin(Optional<SnapshotPin> pin) {
+    if (pin.isEmpty()) {
+      return null;
+    }
+    if (pin.get().hasSnapshotId()) {
+      return SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
+    }
+    if (pin.get().hasAsOf()) {
+      return SnapshotRef.newBuilder().setAsOf(pin.get().getAsOf()).build();
+    }
+    return null;
   }
 
   private NameRef canonicalName(ResourceId id, GraphNode node) {

@@ -112,4 +112,27 @@ class DeltaSchemaNormalizerTest {
     Map<String, Object> elementType = (Map<String, Object>) itemsType.get("element");
     assertEquals("struct", elementType.get("type"));
   }
+
+  @Test
+  void defaultNameMappingJsonIncludesLogicalAndPhysicalNames() throws Exception {
+    String deltaSchemaJson =
+        "{\"type\":\"struct\",\"fields\":["
+            + "{\"name\":\"flags\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":9,\"delta.columnMapping.physicalName\":\"col-111\"}},"
+            + "{\"name\":\"status\",\"type\":{\"type\":\"struct\",\"fields\":["
+            + "{\"name\":\"message\",\"type\":\"string\",\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":21,\"delta.columnMapping.physicalName\":\"col-211\"}}"
+            + "]},\"nullable\":true,\"metadata\":{\"delta.columnMapping.id\":20,\"delta.columnMapping.physicalName\":\"col-200\"}}]}";
+
+    String mappingJson = DeltaSchemaNormalizer.defaultNameMappingJson(deltaSchemaJson);
+
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> mapping = JSON.readValue(mappingJson, List.class);
+    assertEquals(List.of("flags", "col-111"), mapping.get(0).get("names"));
+    assertEquals(9, mapping.get(0).get("field-id"));
+
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> nested = (List<Map<String, Object>>) mapping.get(1).get("fields");
+    assertEquals(List.of("status", "col-200"), mapping.get(1).get("names"));
+    assertEquals(List.of("message", "col-211"), nested.get(0).get("names"));
+    assertEquals(21, nested.get(0).get("field-id"));
+  }
 }
