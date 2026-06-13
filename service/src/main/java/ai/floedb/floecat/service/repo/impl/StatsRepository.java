@@ -358,7 +358,7 @@ public class StatsRepository implements StatsStore {
         record.getSnapshotId(),
         generationId,
         StatsTargetIdentity.storageId(record.getTarget()),
-        Hashing.sha256Hex(record.toByteArray()));
+        Hashing.sha256Hex(TargetStatsRecords.contentHashImage(record).toByteArray()));
   }
 
   private void deleteGeneration(

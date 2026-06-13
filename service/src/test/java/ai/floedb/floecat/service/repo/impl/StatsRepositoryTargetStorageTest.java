@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.StatsProducer;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -38,6 +40,7 @@ import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -358,6 +361,107 @@ class StatsRepositoryTargetStorageTest {
                         null)))
         .isInstanceOf(BaseResourceRepository.NameConflictException.class)
         .hasMessageContaining("pointer bound to different blob");
+  }
+
+  @Test
+  void resubmitDifferingOnlyInOperationalTimestampsIsIdempotent() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9091L;
+
+    TargetStatsRecord first =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder()
+                .setRowCount(11L)
+                .setUpstream(
+                    UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(ts(1_000L)))
+                .build(),
+            metadataAt(ts(1_000L), ts(1_000L)));
+    TargetStatsRecord second =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder()
+                .setRowCount(11L)
+                .setUpstream(
+                    UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(ts(2_000L)))
+                .build(),
+            metadataAt(ts(2_000L), ts(2_000L)));
+
+    repository.putTargetStats(first);
+    // Identical payload, only operational timestamps differ: both records hash to the same content
+    // blob, so the stable target pointer re-binds to that same blob (last write wins on content)
+    // instead of failing with a "pointer bound to different blob" conflict. Regression for the
+    // MC_CONFLICT resubmit bug.
+    repository.putTargetStats(second);
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(second);
+  }
+
+  @Test
+  void resubmitFileTargetDifferingOnlyInColumnUpstreamIsIdempotent() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9092L;
+
+    TargetStatsRecord first =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            fileStatsWithColumnFetchedAt(ts(1_000L)),
+            metadataAt(ts(1_000L), ts(1_000L)));
+    TargetStatsRecord second =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            fileStatsWithColumnFetchedAt(ts(2_000L)),
+            metadataAt(ts(2_000L), ts(2_000L)));
+
+    repository.putTargetStats(first);
+    // Mirrors the ingest case: per-column scalar upstream fetched_at is wall-clock and differs on
+    // every capture; it must not change the content blob address, so the resubmit re-binds the same
+    // pointer instead of conflicting (last write wins on content).
+    repository.putTargetStats(second);
+
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget("s3://bucket/f.parquet")))
+        .contains(second);
+  }
+
+  private static FileTargetStats fileStatsWithColumnFetchedAt(Timestamp fetchedAt) {
+    return FileTargetStats.newBuilder()
+        .setFilePath("s3://bucket/f.parquet")
+        .setRowCount(7L)
+        .addColumns(
+            FileColumnStats.newBuilder()
+                .setColumnId(1L)
+                .setScalar(
+                    ScalarStats.newBuilder()
+                        .setLogicalType("BIGINT")
+                        .setRowCount(7L)
+                        .setUpstream(
+                            UpstreamStamp.newBuilder()
+                                .setCommitRef("snap")
+                                .setFetchedAt(fetchedAt))))
+        .build();
+  }
+
+  private static StatsMetadata metadataAt(Timestamp capturedAt, Timestamp refreshedAt) {
+    return StatsMetadata.newBuilder()
+        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+        .setCompleteness(StatsCompleteness.SC_COMPLETE)
+        .setCaptureMode(StatsCaptureMode.SCM_ASYNC)
+        .setCapturedAt(capturedAt)
+        .setRefreshedAt(refreshedAt)
+        .build();
+  }
+
+  private static Timestamp ts(long seconds) {
+    return Timestamp.newBuilder().setSeconds(seconds).build();
   }
 
   @Test

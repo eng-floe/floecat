@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -172,6 +173,61 @@ public final class TargetStatsRecords {
         record.getSnapshotId(),
         record.getFile(),
         record.hasMetadata() ? record.getMetadata() : null);
+  }
+
+  /**
+   * Returns a copy of {@code record} with volatile operational timestamps cleared, for use as the
+   * content-hash image behind a content-addressed storage key.
+   *
+   * <p>{@link StatsMetadata} {@code captured_at}/{@code refreshed_at} and every {@link
+   * UpstreamStamp} {@code fetched_at} are wall-clock stamps applied at capture time. Folding them
+   * into the content hash makes an otherwise-identical resubmission hash differently, so the stable
+   * target pointer can no longer be re-bound to the same blob and the write fails with a "pointer
+   * bound to different blob" conflict. They are excluded here so records that differ only in these
+   * timestamps share one blob and re-submit idempotently, mirroring the idempotency-fingerprint
+   * contract. The stored record is untouched; only the hash image drops them.
+   */
+  public static TargetStatsRecord contentHashImage(TargetStatsRecord record) {
+    if (record == null) {
+      return null;
+    }
+    TargetStatsRecord.Builder builder = record.toBuilder();
+    if (builder.hasMetadata()) {
+      builder.setMetadata(builder.getMetadata().toBuilder().clearCapturedAt().clearRefreshedAt());
+    }
+    switch (record.getValueCase()) {
+      case TABLE -> {
+        if (record.getTable().hasUpstream()) {
+          builder.setTable(
+              record.getTable().toBuilder()
+                  .setUpstream(record.getTable().getUpstream().toBuilder().clearFetchedAt()));
+        }
+      }
+      case SCALAR -> builder.setScalar(scalarHashImage(record.getScalar()));
+      case FILE -> builder.setFile(fileHashImage(record.getFile()));
+      case VALUE_NOT_SET -> {}
+    }
+    return builder.build();
+  }
+
+  private static ScalarStats scalarHashImage(ScalarStats scalar) {
+    if (!scalar.hasUpstream()) {
+      return scalar;
+    }
+    return scalar.toBuilder()
+        .setUpstream(scalar.getUpstream().toBuilder().clearFetchedAt())
+        .build();
+  }
+
+  private static FileTargetStats fileHashImage(FileTargetStats file) {
+    FileTargetStats.Builder builder = file.toBuilder();
+    for (int i = 0; i < builder.getColumnsCount(); i++) {
+      FileColumnStats column = builder.getColumns(i);
+      if (column.hasScalar() && column.getScalar().hasUpstream()) {
+        builder.setColumns(i, column.toBuilder().setScalar(scalarHashImage(column.getScalar())));
+      }
+    }
+    return builder.build();
   }
 
   private static FileTargetStats canonicalFileStats(

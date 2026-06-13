@@ -177,8 +177,8 @@ final class StatsCanonicalizer {
           g.scalar("system", up.getSystem().name());
           g.scalar("table_native_id", up.getTableNativeId());
           g.scalar("commit_ref", up.getCommitRef());
-          g.scalar("fetched_at_seconds", up.hasFetchedAt() ? up.getFetchedAt().getSeconds() : 0L);
-          g.scalar("fetched_at_nanos", up.hasFetchedAt() ? up.getFetchedAt().getNanos() : 0);
+          // fetched_at is an operational timestamp and intentionally excluded from content
+          // identity/fingerprinting, matching captured_at/refreshed_at in canonicalStatsMetadata.
           g.map("properties", up.getPropertiesMap());
         });
   }
