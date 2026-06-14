@@ -707,6 +707,59 @@ class ReconcileExecutorControlImplTest {
             eq(0L));
   }
 
+  @Test
+  void completeLeasedReconcileJobCancelsQueuedGrandchildrenOfCancelledPlanChildren() {
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("stop"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
+    var connector = job("job-1", "acct", ReconcileJobKind.PLAN_CONNECTOR, "", "JS_CANCELLED");
+    var table = job("table-1", "acct", ReconcileJobKind.PLAN_TABLE, "job-1", "JS_CANCELLED");
+    var snapshot =
+        job("snapshot-1", "acct", ReconcileJobKind.PLAN_SNAPSHOT, "table-1", "JS_CANCELLED");
+    var fileGroup =
+        job("file-1", "acct", ReconcileJobKind.EXEC_FILE_GROUP, "snapshot-1", "JS_CANCELLED");
+    when(service.jobs.get(null, "job-1")).thenReturn(Optional.of(connector));
+    when(service.jobs.get("acct", "table-1")).thenReturn(Optional.of(table));
+    when(service.jobs.get("acct", "snapshot-1")).thenReturn(Optional.of(snapshot));
+    when(service.jobs.cancel("acct", "table-1", "stop")).thenReturn(Optional.of(table));
+    when(service.jobs.cancel("acct", "snapshot-1", "stop")).thenReturn(Optional.of(snapshot));
+    when(service.jobs.cancel("acct", "file-1", "stop")).thenReturn(Optional.of(fileGroup));
+    when(service.jobs.childJobsPage("acct", "job-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(table), ""));
+    when(service.jobs.childJobsPage("acct", "table-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(snapshot), ""));
+    when(service.jobs.childJobsPage("acct", "snapshot-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(fileGroup), ""));
+
+    var response =
+        service
+            .completeLeasedReconcileJob(
+                CompleteLeasedReconcileJobRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setState(ReconcileCompletionState.RCS_CANCELLED)
+                    .setMessage("stop")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs).cancel("acct", "table-1", "stop");
+    verify(service.jobs).cancel("acct", "snapshot-1", "stop");
+    verify(service.jobs).cancel("acct", "file-1", "stop");
+  }
+
   private static ReconcileJobStore.ReconcileJob job(
       String jobId, String accountId, ReconcileJobKind jobKind, String parentJobId) {
     return job(jobId, accountId, jobKind, parentJobId, "JS_QUEUED");

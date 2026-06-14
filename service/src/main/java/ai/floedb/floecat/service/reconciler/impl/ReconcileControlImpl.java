@@ -1093,6 +1093,10 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       var cancelled = jobs.cancel(accountId, effectiveChild.jobId, reason);
       if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
         cancellations.requestCancel(cancelled.get().jobId);
+      }
+      var recursiveTarget = cancelled.orElse(storedChild);
+      if (recursiveTarget != null && supportsChildAggregation(recursiveTarget.jobKind)) {
+        cancelChildJobs(accountId, recursiveTarget, reason);
       } else if (cancelled.isEmpty() && canCancelViaActiveChildren(storedChild, effectiveChild)) {
         cancelChildJobs(accountId, storedChild, reason);
       }
