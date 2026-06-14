@@ -26,6 +26,7 @@ import com.google.rpc.DebugInfo;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import java.util.Locale;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -122,6 +123,64 @@ class GrpcErrorsTest {
     assertEquals(ErrorCode.MC_UNAVAILABLE, floecatStatus.errorCode());
     assertEquals("stats.engine.not.implemented", floecatStatus.messageKey());
     assertEquals("list_target_stats", floecatStatus.params().get("operation"));
+  }
+
+  @Test
+  void clampDetailKeepsHeadAndTailAndElidesMiddle() {
+    // Shape mirrors an AWS SDK validation message: the actionable constraint trails the
+    // embedded request/value dump, so the truncation must preserve both ends.
+    String head = "1 validation error detected: Value '";
+    String tail =
+        "' at 'transactItems' failed to satisfy constraint: "
+            + "Member must have length less than or equal to 100";
+    String oversized = head + "A".repeat(40_000) + tail;
+
+    String clamped = GrpcErrors.clampDetail(oversized);
+
+    assertTrue(clamped.length() < 700, "clamped detail should be bounded, was " + clamped.length());
+    assertTrue(clamped.startsWith("1 validation error detected"), clamped);
+    assertTrue(
+        clamped.endsWith("Member must have length less than or equal to 100"),
+        "tail constraint must survive: " + clamped);
+    assertTrue(clamped.contains("elided"), clamped);
+  }
+
+  @Test
+  void clampDetailLeavesShortMessagesIntact() {
+    assertEquals("boom", GrpcErrors.clampDetail("boom"));
+    assertEquals("", GrpcErrors.clampDetail(null));
+    // Whitespace runs (multi-line SDK dumps) are collapsed so they stay header-safe.
+    assertEquals("a b c", GrpcErrors.clampDetail("a\n\t b   c"));
+  }
+
+  @Test
+  void internalErrorBoundsRootMessageAndRenderedMessageForOversizedCause() {
+    String dump = "X".repeat(40_000);
+    StatusRuntimeException ex =
+        GrpcErrors.internal("corr-id", null, null, new RuntimeException(dump));
+
+    Status statusProto = StatusProto.fromThrowable(ex);
+    Error error = detailOfType(statusProto, Error.class);
+    assertNotNull(error, "Error detail should be present");
+
+    String rootMessage = error.getParamsMap().get("root_message");
+    assertNotNull(rootMessage, "root_message param should be set");
+    assertTrue(
+        rootMessage.length() < 700, "root_message must be clamped, was " + rootMessage.length());
+
+    // The MC_INTERNAL catalog template interpolates {root_message}; LocalizeErrorsInterceptor
+    // re-renders it into grpc-message + grpc-status-details-bin. With the source clamped, the
+    // rendered message stays well under the HTTP/2 header-list-size limit.
+    String rendered = new MessageCatalog(Locale.ENGLISH).render(error);
+    assertTrue(rendered.contains("root="), "template should still render the cause: " + rendered);
+    assertTrue(
+        rendered.length() < 2048,
+        "rendered message must stay header-safe, was " + rendered.length());
+
+    // The whole serialized status (what becomes grpc-status-details-bin) must be bounded too.
+    assertTrue(
+        statusProto.toByteArray().length < 4096,
+        "serialized status trailer must be bounded, was " + statusProto.toByteArray().length);
   }
 
   private static <T extends com.google.protobuf.Message> T detailOfType(
