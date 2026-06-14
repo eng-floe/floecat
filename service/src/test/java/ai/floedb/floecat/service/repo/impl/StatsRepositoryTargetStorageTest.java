@@ -491,6 +491,44 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void putTargetStatsIfAbsentDoesNotOverwriteWhenOnlyOperationalTimestampsDiffer() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9191L;
+
+    TargetStatsRecord existing =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder()
+                .setRowCount(11L)
+                .setUpstream(
+                    UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(ts(1_000L)))
+                .build(),
+            metadataAt(ts(1_000L), ts(1_000L)));
+    // Same payload, only operational timestamps differ -> same content blob address as `existing`.
+    TargetStatsRecord resubmit =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder()
+                .setRowCount(11L)
+                .setUpstream(
+                    UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(ts(2_000L)))
+                .build(),
+            metadataAt(ts(2_000L), ts(2_000L)));
+
+    repository.putTargetStats(existing);
+
+    // The target is already bound, so ifAbsent must report false AND leave the stored record's
+    // bytes (including its real operational timestamps) untouched -- it must not overwrite the
+    // shared blob before the pointer CAS miss.
+    assertThat(repository.putTargetStatsIfAbsent(resubmit)).isFalse();
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(existing);
+  }
+
+  @Test
   void replaceAllStatsForSnapshotSwapsAndRemovesSnapshotStats() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

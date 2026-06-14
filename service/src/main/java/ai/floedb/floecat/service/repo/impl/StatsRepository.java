@@ -427,6 +427,13 @@ public class StatsRepository implements StatsStore {
     }
 
     private boolean createIfAbsent(String pointerKey, String blobUri, TargetStatsRecord value) {
+      // The target pointer is bound, so ifAbsent must leave the existing record untouched. Now
+      // that content-hash images can map distinct records to one blobUri (timestamp-only resubmits
+      // share a blob), writing the blob before this check would overwrite the live record's bytes
+      // and still return false on the CAS miss. Check the pointer first and write nothing.
+      if (pointerStore.get(pointerKey).isPresent()) {
+        return false;
+      }
       boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
       Pointer reserve = PointerReferences.blobPointer(pointerKey, blobUri, 1L);
