@@ -567,6 +567,56 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   @Test
+  void persistPlanTableFailureCancelsObsoleteMissingConnectorJob() {
+    when(jobs.renewLease("job-2b", "lease-2b")).thenReturn(true);
+    when(jobs.getLeaseView("job-2b"))
+        .thenReturn(java.util.Optional.of(job("job-2b", ReconcileJobKind.PLAN_TABLE)));
+    when(jobs.applyLeaseOutcome(
+            eq("job-2b"),
+            eq("lease-2b"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(true);
+
+    boolean accepted =
+        service.persistPlanTableFailure(
+            principal,
+            "job-2b",
+            "lease-2b",
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .CONNECTOR_MISSING,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+                .RETRYABLE,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+                .TRANSIENT_ERROR,
+            "getConnector failed: connector-1");
+
+    assertTrue(accepted);
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq("job-2b"),
+            eq("lease-2b"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("getConnector failed: connector-1"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(1L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
   void persistPlanSnapshotFailureMarksRetryableFailure() {
     when(jobs.renewLease("job-3", "lease-3")).thenReturn(true);
     when(jobs.getLeaseView("job-3"))

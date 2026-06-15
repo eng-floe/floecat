@@ -654,7 +654,6 @@ class ReconcileExecutorControlImplTest {
             eq(0L));
   }
 
-  @Test
   void completeLeasedReconcileJobCancelsQueuedGrandchildrenOfCancelledPlanChildren() {
     when(service.jobs.applyLeaseOutcome(
             eq("job-1"),
