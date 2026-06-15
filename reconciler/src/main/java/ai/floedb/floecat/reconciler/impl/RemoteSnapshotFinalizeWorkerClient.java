@@ -16,9 +16,12 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import java.util.List;
+
 interface RemoteSnapshotFinalizeWorkerClient {
   boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease, String resultId, String statsBlobUri, int statsRecordCount);
+      RemoteLeasedJob lease, String resultId, List<TargetStatsRecord> statsRecords);
 
   boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
 }

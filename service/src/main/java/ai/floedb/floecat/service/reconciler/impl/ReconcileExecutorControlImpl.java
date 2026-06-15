@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
-import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -63,7 +62,6 @@ import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressResponse;
-import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeGroupManifest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
@@ -834,15 +832,6 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setDirectStatsRecordCount(payload.directStatsRecordCount())
                       .setSourceFileCount(payload.sourceFileCount())
                       .setFullRescan(payload.fullRescan());
-              for (var group : payload.completedGroups()) {
-                inputBuilder.addCompletedGroups(
-                    SnapshotFinalizeGroupManifest.newBuilder()
-                        .setPlanId(group.planId())
-                        .setGroupId(group.groupId())
-                        .setFileStatsBlobUri(group.fileStatsBlobUri())
-                        .setFileStatsRecordCount(group.fileStatsRecordCount())
-                        .build());
-              }
               return GetLeasedSnapshotFinalizeInputResponse.newBuilder()
                   .setInput(inputBuilder.build())
                   .build();
@@ -861,42 +850,30 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasChunk()) {
+                boolean accepted =
+                    leasedFileGroupExecutionService.persistChunk(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getChunk().getResultId(),
+                        request.getChunk().getChunkIndex(),
+                        request.getChunk().getStatsRecordsList(),
+                        request.getChunk().getIndexArtifactsList());
+                return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
               if (request.hasSuccess()) {
-                var uploadedIndexArtifacts =
-                    new ArrayList<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>();
-                var inlineIndexArtifacts =
-                    new ArrayList<
-                        ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact>();
-                for (var artifact : request.getSuccess().getIndexArtifactsList()) {
-                  if (artifact.getUploadedArtifactUri().isBlank()) {
-                    inlineIndexArtifacts.add(
-                        new ai.floedb.floecat.reconciler.spi.ReconcilerBackend.StagedIndexArtifact(
-                            artifact.getRecord(),
-                            artifact.getContent().toByteArray(),
-                            artifact.getContentType()));
-                    continue;
-                  }
-                  if (!artifact.getContent().isEmpty()) {
-                    throw new IllegalArgumentException(
-                        "uploaded index artifact manifest must not include inline content");
-                  }
-                  uploadedIndexArtifacts.add(
-                      new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
-                          artifact.getRecord(),
-                          artifact.getContentType(),
-                          artifact.getUploadedArtifactUri()));
-                }
                 boolean accepted =
                     leasedFileGroupExecutionService.persistSuccess(
                         principalContext,
                         jobId,
                         leaseEpoch,
                         request.getSuccess().getResultId(),
-                        request.getSuccess().getStatsRecordsList(),
-                        request.getSuccess().getFileStatsBlobUri(),
-                        request.getSuccess().getFileStatsRecordCount(),
-                        inlineIndexArtifacts,
-                        uploadedIndexArtifacts);
+                        request.getSuccess().getFileResultsList().stream()
+                            .map(ReconcileExecutorControlImpl::fromProtoFileResult)
+                            .toList());
                 return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -929,15 +906,23 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
-              if (request.hasSuccess()) {
+              if (request.hasChunk()) {
                 boolean accepted =
-                    leasedSnapshotFinalizeExecutionService.persistSuccess(
+                    leasedSnapshotFinalizeExecutionService.persistChunk(
                         principalContext,
                         jobId,
                         leaseEpoch,
-                        request.getSuccess().getResultId(),
-                        request.getSuccess().getStatsBlobUri(),
-                        request.getSuccess().getStatsRecordCount());
+                        request.getChunk().getResultId(),
+                        request.getChunk().getChunkIndex(),
+                        request.getChunk().getStatsRecordsList());
+                return SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
+              if (request.hasSuccess()) {
+                boolean accepted =
+                    leasedSnapshotFinalizeExecutionService.persistSuccess(
+                        principalContext, jobId, leaseEpoch, request.getSuccess().getResultId());
                 return SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

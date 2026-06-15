@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -867,7 +868,7 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void runLeaseKeepsHeartbeatsRunningUntilHandledCompletionReturns() throws Exception {
+  void runLeaseStopsHeartbeatsWhenHandledCompletionStarts() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger renewCalls = new AtomicInteger();
@@ -933,11 +934,8 @@ class RemoteReconcileExecutorPollerTest {
     assertTrue(sawHeartbeat.await(5, TimeUnit.SECONDS));
     assertTrue(handledCompletionStarted.await(5, TimeUnit.SECONDS));
     int renewCountAtHandledCompletion = renewCalls.get();
-    long renewDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-    while (renewCalls.get() <= renewCountAtHandledCompletion && System.nanoTime() < renewDeadline) {
-      Thread.sleep(25L);
-    }
-    assertTrue(renewCalls.get() > renewCountAtHandledCompletion);
+    Thread.sleep(500L);
+    assertEquals(renewCountAtHandledCompletion, renewCalls.get());
     allowHandledCompletion.countDown();
     worker.join(5_000L);
 
@@ -952,7 +950,7 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void runLeaseCanRenewDuringHandledCompletionWithoutExplicitProgress() throws Exception {
+  void runLeaseDoesNotRenewDuringHandledCompletionWithoutExplicitProgress() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     AtomicInteger renewCalls = new AtomicInteger();
     CountDownLatch handledCompletionStarted = new CountDownLatch(1);
@@ -1002,11 +1000,9 @@ class RemoteReconcileExecutorPollerTest {
     worker.start();
 
     assertTrue(handledCompletionStarted.await(5, TimeUnit.SECONDS));
-    long renewDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-    while (renewCalls.get() == 0 && System.nanoTime() < renewDeadline) {
-      Thread.sleep(25L);
-    }
-    assertTrue(renewCalls.get() > 0);
+    int renewCountAtHandledCompletion = renewCalls.get();
+    Thread.sleep(500L);
+    assertEquals(renewCountAtHandledCompletion, renewCalls.get());
     allowHandledCompletion.countDown();
     worker.join(5_000L);
 

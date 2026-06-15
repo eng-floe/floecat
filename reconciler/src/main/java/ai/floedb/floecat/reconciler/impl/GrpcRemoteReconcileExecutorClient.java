@@ -42,6 +42,7 @@ import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanViewInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureKind;
@@ -56,6 +57,8 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.MessageLite;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
@@ -65,6 +68,7 @@ import io.grpc.stub.MetadataUtils;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -86,6 +90,10 @@ class GrpcRemoteReconcileExecutorClient
       Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+  // File-group result chunks drive per-record persistence and partial aggregate merges on the
+  // service side, so they need a lower target than finalize-result chunks.
+  private static final int FILE_GROUP_RESULT_CHUNK_TARGET_BYTES = 128 * 1024;
+  private static final int SNAPSHOT_FINALIZE_RESULT_CHUNK_TARGET_BYTES = 512 * 1024;
 
   private final Optional<String> workerAuthHeaderName;
   private final boolean workerAuthRequired;
@@ -94,6 +102,12 @@ class GrpcRemoteReconcileExecutorClient
   private final int workerControlPort;
   private final boolean workerControlPlainText;
   private final int workerControlMaxInboundMessageSize;
+  private final long workerControlDefaultDeadlineMs;
+  private final long workerControlLeaseDeadlineMs;
+  private final long workerControlMutationDeadlineMs;
+  private final long workerControlKeepAliveTimeMs;
+  private final long workerControlKeepAliveTimeoutMs;
+  private final boolean workerControlKeepAliveWithoutCalls;
   private final Object workerControlLock = new Object();
   private volatile ManagedChannel workerControlChannel;
   private volatile ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub
@@ -120,6 +134,30 @@ class GrpcRemoteReconcileExecutorClient
               name = "floecat.reconciler.worker-control.grpc.max-inbound-message-size",
               defaultValue = "0")
           int workerControlMaxInboundMessageSize,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.deadline-ms",
+              defaultValue = "10000")
+          long workerControlDefaultDeadlineMs,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.lease-deadline-ms",
+              defaultValue = "5000")
+          long workerControlLeaseDeadlineMs,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.mutation-deadline-ms",
+              defaultValue = "30000")
+          long workerControlMutationDeadlineMs,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.keep-alive-time-ms",
+              defaultValue = "30000")
+          long workerControlKeepAliveTimeMs,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.keep-alive-timeout-ms",
+              defaultValue = "10000")
+          long workerControlKeepAliveTimeoutMs,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.grpc.keep-alive-without-calls",
+              defaultValue = "false")
+          boolean workerControlKeepAliveWithoutCalls,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
     this(
         sessionHeaderName,
@@ -130,6 +168,12 @@ class GrpcRemoteReconcileExecutorClient
         workerControlPort,
         workerControlPlainText,
         workerControlMaxInboundMessageSize,
+        workerControlDefaultDeadlineMs,
+        workerControlLeaseDeadlineMs,
+        workerControlMutationDeadlineMs,
+        workerControlKeepAliveTimeMs,
+        workerControlKeepAliveTimeoutMs,
+        workerControlKeepAliveWithoutCalls,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -145,6 +189,12 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
+        10_000L,
+        5_000L,
+        30_000L,
+        30_000L,
+        10_000L,
+        false,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -162,6 +212,12 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
+        10_000L,
+        5_000L,
+        30_000L,
+        30_000L,
+        10_000L,
+        false,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -180,6 +236,12 @@ class GrpcRemoteReconcileExecutorClient
         workerControlPort,
         true,
         0,
+        10_000L,
+        5_000L,
+        30_000L,
+        30_000L,
+        10_000L,
+        false,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -193,6 +255,12 @@ class GrpcRemoteReconcileExecutorClient
       int workerControlPort,
       boolean workerControlPlainText,
       int workerControlMaxInboundMessageSize,
+      long workerControlDefaultDeadlineMs,
+      long workerControlLeaseDeadlineMs,
+      long workerControlMutationDeadlineMs,
+      long workerControlKeepAliveTimeMs,
+      long workerControlKeepAliveTimeoutMs,
+      boolean workerControlKeepAliveWithoutCalls,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       boolean ignored) {
     this.workerAuthHeaderName =
@@ -207,6 +275,12 @@ class GrpcRemoteReconcileExecutorClient
     this.workerControlPort = workerControlPort;
     this.workerControlPlainText = workerControlPlainText;
     this.workerControlMaxInboundMessageSize = Math.max(0, workerControlMaxInboundMessageSize);
+    this.workerControlDefaultDeadlineMs = Math.max(1_000L, workerControlDefaultDeadlineMs);
+    this.workerControlLeaseDeadlineMs = Math.max(1_000L, workerControlLeaseDeadlineMs);
+    this.workerControlMutationDeadlineMs = Math.max(1_000L, workerControlMutationDeadlineMs);
+    this.workerControlKeepAliveTimeMs = Math.max(1_000L, workerControlKeepAliveTimeMs);
+    this.workerControlKeepAliveTimeoutMs = Math.max(1_000L, workerControlKeepAliveTimeoutMs);
+    this.workerControlKeepAliveWithoutCalls = workerControlKeepAliveWithoutCalls;
   }
 
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
@@ -754,66 +828,48 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   public boolean submitSuccess(RemoteLeasedJob lease, StandaloneFileGroupExecutionResult result) {
-    StandaloneFileGroupExecutionResult.FileStatsBlobManifest statsBlobManifest =
-        result.fileStatsBlobManifest() == null
-            ? StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty()
-            : result.fileStatsBlobManifest();
+    String resultId = result.resultId() == null ? "" : result.resultId().trim();
+    List<LeasedFileGroupIndexArtifact> indexArtifacts = toProtoIndexArtifacts(result);
+    List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> chunks =
+        chunkFileGroupResult(resultId, result.statsRecords(), indexArtifacts);
+    boolean retryable = !resultId.isBlank();
+    for (SubmitLeasedFileGroupExecutionResultRequest.Chunk chunk : chunks) {
+      boolean accepted =
+          invokeWorkerControl(
+              "submitLeasedFileGroupExecutionResult",
+              correlationId(lease),
+              lease.lease().accountId,
+              retryable,
+              stub ->
+                  stub.submitLeasedFileGroupExecutionResult(
+                          SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                              .setJobId(lease.lease().jobId)
+                              .setLeaseEpoch(lease.lease().leaseEpoch)
+                              .setChunk(chunk)
+                              .build())
+                      .getAccepted());
+      if (!accepted) {
+        return false;
+      }
+    }
+    ReconcileFileGroupTask plannedTask =
+        lease.lease().fileGroupTask == null
+            ? ReconcileFileGroupTask.empty()
+            : lease.lease().fileGroupTask;
     SubmitLeasedFileGroupExecutionResultRequest.Success.Builder success =
         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
-            .setResultId(result.resultId() == null ? "" : result.resultId());
-    if (!statsBlobManifest.isEmpty()) {
-      success
-          .setFileStatsBlobUri(statsBlobManifest.blobUri())
-          .setFileStatsRecordCount(statsBlobManifest.recordCount());
-    } else {
-      success.addAllStatsRecords(result.statsRecords());
-    }
-    for (var artifact : result.preUploadedIndexArtifacts()) {
-      if (artifact == null || artifact.record() == null) {
-        continue;
-      }
-      success.addIndexArtifacts(
-          ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact.newBuilder()
-              .setRecord(artifact.record())
-              .setContentType(artifact.contentType() == null ? "" : artifact.contentType())
-              .setUploadedArtifactUri(
-                  artifact.uploadedArtifactUri() == null ? "" : artifact.uploadedArtifactUri())
-              .build());
-    }
-    for (var artifact : result.stagedIndexArtifacts()) {
-      if (artifact == null || artifact.record() == null) {
-        continue;
-      }
-      byte[] content = artifact.content();
-      success.addIndexArtifacts(
-          ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact.newBuilder()
-              .setRecord(artifact.record())
-              .setContent(
-                  content == null
-                      ? com.google.protobuf.ByteString.EMPTY
-                      : com.google.protobuf.ByteString.copyFrom(content))
-              .setContentType(artifact.contentType() == null ? "" : artifact.contentType())
-              .build());
-    }
-    String resultId = result.resultId() == null ? "" : result.resultId().trim();
-    if (resultId.isBlank()) {
-      return invokeWorkerControlMutationOnce(
-          "submitLeasedFileGroupExecutionResult",
-          correlationId(lease),
-          lease.lease().accountId,
-          stub ->
-              stub.submitLeasedFileGroupExecutionResult(
-                      SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
-                          .setJobId(lease.lease().jobId)
-                          .setLeaseEpoch(lease.lease().leaseEpoch)
-                          .setSuccess(success.build())
-                          .build())
-                  .getAccepted());
-    }
-    return invokeWorkerControlRetryable(
+            .setResultId(resultId)
+            .addAllFileResults(
+                FileGroupExecutionSupport.fileResultsForSuccess(
+                        plannedTask, result.statsRecords(), result.stagedIndexArtifacts())
+                    .stream()
+                    .map(GrpcRemoteReconcileExecutorClient::toProtoFileResult)
+                    .toList());
+    return invokeWorkerControl(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
         lease.lease().accountId,
+        retryable,
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
                     SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
@@ -864,13 +920,34 @@ class GrpcRemoteReconcileExecutorClient
 
   @Override
   public boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease, String resultId, String statsBlobUri, int statsRecordCount) {
+      RemoteLeasedJob lease, String resultId, List<TargetStatsRecord> statsRecords) {
     String stableResultId = resultId == null ? "" : resultId.trim();
+    boolean retryable = !stableResultId.isBlank();
+    for (SubmitLeasedSnapshotFinalizeResultRequest.Chunk chunk :
+        chunkSnapshotFinalizeResult(stableResultId, statsRecords)) {
+      boolean accepted =
+          invokeWorkerControl(
+              "submitLeasedSnapshotFinalizeResult",
+              correlationId(lease),
+              lease.lease().accountId,
+              retryable,
+              stub ->
+                  stub.submitLeasedSnapshotFinalizeResult(
+                          SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+                              .setJobId(lease.lease().jobId)
+                              .setLeaseEpoch(lease.lease().leaseEpoch)
+                              .setChunk(chunk)
+                              .build())
+                      .getAccepted());
+      if (!accepted) {
+        return false;
+      }
+    }
     return invokeWorkerControl(
         "submitLeasedSnapshotFinalizeResult",
         correlationId(lease),
         lease.lease().accountId,
-        !stableResultId.isBlank(),
+        retryable,
         stub ->
             stub.submitLeasedSnapshotFinalizeResult(
                     SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
@@ -879,11 +956,128 @@ class GrpcRemoteReconcileExecutorClient
                         .setSuccess(
                             SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
                                 .setResultId(stableResultId)
-                                .setStatsBlobUri(statsBlobUri == null ? "" : statsBlobUri)
-                                .setStatsRecordCount(Math.max(0, statsRecordCount))
                                 .build())
                         .build())
                 .getAccepted());
+  }
+
+  private static List<LeasedFileGroupIndexArtifact> toProtoIndexArtifacts(
+      StandaloneFileGroupExecutionResult result) {
+    List<LeasedFileGroupIndexArtifact> out = new ArrayList<>();
+    for (var artifact : result.stagedIndexArtifacts()) {
+      if (artifact == null || artifact.record() == null) {
+        continue;
+      }
+      out.add(
+          LeasedFileGroupIndexArtifact.newBuilder()
+              .setRecord(artifact.record())
+              .setContent(
+                  artifact.content() == null
+                      ? ByteString.EMPTY
+                      : ByteString.copyFrom(artifact.content()))
+              .setContentType(artifact.contentType() == null ? "" : artifact.contentType())
+              .build());
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> chunkFileGroupResult(
+      String resultId,
+      List<TargetStatsRecord> statsRecords,
+      List<LeasedFileGroupIndexArtifact> indexArtifacts) {
+    List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> out = new ArrayList<>();
+    int chunkIndex = 0;
+    List<TargetStatsRecord> currentStats = new ArrayList<>();
+    List<LeasedFileGroupIndexArtifact> currentArtifacts = new ArrayList<>();
+    int currentBytes = 0;
+    for (TargetStatsRecord record :
+        statsRecords == null ? List.<TargetStatsRecord>of() : statsRecords) {
+      if (record == null) {
+        continue;
+      }
+      int itemBytes = estimatedChunkItemBytes(record);
+      if (currentBytes > 0 && currentBytes + itemBytes > FILE_GROUP_RESULT_CHUNK_TARGET_BYTES) {
+        out.add(buildFileGroupChunk(resultId, chunkIndex++, currentStats, currentArtifacts));
+        currentStats = new ArrayList<>();
+        currentArtifacts = new ArrayList<>();
+        currentBytes = 0;
+      }
+      currentStats.add(record);
+      currentBytes += itemBytes;
+    }
+    for (LeasedFileGroupIndexArtifact artifact :
+        indexArtifacts == null ? List.<LeasedFileGroupIndexArtifact>of() : indexArtifacts) {
+      if (artifact == null) {
+        continue;
+      }
+      int itemBytes = estimatedChunkItemBytes(artifact);
+      if (currentBytes > 0 && currentBytes + itemBytes > FILE_GROUP_RESULT_CHUNK_TARGET_BYTES) {
+        out.add(buildFileGroupChunk(resultId, chunkIndex++, currentStats, currentArtifacts));
+        currentStats = new ArrayList<>();
+        currentArtifacts = new ArrayList<>();
+        currentBytes = 0;
+      }
+      currentArtifacts.add(artifact);
+      currentBytes += itemBytes;
+    }
+    if (!currentStats.isEmpty() || !currentArtifacts.isEmpty()) {
+      out.add(buildFileGroupChunk(resultId, chunkIndex, currentStats, currentArtifacts));
+    }
+    return List.copyOf(out);
+  }
+
+  private static SubmitLeasedFileGroupExecutionResultRequest.Chunk buildFileGroupChunk(
+      String resultId,
+      int chunkIndex,
+      List<TargetStatsRecord> statsRecords,
+      List<LeasedFileGroupIndexArtifact> indexArtifacts) {
+    return SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
+        .setResultId(resultId)
+        .setChunkIndex(chunkIndex)
+        .addAllStatsRecords(statsRecords)
+        .addAllIndexArtifacts(indexArtifacts)
+        .build();
+  }
+
+  private static List<SubmitLeasedSnapshotFinalizeResultRequest.Chunk> chunkSnapshotFinalizeResult(
+      String resultId, List<TargetStatsRecord> statsRecords) {
+    List<SubmitLeasedSnapshotFinalizeResultRequest.Chunk> out = new ArrayList<>();
+    int chunkIndex = 0;
+    List<TargetStatsRecord> current = new ArrayList<>();
+    int currentBytes = 0;
+    for (TargetStatsRecord record :
+        statsRecords == null ? List.<TargetStatsRecord>of() : statsRecords) {
+      if (record == null) {
+        continue;
+      }
+      int itemBytes = estimatedChunkItemBytes(record);
+      if (currentBytes > 0
+          && currentBytes + itemBytes > SNAPSHOT_FINALIZE_RESULT_CHUNK_TARGET_BYTES) {
+        out.add(
+            SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
+                .setResultId(resultId)
+                .setChunkIndex(chunkIndex++)
+                .addAllStatsRecords(current)
+                .build());
+        current = new ArrayList<>();
+        currentBytes = 0;
+      }
+      current.add(record);
+      currentBytes += itemBytes;
+    }
+    if (!current.isEmpty()) {
+      out.add(
+          SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
+              .setResultId(resultId)
+              .setChunkIndex(chunkIndex)
+              .addAllStatsRecords(current)
+              .build());
+    }
+    return List.copyOf(out);
+  }
+
+  private static int estimatedChunkItemBytes(MessageLite message) {
+    return Math.max(1, message.getSerializedSize()) + 32;
   }
 
   @Override
@@ -1481,6 +1675,9 @@ class GrpcRemoteReconcileExecutorClient
     if (workerControlMaxInboundMessageSize > 0) {
       builder.maxInboundMessageSize(workerControlMaxInboundMessageSize);
     }
+    builder.keepAliveTime(workerControlKeepAliveTimeMs, TimeUnit.MILLISECONDS);
+    builder.keepAliveTimeout(workerControlKeepAliveTimeoutMs, TimeUnit.MILLISECONDS);
+    builder.keepAliveWithoutCalls(workerControlKeepAliveWithoutCalls);
     return builder.build();
   }
 
@@ -1544,7 +1741,9 @@ class GrpcRemoteReconcileExecutorClient
     ManagedChannel channel = null;
     try {
       channel = newWorkerControlChannel();
-      return invocation.apply(withHeaders(workerControlStub(channel), correlationId, accountId));
+      return invocation.apply(
+          withHeaders(workerControlStub(channel), correlationId, accountId)
+              .withDeadlineAfter(deadlineMsFor(operation), TimeUnit.MILLISECONDS));
     } catch (RuntimeException error) {
       if (isTransportFailure(error)) {
         logWorkerControlTransportFailure(operation, "dedicated", 1, error);
@@ -1565,7 +1764,9 @@ class GrpcRemoteReconcileExecutorClient
     int maxAttempts = retryOnTransportFailure ? 2 : 1;
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return invocation.apply(withHeaders(controlStub(), correlationId, accountId));
+        return invocation.apply(
+            withHeaders(controlStub(), correlationId, accountId)
+                .withDeadlineAfter(deadlineMsFor(operation), TimeUnit.MILLISECONDS));
       } catch (RuntimeException error) {
         lastError = error;
         boolean transportFailure = isTransportFailure(error);
@@ -1589,6 +1790,21 @@ class GrpcRemoteReconcileExecutorClient
         operation,
         path,
         attempt);
+  }
+
+  private long deadlineMsFor(String operation) {
+    if (operation == null || operation.isBlank()) {
+      return workerControlDefaultDeadlineMs;
+    }
+    return switch (operation) {
+      case "renewReconcileLease", "getReconcileCancellation", "reportReconcileProgress" ->
+          workerControlLeaseDeadlineMs;
+      case "submitLeasedFileGroupExecutionResult",
+          "submitLeasedSnapshotFinalizeResult",
+          "completeLeasedReconcileJob" ->
+          workerControlMutationDeadlineMs;
+      default -> workerControlDefaultDeadlineMs;
+    };
   }
 
   private static boolean isTransportFailure(Throwable error) {

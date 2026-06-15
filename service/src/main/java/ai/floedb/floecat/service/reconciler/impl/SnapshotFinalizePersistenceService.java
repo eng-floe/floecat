@@ -103,15 +103,49 @@ public class SnapshotFinalizePersistenceService {
     return List.copyOf(out);
   }
 
+  public List<TargetStatsRecord> listSnapshotStats(ResourceId tableId, long snapshotId) {
+    List<TargetStatsRecord> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      StatsStore.StatsStorePage page =
+          statsStore.listTargetStats(tableId, snapshotId, Optional.empty(), 256, pageToken);
+      out.addAll(page.records());
+      pageToken = page.nextPageToken();
+    } while (pageToken != null && !pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
   public List<TargetStatsRecord> buildAggregateStats(
       ResourceId tableId,
       long snapshotId,
       Set<FloecatConnector.StatsTargetKind> aggregateKinds,
       List<TargetStatsRecord> fileStats) {
-    return FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+    return FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
             tableId, snapshotId, aggregateKinds, fileStats)
         .stream()
-        .filter(record -> record != null && !record.hasFile())
+        .map(TargetStatsRecords::canonicalize)
+        .toList();
+  }
+
+  public List<TargetStatsRecord> completeStatsWithAggregates(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> aggregateKinds,
+      List<TargetStatsRecord> capturedStats) {
+    return new FileGroupTargetStatsRollup()
+        .complete(tableId, snapshotId, aggregateKinds, capturedStats).stream()
+            .map(TargetStatsRecords::canonicalize)
+            .toList();
+  }
+
+  public List<TargetStatsRecord> mergeAggregatePartials(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> aggregateKinds,
+      List<TargetStatsRecord> partials) {
+    return FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            tableId, snapshotId, aggregateKinds, partials)
+        .stream()
         .map(TargetStatsRecords::canonicalize)
         .toList();
   }

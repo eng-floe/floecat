@@ -265,7 +265,8 @@ public class ReconcilePayloadStore {
         resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
         resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
         resultPayload == null ? List.of() : resultPayload.filePaths(),
-        resultPayload == null ? List.of() : resultPayload.fileResults());
+        resultPayload == null ? List.of() : resultPayload.fileResults(),
+        resultPayload == null ? List.of() : resultPayload.partialAggregateRecords());
   }
 
   private <T> String encodeInlineJson(String prefix, T payload) {

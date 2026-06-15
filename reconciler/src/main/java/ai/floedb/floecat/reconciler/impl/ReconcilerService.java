@@ -44,6 +44,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
@@ -137,7 +138,7 @@ public class ReconcilerService {
           dest.getTableDisplayName() == null || dest.getTableDisplayName().isBlank()
               ? null
               : dest.getTableDisplayName();
-      destNamespaceId = lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
+      destNamespaceId = ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
 
       if (dest.hasTableId() && (source.getTable() == null || source.getTable().isBlank())) {
         throw new IllegalArgumentException(
@@ -229,7 +230,7 @@ public class ReconcilerService {
                   ? fq(dest.getNamespace().getSegmentsList())
                   : sourceNsFq;
       Optional<ResourceId> destNamespaceId =
-          lookupDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
+          ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
       if (!matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope)) {
         return List.of();
       }
@@ -353,7 +354,8 @@ public class ReconcilerService {
           .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
           .filter(
               bundle ->
-                  !requiresCaptureOutputs
+                  fullRescan
+                      || !requiresCaptureOutputs
                       || !isSnapshotCaptureCompleteForScope(
                           ctx,
                           tableId,
@@ -1009,6 +1011,28 @@ public class ReconcilerService {
     }
     String catalogName = backend.lookupCatalogName(ctx, destCatalogId);
     return backend.lookupNamespace(ctx, namespaceNameRef(catalogName, destNamespaceFq));
+  }
+
+  Optional<ResourceId> ensureDestinationNamespaceId(
+      ReconcileContext ctx,
+      ResourceId destCatalogId,
+      DestinationTarget destination,
+      String destNamespaceFq) {
+    Optional<ResourceId> existing =
+        lookupDestinationNamespaceId(ctx, destCatalogId, destination, destNamespaceFq);
+    if (existing.isPresent()
+        || destCatalogId == null
+        || destCatalogId.getId().isBlank()
+        || destNamespaceFq == null
+        || destNamespaceFq.isBlank()) {
+      return existing;
+    }
+    String catalogName = backend.lookupCatalogName(ctx, destCatalogId);
+    return Optional.of(
+        backend.ensureNamespace(
+            ctx,
+            destCatalogId,
+            NameRefNormalizer.normalize(namespaceNameRef(catalogName, destNamespaceFq))));
   }
 
   private NameRef namespaceNameRef(String catalogName, String namespaceFq) {

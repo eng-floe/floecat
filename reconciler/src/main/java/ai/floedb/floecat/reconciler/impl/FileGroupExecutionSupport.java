@@ -99,40 +99,12 @@ public final class FileGroupExecutionSupport {
       ReconcileFileGroupTask plannedTask,
       List<TargetStatsRecord> stats,
       List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
-    return fileResultsForSuccess(plannedTask, stats, artifacts, List.of());
-  }
-
-  public static List<ReconcileFileResult> fileResultsForSuccess(
-      ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> stats,
-      List<ReconcilerBackend.StagedIndexArtifact> artifacts,
-      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedArtifacts) {
     LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
     HashMap<String, ReconcileIndexArtifactResult> artifactsByFile = new HashMap<>();
     for (String filePath : plannedTask.filePaths()) {
       statsByFile.put(filePath, 0L);
     }
     for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
-      if (artifact == null || artifact.record() == null) {
-        continue;
-      }
-      var record = artifact.record();
-      if (!record.hasTarget() || !record.getTarget().hasFile()) {
-        continue;
-      }
-      String filePath = record.getTarget().getFile().getFilePath();
-      if (filePath == null || filePath.isBlank()) {
-        continue;
-      }
-      artifactsByFile.put(
-          filePath,
-          ReconcileIndexArtifactResult.of(
-              record.getArtifactUri(),
-              record.getArtifactFormat(),
-              record.getArtifactFormatVersion()));
-    }
-    for (StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact artifact :
-        preUploadedArtifacts) {
       if (artifact == null || artifact.record() == null) {
         continue;
       }

@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -100,6 +101,46 @@ public final class FileGroupTargetStatsRollup {
         .complete(tableId, snapshotId, requestedKinds, fileRecords);
   }
 
+  public static List<TargetStatsRecord> partialAggregatesFromFileRecords(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> requestedKinds,
+      List<TargetStatsRecord> fileRecords) {
+    return completeSnapshotFromFileRecords(tableId, snapshotId, requestedKinds, fileRecords)
+        .stream()
+        .filter(record -> record != null && !record.hasFile())
+        .toList();
+  }
+
+  public static List<TargetStatsRecord> mergeSnapshotAggregatePartials(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> requestedKinds,
+      List<TargetStatsRecord> partials) {
+    if (partials == null || partials.isEmpty()) {
+      return List.of();
+    }
+    LinkedHashMap<String, TargetStatsRecord> merged = new LinkedHashMap<>();
+    if (requestedKinds.contains(FloecatConnector.StatsTargetKind.TABLE)) {
+      TargetStatsRecord tableRecord = aggregateTableFromPartials(tableId, snapshotId, partials);
+      if (tableRecord != null) {
+        merged.put(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(tableRecord.getTarget()),
+            tableRecord);
+      }
+    }
+    if (requestedKinds.contains(FloecatConnector.StatsTargetKind.COLUMN)) {
+      for (TargetStatsRecord columnRecord :
+          aggregateColumnsFromPartials(tableId, snapshotId, partials)) {
+        merged.put(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+                columnRecord.getTarget()),
+            columnRecord);
+      }
+    }
+    return List.copyOf(merged.values());
+  }
+
   private static TargetStatsRecord aggregateTable(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> fileRecords) {
     long rowCount = 0L;
@@ -157,6 +198,77 @@ public final class FileGroupTargetStatsRollup {
       }
     }
 
+    List<TargetStatsRecord> out = new ArrayList<>(byColumnId.size());
+    for (Map.Entry<Long, ColumnAccumulator> entry : byColumnId.entrySet()) {
+      ScalarStats scalar = entry.getValue().toScalar();
+      if (scalar == null) {
+        continue;
+      }
+      TargetStatsRecord.Builder builder =
+          TargetStatsRecords.columnRecord(tableId, snapshotId, entry.getKey(), scalar, null)
+              .toBuilder();
+      if (entry.getValue().metadataSource != null
+          && entry.getValue().metadataSource.hasMetadata()) {
+        builder.setMetadata(entry.getValue().metadataSource.getMetadata());
+      }
+      out.add(builder.build());
+    }
+    return List.copyOf(out);
+  }
+
+  private static TargetStatsRecord aggregateTableFromPartials(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> partials) {
+    long rowCount = 0L;
+    long sizeBytes = 0L;
+    long dataFileCount = 0L;
+    TargetStatsRecord metadataSource = null;
+    boolean sawTable = false;
+    for (TargetStatsRecord record : partials) {
+      if (record == null || !record.hasTable()) {
+        continue;
+      }
+      TableValueStats table = record.getTable();
+      sawTable = true;
+      metadataSource = metadataSource == null ? record : metadataSource;
+      rowCount += Math.max(0L, table.getRowCount());
+      sizeBytes += Math.max(0L, table.getTotalSizeBytes());
+      dataFileCount += Math.max(0L, table.getDataFileCount());
+    }
+    if (!sawTable) {
+      return null;
+    }
+    TargetStatsRecord.Builder builder =
+        TargetStatsRecords.tableRecord(
+            tableId,
+            snapshotId,
+            TableValueStats.newBuilder()
+                .setRowCount(rowCount)
+                .setDataFileCount(dataFileCount)
+                .setTotalSizeBytes(sizeBytes)
+                .build(),
+            null)
+            .toBuilder();
+    if (metadataSource != null && metadataSource.hasMetadata()) {
+      builder.setMetadata(metadataSource.getMetadata());
+    }
+    return builder.build();
+  }
+
+  private static List<TargetStatsRecord> aggregateColumnsFromPartials(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> partials) {
+    LinkedHashMap<Long, ColumnAccumulator> byColumnId = new LinkedHashMap<>();
+    for (TargetStatsRecord record : partials) {
+      if (record == null || !record.hasScalar()) {
+        continue;
+      }
+      StatsTarget target = record.getTarget();
+      if (target == null || !target.hasColumn() || target.getColumn().getColumnId() <= 0L) {
+        continue;
+      }
+      byColumnId
+          .computeIfAbsent(target.getColumn().getColumnId(), ignored -> new ColumnAccumulator())
+          .add(record, record.getScalar());
+    }
     List<TargetStatsRecord> out = new ArrayList<>(byColumnId.size());
     for (Map.Entry<Long, ColumnAccumulator> entry : byColumnId.entrySet()) {
       ScalarStats scalar = entry.getValue().toScalar();

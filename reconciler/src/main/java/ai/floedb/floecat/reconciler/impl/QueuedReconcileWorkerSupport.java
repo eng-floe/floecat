@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -1135,21 +1134,11 @@ class QueuedReconcileWorkerSupport {
                 ? fq(destination.getNamespace().getSegmentsList())
                 : fq(source.getNamespace().getSegmentsList());
     return reconcilerService
-        .lookupDestinationNamespaceId(ctx, destCatalogId, destination, destNamespaceFq)
-        .orElseGet(() -> ensureNamespace(ctx, destCatalogId, destNamespaceFq));
-  }
-
-  private ResourceId ensureNamespace(
-      ReconcileContext ctx, ResourceId catalogId, String namespaceFq) {
-    var parts = split(namespaceFq);
-    String catalogName = backend.lookupCatalogName(ctx, catalogId);
-    NameRef nameRef =
-        NameRef.newBuilder()
-            .setCatalog(catalogName)
-            .addAllPath(parts.parents)
-            .setName(parts.leaf)
-            .build();
-    return backend.ensureNamespace(ctx, catalogId, NameRefNormalizer.normalize(nameRef));
+        .ensureDestinationNamespaceId(ctx, destCatalogId, destination, destNamespaceFq)
+        .orElseThrow(
+            () ->
+                new IllegalArgumentException(
+                    "destination namespace could not be resolved for " + destNamespaceFq));
   }
 
   private ResourceId ensureTable(

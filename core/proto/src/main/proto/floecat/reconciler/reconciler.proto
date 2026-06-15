@@ -455,13 +455,6 @@ message GetLeasedSnapshotFinalizeInputRequest {
   string lease_epoch = 2;
 }
 
-message SnapshotFinalizeGroupManifest {
-  string plan_id = 1;
-  string group_id = 2;
-  string file_stats_blob_uri = 3;
-  uint32 file_stats_record_count = 4;
-}
-
 message LeasedSnapshotFinalizeInput {
   enum FinalizeMode {
     FZM_UNSPECIFIED = 0;
@@ -479,7 +472,6 @@ message LeasedSnapshotFinalizeInput {
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
-  repeated SnapshotFinalizeGroupManifest completed_groups = 10;
   bool full_rescan = 11;
 }
 
@@ -716,16 +708,19 @@ message LeasedFileGroupIndexArtifact {
   ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
   bytes content = 2;
   string content_type = 3;
-  string uploaded_artifact_uri = 4;
 }
 
 message SubmitLeasedFileGroupExecutionResultRequest {
+  message Chunk {
+    string result_id = 1;
+    uint32 chunk_index = 2;
+    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
+    repeated LeasedFileGroupIndexArtifact index_artifacts = 4;
+  }
+
   message Success {
     string result_id = 1;
-    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 2;
-    repeated LeasedFileGroupIndexArtifact index_artifacts = 3;
-    string file_stats_blob_uri = 4;
-    uint32 file_stats_record_count = 5;
+    repeated ReconcileFileResult file_results = 2;
   }
 
   message Failure {
@@ -737,8 +732,9 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Success success = 3;
-    Failure failure = 4;
+    Chunk chunk = 3;
+    Success success = 4;
+    Failure failure = 5;
   }
 }
 
@@ -747,10 +743,14 @@ message SubmitLeasedFileGroupExecutionResultResponse {
 }
 
 message SubmitLeasedSnapshotFinalizeResultRequest {
+  message Chunk {
+    string result_id = 1;
+    uint32 chunk_index = 2;
+    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
+  }
+
   message Success {
     string result_id = 1;
-    string stats_blob_uri = 2;
-    uint32 stats_record_count = 3;
   }
 
   message Failure {
@@ -762,8 +762,9 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Success success = 3;
-    Failure failure = 4;
+    Chunk chunk = 3;
+    Success success = 4;
+    Failure failure = 5;
   }
 }
 

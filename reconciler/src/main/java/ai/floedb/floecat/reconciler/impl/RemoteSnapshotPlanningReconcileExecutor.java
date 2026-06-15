@@ -138,7 +138,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         payload.snapshotTask() == null ? ReconcileSnapshotTask.empty() : payload.snapshotTask();
 
     LOG.infof(
-        "execute PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
+        "execute PLAN_SNAPSHOT jobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s"
+            + " fileGroups=%d",
         lease.jobId,
         lease.connectorId,
         task.tableId(),
@@ -476,7 +477,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     Optional<FloecatConnector.SnapshotFilePlan> planned =
         backend.fetchSnapshotFilePlan(reconcileContext(lease), tableId, task.snapshotId());
     LOG.infof(
-        "fetchSnapshotFilePlan jobId=%s tableId=%s snapshotId=%d present=%s dataFiles=%d deleteFiles=%d",
+        "fetchSnapshotFilePlan jobId=%s tableId=%s snapshotId=%d present=%s dataFiles=%d"
+            + " deleteFiles=%d",
         lease.jobId,
         task.tableId(),
         task.snapshotId(),

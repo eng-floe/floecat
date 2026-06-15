@@ -41,7 +41,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
-import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,11 +53,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease =
         new ReconcileJobStore.LeasedJob(
@@ -133,11 +129,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
 
@@ -156,11 +149,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -182,10 +172,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     assertTrue(result.cancelled);
     assertTrue(result.message.contains("Stopped during file-group execution"));
-    verify(workerClient, never())
-        .submitSuccess(
-            eq(remoteLease),
-            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success")));
+    verify(workerClient, never()).submitSuccess(eq(remoteLease), any());
   }
 
   @Test
@@ -193,11 +180,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -224,10 +208,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(remoteLease),
             eq("job-1:plan-1:group-1:failure"),
             eq("IllegalStateException: capture exploded"));
-    verify(workerClient, never())
-        .submitSuccess(
-            eq(remoteLease),
-            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success")));
+    verify(workerClient, never()).submitSuccess(eq(remoteLease), any());
   }
 
   @Test
@@ -235,11 +216,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -247,10 +225,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
-    when(workerClient.submitSuccess(
-            eq(remoteLease),
-            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success"))))
-        .thenReturn(true);
+    when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -261,7 +236,9 @@ class RemoteFileGroupReconcileExecutorTest {
     verify(workerClient)
         .submitSuccess(
             eq(remoteLease),
-            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success")));
+            eq(
+                new StandaloneFileGroupExecutionResult(
+                    "job-1:plan-1:group-1:success", List.of(), List.of())));
   }
 
   @Test
@@ -269,11 +246,8 @@ class RemoteFileGroupReconcileExecutorTest {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -281,9 +255,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
-    when(workerClient.submitSuccess(
-            eq(remoteLease),
-            eq(StandaloneFileGroupExecutionResult.empty("job-1:plan-1:group-1:success"))))
+    when(workerClient.submitSuccess(eq(remoteLease), any()))
         .thenThrow(new RuntimeException("response lost after success submit"));
 
     ReconcileFailureException error =
@@ -299,15 +271,12 @@ class RemoteFileGroupReconcileExecutorTest {
   }
 
   @Test
-  void uploadsIndexArtifactsDirectlyAndSubmitsManifestResult() {
+  void submitsInlineIndexArtifactsInSuccessResult() {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -325,84 +294,21 @@ class RemoteFileGroupReconcileExecutorTest {
                 lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
     assertTrue(result.ok());
-    verify(blobStore)
-        .put(
-            eq("s3://bucket/file.parquet.idx"),
-            org.mockito.ArgumentMatchers.<byte[]>argThat(
-                bytes -> java.util.Arrays.equals(bytes, new byte[] {1, 2, 3})),
-            eq("application/x-parquet"));
     verify(workerClient)
         .submitSuccess(
             eq(remoteLease),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success",
-                    List.of(),
-                    StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty(),
-                    List.of(),
-                    List.of(
-                        new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
-                            artifact.record(),
-                            "application/x-parquet",
-                            "s3://bucket/file.parquet.idx")))));
+                    "job-1:plan-1:group-1:success", List.of(), List.of(artifact))));
   }
 
   @Test
-  void fallsBackToInlineArtifactsWhenDirectUploadFails() {
+  void submitsFileStatsInlineInSuccessResult() {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
     RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
-
-    ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
-    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
-    StandaloneFileGroupExecutionPayload payload = payloadWithPageIndex();
-    ReconcilerBackend.StagedIndexArtifact artifact = stagedArtifact();
-
-    when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
-        .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
-    org.mockito.Mockito.doThrow(new IllegalStateException("blob write failed"))
-        .when(blobStore)
-        .put(
-            eq("s3://bucket/file.parquet.idx"),
-            org.mockito.ArgumentMatchers.<byte[]>argThat(
-                bytes -> java.util.Arrays.equals(bytes, new byte[] {1, 2, 3})),
-            eq("application/x-parquet"));
-    when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
-
-    ReconcileExecutor.ExecutionResult result =
-        executor.execute(
-            new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
-
-    assertTrue(result.ok());
-    verify(workerClient)
-        .submitSuccess(
-            eq(remoteLease),
-            eq(
-                new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success",
-                    List.of(),
-                    StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty(),
-                    List.of(artifact),
-                    List.of())));
-  }
-
-  @Test
-  void uploadsFileStatsDirectlyAndSubmitsBlobManifest() {
-    RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
-    StandaloneJavaFileGroupExecutionRunner runner =
-        mock(StandaloneJavaFileGroupExecutionRunner.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
-    RemoteFileGroupReconcileExecutor executor =
-        new RemoteFileGroupReconcileExecutor(
-            blobStore, snapshotPlanBlobStore, workerClient, runner, true);
+        new RemoteFileGroupReconcileExecutor(workerClient, runner, true);
 
     ReconcileJobStore.LeasedJob lease = leasedFileGroupJob();
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -424,11 +330,6 @@ class RemoteFileGroupReconcileExecutorTest {
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload))
         .thenReturn(CaptureEngineResult.of(List.of(fileStat), List.of(), List.of()));
-    when(snapshotPlanBlobStore.persistFileGroupStats(
-            "acct", "job-1", "job-1:plan-1:group-1:success", List.of(fileStat)))
-        .thenReturn(
-            new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
-                "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json", 1));
     when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -442,12 +343,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(remoteLease),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success",
-                    List.of(),
-                    new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
-                        "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json", 1),
-                    List.of(),
-                    List.of())));
+                    "job-1:plan-1:group-1:success", List.of(fileStat), List.of())));
   }
 
   private static ReconcileJobStore.LeasedJob leasedFileGroupJob() {

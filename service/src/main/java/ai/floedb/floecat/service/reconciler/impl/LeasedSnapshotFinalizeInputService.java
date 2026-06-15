@@ -19,14 +19,12 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.ArrayList;
 import java.util.List;
 
 @ApplicationScoped
@@ -34,9 +32,6 @@ public class LeasedSnapshotFinalizeInputService {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject SnapshotFinalizeCoverageService coverageService;
-
-  record SnapshotFinalizeGroupManifest(
-      String planId, String groupId, String fileStatsBlobUri, int fileStatsRecordCount) {}
 
   record SnapshotFinalizeInput(
       String jobId,
@@ -48,8 +43,7 @@ public class LeasedSnapshotFinalizeInputService {
       boolean fullRescan,
       String directStatsBlobUri,
       int directStatsRecordCount,
-      int sourceFileCount,
-      List<SnapshotFinalizeGroupManifest> completedGroups) {}
+      int sourceFileCount) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
@@ -84,8 +78,7 @@ public class LeasedSnapshotFinalizeInputService {
           lease.fullRescan,
           requireDirectStatsBlobUri(snapshotTask),
           snapshotTask.directStatsRecordCount(),
-          snapshotTask.sourceFileCount(),
-          List.of());
+          snapshotTask.sourceFileCount());
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
@@ -99,8 +92,7 @@ public class LeasedSnapshotFinalizeInputService {
           lease.fullRescan,
           "",
           0,
-          snapshotTask.sourceFileCount(),
-          List.of());
+          snapshotTask.sourceFileCount());
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.childState(
@@ -116,8 +108,7 @@ public class LeasedSnapshotFinalizeInputService {
         lease.fullRescan,
         "",
         0,
-        snapshotTask.sourceFileCount(),
-        completedGroupManifests(childState));
+        snapshotTask.sourceFileCount());
   }
 
   private static ResourceId tableId(
@@ -127,26 +118,6 @@ public class LeasedSnapshotFinalizeInputService {
         .setKind(ResourceKind.RK_TABLE)
         .setId(snapshotTask.tableId())
         .build();
-  }
-
-  private List<SnapshotFinalizeGroupManifest> completedGroupManifests(
-      SnapshotFinalizeChildStateService.ChildState childState) {
-    List<SnapshotFinalizeGroupManifest> manifests = new ArrayList<>();
-    for (ReconcileFileGroupTask persistedGroup : childState.completedGroupTasks()) {
-      if (persistedGroup == null || persistedGroup.fileStatsBlobUri().isBlank()) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription(
-                "snapshot finalization found succeeded file-group jobs without persisted stats blobs")
-            .asRuntimeException();
-      }
-      manifests.add(
-          new SnapshotFinalizeGroupManifest(
-              persistedGroup.planId(),
-              persistedGroup.groupId(),
-              persistedGroup.fileStatsBlobUri(),
-              persistedGroup.fileStatsRecordCount()));
-    }
-    return List.copyOf(manifests);
   }
 
   private static String requireDirectStatsBlobUri(ReconcileSnapshotTask snapshotTask) {

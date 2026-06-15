@@ -28,13 +28,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
-import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -345,9 +343,35 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void submitLeasedFileGroupExecutionResultRoutesUploadedArtifactsToManifestPath() {
+  void submitLeasedFileGroupExecutionResultRoutesChunk() {
+    when(service.leasedFileGroupExecutionService.persistChunk(
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(3), any(), any()))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .setChunk(
+                        SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
+                            .setResultId("result-1")
+                            .setChunkIndex(3)
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.leasedFileGroupExecutionService)
+        .persistChunk(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(3), any(), any());
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), eq(""), eq(0), any(), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any()))
         .thenReturn(true);
 
     var response =
@@ -359,15 +383,12 @@ class ReconcileExecutorControlImplTest {
                     .setSuccess(
                         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
                             .setResultId("result-1")
-                            .addIndexArtifacts(
-                                ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact
-                                    .newBuilder()
-                                    .setRecord(
-                                        IndexArtifactRecord.newBuilder()
-                                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
-                                            .build())
-                                    .setContentType("application/x-parquet")
-                                    .setUploadedArtifactUri("s3://bucket/artifacts/file-1.idx")
+                            .addFileResults(
+                                ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
+                                    .setFilePath("s3://bucket/file-1.parquet")
+                                    .setState(
+                                        ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State
+                                            .RFRS_SUCCEEDED)
                                     .build())
                             .build())
                     .build())
@@ -376,57 +397,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(
-            any(),
-            eq("job-1"),
-            eq("lease-1"),
-            eq("result-1"),
-            eq(List.of()),
-            eq(""),
-            eq(0),
-            eq(List.of()),
-            eq(
-                List.of(
-                    new StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact(
-                        IndexArtifactRecord.newBuilder()
-                            .setArtifactUri("s3://bucket/artifacts/file-1.idx")
-                            .build(),
-                        "application/x-parquet",
-                        "s3://bucket/artifacts/file-1.idx"))));
-  }
-
-  @Test
-  void submitLeasedFileGroupExecutionResultRoutesFileStatsBlobManifest() {
-    when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(),
-            eq("job-1"),
-            eq("lease-1"),
-            eq("result-1"),
-            eq(List.of()),
-            eq("/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json"),
-            eq(4),
-            eq(List.of()),
-            eq(List.of())))
-        .thenReturn(true);
-
-    var response =
-        service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
-                    .setJobId("job-1")
-                    .setLeaseEpoch("lease-1")
-                    .setSuccess(
-                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
-                            .setResultId("result-1")
-                            .setFileStatsBlobUri(
-                                "/accounts/acct/reconcile/jobs/job-1/file-group-stats/result.json")
-                            .setFileStatsRecordCount(4)
-                            .build())
-                    .build())
-            .await()
-            .indefinitely();
-
-    assertTrue(response.getAccepted());
+        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), any());
   }
 
   @Test
@@ -447,13 +418,7 @@ class ReconcileExecutorControlImplTest {
                 false,
                 "",
                 0,
-                4,
-                List.of(
-                    new LeasedSnapshotFinalizeInputService.SnapshotFinalizeGroupManifest(
-                        "plan-1",
-                        "group-1",
-                        "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
-                        4))));
+                4));
 
     var response =
         service
@@ -475,8 +440,6 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getFinalizeMode());
     assertEquals(false, response.getInput().getFullRescan());
     assertEquals(4, response.getInput().getSourceFileCount());
-    assertEquals(1, response.getInput().getCompletedGroupsCount());
-    assertEquals("plan-1", response.getInput().getCompletedGroups(0).getPlanId());
   }
 
   @Test
@@ -497,8 +460,7 @@ class ReconcileExecutorControlImplTest {
                 true,
                 "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
                 3,
-                6,
-                List.of()));
+                6));
 
     var response =
         service
@@ -519,18 +481,12 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getDirectStatsBlobUri());
     assertEquals(3, response.getInput().getDirectStatsRecordCount());
     assertEquals(6, response.getInput().getSourceFileCount());
-    assertEquals(0, response.getInput().getCompletedGroupsCount());
   }
 
   @Test
-  void submitLeasedSnapshotFinalizeResultRoutesBlobManifest() {
+  void submitLeasedSnapshotFinalizeResultRoutesSuccessCompletion() {
     when(service.leasedSnapshotFinalizeExecutionService.persistSuccess(
-            any(),
-            eq("job-1"),
-            eq("lease-1"),
-            eq("result-1"),
-            eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
-            eq(7)))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1")))
         .thenReturn(true);
 
     var response =
@@ -542,9 +498,6 @@ class ReconcileExecutorControlImplTest {
                     .setSuccess(
                         SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
                             .setResultId("result-1")
-                            .setStatsBlobUri(
-                                "/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json")
-                            .setStatsRecordCount(7)
                             .build())
                     .build())
             .await()
@@ -552,13 +505,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedSnapshotFinalizeExecutionService)
-        .persistSuccess(
-            any(),
-            eq("job-1"),
-            eq("lease-1"),
-            eq("result-1"),
-            eq("/accounts/acct/reconcile/jobs/job-1/snapshot-finalize-stats/result.json"),
-            eq(7));
+        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"));
   }
 
   @Test
