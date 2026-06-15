@@ -2171,8 +2171,8 @@ shares the same <code>QueryContext</code> as the other query RPCs and relies on 
 <code>snapshotPinFor</code>, and view metadata stored in <code>ViewNode</code> to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through <code>QueryInputResolver</code> so their snapshot pins are merged into
-<code>QueryContext</code> before the response hits the planner—<code>FetchScanBundle</code> can therefore find the same
-pins later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
+<code>QueryContext</code> before the response hits the planner—<code>QueryScanService.InitScan</code> can therefore find
+the same pins later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
 relations are materialized in the engine-specific overlays for <code>_system</code> scans but do not appear in the RPC
 response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via <code>RelationInfo.columns[*]</code> (<code>ColumnResult</code>), so a relation can

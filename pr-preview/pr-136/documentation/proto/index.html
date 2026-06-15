@@ -1934,8 +1934,23 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>QueryService</code></td>
-<td><code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>, <code>FetchScanBundle</code>.</td>
+<td><code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>.</td>
 <td></td>
+</tr>
+<tr>
+<td><code>QuerySchemaService</code></td>
+<td><code>DescribeInputs</code>.</td>
+<td></td>
+</tr>
+<tr>
+<td><code>QueryScanService</code></td>
+<td><code>InitScan</code>, <code>StreamDeleteFiles</code>, <code>StreamDataFiles</code>, <code>CloseScan</code>.</td>
+<td></td>
+</tr>
+<tr>
+<td><code>ReconcileControl</code></td>
+<td><code>CaptureNow</code>, <code>StartCapture</code>, <code>GetReconcileJob</code>, <code>GetReconcileJobTree</code>, <code>ListReconcileJobs</code>, <code>GetFinalizedSnapshotStatus</code>, <code>CancelReconcileJob</code>, <code>GetReconcilerSettings</code>, <code>UpdateReconcilerSettings</code></td>
+<td>Client-facing reconcile control plane for synchronous execution, queued jobs, finalized snapshot status lookup, cancellation, and automatic reconcile defaults. <code>GetFinalizedSnapshotStatus</code> returns <code>FSS_PENDING</code> when no finalized snapshot record exists yet for the requested table/snapshot pair; <code>FSS_FINALIZED</code> includes <code>finalized_at</code> and <code>finalizer_job_id</code>.</td>
 </tr>
 <tr>
 <td><code>ReconcileExecutorControl</code></td>
@@ -1970,8 +1985,8 @@ before hitting repository storage.</p>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
 - <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
-  <code>QueryService.FetchScanBundle</code>, which returns the <code>execution/scan.proto</code> records for a specific
-  table.</p>
+  <code>QueryScanService</code>: clients call <code>InitScan</code>, fully consume <code>StreamDeleteFiles</code>, then consume
+  <code>StreamDataFiles</code> for a specific table before <code>CloseScan</code>.</p>
 <p><code>execution/scan.proto</code> describes the scan inputs that executors consume:
 - <code>ScanFile</code> entries include the file path, size, record count, format, per-column stats, and whether
   the file is data vs equality/position deletes.
@@ -2041,9 +2056,10 @@ engine release.</p>
   that exactly match the protos defined here; the reconciler pipes them back via the
   catalog/statistics/index services.</li>
 <li>
-<p>Planners call <code>QueryService.BeginQuery</code> to create query leases, optionally extend them via
-   <code>RenewQuery</code>, call <code>FetchScanBundle</code> per table when they need manifests, and close leases out via
-   <code>EndQuery</code> once execution is complete.</p>
+<p>Planners call <code>QueryService.BeginQuery</code> to create query leases, optionally resolve additional
+   inputs via <code>QuerySchemaService.DescribeInputs</code>, extend leases via <code>RenewQuery</code>, call
+   <code>QueryScanService</code> per table when they need manifests, and close leases out via <code>EndQuery</code> once
+   execution is complete.</p>
 </li>
 <li>
 <p>BeginQuery allows clients to provide an optional <code>query_id</code> (duplicates are rejected) and

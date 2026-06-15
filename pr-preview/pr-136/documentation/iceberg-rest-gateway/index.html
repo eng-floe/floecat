@@ -2225,7 +2225,7 @@ short bounded confirmation poll before returning unknown-state errors. Poll beha
 <hr />
 <h2 id="scan-planning-task-consumption">Scan Planning &amp; Task Consumption<a class="headerlink" href="#scan-planning-task-consumption" title="Permanent link">&para;</a></h2>
 <ol>
-<li><code>TablePlanService</code> resolves the table ID, applies snapshot filters (start/end snapshot, stats fields, filter expressions), and issues <code>BeginQuery</code> + <code>FetchScanBundle</code> against Floecat’s <code>QueryService</code>.</li>
+<li><code>TablePlanService</code> resolves the table ID, applies snapshot filters (start/end snapshot, stats fields, filter expressions), and issues <code>BeginQuery</code> plus <code>QueryScanService</code> streaming scan RPCs against Floecat.</li>
 <li>The resulting plan bundle is immediately completed (no async state today). <code>PlanTaskManager</code> registers the descriptor (plan-id, namespace, table, credentials, delete files) and chunks file scan tasks into deterministic task IDs (<code>{planId}-task-{n}</code>) based on configured chunk size.</li>
 <li><code>/tables/{table}/plan</code> returns the plan descriptor, aggregated file scan tasks, delete files, storage credentials, and the list of <code>planTasks</code>.</li>
 <li><code>/tables/{table}/tasks</code> accepts a <code>planTask</code> ID and consumes it exactly once, returning only the payload for that task. Invalid/consumed IDs return Iceberg-style 404 responses.</li>

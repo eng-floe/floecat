@@ -2177,7 +2177,7 @@ rows upserted after all batches have been consumed.</p>
 - <strong>Security</strong> – Replace <code>Authorizer</code> or interceptors with CDI alternatives.
 - <strong>Connectors</strong> – Register new SPI implementations and expose them via <code>ConnectorRepository</code>.
 - <strong>QueryService</strong> – Extend query metadata by enriching <code>QueryContext</code> creation or injecting
-  additional connector metadata via the <code>FetchScanBundle</code> RPC / <code>ScanBundleService</code> on the query
+  additional connector metadata via the <code>QueryScanService</code> streaming RPCs / <code>ScanBundleService</code> on the query
   path. Reconcile planning/execution does not use <code>ScanBundleService</code>; it goes through
   <code>FloecatConnector</code> directly. <code>BeginQuery</code> optionally accepts a client-specified <code>query_id</code> plus
   <code>common.QueryInput</code> records so lifecycle can pre-pin snapshots/expansions for deterministic
