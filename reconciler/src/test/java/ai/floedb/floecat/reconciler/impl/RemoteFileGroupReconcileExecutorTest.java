@@ -172,7 +172,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     assertTrue(result.cancelled);
     assertTrue(result.message.contains("Stopped during file-group execution"));
-    verify(workerClient, never()).submitSuccess(eq(remoteLease), any());
+    verify(workerClient, never()).submitSuccess(eq(remoteLease), any(), any());
   }
 
   @Test
@@ -208,7 +208,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(remoteLease),
             eq("job-1:plan-1:group-1:failure"),
             eq("IllegalStateException: capture exploded"));
-    verify(workerClient, never()).submitSuccess(eq(remoteLease), any());
+    verify(workerClient, never()).submitSuccess(eq(remoteLease), any(), any());
   }
 
   @Test
@@ -225,7 +225,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
-    when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
+    when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -236,6 +236,7 @@ class RemoteFileGroupReconcileExecutorTest {
     verify(workerClient)
         .submitSuccess(
             eq(remoteLease),
+            eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
                     "job-1:plan-1:group-1:success", List.of(), List.of())));
@@ -255,7 +256,7 @@ class RemoteFileGroupReconcileExecutorTest {
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
-    when(workerClient.submitSuccess(eq(remoteLease), any()))
+    when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any()))
         .thenThrow(new RuntimeException("response lost after success submit"));
 
     ReconcileFailureException error =
@@ -286,7 +287,7 @@ class RemoteFileGroupReconcileExecutorTest {
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload))
         .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
-    when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
+    when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -297,6 +298,7 @@ class RemoteFileGroupReconcileExecutorTest {
     verify(workerClient)
         .submitSuccess(
             eq(remoteLease),
+            eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
                     "job-1:plan-1:group-1:success", List.of(), List.of(artifact))));
@@ -330,7 +332,7 @@ class RemoteFileGroupReconcileExecutorTest {
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(payload))
         .thenReturn(CaptureEngineResult.of(List.of(fileStat), List.of(), List.of()));
-    when(workerClient.submitSuccess(eq(remoteLease), any())).thenReturn(true);
+    when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -341,6 +343,7 @@ class RemoteFileGroupReconcileExecutorTest {
     verify(workerClient)
         .submitSuccess(
             eq(remoteLease),
+            eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
                     "job-1:plan-1:group-1:success", List.of(fileStat), List.of())));

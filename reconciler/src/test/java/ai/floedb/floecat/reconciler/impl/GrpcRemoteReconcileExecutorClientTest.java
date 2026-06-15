@@ -490,7 +490,9 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     boolean accepted =
         client.submitSuccess(
-            remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("result-1"));
+            remoteFileGroupLease(),
+            fileGroupPayload("s3://bucket/file.parquet"),
+            StandaloneFileGroupExecutionResult.empty("result-1"));
 
     assertThat(accepted).isTrue();
     verify(stub1).submitLeasedFileGroupExecutionResult(any());
@@ -513,7 +515,9 @@ class GrpcRemoteReconcileExecutorClientTest {
         StatusRuntimeException.class,
         () ->
             client.submitSuccess(
-                remoteFileGroupLease(), StandaloneFileGroupExecutionResult.empty("  ")));
+                remoteFileGroupLease(),
+                fileGroupPayload("s3://bucket/file.parquet"),
+                StandaloneFileGroupExecutionResult.empty("  ")));
 
     verify(stub).submitLeasedFileGroupExecutionResult(any());
     verify(channel).shutdown();
@@ -537,7 +541,10 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of());
 
-    assertThat(client.submitSuccess(remoteFileGroupLease(), result)).isTrue();
+    assertThat(
+            client.submitSuccess(
+                remoteFileGroupLease(), fileGroupPayload("s3://bucket/file.parquet"), result))
+        .isTrue();
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
@@ -579,7 +586,12 @@ class GrpcRemoteReconcileExecutorClientTest {
                     null)),
             List.of());
 
-    assertThat(client.submitSuccess(remoteFileGroupLease(), result)).isTrue();
+    assertThat(
+            client.submitSuccess(
+                remoteFileGroupLease(),
+                fileGroupPayload("s3://bucket/data/file-1.parquet"),
+                result))
+        .isTrue();
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
@@ -629,7 +641,9 @@ class GrpcRemoteReconcileExecutorClientTest {
         new StandaloneFileGroupExecutionResult(
             "result-1", java.util.Collections.nCopies(12, record), List.of());
 
-    assertThat(client.submitSuccess(remoteFileGroupLease(), result)).isTrue();
+    assertThat(
+            client.submitSuccess(remoteFileGroupLease(), fileGroupPayload(largeFilePath), result))
+        .isTrue();
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
@@ -709,9 +723,28 @@ class GrpcRemoteReconcileExecutorClientTest {
             null,
             null,
             null,
-            ReconcileFileGroupTask.of(
-                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet")),
+            ReconcileFileGroupTask.of("plan-1", "group-1", "table-1", 55L, List.of()),
             ""));
+  }
+
+  private static StandaloneFileGroupExecutionPayload fileGroupPayload(String... filePaths) {
+    return new StandaloneFileGroupExecutionPayload(
+        "job-lease",
+        "lease-epoch",
+        "",
+        ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+        "db",
+        "events",
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build(),
+        55L,
+        "plan-1",
+        "group-1",
+        List.of(filePaths),
+        ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
   }
 
   private static final class ExplicitTransportClient extends GrpcRemoteReconcileExecutorClient {

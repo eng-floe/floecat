@@ -19,7 +19,10 @@ package ai.floedb.floecat.reconciler.impl;
 interface RemoteFileGroupWorkerClient {
   StandaloneFileGroupExecutionPayload getExecution(RemoteLeasedJob lease);
 
-  boolean submitSuccess(RemoteLeasedJob lease, StandaloneFileGroupExecutionResult result);
+  boolean submitSuccess(
+      RemoteLeasedJob lease,
+      StandaloneFileGroupExecutionPayload payload,
+      StandaloneFileGroupExecutionResult result);
 
   boolean submitFailure(RemoteLeasedJob lease, String resultId, String message);
 }

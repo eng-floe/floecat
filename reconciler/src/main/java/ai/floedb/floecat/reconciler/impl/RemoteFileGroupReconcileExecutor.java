@@ -194,7 +194,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       return stopRequestedResult(payload);
     }
     try {
-      if (!workerClient.submitSuccess(remoteLease, result)) {
+      if (!workerClient.submitSuccess(remoteLease, payload, result)) {
         throw terminalSubmissionUncertain(
             "standalone worker success result submission was rejected", null);
       }

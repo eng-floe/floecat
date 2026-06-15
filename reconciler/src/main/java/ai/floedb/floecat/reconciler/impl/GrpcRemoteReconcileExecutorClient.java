@@ -827,7 +827,10 @@ class GrpcRemoteReconcileExecutorClient
             : ReconcileCapturePolicy.empty());
   }
 
-  public boolean submitSuccess(RemoteLeasedJob lease, StandaloneFileGroupExecutionResult result) {
+  public boolean submitSuccess(
+      RemoteLeasedJob lease,
+      StandaloneFileGroupExecutionPayload payload,
+      StandaloneFileGroupExecutionResult result) {
     String resultId = result.resultId() == null ? "" : result.resultId().trim();
     List<LeasedFileGroupIndexArtifact> indexArtifacts = toProtoIndexArtifacts(result);
     List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> chunks =
@@ -853,9 +856,16 @@ class GrpcRemoteReconcileExecutorClient
       }
     }
     ReconcileFileGroupTask plannedTask =
-        lease.lease().fileGroupTask == null
-            ? ReconcileFileGroupTask.empty()
-            : lease.lease().fileGroupTask;
+        payload == null
+            ? (lease.lease().fileGroupTask == null
+                ? ReconcileFileGroupTask.empty()
+                : lease.lease().fileGroupTask)
+            : ReconcileFileGroupTask.of(
+                payload.planId(),
+                payload.groupId(),
+                payload.tableId() == null ? "" : payload.tableId().getId(),
+                payload.snapshotId(),
+                payload.plannedFilePaths());
     SubmitLeasedFileGroupExecutionResultRequest.Success.Builder success =
         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
             .setResultId(resultId)

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
