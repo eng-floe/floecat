@@ -1938,7 +1938,7 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
   block, iterates <code>listTables</code>, calls <code>enumerateSnapshots</code> for metadata/snapshot ingestion, and
   routes stats capture through the stats control plane (which uses
   <code>captureSnapshotTargetStats</code> in native engines).</li>
-<li><strong>Query lifecycle</strong> – <code>QueryService.FetchScanBundle</code> fetch file lists pinned to the requested snapshot
+<li><strong>Query lifecycle</strong> – <code>QueryScanService</code> streams file lists pinned to the requested snapshot
 directly from table and file statistics stored in the catalog (via TableStatisticsService).</li>
 </ul>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>

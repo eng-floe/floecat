@@ -2014,8 +2014,8 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
 <li>capture only -&gt; <code>CAPTURE_ONLY</code></li>
 <li>metadata plus capture -&gt; <code>METADATA_AND_CAPTURE</code></li>
 <li><strong>QueryServiceImpl</strong> – Administers query leases (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>,
-  <code>GetQuery</code>) and exposes <code>FetchScanBundle</code> so planners can request connector scan metadata on
-  demand.</li>
+  <code>GetQuery</code>) and exposes the scan streaming helpers (<code>InitScan</code>, <code>StreamDeleteFiles</code>,
+  <code>StreamDataFiles</code>, <code>CloseScan</code>) so planners can request connector metadata safely.</li>
 <li><strong>SystemObjectsServiceImpl</strong> – Loads immutable builtin catalogs from disk/classpath, caches them
   per engine version, and serves them via <code>GetSystemObjects</code>.</li>
 </ul>
@@ -2049,9 +2049,15 @@ can be replaced by injecting a custom implementation.</p>
 <p><code>QueryContextStore</code> is a Caffeine cache keyed by query ID. Each <code>QueryContext</code> tracks state,
 expiration, <code>PrincipalContext</code>, encoded <code>SnapshotSet</code>, and <code>ExpansionMap</code>.
 <code>QueryServiceImpl.beginQuery</code> resolves name or ID references via Directory/Snapshot/Table services,
-pins snapshots, and stores the lease. Planners request connector <code>ScanBundle</code>s later via
-<code>FetchScanBundle</code>, which streams data/delete files for a specific table. The lease data (snapshots,
-expansion map, obligations) is returned to the caller inside the <code>QueryDescriptor</code>.</p>
+pins snapshots, and stores the lease. Planners request connector file lists with <code>InitScan</code> (which
+returns table metadata and a scan handle), then consume <code>StreamDeleteFiles</code> followed by
+<code>StreamDataFiles</code>, and finally call <code>CloseScan</code> when done. Ordering is strict: <code>StreamDeleteFiles</code>
+must be fully consumed before <code>StreamDataFiles</code> begins, otherwise the server rejects the data stream
+with <code>FAILED_PRECONDITION</code>. The server auto-releases the scan session as soon as both streams finish,
+so <code>CloseScan</code> is best-effort but still recommended to tidy server resources sooner. Each <code>DataFile</code>
+currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete references will come later once the
+applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
+the caller inside the <code>QueryDescriptor</code>.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
@@ -2171,7 +2177,7 @@ rows upserted after all batches have been consumed.</p>
 - <strong>Security</strong> – Replace <code>Authorizer</code> or interceptors with CDI alternatives.
 - <strong>Connectors</strong> – Register new SPI implementations and expose them via <code>ConnectorRepository</code>.
 - <strong>QueryService</strong> – Extend query metadata by enriching <code>QueryContext</code> creation or injecting
-  additional connector metadata via the <code>FetchScanBundle</code> RPC / <code>ScanBundleService</code> on the query
+  additional connector metadata via the <code>QueryScanService</code> streaming RPCs / <code>ScanBundleService</code> on the query
   path. Reconcile planning/execution does not use <code>ScanBundleService</code>; it goes through
   <code>FloecatConnector</code> directly. <code>BeginQuery</code> optionally accepts a client-specified <code>query_id</code> plus
   <code>common.QueryInput</code> records so lifecycle can pre-pin snapshots/expansions for deterministic
