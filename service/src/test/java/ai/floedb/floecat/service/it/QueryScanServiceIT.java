@@ -25,8 +25,10 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.*;
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
@@ -35,12 +37,16 @@ import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Integration tests for QueryScanService (FetchScanBundle).
+ * Integration tests for QueryScanService streaming scans.
  *
  * <p>After API changes: - BeginQuery no longer takes inputs. - DescribeInputs establishes pinned
  * tables + snapshots.
@@ -77,6 +83,7 @@ class QueryScanServiceIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject QueryContextStore queryStore;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
@@ -86,9 +93,9 @@ class QueryScanServiceIT {
     seeder.seedData();
   }
 
-  /** Ensures FetchScanBundle returns empty bundle for a pinned table. */
+  /** Ensures streaming scans return empty file lists for a pinned table. */
   @Test
-  void fetchScanBundleReturnsBundleForPinnedTable() throws Exception {
+  void streamScanReturnsFilesForPinnedTable() throws Exception {
 
     var catName = catalogPrefix + "scan_cat";
     var cat = TestSupport.createCatalog(catalog, catName, "");
@@ -134,20 +141,16 @@ class QueryScanServiceIT {
                     .build())
             .build());
 
-    var resp =
-        scan.fetchScanBundle(
-            FetchScanBundleRequest.newBuilder()
-                .setQueryId(queryId)
-                .setTableId(tbl.getResourceId())
-                .build());
+    InitScanRequest initReq =
+        InitScanRequest.newBuilder().setQueryId(queryId).setTableId(tbl.getResourceId()).build();
+    var resp = collectScanFileStream(initReq);
 
-    assertTrue(resp.hasBundle());
-    assertEquals(0, resp.getBundle().getDataFilesCount());
-    assertEquals(0, resp.getBundle().getDeleteFilesCount());
+    assertEquals(0, resp.dataFiles().size());
+    assertEquals(0, resp.deleteFiles().size());
   }
 
   @Test
-  void fetchScanBundleReturnsTableInfo() throws Exception {
+  void streamScanReturnsTableInfo() throws Exception {
 
     var catName = catalogPrefix + "scan_info";
     var cat = TestSupport.createCatalog(catalog, catName, "");
@@ -207,15 +210,12 @@ class QueryScanServiceIT {
                     .build())
             .build());
 
-    var resp =
-        scan.fetchScanBundle(
-            FetchScanBundleRequest.newBuilder()
-                .setQueryId(queryId)
-                .setTableId(tbl.getResourceId())
-                .build());
+    InitScanRequest initReq =
+        InitScanRequest.newBuilder().setQueryId(queryId).setTableId(tbl.getResourceId()).build();
+    var resp = collectScanFileStream(initReq);
 
-    assertTrue(resp.hasTableInfo());
-    var info = resp.getTableInfo();
+    assertNotNull(resp.tableInfo());
+    var info = resp.tableInfo();
     assertEquals(tbl.getResourceId(), info.getTableId());
     assertEquals(tbl.getSchemaJson(), info.getSchemaJson());
     assertEquals(metadataLocation, info.getMetadataLocation());
@@ -223,9 +223,9 @@ class QueryScanServiceIT {
     assertEquals(snap.getSnapshotId(), info.getSnapshotId());
   }
 
-  /** Ensures FetchScanBundle rejects unpinned tables. */
+  /** Ensures streaming scans reject unpinned tables. */
   @Test
-  void fetchScanBundleRejectsUnpinnedTables() throws Exception {
+  void streamScanRejectsUnpinnedTables() throws Exception {
 
     var catName = catalogPrefix + "scan_nf";
     var cat = TestSupport.createCatalog(catalog, catName, "");
@@ -283,8 +283,8 @@ class QueryScanServiceIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                scan.fetchScanBundle(
-                    FetchScanBundleRequest.newBuilder()
+                collectScanFileStream(
+                    InitScanRequest.newBuilder()
                         .setQueryId(queryId)
                         .setTableId(tblB.getResourceId())
                         .build()));
@@ -342,5 +342,116 @@ class QueryScanServiceIT {
             .setSpec(spec)
             .setUpdateMask(mask)
             .build());
+  }
+
+  private record ScanFileStreamResponse(
+      TableInfo tableInfo, List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
+
+  private ScanFileStreamResponse collectScanFileStream(InitScanRequest request) {
+    InitScanResponse initResp = scan.initScan(request);
+    ScanHandle handle = initResp.getHandle();
+    List<ScanFile> deleteFiles = new ArrayList<>();
+    var deleteIter = scan.streamDeleteFiles(handle);
+    while (deleteIter.hasNext()) {
+      DeleteFileBatch batch = deleteIter.next();
+      for (var delete : batch.getItemsList()) {
+        deleteFiles.add(delete.getFile());
+      }
+    }
+    List<ScanFile> dataFiles = new ArrayList<>();
+    var dataIter = scan.streamDataFiles(handle);
+    while (dataIter.hasNext()) {
+      DataFileBatch batch = dataIter.next();
+      for (var data : batch.getItemsList()) {
+        dataFiles.add(data.getFile());
+      }
+    }
+    scan.closeScan(handle);
+    return new ScanFileStreamResponse(initResp.getTableInfo(), dataFiles, deleteFiles);
+  }
+
+  private static final AtomicLong SNAPSHOT_SEQ = new AtomicLong(1000);
+
+  private ScanHandle prepareScanHandle(String tag) throws Exception {
+    var catName = catalogPrefix + "scan_precondition_" + tag;
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "scan", List.of("scan"), "");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "scan_table_" + tag,
+            "s3://bucket/scan_table_" + tag,
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "scan table");
+    var snap =
+        TestSupport.createSnapshot(
+            snapshot,
+            tbl.getResourceId(),
+            SNAPSHOT_SEQ.getAndIncrement(),
+            System.currentTimeMillis());
+    var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), tag);
+    attachConnectorToTable(tbl.getResourceId(), connector);
+
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
+    var queryId = begin.getQuery().getQueryId();
+    schema.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(
+                QueryInput.newBuilder()
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(
+                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
+                    .build())
+            .build());
+    return scan.initScan(
+            InitScanRequest.newBuilder()
+                .setQueryId(queryId)
+                .setTableId(tbl.getResourceId())
+                .build())
+        .getHandle();
+  }
+
+  @Test
+  void streamDataBeforeDeletesFails() throws Exception {
+    ScanHandle handle = prepareScanHandle("precondition");
+    StatusRuntimeException ex = assertStreamDataFilesFails(handle);
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    scan.closeScan(handle);
+  }
+
+  @Test
+  void closeScanIsIdempotent() throws Exception {
+    ScanHandle handle = prepareScanHandle("close twice");
+    scan.streamDeleteFiles(handle).forEachRemaining(batch -> {});
+    scan.closeScan(handle);
+    assertDoesNotThrow(() -> scan.closeScan(handle));
+  }
+
+  @Test
+  void incompleteDeleteStreamPreventsData() throws Exception {
+    ScanHandle handle = prepareScanHandle("delete-short");
+    var session = queryStore.getScanSession(handle).orElseThrow();
+    assertTrue(session.initDeleteBatchesFuture(new CompletableFuture<>()));
+
+    StatusRuntimeException ex = assertStreamDataFilesFails(handle);
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    scan.closeScan(handle);
+  }
+
+  private StatusRuntimeException assertStreamDataFilesFails(ScanHandle handle) {
+    Iterator<DataFileBatch> batches = scan.streamDataFiles(handle);
+    return assertThrows(
+        StatusRuntimeException.class,
+        () -> {
+          while (batches.hasNext()) {
+            batches.next();
+          }
+        });
   }
 }

@@ -196,8 +196,8 @@ shares the same `QueryContext` as the other query RPCs and relies on `CatalogOve
 `snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
-`QueryContext` before the response hits the planner—`FetchScanBundle` can therefore find the same
-pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
+`QueryContext` before the response hits the planner—`QueryScanService.InitScan` can therefore find
+the same pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
 relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC
 response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via `RelationInfo.columns[*]` (`ColumnResult`), so a relation can

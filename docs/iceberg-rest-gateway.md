@@ -138,7 +138,7 @@ short bounded confirmation poll before returning unknown-state errors. Poll beha
 
 ## Scan Planning & Task Consumption
 
-1. `TablePlanService` resolves the table ID, applies snapshot filters (start/end snapshot, stats fields, filter expressions), and issues `BeginQuery` + `FetchScanBundle` against Floecat’s `QueryService`.
+1. `TablePlanService` resolves the table ID, applies snapshot filters (start/end snapshot, stats fields, filter expressions), and issues `BeginQuery` plus `QueryScanService` streaming scan RPCs against Floecat.
 2. The resulting plan bundle is immediately completed (no async state today). `PlanTaskManager` registers the descriptor (plan-id, namespace, table, credentials, delete files) and chunks file scan tasks into deterministic task IDs (`{planId}-task-{n}`) based on configured chunk size.
 3. `/tables/{table}/plan` returns the plan descriptor, aggregated file scan tasks, delete files, storage credentials, and the list of `planTasks`.
 4. `/tables/{table}/tasks` accepts a `planTask` ID and consumes it exactly once, returning only the payload for that task. Invalid/consumed IDs return Iceberg-style 404 responses.
