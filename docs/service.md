@@ -211,7 +211,7 @@ Extension points:
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
-  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService` on the query
+  additional connector metadata via the `QueryScanService` streaming RPCs / `ScanBundleService` on the query
   path. Reconcile planning/execution does not use `ScanBundleService`; it goes through
   `FloecatConnector` directly. `BeginQuery` optionally accepts a client-specified `query_id` plus
   `common.QueryInput` records so lifecycle can pre-pin snapshots/expansions for deterministic

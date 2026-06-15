@@ -51,7 +51,9 @@ CLI, and reconciler.
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
-| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
+| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
+| `QuerySchemaService` | `DescribeInputs`. |
+| `QueryScanService` | `InitScan`, `StreamDeleteFiles`, `StreamDataFiles`, `CloseScan`. |
 | `ReconcileControl` | `CaptureNow`, `StartCapture`, `GetReconcileJob`, `GetReconcileJobTree`, `ListReconcileJobs`, `GetFinalizedSnapshotStatus`, `CancelReconcileJob`, `GetReconcilerSettings`, `UpdateReconcilerSettings` | Client-facing reconcile control plane for synchronous execution, queued jobs, finalized snapshot status lookup, cancellation, and automatic reconcile defaults. `GetFinalizedSnapshotStatus` returns `FSS_PENDING` when no finalized snapshot record exists yet for the requested table/snapshot pair; `FSS_FINALIZED` includes `finalized_at` and `finalizer_job_id`. |
 | `ReconcileExecutorControl` | `LeaseReconcileJob`, `GetLeasedPlan*Input`, `SubmitLeasedPlan*Result`, `GetLeasedFileGroupExecution`, `SubmitLeasedFileGroupExecutionResult` | Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs. |
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
@@ -66,8 +68,8 @@ before hitting repository storage.
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:
 - `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
-  `QueryService.FetchScanBundle`, which returns the `execution/scan.proto` records for a specific
-  table.
+  `QueryScanService`: clients call `InitScan`, fully consume `StreamDeleteFiles`, then consume
+  `StreamDataFiles` for a specific table before `CloseScan`.
 
 `execution/scan.proto` describes the scan inputs that executors consume:
 - `ScanFile` entries include the file path, size, record count, format, per-column stats, and whether
@@ -137,9 +139,10 @@ engine release.
 3. Connectors written against the SPI return `ScanFile`, stats, and file-group capture metadata
   that exactly match the protos defined here; the reconciler pipes them back via the
   catalog/statistics/index services.
-4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
-   `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
-   `EndQuery` once execution is complete.
+4. Planners call `QueryService.BeginQuery` to create query leases, optionally resolve additional
+   inputs via `QuerySchemaService.DescribeInputs`, extend leases via `RenewQuery`, call
+   `QueryScanService` per table when they need manifests, and close leases out via `EndQuery` once
+   execution is complete.
 
    * BeginQuery allows clients to provide an optional `query_id` (duplicates are rejected) and
      a list of `common.QueryInput` records so the lifecycle service can pin snapshots and expansions

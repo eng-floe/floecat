@@ -165,7 +165,7 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
   block, iterates `listTables`, calls `enumerateSnapshots` for metadata/snapshot ingestion, and
   routes stats capture through the stats control plane (which uses
   `captureSnapshotTargetStats` in native engines).
-- **Query lifecycle** – `QueryService.FetchScanBundle` fetch file lists pinned to the requested snapshot
+- **Query lifecycle** – `QueryScanService` streams file lists pinned to the requested snapshot
 directly from table and file statistics stored in the catalog (via TableStatisticsService).
 
 ## Cross-References
