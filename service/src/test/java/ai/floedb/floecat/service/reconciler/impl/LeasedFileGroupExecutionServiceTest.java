@@ -21,7 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -127,6 +130,31 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals("plan-1", payload.planId());
     assertEquals("group-1", payload.groupId());
     assertEquals(List.of("s3://bucket/data/file-1.parquet"), payload.plannedFilePaths());
+  }
+
+  @Test
+  void mergePersistedChildResultPreservesChildPartialsWhileHydratingPlannedFilePaths() {
+    TargetStatsRecord partialAggregate =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
+                    .build())
+            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+            .build();
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileFileGroupTask persistedChild =
+        group.withPartialAggregateRecords(List.of(partialAggregate));
+
+    ReconcileFileGroupTask merged =
+        LeasedFileGroupExecutionService.mergePersistedChildResult(group, persistedChild);
+
+    assertEquals(List.of("s3://bucket/data/file-1.parquet"), merged.filePaths());
+    assertEquals(List.of(partialAggregate), merged.partialAggregateRecords());
   }
 
   @Test

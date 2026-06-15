@@ -723,7 +723,21 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .map(parent -> parent.snapshotTask)
         .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
         .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))
+        .map(parentTask -> mergePersistedChildResult(parentTask, task))
         .orElseThrow(this::unresolvedPlannedTask);
+  }
+
+  static ReconcileFileGroupTask mergePersistedChildResult(
+      ReconcileFileGroupTask plannedTask, ReconcileFileGroupTask persistedTask) {
+    ReconcileFileGroupTask effectivePlanned =
+        plannedTask == null ? ReconcileFileGroupTask.empty() : plannedTask;
+    ReconcileFileGroupTask effectivePersisted =
+        persistedTask == null ? ReconcileFileGroupTask.empty() : persistedTask;
+    return effectivePlanned
+        .withFileStatsBlob(
+            effectivePersisted.fileStatsBlobUri(), effectivePersisted.fileStatsRecordCount())
+        .withFileResults(effectivePersisted.fileResults())
+        .withPartialAggregateRecords(effectivePersisted.partialAggregateRecords());
   }
 
   private static java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(
