@@ -437,7 +437,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         item.getContentType() == null || item.getContentType().isBlank()
             ? "application/x-parquet"
             : item.getContentType();
-    blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
+    if (!item.getContent().isEmpty()) {
+      blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
+    }
     String etag =
         blobStore
             .head(record.getArtifactUri())
@@ -543,8 +545,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> indexArtifacts) {
     List<ReconcilerBackend.StagedIndexArtifact> inlineArtifacts = new java.util.ArrayList<>();
     for (var artifact : indexArtifacts) {
-      if (artifact.getContent().isEmpty()) {
-        throw new IllegalArgumentException("inline index artifact content is required");
+      if (artifact.getContent().isEmpty() && artifact.getRecord().getArtifactUri().isBlank()) {
+        throw new IllegalArgumentException(
+            "inline index artifact content is required when artifact_uri is blank");
       }
       inlineArtifacts.add(
           new ReconcilerBackend.StagedIndexArtifact(

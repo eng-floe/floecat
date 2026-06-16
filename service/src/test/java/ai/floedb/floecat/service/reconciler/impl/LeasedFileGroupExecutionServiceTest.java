@@ -18,9 +18,19 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
@@ -43,9 +53,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import com.google.protobuf.ByteString;
 import io.grpc.StatusRuntimeException;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -384,6 +398,82 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(
         "test-secret", payload.sourceConnector().getPropertiesOrThrow("s3.secret-access-key"));
     assertEquals("test-token", payload.sourceConnector().getPropertiesOrThrow("s3.session-token"));
+  }
+
+  @Test
+  void parseIndexArtifactsAllowsDirectUploadedArtifactWithoutInlineContent() throws Exception {
+    IndexArtifactRecord record =
+        IndexArtifactRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("s3://bucket/file-1.parquet"))
+                    .build())
+            .setArtifactUri("s3://floescan-sidecars/acct/table-1/55/file-1.parquet")
+            .setArtifactFormat("parquet")
+            .setArtifactFormatVersion(1)
+            .setState(IndexArtifactState.IAS_READY)
+            .build();
+    LeasedFileGroupIndexArtifact artifact =
+        LeasedFileGroupIndexArtifact.newBuilder().setRecord(record).build();
+
+    List<ReconcilerBackend.StagedIndexArtifact> staged =
+        invokeParseIndexArtifacts(List.of(artifact));
+
+    assertEquals(1, staged.size());
+    assertEquals(record, staged.getFirst().record());
+    assertEquals(0, staged.getFirst().content().length);
+    assertTrue(staged.getFirst().contentType().isEmpty());
+  }
+
+  @Test
+  void persistIndexArtifactSkipsBlobWriteWhenArtifactWasAlreadyUploaded() throws Exception {
+    service.blobStore = mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    service.indexArtifactRepo =
+        mock(ai.floedb.floecat.service.repo.impl.IndexArtifactRepository.class);
+
+    IndexArtifactRecord record =
+        IndexArtifactRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath("s3://bucket/file-1.parquet"))
+                    .build())
+            .setArtifactUri("s3://floescan-sidecars/acct/table-1/55/file-1.parquet")
+            .setArtifactFormat("parquet")
+            .setArtifactFormatVersion(1)
+            .setState(IndexArtifactState.IAS_READY)
+            .build();
+    PutIndexArtifactItem item =
+        PutIndexArtifactItem.newBuilder().setRecord(record).setContent(ByteString.empty()).build();
+
+    when(service.blobStore.head(record.getArtifactUri())).thenReturn(Optional.empty());
+
+    invokePersistIndexArtifact(item);
+
+    verify(service.blobStore, never()).put(anyString(), any(byte[].class), anyString());
+    verify(service.blobStore).head(record.getArtifactUri());
+    verify(service.indexArtifactRepo)
+        .putIndexArtifact(record.toBuilder().setContentEtag("").build());
+  }
+
+  @SuppressWarnings("unchecked")
+  private List<ReconcilerBackend.StagedIndexArtifact> invokeParseIndexArtifacts(
+      List<LeasedFileGroupIndexArtifact> artifacts) throws Exception {
+    Method method =
+        LeasedFileGroupExecutionService.class.getDeclaredMethod("parseIndexArtifacts", List.class);
+    method.setAccessible(true);
+    return (List<ReconcilerBackend.StagedIndexArtifact>) method.invoke(service, artifacts);
+  }
+
+  private void invokePersistIndexArtifact(PutIndexArtifactItem item) throws Exception {
+    Method method =
+        LeasedFileGroupExecutionService.class.getDeclaredMethod(
+            "persistIndexArtifact", PutIndexArtifactItem.class);
+    method.setAccessible(true);
+    method.invoke(service, item);
   }
 
   private static ReconcileJobStore.ReconcileJob job(

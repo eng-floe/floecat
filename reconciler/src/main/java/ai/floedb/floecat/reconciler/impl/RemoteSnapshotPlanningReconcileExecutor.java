@@ -344,7 +344,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
               .distinct()
               .toList();
       if (!parquetFilePaths.isEmpty()) {
-        return partitionFilePaths(lease.jobId, task, parquetFilePaths);
+        return partitionFilePaths(
+            lease.jobId, task, parquetFilePaths.subList(0, Math.min(256, parquetFilePaths.size())));
       }
       return List.of();
     }

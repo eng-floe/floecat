@@ -1825,6 +1825,82 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void captureOnlySnapshotPlanningPreservesCurrentSelectionWhenNoLocalSnapshotsExist() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-capture-only-current-no-local")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+    }
+
+    class CurrentSnapshotConnector extends FakeConnector {
+      CurrentSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        if (options.selectionKind() != SnapshotSelectionKind.CURRENT) {
+          return List.of();
+        }
+        return List.of(
+            new SnapshotBundle(
+                42L, 41L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new CurrentSnapshotConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)),
+            ReconcileSnapshotSelection.current());
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            false,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
   void fullCaptureOnlySnapshotPlanningUsesKnownLocalSnapshotIds() {
     ResourceId tableId =
         ResourceId.newBuilder()

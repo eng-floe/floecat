@@ -395,7 +395,7 @@ public class ReconcilerService {
       return bundles;
     }
     if (knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
-      return List.of();
+      return bundles;
     }
     return bundles.stream()
         .filter(bundle -> bundle != null && knownSnapshotIds.contains(bundle.snapshotId()))
@@ -551,10 +551,12 @@ public class ReconcilerService {
       ReconcileSnapshotSelection selection,
       Set<Long> knownSnapshotIds,
       Set<Long> targetSnapshotIds) {
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
     Set<Long> localSnapshotIds =
-        captureOnlySelectedSnapshotIds(selection, knownSnapshotIds, targetSnapshotIds);
+        captureOnlySelectedSnapshotIds(effective, knownSnapshotIds, targetSnapshotIds);
     if (localSnapshotIds.isEmpty()) {
-      return ReconcileSnapshotSelection.all();
+      return effective;
     }
     return ReconcileSnapshotSelection.explicit(List.copyOf(localSnapshotIds));
   }
