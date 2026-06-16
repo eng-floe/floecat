@@ -130,7 +130,7 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
 
 ## Examples & Scenarios
 
-- **Provisioning a catalog and namespace**
+### Provisioning a catalog and namespace
 
   ```
   account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
@@ -138,7 +138,7 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   namespace create demo.sales --desc "Sales sandbox" --props owner=analyst
   ```
 
-- **Creating a connector to an upstream Glue Iceberg table**
+### Creating a connector to an upstream Glue Iceberg table
 
   ```
   connector create "glue-iceberg" ICEBERG
@@ -149,7 +149,7 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --props iceberg.source=glue
   ```
 
-- **Configuring connector reconcile policy**
+### Configuring connector reconcile policy
 
   ```
   connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
@@ -157,14 +157,14 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   connector update glue-iceberg --policy-all
   ```
 
-- **Triggering a connector to read an upstream table**
+### Triggering a connector to read an upstream table
 
   ```
   connector trigger glue-iceberg --incremental --current --mode metadata-only
   connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
   ```
 
-- **Creating a storage authority for Iceberg REST credential vending**
+### Creating a storage authority for Iceberg REST credential vending
 
   ```
   storage-authority create localstack-demo \
@@ -178,7 +178,7 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --cred secret_access_key=test
   ```
 
-- **Managing snapshot constraints**
+### Managing snapshot constraints
 
   ```
   constraints put demo.sales.users --snapshot 42 --file /tmp/users_constraints.json
@@ -198,20 +198,23 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   constraints delete-one demo.sales.users pk_users --snapshot 42
   ```
 
-  If `--snapshot` is omitted in constraints commands, the CLI resolves and uses the current
-  snapshot.
-  For `constraints put`/`add`/`update`, the command target table + snapshot is authoritative; any
-  payload identity fields are normalized to match that target before write.
-  Semantics:
-  `put` replaces the full bundle, `update` does a server-side merge by constraint name and
-  shallow-merges bundle `properties` (incoming keys override existing keys), and `add` does a
-  server-side append-only mutation (errors on duplicates). `update`/`add` support optional
-  `--etag` / `--version` preconditions.
-  Without a precondition, `update` and `add` create the snapshot bundle if it does not exist.
-  For atomic single-constraint mutations under concurrency, prefer `add-one` / `delete-one`.
-  `put` uses `--idempotency <key>` for safe-to-retry full replaces (same key guarantees the same
-  outcome); `update` and `add` use `--etag`/`--version` for conditional mutations that prevent
-  lost updates when multiple writers race on the same snapshot.
+If `--snapshot` is omitted in constraints commands, the CLI resolves and uses the current snapshot.
+
+For `constraints put`/`add`/`update`, the command target table + snapshot is authoritative; any
+payload identity fields are normalized to match that target before write.
+
+Constraint mutation semantics:
+
+- `put` replaces the full bundle.
+- `update` does a server-side merge by constraint name and shallow-merges bundle `properties`
+  where incoming keys override existing keys.
+- `add` does a server-side append-only mutation and errors on duplicates.
+- `update` and `add` support optional `--etag` / `--version` preconditions.
+- Without a precondition, `update` and `add` create the snapshot bundle if it does not exist.
+- For atomic single-constraint mutations under concurrency, prefer `add-one` / `delete-one`.
+- `put` uses `--idempotency <key>` for safe-to-retry full replaces. `update` and `add` use
+  `--etag` / `--version` for conditional mutations that prevent lost updates when multiple writers
+  race on the same snapshot.
 
 ## Cross-References
 
