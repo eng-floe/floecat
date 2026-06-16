@@ -80,7 +80,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -833,29 +832,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public ReconcileJobStore.ClearQueueResult clearQueue(String accountId) {
-    if (blank(accountId)) {
-      return ReconcileJobStore.ClearQueueResult.empty();
-    }
-    long jobsCleared = pointerStore.countByPrefix(Keys.reconcileJobStateRowByIdPrefix(accountId));
-    if (jobsCleared <= 0L) {
-      return ReconcileJobStore.ClearQueueResult.empty();
-    }
-
-    long pointersDeleted =
-        pointerStore.deleteByPrefix(Keys.reconcileJobAccountPointerPrefix(accountId));
-    pointersDeleted += pointerStore.deleteByPrefix(Keys.reconcileDedupePointerPrefix(accountId));
-    pointersDeleted +=
-        pointerStore.deleteByPrefix(Keys.reconcileJobLeasePointerByIdPrefix(accountId));
-    pointersDeleted += pointerStore.deleteByPrefix(Keys.reconcileLaneLeasePointerPrefix(accountId));
-    pointersDeleted +=
-        pointerStore.deleteByPrefix(Keys.reconcileSnapshotLeasePointerPrefix(accountId));
-    pointersDeleted +=
-        pointerStore.deleteByPrefix(Keys.reconcileDirtyParentPointerPrefix(accountId));
-    return new ReconcileJobStore.ClearQueueResult(jobsCleared, pointersDeleted, 0L);
-  }
-
-  @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     long startedAtMs = System.currentTimeMillis();
@@ -1506,66 +1482,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return jobIndexStore()
         .loadByAnyAccount(jobId)
         .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-  }
-
-  private List<StoredReconcileJob> listStoredJobsForClear(String accountId) {
-    List<StoredReconcileJob> out = new ArrayList<>();
-    String token = "";
-    do {
-      var page = jobIndexStore().listStoredJobs(accountId, 256, token, "", Set.of());
-      out.addAll(page.records());
-      token = page.nextPageToken();
-    } while (token != null && !token.isBlank());
-    return out;
-  }
-
-  private List<String> readyPointerKeysForClear(StoredReconcileJob record) {
-    java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
-    if (record != null && !blank(record.readyPointerKey)) {
-      keys.add(record.readyPointerKey);
-    }
-    if (record != null && readyQueueStore != null) {
-      keys.addAll(readyQueueStore.readyPointerKeys(record));
-    }
-    return new ArrayList<>(keys);
-  }
-
-  private String snapshotLeasePointerForClear(StoredReconcileJob record) {
-    if (record == null
-        || record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
-        || blank(record.snapshotTaskTableId)
-        || record.snapshotTaskSnapshotId < 0L) {
-      return "";
-    }
-    return Keys.reconcileSnapshotLeasePointer(
-        record.snapshotTaskTableId, record.snapshotTaskSnapshotId);
-  }
-
-  private String leaseExpiryPointerForClear(StoredReconcileJob record) {
-    if (record == null) {
-      return "";
-    }
-    return leaseManager().loadLease(record).map(leaseManager()::leaseExpiryPointerKey).orElse("");
-  }
-
-  private long deleteExactPointers(Set<String> pointerKeys) {
-    long deleted = 0L;
-    for (String pointerKey : pointerKeys) {
-      if (!blank(pointerKey) && pointerStore.delete(pointerKey)) {
-        deleted++;
-      }
-    }
-    return deleted;
-  }
-
-  private boolean deleteJobBlobPrefixIfPresent(String accountId, String jobId) {
-    if (blank(accountId) || blank(jobId)) {
-      return false;
-    }
-    String prefix = Keys.reconcileJobBlobPrefix(accountId, jobId);
-    boolean hadBlob = !blobStore.list(prefix, 1, "").keys().isEmpty();
-    blobStore.deletePrefix(prefix);
-    return hadBlob;
   }
 
   private Optional<StoredEnvelope> mutateByJobIdReturningRecord(

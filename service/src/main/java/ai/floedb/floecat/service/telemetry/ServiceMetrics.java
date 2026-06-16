@@ -106,13 +106,6 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
-    public static final MetricId CLEAR_QUEUE =
-        new MetricId(
-            "floecat.service.reconcile.clear_queue.total",
-            MetricType.COUNTER,
-            "",
-            CONTRACT,
-            "service");
     public static final MetricId JOBS =
         new MetricId(
             "floecat.service.reconcile.jobs.total", MetricType.COUNTER, "", CONTRACT, "service");

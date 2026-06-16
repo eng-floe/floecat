@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
@@ -45,22 +46,55 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   @Override
   public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
       ReadyQueueSlice slice, int pageSize, String pageToken) {
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = collectAllReadyEntries();
-    entries =
-        entries.stream()
-            .filter(entry -> entry.indexType() == slice.indexType())
-            .filter(
-                entry ->
-                    blankToEmpty(entry.filterValue()).equals(blankToEmpty(slice.filterValue())))
-            .toList();
-    return paginate(entries, pageSize, pageToken);
+    String prefix = ReadyQueueBackendSupport.readyIndexPrefix(slice);
+    if (prefix.isBlank()) {
+      return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
+    }
+    StringBuilder next = new StringBuilder();
+    List<Pointer> pointers =
+        pointerStore.listPointersByPrefix(
+            prefix, Math.max(1, pageSize), blankToEmpty(pageToken), next);
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(pointers.size());
+    for (Pointer pointer : pointers) {
+      var decoded =
+          ReadyQueueBackendSupport.decodeReadyQueueEntry(
+              pointer.getKey(), pointer.getBlobUri(), slice);
+      if (decoded != null) {
+        entries.add(decoded);
+      }
+    }
+    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, next.toString());
   }
 
   @Override
   public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-    ReconcileReadyQueueStore.ReadyQueueScanPage page =
-        paginate(collectAllReadyEntries(), pageSize, pageToken);
-    return new ReadyQueueScanPage(page.entries(), page.nextPageToken());
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
+    collectEntriesForPrefix(
+        Keys.reconcileReadyPointerPrefix(),
+        new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
+        entries);
+    collectEntriesForPrefix(Keys.reconcileReadyByExecutionClassPointerPrefix(), null, entries);
+    collectEntriesForPrefix(Keys.reconcileReadyByExecutionLanePointerPrefix(), null, entries);
+    collectEntriesForPrefix(Keys.reconcileReadyByPinnedExecutorPointerPrefix(), null, entries);
+    collectEntriesForPrefix(Keys.reconcileReadyByJobKindPointerPrefix(), null, entries);
+    entries.sort(
+        Comparator.comparingLong(ReconcileReadyQueueStore.ReadyQueueEntry::dueAtMs)
+            .thenComparing(ReconcileReadyQueueStore.ReadyQueueEntry::readyPointerKey));
+
+    int offset = 0;
+    if (pageToken != null && !pageToken.isBlank()) {
+      try {
+        offset = Math.max(0, Integer.parseInt(pageToken));
+      } catch (NumberFormatException ignored) {
+        offset = 0;
+      }
+    }
+    if (offset >= entries.size()) {
+      return new ReadyQueueScanPage(List.of(), "");
+    }
+    int end = Math.min(entries.size(), offset + Math.max(1, pageSize));
+    String next = end >= entries.size() ? "" : Integer.toString(end);
+    return new ReadyQueueScanPage(entries.subList(offset, end), next);
   }
 
   @Override
@@ -108,32 +142,5 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
       }
       token = next.toString();
     } while (!token.isBlank());
-  }
-
-  private List<ReconcileReadyQueueStore.ReadyQueueEntry> collectAllReadyEntries() {
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
-    collectEntriesForPrefix("/accounts/", null, entries);
-    entries.sort(
-        Comparator.comparingLong(ReconcileReadyQueueStore.ReadyQueueEntry::dueAtMs)
-            .thenComparing(ReconcileReadyQueueStore.ReadyQueueEntry::readyPointerKey));
-    return entries;
-  }
-
-  private ReconcileReadyQueueStore.ReadyQueueScanPage paginate(
-      List<ReconcileReadyQueueStore.ReadyQueueEntry> entries, int pageSize, String pageToken) {
-    int offset = 0;
-    if (pageToken != null && !pageToken.isBlank()) {
-      try {
-        offset = Math.max(0, Integer.parseInt(pageToken));
-      } catch (NumberFormatException ignored) {
-        offset = 0;
-      }
-    }
-    if (offset >= entries.size()) {
-      return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
-    }
-    int end = Math.min(entries.size(), offset + Math.max(1, pageSize));
-    String next = end >= entries.size() ? "" : Integer.toString(end);
-    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries.subList(offset, end), next);
   }
 }

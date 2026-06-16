@@ -499,7 +499,6 @@ run-localstack: localstack-up jar-dependencies
 	@echo "==> [DEV] quarkus:dev catalog LocalStack (seed enabled=$(SEED_ENABLED), source=$(SEED_SOURCE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.reconciler.worker.auth.required=false \
 	  $(SEED_PROPS) \
 	  $(CATALOG_LOCALSTACK_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \

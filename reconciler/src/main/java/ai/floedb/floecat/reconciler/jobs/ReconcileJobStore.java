@@ -430,10 +430,6 @@ public interface ReconcileJobStore {
 
   QueueStats queueStats();
 
-  default ClearQueueResult clearQueue(String accountId) {
-    throw new UnsupportedOperationException("reconcile queue clear is not supported");
-  }
-
   default Optional<LeasedJob> leaseNext() {
     return leaseNext(LeaseRequest.all());
   }
@@ -1839,22 +1835,6 @@ public interface ReconcileJobStore {
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
       this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
-    }
-  }
-
-  final class ClearQueueResult {
-    public final long jobsCleared;
-    public final long pointersDeleted;
-    public final long jobBlobPrefixesDeleted;
-
-    public ClearQueueResult(long jobsCleared, long pointersDeleted, long jobBlobPrefixesDeleted) {
-      this.jobsCleared = Math.max(0L, jobsCleared);
-      this.pointersDeleted = Math.max(0L, pointersDeleted);
-      this.jobBlobPrefixesDeleted = Math.max(0L, jobBlobPrefixesDeleted);
-    }
-
-    public static ClearQueueResult empty() {
-      return new ClearQueueResult(0L, 0L, 0L);
     }
   }
 
