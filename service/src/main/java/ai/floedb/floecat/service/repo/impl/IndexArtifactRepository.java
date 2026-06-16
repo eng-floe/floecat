@@ -65,6 +65,18 @@ public class IndexArtifactRepository {
             + indexArtifactTargetStorageId(value.getTarget()));
   }
 
+  public void putIndexArtifactsBatch(List<IndexArtifactRecord> values) {
+    if (values == null || values.isEmpty()) {
+      return;
+    }
+    for (IndexArtifactRecord value : values) {
+      if (value == null) {
+        continue;
+      }
+      putIndexArtifact(value);
+    }
+  }
+
   public Optional<IndexArtifactRecord> getIndexArtifact(
       ResourceId tableId, long snapshotId, IndexTarget target) {
     return repo.getByKey(indexArtifactLookupKey(tableId, snapshotId, target));

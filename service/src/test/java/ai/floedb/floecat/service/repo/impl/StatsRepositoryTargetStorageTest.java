@@ -163,6 +163,82 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void putTargetStatsBatchWritesMultipleTargets() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 707L;
+    EngineExpressionStatsTarget expressionTarget =
+        EngineExpressionStatsTarget.newBuilder()
+            .setEngineKind("duckdb")
+            .setEngineExpressionKey(ByteString.copyFromUtf8("expr:batched"))
+            .build();
+    String filePath = "s3://bucket/path/file-batch.parquet";
+
+    repository.putTargetStatsBatch(
+        TABLE_ID,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12).build(), null),
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder().setDisplayName("c1").setLogicalType("BIGINT").build(),
+                null),
+            TargetStatsRecords.expressionRecord(
+                TABLE_ID,
+                snapshotId,
+                expressionTarget,
+                ScalarStats.newBuilder().setLogicalType("VARCHAR").setRowCount(2L).build()),
+            TargetStatsRecords.fileRecord(
+                TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(filePath).build())));
+
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(4);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .isPresent();
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
+        .isPresent();
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.expressionTarget(expressionTarget)))
+        .isPresent();
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath)))
+        .isPresent();
+  }
+
+  @Test
+  void putTargetStatsBatchFillsMissingPointersWhenSomeAlreadyExist() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 708L;
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12).build(), null);
+    TargetStatsRecord columnRecord =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            1L,
+            ScalarStats.newBuilder().setDisplayName("c1").setLogicalType("BIGINT").build(),
+            null);
+
+    repository.putTargetStats(tableRecord);
+
+    repository.putTargetStatsBatch(TABLE_ID, snapshotId, List.of(tableRecord, columnRecord));
+
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(2);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .isPresent();
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
+        .isPresent();
+  }
+
+  @Test
   void listAndCountCanFilterByTargetKind() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
