@@ -739,10 +739,7 @@ public class ReconcileJobEnqueuer {
             : (viewTask == null ? "" : viewTask.destinationViewDisplayName());
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
-    boolean stableSnapshotWorkDedupe =
-        jobKind == ReconcileJobKind.PLAN_SNAPSHOT
-            || jobKind == ReconcileJobKind.EXEC_FILE_GROUP
-            || jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
+    boolean stableSnapshotWorkDedupe = jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
     Canonicalizer canonicalizer = new Canonicalizer();
     canonicalizer
         .scalar("account_id", accountId)

@@ -394,6 +394,7 @@ public final class CliCommandExecutor {
               snapshots,
               directory,
               getAccountId);
+      case "reconciler" -> ReconcilerCliSupport.handle(CliArgs.tail(tokens), out, reconcileControl);
       case "snapshots", "snapshot" ->
           SnapshotCliSupport.handle(
               command,

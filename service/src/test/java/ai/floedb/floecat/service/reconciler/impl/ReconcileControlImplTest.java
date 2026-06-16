@@ -48,6 +48,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.ClearReconcileQueueRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
@@ -1112,6 +1113,38 @@ class ReconcileControlImplTest {
     assertEquals(8L, response.getIndexesProcessed());
     assertEquals("worker-1", response.getExecutorId());
     verify(service.jobs, never()).childJobsPage("acct", "plan-1", 200, "");
+  }
+
+  @Test
+  void clearReconcileQueueRequiresForce() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .clearReconcileQueue(ClearReconcileQueueRequest.newBuilder().build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never()).clearQueue(anyString());
+  }
+
+  @Test
+  void clearReconcileQueueReturnsStoreCounts() {
+    when(service.jobs.clearQueue("acct"))
+        .thenReturn(new ReconcileJobStore.ClearQueueResult(4L, 9L, 3L));
+
+    var response =
+        service
+            .clearReconcileQueue(ClearReconcileQueueRequest.newBuilder().setForce(true).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(4L, response.getJobsCleared());
+    assertEquals(9L, response.getPointersDeleted());
+    assertEquals(3L, response.getJobBlobPrefixesDeleted());
+    verify(service.jobs).clearQueue("acct");
   }
 
   private static ResourceId connectorId() {

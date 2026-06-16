@@ -27,7 +27,7 @@ public class ReconcilerSettingsStore {
   private volatile boolean autoEnabled = true;
   private volatile long defaultIntervalMs = Duration.ofMinutes(10).toMillis();
   private volatile ReconcileMode defaultMode = ReconcileMode.RM_INCREMENTAL;
-  private volatile long finishedJobRetentionMs = Duration.ofDays(7).toMillis();
+  private volatile long finishedJobRetentionMs = Duration.ofHours(6).toMillis();
 
   @PostConstruct
   void init() {
@@ -54,9 +54,9 @@ public class ReconcilerSettingsStore {
     }
     finishedJobRetentionMs =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
-            .orElse(Duration.ofDays(7).toMillis());
+            .orElse(Duration.ofHours(6).toMillis());
     if (finishedJobRetentionMs <= 0L) {
-      finishedJobRetentionMs = Duration.ofDays(7).toMillis();
+      finishedJobRetentionMs = Duration.ofHours(6).toMillis();
     }
   }
 

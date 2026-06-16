@@ -120,6 +120,7 @@ connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,run
 connector cancel <jobId> [--reason <text>]
 connector settings get
 connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
+reconciler queue clear --force
 
 storage-authorities
 storage-authority list [--page-size <N>]

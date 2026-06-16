@@ -43,6 +43,8 @@ import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.ClearReconcileQueueRequest;
+import ai.floedb.floecat.reconciler.rpc.ClearReconcileQueueResponse;
 import ai.floedb.floecat.reconciler.rpc.FinalizedSnapshotStatus;
 import ai.floedb.floecat.reconciler.rpc.GetFinalizedSnapshotStatusRequest;
 import ai.floedb.floecat.reconciler.rpc.GetFinalizedSnapshotStatusResponse;
@@ -650,6 +652,48 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.UPDATE_SETTINGS,
                         "update_reconciler_settings",
+                        "error",
+                        normalizeReason(e));
+                    throw e;
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<ClearReconcileQueueResponse> clearReconcileQueue(ClearReconcileQueueRequest request) {
+    var L = LogHelper.start(LOG, "ClearReconcileQueue");
+    return mapFailures(
+            run(
+                () -> {
+                  try {
+                    var principalContext = principalProvider.get();
+                    authz.require(principalContext, "connector.manage");
+                    if (!request.getForce()) {
+                      throw io.grpc.Status.INVALID_ARGUMENT
+                          .withDescription("ClearReconcileQueue requires force=true")
+                          .asRuntimeException();
+                    }
+                    ReconcileJobStore.ClearQueueResult result =
+                        jobs.clearQueue(principalContext.getAccountId());
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.CLEAR_QUEUE,
+                        "clear_reconcile_queue",
+                        "success",
+                        null);
+                    return ClearReconcileQueueResponse.newBuilder()
+                        .setJobsCleared(result.jobsCleared)
+                        .setPointersDeleted(result.pointersDeleted)
+                        .setJobBlobPrefixesDeleted(result.jobBlobPrefixesDeleted)
+                        .build();
+                  } catch (RuntimeException e) {
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.CLEAR_QUEUE,
+                        "clear_reconcile_queue",
                         "error",
                         normalizeReason(e));
                     throw e;

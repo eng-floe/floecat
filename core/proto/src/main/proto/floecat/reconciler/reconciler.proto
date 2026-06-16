@@ -927,6 +927,20 @@ message UpdateReconcilerSettingsResponse {
   google.protobuf.Duration finished_job_retention = 4;
 }
 
+message ClearReconcileQueueRequest {
+  // Required safety flag for destructive queue clearing.
+  bool force = 1;
+}
+
+message ClearReconcileQueueResponse {
+  // Number of reconcile jobs discovered and cleared for the account.
+  uint64 jobs_cleared = 1;
+  // Number of pointer-store entries removed across reconcile queue domains.
+  uint64 pointers_deleted = 2;
+  // Number of reconcile job blob prefixes deleted.
+  uint64 job_blob_prefixes_deleted = 3;
+}
+
 // Client-facing control plane for synchronous and asynchronous reconcile operations.
 service ReconcileControl {
   // Starts a reconcile and waits for its aggregated result up to max_wait.
@@ -949,6 +963,8 @@ service ReconcileControl {
   // Updates automatic reconcile settings.
   rpc UpdateReconcilerSettings(UpdateReconcilerSettingsRequest)
       returns (UpdateReconcilerSettingsResponse);
+  // Hard-clears reconcile queue state for the caller account.
+  rpc ClearReconcileQueue(ClearReconcileQueueRequest) returns (ClearReconcileQueueResponse);
 }
 
 // Executor-facing lease protocol used by remote workers to pull and report reconcile jobs.
