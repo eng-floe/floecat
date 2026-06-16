@@ -20,7 +20,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 
-final class ReadyQueueBackendSupport {
+public final class ReadyQueueBackendSupport {
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
   private static final String READY_GLOBAL_PARTITION = "reconcile-ready#global";
   private static final String READY_EXECUTION_CLASS_PARTITION = "reconcile-ready#execution-class#";
@@ -36,26 +36,7 @@ final class ReadyQueueBackendSupport {
   record ReadyRowCursor(String partitionKey, String sortKey) {}
 
   static String readyIndexPrefix(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
-    String normalizedFilterValue = blankToEmpty(slice.filterValue());
-    return switch (slice.indexType()) {
-      case GLOBAL -> Keys.reconcileReadyPointerPrefix();
-      case EXECUTION_CLASS ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByExecutionClassPointerPrefix(normalizedFilterValue);
-      case EXECUTION_LANE ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByExecutionLanePointerPrefix(normalizedFilterValue);
-      case PINNED_EXECUTOR ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByPinnedExecutorPointerPrefix(normalizedFilterValue);
-      case JOB_KIND ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByJobKindPointerPrefix(normalizedFilterValue);
-    };
+    return "";
   }
 
   static ReconcileReadyQueueStore.ReadyQueueEntry decodeReadyQueueEntry(
@@ -65,40 +46,24 @@ final class ReadyQueueBackendSupport {
     if (blankToEmpty(readyPointerKey).isBlank() || blankToEmpty(canonicalPointerKey).isBlank()) {
       return null;
     }
-    long dueAt = parseTimestampFromOrderedPointer(readyPointerKey, readyIndexPrefix(slice));
-    if (dueAt == INVALID_ORDERED_POINTER_MS) {
-      return null;
-    }
     String normalizedKey = normalizePointerKey(readyPointerKey);
-    String prefix = normalizePointerKey(readyIndexPrefix(slice));
-    if (!normalizedKey.startsWith(prefix)) {
-      return null;
-    }
-    String[] parts = normalizedKey.substring(prefix.length()).split("/");
+    String[] parts = stripLeadingSlash(normalizedKey).split("/");
     try {
-      String accountId;
-      String jobId;
-      if (slice.indexType() == ReconcileReadyQueueStore.ReadyIndexType.GLOBAL) {
-        if (parts.length != 4) {
-          return null;
-        }
-        accountId = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
-        jobId = URLDecoder.decode(parts[3], StandardCharsets.UTF_8);
-      } else {
-        if (parts.length != 3) {
-          return null;
-        }
-        accountId = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
-        jobId = URLDecoder.decode(parts[2], StandardCharsets.UTF_8);
+      ParsedReadyPointer parsed = parseReadyPointer(parts, slice.indexType());
+      if (parsed == null) {
+        return null;
+      }
+      if (!blankToEmpty(slice.filterValue()).equals(blankToEmpty(parsed.filterValue()))) {
+        return null;
       }
       return new ReconcileReadyQueueStore.ReadyQueueEntry(
           readyPointerKey,
           canonicalPointerKey,
-          accountId,
-          jobId,
-          dueAt,
+          parsed.accountId(),
+          parsed.jobId(),
+          parsed.dueAtMs(),
           slice.indexType(),
-          blankToEmpty(slice.filterValue()));
+          parsed.filterValue());
     } catch (Exception e) {
       return null;
     }
@@ -171,40 +136,42 @@ final class ReadyQueueBackendSupport {
 
   static ReconcileReadyQueueBackend.ReadyQueueSlice sliceForReadyPointerKey(
       String readyPointerKey) {
-    String normalized = normalizePointerKey(readyPointerKey);
-    String filterValue =
-        extractEncodedFilterValue(
-            normalized, normalizePointerKey(Keys.reconcileReadyByExecutionClassPointerPrefix()));
-    if (filterValue != null) {
-      return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS, filterValue);
+    String[] parts = stripLeadingSlash(readyPointerKey).split("/");
+    if (parts.length < 6
+        || !"accounts".equals(parts[0])
+        || !"reconcile".equals(parts[2])
+        || !"jobs".equals(parts[3])
+        || !"ready".equals(parts[4])) {
+      return null;
     }
-    filterValue =
-        extractEncodedFilterValue(
-            normalized, normalizePointerKey(Keys.reconcileReadyByExecutionLanePointerPrefix()));
-    if (filterValue != null) {
+    if (parts.length >= 7 && "by-execution-class".equals(parts[5])) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, filterValue);
+          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS, decodeSegment(parts[6]));
     }
-    filterValue =
-        extractEncodedFilterValue(
-            normalized, normalizePointerKey(Keys.reconcileReadyByPinnedExecutorPointerPrefix()));
-    if (filterValue != null) {
+    if (parts.length >= 7 && "by-execution-lane".equals(parts[5])) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, filterValue);
+          ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, decodeSegment(parts[6]));
     }
-    filterValue =
-        extractEncodedFilterValue(
-            normalized, normalizePointerKey(Keys.reconcileReadyByJobKindPointerPrefix()));
-    if (filterValue != null) {
+    if (parts.length >= 7 && "by-pinned-executor".equals(parts[5])) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, filterValue);
+          ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, decodeSegment(parts[6]));
     }
-    if (normalized.startsWith(normalizePointerKey(Keys.reconcileReadyPointerPrefix()))) {
+    if (parts.length >= 7 && "by-job-kind".equals(parts[5])) {
       return new ReconcileReadyQueueBackend.ReadyQueueSlice(
-          ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
+          ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, decodeSegment(parts[6]));
     }
-    return null;
+    return new ReconcileReadyQueueBackend.ReadyQueueSlice(
+        ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, "");
+  }
+
+  public static long parseDueAtMs(String readyPointerKey) {
+    ReconcileReadyQueueBackend.ReadyQueueSlice slice = sliceForReadyPointerKey(readyPointerKey);
+    if (slice == null) {
+      return INVALID_ORDERED_POINTER_MS;
+    }
+    String[] parts = stripLeadingSlash(readyPointerKey).split("/");
+    ParsedReadyPointer parsed = parseReadyPointer(parts, slice.indexType());
+    return parsed == null ? INVALID_ORDERED_POINTER_MS : parsed.dueAtMs();
   }
 
   static String normalizePointerKey(String key) {
@@ -234,44 +201,79 @@ final class ReadyQueueBackendSupport {
     return new ReadyRowCursor(token.substring(0, split), token.substring(split + 1));
   }
 
-  private static String extractEncodedFilterValue(String normalizedKey, String prefix) {
-    if (!normalizedKey.startsWith(prefix)) {
-      return null;
-    }
-    int slash = normalizedKey.indexOf('/', prefix.length());
-    if (slash < 0) {
-      return null;
-    }
+  private static ParsedReadyPointer parseReadyPointer(
+      String[] parts, ReconcileReadyQueueStore.ReadyIndexType indexType) {
     try {
-      return URLDecoder.decode(
-          normalizedKey.substring(prefix.length(), slash), StandardCharsets.UTF_8);
+      if (parts.length < 8
+          || !"accounts".equals(parts[0])
+          || !"reconcile".equals(parts[2])
+          || !"jobs".equals(parts[3])
+          || !"ready".equals(parts[4])) {
+        return null;
+      }
+      String accountId = decodeSegment(parts[1]);
+      return switch (indexType) {
+        case GLOBAL -> {
+          if (parts.length != 8) {
+            yield null;
+          }
+          yield new ParsedReadyPointer(
+              accountId, decodeSegment(parts[7]), Long.parseLong(parts[5]), "");
+        }
+        case EXECUTION_CLASS -> {
+          if (parts.length != 9 || !"by-execution-class".equals(parts[5])) {
+            yield null;
+          }
+          yield new ParsedReadyPointer(
+              accountId,
+              decodeSegment(parts[8]),
+              Long.parseLong(parts[7]),
+              decodeSegment(parts[6]));
+        }
+        case EXECUTION_LANE -> {
+          if (parts.length != 9 || !"by-execution-lane".equals(parts[5])) {
+            yield null;
+          }
+          yield new ParsedReadyPointer(
+              accountId,
+              decodeSegment(parts[8]),
+              Long.parseLong(parts[7]),
+              decodeSegment(parts[6]));
+        }
+        case PINNED_EXECUTOR -> {
+          if (parts.length != 9 || !"by-pinned-executor".equals(parts[5])) {
+            yield null;
+          }
+          yield new ParsedReadyPointer(
+              accountId,
+              decodeSegment(parts[8]),
+              Long.parseLong(parts[7]),
+              decodeSegment(parts[6]));
+        }
+        case JOB_KIND -> {
+          if (parts.length != 9 || !"by-job-kind".equals(parts[5])) {
+            yield null;
+          }
+          yield new ParsedReadyPointer(
+              accountId,
+              decodeSegment(parts[8]),
+              Long.parseLong(parts[7]),
+              decodeSegment(parts[6]));
+        }
+      };
     } catch (Exception e) {
       return null;
     }
   }
 
-  private static long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String normalizedKey = normalizePointerKey(pointerKey);
-    String normalizedPrefix = normalizePointerKey(prefix);
-    if (!normalizedKey.startsWith(normalizedPrefix)) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    int slash = normalizedKey.indexOf('/', normalizedPrefix.length());
-    if (slash < 0) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String token = normalizedKey.substring(normalizedPrefix.length(), slash);
-    try {
-      return Long.parseLong(token);
-    } catch (NumberFormatException nfe) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
+  private static String decodeSegment(String value) {
+    return URLDecoder.decode(blankToEmpty(value), StandardCharsets.UTF_8);
   }
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
   }
+
+  private record ParsedReadyPointer(
+      String accountId, String jobId, long dueAtMs, String filterValue) {}
 }

@@ -265,6 +265,7 @@ public class Shell implements Runnable {
               "table",
               "connectors",
               "connector",
+              "reconciler",
               "resolve",
               "describe",
               "snapshots",
@@ -582,6 +583,7 @@ public class Shell implements Runnable {
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
+         reconciler queue clear --force
          storage-authorities
          storage-authority list [--page-size <N>]
          storage-authority get <display_name|id>

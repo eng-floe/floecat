@@ -95,11 +95,7 @@ public class ReconcileJobIndexes {
     if (!hasStateIndex(record)) {
       return List.of();
     }
-    List<String> keys = new ArrayList<>(3);
-    String globalStateKey = statePointerKey(record);
-    if (!globalStateKey.isBlank()) {
-      keys.add(globalStateKey);
-    }
+    List<String> keys = new ArrayList<>(2);
     String accountStateKey = accountStatePointerKey(record);
     if (!accountStateKey.isBlank()) {
       keys.add(accountStateKey);

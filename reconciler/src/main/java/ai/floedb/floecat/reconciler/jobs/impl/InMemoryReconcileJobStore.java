@@ -591,6 +591,44 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public ReconcileJobStore.ClearQueueResult clearQueue(String accountId) {
+    if (blank(accountId)) {
+      return ReconcileJobStore.ClearQueueResult.empty();
+    }
+    Set<String> removedJobIds =
+        jobs.values().stream()
+            .filter(job -> job != null && accountId.equals(job.accountId))
+            .map(job -> job.jobId)
+            .collect(Collectors.toSet());
+    if (removedJobIds.isEmpty()) {
+      return ReconcileJobStore.ClearQueueResult.empty();
+    }
+    for (String jobId : removedJobIds) {
+      jobs.remove(jobId);
+      createdAtMs.remove(jobId);
+      leaseEpochs.remove(jobId);
+      leaseExpiresAtMs.remove(jobId);
+      pinnedExecutors.remove(jobId);
+      leased.remove(jobId);
+      attemptsByJobId.remove(jobId);
+      nextAttemptAtMs.remove(jobId);
+      String dedupeKey = dedupeKeysByJobId.remove(jobId);
+      if (dedupeKey != null) {
+        activeJobIdByDedupeKey.remove(dedupeKey, jobId);
+      }
+      String laneKey = laneKeysByJobId.remove(jobId);
+      if (laneKey != null) {
+        activeJobIdByLaneKey.remove(laneKey, jobId);
+      }
+    }
+    activeJobIdBySnapshotLeaseKey
+        .entrySet()
+        .removeIf(entry -> removedJobIds.contains(entry.getValue()));
+    ready.removeIf(removedJobIds::contains);
+    return new ReconcileJobStore.ClearQueueResult(removedJobIds.size(), 0L, 0L);
+  }
+
+  @Override
   public String persistSnapshotPlanManifest(
       String accountId, String jobId, ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =

@@ -158,6 +158,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "UpdateReconcilerSettings request outcomes.");
     add(
         defs,
+        ServiceMetrics.Reconcile.CLEAR_QUEUE,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "ClearReconcileQueue request outcomes.");
+    add(
+        defs,
         ServiceMetrics.Reconcile.JOBS,
         reconcileExecutionRequired,
         reconcileExecutionAllowed,

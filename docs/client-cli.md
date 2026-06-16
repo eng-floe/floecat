@@ -53,6 +53,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
   while `query fetch-scan <query_id> <table_id>` requests the connector-provided `ScanFile` lists for
   an individual table.
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
+- `reconciler queue clear --force` – Hard-clear account-scoped reconcile queue state and reconcile
+  job payload blobs from the control plane.
 - `storage-authorities` / `storage-authority <subcommand>` – Manage storage credential authorities
   used by the Iceberg REST gateway to vend temporary object-store credentials.
 

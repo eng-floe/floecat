@@ -20,6 +20,7 @@ import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueueBackendSupport;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
@@ -78,7 +79,7 @@ public class ReconcileJobGc {
             settings != null
                 ? settings.finishedJobRetentionMs()
                 : cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
-                    .orElse(7L * 24L * 60L * 60L * 1000L));
+                    .orElse(6L * 60L * 60L * 1000L));
 
     final long nowMs = System.currentTimeMillis();
     final long deadline = nowMs + sliceMillis;
@@ -368,6 +369,10 @@ public class ReconcileJobGc {
                   rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
         }
       }
+      String legacyStateKey = jobIndexes.statePointerKey(stored);
+      if (!legacyStateKey.isBlank()) {
+        appendDeleteIfPresent(deletes, legacyStateKey);
+      }
       for (String stateKey : jobIndexes.statePointerKeys(stored)) {
         appendDeleteIfPresent(deletes, stateKey);
       }
@@ -610,34 +615,6 @@ public class ReconcileJobGc {
   }
 
   private long parseDueMillis(String readyPointerKey) {
-    return parseTimestampFromOrderedPointer(readyPointerKey, Keys.reconcileReadyPointerPrefix());
-  }
-
-  private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String normalizedKey = normalizePointerKey(pointerKey);
-    String normalizedPrefix = normalizePointerKey(prefix);
-    if (!normalizedKey.startsWith(normalizedPrefix)) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    int slash = normalizedKey.indexOf('/', normalizedPrefix.length());
-    if (slash < 0) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String token = normalizedKey.substring(normalizedPrefix.length(), slash);
-    try {
-      return Long.parseLong(token);
-    } catch (NumberFormatException nfe) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-  }
-
-  private static String normalizePointerKey(String key) {
-    if (key == null || key.isBlank()) {
-      return "/";
-    }
-    return key.startsWith("/") ? key : "/" + key;
+    return ReadyQueueBackendSupport.parseDueAtMs(readyPointerKey);
   }
 }

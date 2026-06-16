@@ -635,35 +635,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private long parseDueMillis(String readyPointerKey) {
-    return parseTimestampFromOrderedPointer(readyPointerKey, Keys.reconcileReadyPointerPrefix());
-  }
-
-  private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String normalizedKey = normalizePointerKey(pointerKey);
-    String normalizedPrefix = normalizePointerKey(prefix);
-    if (!normalizedKey.startsWith(normalizedPrefix)) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    int slash = normalizedKey.indexOf('/', normalizedPrefix.length());
-    if (slash < 0) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-    String token = normalizedKey.substring(normalizedPrefix.length(), slash);
-    try {
-      return Long.parseLong(token);
-    } catch (NumberFormatException nfe) {
-      return INVALID_ORDERED_POINTER_MS;
-    }
-  }
-
-  private static String normalizePointerKey(String key) {
-    if (key == null || key.isBlank()) {
-      return "/";
-    }
-    return key.startsWith("/") ? key : "/" + key;
+    return ReadyQueueBackendSupport.parseDueAtMs(readyPointerKey);
   }
 
   private static String blankToEmpty(String value) {
