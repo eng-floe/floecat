@@ -66,19 +66,11 @@
 
 .md-typeset a {
   color: #0b5f80;
-  text-decoration: underline;
-  text-decoration-thickness: 0.08em;
-  text-underline-offset: 0.14em;
 }
 
 .md-typeset a:hover,
 .md-typeset a:focus {
   color: #084860;
-}
-
-/* Bring syntax-highlighted method/property names above Lighthouse contrast threshold. */
-.md-typeset .highlight .na {
-  color: #666;
 }
 
 /* Header shortcut to jump back to Floecat site root. */
