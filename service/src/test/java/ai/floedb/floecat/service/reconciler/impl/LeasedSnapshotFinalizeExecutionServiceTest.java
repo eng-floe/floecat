@@ -297,6 +297,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             0,
             "blob://planner-direct-stats",
             2);
+    ReconcileSnapshotTask persistedCountTask =
+        snapshotTask.withDirectStatsPersistedRecordCountForChunk(0, 1);
     ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(true);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -307,8 +309,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     TargetStatsRecord tableRecord = mock(TargetStatsRecord.class);
     when(persistence.validateReplacementStats(List.of(tableRecord), tableId, SNAPSHOT_ID))
         .thenReturn(List.of(tableRecord));
-    when(persistence.listFileStats(tableId, SNAPSHOT_ID)).thenReturn(List.of(tableRecord));
-    when(coverageService.expectedCoverage(snapshotTask))
+    when(coverageService.expectedCoverage(persistedCountTask))
         .thenReturn(
             new SnapshotFinalizeCoverageService.ExpectedCoverage(
                 SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS,
@@ -319,17 +320,72 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
-            () -> {
-              service.persistStatsChunk(
-                  lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(tableRecord));
-              service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
-            });
+            () -> service.finalizeChunkedSuccess(lease, persistedCountTask, tableId, SNAPSHOT_ID));
 
     assertEquals(
         "FAILED_PRECONDITION: snapshot finalize direct stats record count mismatch expected=2 actual=1",
         error.getMessage());
-    verify(persistence).replaceAllStatsForSnapshot(tableId, SNAPSHOT_ID, List.of(tableRecord));
+    verify(persistence, never())
+        .replaceAllStatsForSnapshot(eq(tableId), eq(SNAPSHOT_ID), anyList());
     verify(persistence, never()).persistStats(anyList());
+  }
+
+  @Test
+  void fullRescanEmptyDirectStatsChunkResetsProgressAndBlocksSuccessUntilRepersisted() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+                "",
+                0,
+                0,
+                "blob://planner-direct-stats",
+                3)
+            .withDirectStatsPersistedRecordCountForChunk(0, 1)
+            .withDirectStatsPersistedRecordCountForChunk(1, 1)
+            .withDirectStatsPersistedRecordCountForChunk(2, 1);
+    ReconcileSnapshotTask resetTask = snapshotTask.withoutDirectStatsPersistedRecordCounts();
+    ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(true);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS,
+                List.of(),
+                List.of(),
+                ""));
+    when(coverageService.expectedCoverage(resetTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS,
+                List.of(),
+                List.of(),
+                ""));
+
+    service.persistStatsChunk(lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of());
+
+    verify(persistence).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
+    verify(jobs)
+        .persistSnapshotFinalizeDirectStatsProgress(lease.jobId, lease.leaseEpoch, true, 0, 0);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.finalizeChunkedSuccess(lease, resetTask, tableId, SNAPSHOT_ID));
+
+    assertEquals(
+        "FAILED_PRECONDITION: snapshot finalize direct stats record count mismatch expected=3 actual=0",
+        error.getMessage());
   }
 
   @Test
@@ -348,6 +404,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             0,
             "blob://planner-direct-stats",
             1);
+    snapshotTask = snapshotTask.withDirectStatsPersistedRecordCountForChunk(0, 1);
     ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(false);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -355,8 +412,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId(TABLE_ID)
             .build();
-    TargetStatsRecord fileRecord = mock(TargetStatsRecord.class);
-    when(persistence.listFileStats(tableId, SNAPSHOT_ID)).thenReturn(List.of(fileRecord));
     when(coverageService.expectedCoverage(snapshotTask))
         .thenReturn(
             new SnapshotFinalizeCoverageService.ExpectedCoverage(

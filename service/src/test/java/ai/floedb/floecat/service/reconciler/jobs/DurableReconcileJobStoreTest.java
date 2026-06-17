@@ -2188,6 +2188,55 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "blob://planner-direct-stats",
+            0,
+            0,
+            "blob://planner-direct-stats",
+            3);
+
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
+
+    ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(
+        Map.of(0, 1, 1, 1, 2, 1),
+        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
+
+    ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+  }
+
+  @Test
   void remoteApplyLeaseOutcomeSucceededRecordsFinalizedSnapshotAfterWaitingPass() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);

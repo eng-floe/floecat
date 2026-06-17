@@ -243,6 +243,63 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void runLeaseCompletesObsoleteOutcomeAsSucceeded() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch completed = new CountDownLatch(1);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "snapshot_finalize",
+            context ->
+                ReconcileExecutor.ExecutionResult.obsolete(
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    7,
+                    ReconcileExecutor.ExecutionResult.FailureKind.NONE,
+                    "Snapshot 42 already finalized by job winner",
+                    null));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.workerModeValue = "local";
+    poller.init();
+
+    RemoteLeasedJob lease = leasedJob("job-obsolete", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE);
+
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.complete(
+            eq(lease),
+            eq(RemoteLeasedJob.CompletionState.CANCELLED),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(1L),
+            eq(7L),
+            eq("Snapshot 42 already finalized by job winner")))
+        .thenAnswer(
+            invocation -> {
+              completed.countDown();
+              return new RemoteReconcileExecutorClient.CompletionResult(true);
+            });
+
+    poller.runLease(new RemoteReconcileExecutorPoller.LeaseAssignment(executor, lease));
+
+    assertTrue(completed.await(5, TimeUnit.SECONDS));
+    verify(client).start(lease, "snapshot_finalize");
+  }
+
+  @Test
   void runLeaseCompletesTableMissingFailureAsCancelled() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     CountDownLatch completed = new CountDownLatch(1);

@@ -216,7 +216,8 @@ public class ReconcileJobProjector {
         0,
         (int) Math.max(0L, stored.snapshotTaskSourceFileCount),
         blankToEmpty(stored.snapshotTaskDirectStatsBlobUri),
-        (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount));
+        (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount),
+        stored.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
   }
 
   private static ReconcileFileGroupTask lightweightFileGroupTask(StoredReconcileJob stored) {

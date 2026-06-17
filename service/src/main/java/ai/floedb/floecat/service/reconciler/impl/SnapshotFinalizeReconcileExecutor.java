@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -128,6 +129,23 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             .setKind(ResourceKind.RK_TABLE)
             .setId(snapshotTask.tableId())
             .build();
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> finalizedSnapshot =
+        jobs.getFinalizedSnapshot(
+            lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
+    if (finalizedSnapshot.isPresent()
+        && !lease.jobId.equals(finalizedSnapshot.orElseThrow().finalizerJobId)) {
+      ReconcileJobStore.FinalizedSnapshotEvent finalized = finalizedSnapshot.orElseThrow();
+      String message =
+          "Snapshot "
+              + snapshotTask.snapshotId()
+              + " already finalized by job "
+              + finalized.finalizerJobId;
+      LOG.infof(
+          "Skipping stale snapshot finalizer jobId=%s tableId=%s snapshotId=%d finalizedBy=%s",
+          lease.jobId, snapshotTask.tableId(), snapshotTask.snapshotId(), finalized.finalizerJobId);
+      return ExecutionResult.obsolete(
+          0, 0, 0, 0, 0, 0, 0, ExecutionResult.FailureKind.NONE, message, null);
+    }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
       try {
         long statsProcessed =

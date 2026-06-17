@@ -459,6 +459,8 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
+    rec.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
+        effectiveSnapshotTask.directStatsPersistedRecordCountsByChunk();
     rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
     rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
     rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());

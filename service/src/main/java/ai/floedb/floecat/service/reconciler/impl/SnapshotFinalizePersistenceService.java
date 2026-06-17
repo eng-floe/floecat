@@ -44,6 +44,10 @@ public class SnapshotFinalizePersistenceService {
     return canonical.size();
   }
 
+  public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
+    return statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
+  }
+
   public long persistStats(List<TargetStatsRecord> records) {
     long processed = 0L;
     for (TargetStatsRecord record : canonicalize(records)) {

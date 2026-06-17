@@ -251,7 +251,8 @@ public class ReconcilePayloadStore {
         fileGroupCount,
         state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
-        state.snapshotTaskDirectStatsRecordCount);
+        state.snapshotTaskDirectStatsRecordCount,
+        state.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
   }
 
   private ReconcileFileGroupTask buildFileGroupTask(

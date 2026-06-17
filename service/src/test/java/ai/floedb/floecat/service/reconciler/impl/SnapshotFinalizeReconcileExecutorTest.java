@@ -253,6 +253,70 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void executeReturnsObsoleteWhenDifferentFinalizerAlreadyFinalizedSnapshot() {
+    var store =
+        new InMemoryReconcileJobStore() {
+          @Override
+          public Optional<ReconcileJobStore.FinalizedSnapshotEvent> getFinalizedSnapshot(
+              String accountId, String tableId, long snapshotId) {
+            return Optional.of(
+                new ReconcileJobStore.FinalizedSnapshotEvent(
+                    accountId + ":" + tableId + ":" + snapshotId,
+                    accountId,
+                    tableId,
+                    snapshotId,
+                    123L,
+                    "winning-finalizer"));
+          }
+        };
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    var executor = executor(store, statsStore, snapshotPlanBlobStore);
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileScope scope = captureScope();
+    ReconcileSnapshotTask snapshotTask = persistedSnapshotPlan(snapshotPlanBlobStore, scope, group);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    ExecutionResult result =
+        executor.execute(
+            new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(ExecutionResult.JobOutcome.OBSOLETE, result.outcome);
+    assertEquals(0, result.errors);
+    assertEquals(ExecutionResult.FailureKind.NONE, result.failureKind);
+    assertNull(result.error);
+    assertTrue(result.message.contains("already finalized by job winning-finalizer"));
+  }
+
+  @Test
   void executeCancelsWhenSiblingFileGroupWasCancelled() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

@@ -186,6 +186,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         List<TargetStatsRecord> directStats =
             persistence.validateReplacementStats(statsRecords, tableId, snapshotId);
         if (directStats.isEmpty()) {
+          if (lease.fullRescan && chunkIndex == 0) {
+            persistence.deleteAllStatsForSnapshot(tableId, snapshotId);
+            jobs.persistSnapshotFinalizeDirectStatsProgress(
+                lease.jobId, lease.leaseEpoch, true, 0, 0);
+          }
           return;
         }
         if (lease.fullRescan && chunkIndex == 0) {
@@ -193,6 +198,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         } else {
           persistence.persistStats(directStats);
         }
+        jobs.persistSnapshotFinalizeDirectStatsProgress(
+            lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, directStats.size());
       }
       case EXPLICIT_EMPTY -> {
         requireNoStatsRecords(statsRecords);
@@ -238,7 +245,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           return;
         }
         requirePlannerDirectStatsRecordCount(
-            snapshotTask, persistence.listFileStats(tableId, snapshotId).size());
+            snapshotTask, snapshotTask.directStatsPersistedRecordCount());
       }
       case EXPLICIT_EMPTY -> {
         if (requestsStatsOutputs) {

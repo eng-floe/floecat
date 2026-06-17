@@ -44,6 +44,7 @@ public class StoredReconcileJob {
   public int snapshotTaskSourceFileCount;
   public String snapshotTaskDirectStatsBlobUri;
   public int snapshotTaskDirectStatsRecordCount;
+  public Map<Integer, Integer> snapshotTaskDirectStatsPersistedRecordCountsByChunk = Map.of();
   public String fileGroupPlanId;
   public String fileGroupGroupId;
   public String fileGroupTableId;
