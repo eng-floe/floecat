@@ -88,6 +88,24 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             Optional.of("Bearer worker-token-acct-a"), Optional.of("Bearer worker-token-acct-b"));
   }
 
+  @Test
+  void executeRequestsFileStatsForTableOnlyCapturePolicy() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+
+    runner.execute(payload());
+
+    ArgumentCaptor<CaptureEngineRequest> request =
+        ArgumentCaptor.forClass(CaptureEngineRequest.class);
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    assertThat(request.getValue().requestedStatsTargetKinds())
+        .containsExactlyInAnyOrder(
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE,
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+  }
+
   private static StandaloneFileGroupExecutionPayload payload() {
     return payload("acct");
   }

@@ -414,6 +414,61 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "blob://planner-direct-stats",
+            0,
+            0,
+            "blob://planner-direct-stats",
+            3);
+
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    var lease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "executor-finalizer");
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
+
+    ReconcileJobStore.ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(
+        java.util.Map.of(0, 1, 1, 1, 2, 1),
+        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
+
+    ReconcileJobStore.ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(
+        java.util.Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+  }
+
+  @Test
   void leaseNextAllowsConcurrentExecFileGroupsForDifferentGroups() {
     var store = new InMemoryReconcileJobStore();
 

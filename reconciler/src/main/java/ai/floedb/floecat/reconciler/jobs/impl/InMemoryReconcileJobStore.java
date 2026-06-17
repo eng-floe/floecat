@@ -660,7 +660,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.fileGroupCount(),
                   effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
-                  effective.directStatsRecordCount());
+                  effective.directStatsRecordCount(),
+                  effective.directStatsPersistedRecordCountsByChunk());
           if (existing.snapshotTask.equals(adoptedTask)) {
             return existing;
           }
@@ -736,6 +737,64 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               effective,
               existing.parentJobId);
         });
+  }
+
+  @Override
+  public void persistSnapshotFinalizeDirectStatsProgress(
+      String jobId,
+      String leaseEpoch,
+      boolean fullRescan,
+      int chunkIndex,
+      int directStatsPersistedRecordCount) {
+    final boolean[] updated = {false};
+    jobs.computeIfPresent(
+        jobId,
+        (id, existing) -> {
+          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
+          if (!"JS_RUNNING".equals(existing.state)
+              || leaseEpoch == null
+              || leaseEpoch.isBlank()
+              || !leaseEpoch.equals(currentLeaseEpoch)
+              || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+            return existing;
+          }
+          updated[0] = true;
+          ReconcileSnapshotTask updatedSnapshotTask =
+              ((fullRescan && Math.max(0, chunkIndex) == 0)
+                      ? existing.snapshotTask.withoutDirectStatsPersistedRecordCounts()
+                      : existing.snapshotTask)
+                  .withDirectStatsPersistedRecordCountForChunk(
+                      Math.max(0, chunkIndex), Math.max(0, directStatsPersistedRecordCount));
+          return new ReconcileJob(
+              existing.jobId,
+              existing.accountId,
+              existing.connectorId,
+              existing.state,
+              existing.message,
+              existing.startedAtMs,
+              existing.finishedAtMs,
+              existing.tablesScanned,
+              existing.tablesChanged,
+              existing.viewsScanned,
+              existing.viewsChanged,
+              existing.errors,
+              existing.fullRescan,
+              existing.captureMode,
+              existing.snapshotsProcessed,
+              existing.statsProcessed,
+              existing.scope,
+              existing.executionPolicy,
+              existing.executorId,
+              existing.jobKind,
+              existing.tableTask,
+              existing.viewTask,
+              updatedSnapshotTask,
+              existing.fileGroupTask,
+              existing.parentJobId);
+        });
+    if (!updated[0]) {
+      throw new IllegalStateException("Failed to persist snapshot finalize direct stats progress");
+    }
   }
 
   @Override

@@ -1004,6 +1004,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         blankToEmpty(effective.directStatsBlobUri());
                     existing.snapshotTaskDirectStatsRecordCount =
                         effective.directStatsRecordCount();
+                    existing.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
+                        effective.directStatsPersistedRecordCountsByChunk();
                     existing.snapshotPlanBlobUri = effectiveManifestUri;
                     JobProjection projection =
                         projector().projectSnapshotPlan(projectedSnapshotTask);
@@ -1169,6 +1171,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && blankToEmpty(currentState.snapshotTaskDirectStatsBlobUri)
             .equals(blankToEmpty(effective.directStatsBlobUri()))
         && currentState.snapshotTaskDirectStatsRecordCount == effective.directStatsRecordCount()
+        && java.util.Objects.equals(
+            currentState.snapshotTaskDirectStatsPersistedRecordCountsByChunk,
+            effective.directStatsPersistedRecordCountsByChunk())
         && blankToEmpty(currentState.snapshotPlanBlobUri).equals(blankToEmpty(manifestUri));
   }
 
@@ -1217,7 +1222,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         adoptedFileGroupCount,
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+        effective.directStatsRecordCount(),
+        effective.directStatsPersistedRecordCountsByChunk());
   }
 
   @Override
@@ -1271,6 +1277,66 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           } catch (RuntimeException e) {
             blobStore.delete(blobUri);
             throw e;
+          }
+        });
+  }
+
+  @Override
+  public void persistSnapshotFinalizeDirectStatsProgress(
+      String jobId,
+      String leaseEpoch,
+      boolean fullRescan,
+      int chunkIndex,
+      int directStatsPersistedRecordCount) {
+    onHotPath(
+        () -> {
+          Optional<StoredEnvelope> updated =
+              mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (existing == null
+                        || !"JS_RUNNING".equals(existing.state)
+                        || !leaseManager()
+                            .hasActiveLease(
+                                jobId,
+                                leaseEpoch,
+                                existing,
+                                "persistSnapshotFinalizeDirectStatsProgress",
+                                false,
+                                true,
+                                false)) {
+                      return null;
+                    }
+                    if (ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE != existing.jobKind()) {
+                      throw new IllegalArgumentException(
+                          "persistSnapshotFinalizeDirectStatsProgress requires a"
+                              + " FINALIZE_SNAPSHOT_CAPTURE job");
+                    }
+                    java.util.Map<Integer, Integer> persistedCountsByChunk =
+                        (fullRescan && Math.max(0, chunkIndex) == 0)
+                            ? new java.util.LinkedHashMap<>()
+                            : existing.snapshotTaskDirectStatsPersistedRecordCountsByChunk == null
+                                ? new java.util.LinkedHashMap<>()
+                                : new java.util.LinkedHashMap<>(
+                                    existing.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
+                    int normalizedChunkIndex = Math.max(0, chunkIndex);
+                    int normalizedPersistedRecordCount =
+                        Math.max(0, directStatsPersistedRecordCount);
+                    if (normalizedPersistedRecordCount == 0) {
+                      persistedCountsByChunk.remove(normalizedChunkIndex);
+                    } else {
+                      persistedCountsByChunk.put(
+                          normalizedChunkIndex, normalizedPersistedRecordCount);
+                    }
+                    existing.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
+                        persistedCountsByChunk.isEmpty()
+                            ? java.util.Map.of()
+                            : java.util.Map.copyOf(persistedCountsByChunk);
+                    return existing;
+                  });
+          if (updated.isEmpty()) {
+            throw new IllegalStateException(
+                "Failed to persist snapshot finalize direct stats progress");
           }
         });
   }

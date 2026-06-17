@@ -678,6 +678,86 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void tablePlannerEnsuresMissingDiscoveryDestinationNamespaceBeforeEmittingTask() {
+    int[] lookupNamespaceCalls = {0};
+    int[] ensureNamespaceCalls = {0};
+    Connector connector =
+        activeConnector().toBuilder()
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(
+                        ResourceId.newBuilder()
+                            .setAccountId("acct")
+                            .setKind(ResourceKind.RK_CATALOG)
+                            .setId(DEST_CATALOG)
+                            .build())
+                    .setNamespace(
+                        ai.floedb.floecat.connector.rpc.NamespacePath.newBuilder()
+                            .addAllSegments(List.of("obs2"))))
+            .build();
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+            return "floedb";
+          }
+
+          @Override
+          public Optional<ResourceId> lookupNamespace(ReconcileContext ctx, NameRef namespace) {
+            lookupNamespaceCalls[0]++;
+            assertThat(namespace.getCatalog()).isEqualTo("floedb");
+            assertThat(namespace.getName()).isEqualTo("obs2");
+            return Optional.empty();
+          }
+
+          @Override
+          public ResourceId ensureNamespace(
+              ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
+            ensureNamespaceCalls[0]++;
+            assertThat(namespace.getCatalog()).isEqualTo("floedb");
+            assertThat(namespace.getName()).isEqualTo("obs2");
+            return ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_NAMESPACE)
+                .setId("ns-obs2")
+                .build();
+          }
+
+          @Override
+          public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+            assertThat(table.getCatalog()).isEqualTo("floedb");
+            assertThat(table.getName()).isEqualTo("new_tbl");
+            return Optional.empty();
+          }
+        };
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public List<FloecatConnector.PlannedTableTask> planTableTasks(
+                  FloecatConnector.TablePlanningRequest request) {
+                assertThat(request.destinationNamespaceFq()).isEqualTo("obs2");
+                return List.of(
+                    new FloecatConnector.PlannedTableTask("src_cat.src_ns", "new_tbl", "new_tbl"));
+              }
+            };
+
+    List<ReconcileTableTask> tasks =
+        service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null);
+
+    assertThat(tasks)
+        .containsExactly(
+            ReconcileTableTask.discovery("src_cat.src_ns", "new_tbl", "ns-obs2", "new_tbl"));
+    assertThat(lookupNamespaceCalls[0]).isEqualTo(1);
+    assertThat(ensureNamespaceCalls[0]).isEqualTo(1);
+  }
+
+  @Test
   void viewPlannerEmitsDiscoveryTasksWithoutDestinationViewId() {
     var viewDesc =
         new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
@@ -1745,6 +1825,82 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void captureOnlySnapshotPlanningPreservesCurrentSelectionWhenNoLocalSnapshotsExist() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-capture-only-current-no-local")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return false;
+      }
+    }
+
+    class CurrentSnapshotConnector extends FakeConnector {
+      CurrentSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        if (options.selectionKind() != SnapshotSelectionKind.CURRENT) {
+          return List.of();
+        }
+        return List.of(
+            new SnapshotBundle(
+                42L, 41L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new CurrentSnapshotConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)),
+            ReconcileSnapshotSelection.current());
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            false,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
   void fullCaptureOnlySnapshotPlanningUsesKnownLocalSnapshotIds() {
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -1909,6 +2065,116 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             principal,
             connectorId,
             false,
+            scope,
+            ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+            null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
+  }
+
+  @Test
+  void fullSnapshotCaptureReplansEvenWhenStatsAndIndexesAlreadyExist() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-full-recapture")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of(42L);
+      }
+
+      @Override
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
+        return snapshotId == 42L;
+      }
+
+      @Override
+      public boolean statsCapturedForColumnSelectors(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        return snapshotId == 42L;
+      }
+
+      @Override
+      public Optional<FloecatConnector.SnapshotFilePlan> fetchSnapshotFilePlan(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return Optional.of(
+            new FloecatConnector.SnapshotFilePlan(
+                List.of(
+                    new FloecatConnector.SnapshotFileEntry(
+                        "s3://bucket/path/file-1.parquet",
+                        "PARQUET",
+                        100L,
+                        10L,
+                        ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+                        "",
+                        0,
+                        List.of(),
+                        null)),
+                List.of()));
+      }
+
+      @Override
+      public boolean indexArtifactsCapturedForFilePaths(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          List<String> filePaths,
+          Set<String> requestedSelectors) {
+        return snapshotId == 42L;
+      }
+    }
+
+    class SingleSnapshotConnector extends FakeConnector {
+      SingleSnapshotConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshots(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          SnapshotEnumerationOptions options) {
+        return List.of(
+            new SnapshotBundle(
+                42L, 41L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new SingleSnapshotConnector();
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            tableId.getId(),
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(
+                    ReconcileCapturePolicy.Output.FILE_STATS,
+                    ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+
+    List<ReconcileSnapshotTask> tasks =
+        service.planSnapshotTasks(
+            principal,
+            connectorId,
+            true,
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,

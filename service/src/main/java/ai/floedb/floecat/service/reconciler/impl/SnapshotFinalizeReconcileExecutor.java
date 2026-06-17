@@ -27,13 +27,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -129,11 +129,28 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             .setKind(ResourceKind.RK_TABLE)
             .setId(snapshotTask.tableId())
             .build();
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> finalizedSnapshot =
+        jobs.getFinalizedSnapshot(
+            lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
+    if (finalizedSnapshot.isPresent()
+        && !lease.jobId.equals(finalizedSnapshot.orElseThrow().finalizerJobId)) {
+      ReconcileJobStore.FinalizedSnapshotEvent finalized = finalizedSnapshot.orElseThrow();
+      String message =
+          "Snapshot "
+              + snapshotTask.snapshotId()
+              + " already finalized by job "
+              + finalized.finalizerJobId;
+      LOG.infof(
+          "Skipping stale snapshot finalizer jobId=%s tableId=%s snapshotId=%d finalizedBy=%s",
+          lease.jobId, snapshotTask.tableId(), snapshotTask.snapshotId(), finalized.finalizerJobId);
+      return ExecutionResult.obsolete(
+          0, 0, 0, 0, 0, 0, 0, ExecutionResult.FailureKind.NONE, message, null);
+    }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
       try {
         long statsProcessed =
             requestsStatsOutputs
-                ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan)
+                ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan, aggregateKinds)
                 : snapshotTask.directStatsRecordCount();
         return ExecutionResult.success(
             0,
@@ -302,65 +319,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no stats outputs)");
     }
-    List<TargetStatsRecord> loadedFileStats;
-    try {
-      loadedFileStats = loadFileGroupStatsBlobs(childState.completedGroupTasks());
-    } catch (RuntimeException e) {
-      return ExecutionResult.failure(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          "File-group stats blob ingest failed for snapshot "
-              + snapshotTask.snapshotId()
-              + ": "
-              + e.getMessage(),
-          e);
-    }
-    if (lease.fullRescan) {
-      SnapshotFinalizeCoverageService.CoverageValidation coverageValidation =
-          coverageService.validateCoverage(coverage.expectedFiles(), loadedFileStats);
-      if (!coverageValidation.valid()) {
-        return ExecutionResult.terminalFailure(
-            0,
-            0,
-            0,
-            0,
-            coverageValidation.missingFiles().size()
-                + coverageValidation.unexpectedFiles().size()
-                + coverageValidation.duplicateFiles().size(),
-            0,
-            0,
-            coverageValidation.message(),
-            new IllegalStateException(coverageValidation.message()));
-      }
-      persistence.replaceAllStatsForSnapshot(tableId, snapshotTask.snapshotId(), loadedFileStats);
-    } else {
-      persistence.persistStats(loadedFileStats);
-    }
-    List<TargetStatsRecord> fileStats =
-        lease.fullRescan
-            ? List.copyOf(loadedFileStats)
-            : persistence.listFileStats(tableId, snapshotTask.snapshotId());
-    SnapshotFinalizeCoverageService.CoverageValidation coverageValidation =
-        coverageService.validateCoverage(coverage.expectedFiles(), fileStats);
-    if (!coverageValidation.valid()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          coverageValidation.missingFiles().size()
-              + coverageValidation.unexpectedFiles().size()
-              + coverageValidation.duplicateFiles().size(),
-          0,
-          0,
-          coverageValidation.message(),
-          new IllegalStateException(coverageValidation.message()));
-    }
+    List<TargetStatsRecord> aggregateStats =
+        aggregateKinds.isEmpty()
+            ? List.of()
+            : persistence.mergeAggregatePartials(
+                tableId,
+                snapshotTask.snapshotId(),
+                aggregateKinds,
+                childState.completedGroupTasks().stream()
+                    .flatMap(group -> group.partialAggregateRecords().stream())
+                    .toList());
     if (aggregateKinds.isEmpty()) {
       return ExecutionResult.success(
           0,
@@ -372,9 +340,6 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
     }
-    List<TargetStatsRecord> aggregateStats =
-        persistence.buildAggregateStats(
-            tableId, snapshotTask.snapshotId(), aggregateKinds, fileStats);
     persistence.persistStats(aggregateStats);
     return ExecutionResult.success(
         0,
@@ -441,7 +406,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   private long ingestDirectStats(
-      ReconcileSnapshotTask snapshotTask, ResourceId tableId, boolean fullRescan) {
+      ReconcileSnapshotTask snapshotTask,
+      ResourceId tableId,
+      boolean fullRescan,
+      Set<FloecatConnector.StatsTargetKind> aggregateKinds) {
     List<TargetStatsRecord> records = snapshotPlanBlobStore.loadDirectStats(snapshotTask);
     if (snapshotTask.directStatsRecordCount() > 0
         && records.size() != snapshotTask.directStatsRecordCount()) {
@@ -451,36 +419,15 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + " actual="
               + records.size());
     }
+    List<TargetStatsRecord> completedRecords =
+        aggregateKinds.isEmpty()
+            ? records
+            : persistence.completeStatsWithAggregates(
+                tableId, snapshotTask.snapshotId(), aggregateKinds, records);
     return fullRescan
-        ? persistence.replaceAllStatsForSnapshot(tableId, snapshotTask.snapshotId(), records)
-        : persistence.persistStats(records);
-  }
-
-  private List<TargetStatsRecord> loadFileGroupStatsBlobs(
-      List<ReconcileFileGroupTask> completedGroups) {
-    List<TargetStatsRecord> allRecords = new ArrayList<>();
-    List<ReconcileFileGroupTask> groups =
-        completedGroups == null ? List.<ReconcileFileGroupTask>of() : completedGroups;
-    for (ReconcileFileGroupTask group : groups) {
-      if (group == null || group.fileStatsBlobUri().isBlank()) {
-        continue;
-      }
-      List<TargetStatsRecord> records =
-          snapshotPlanBlobStore.loadFileGroupStats(group.fileStatsBlobUri());
-      if (group.fileStatsRecordCount() > 0 && records.size() != group.fileStatsRecordCount()) {
-        throw new IllegalStateException(
-            "File-group stats blob record count mismatch expected="
-                + group.fileStatsRecordCount()
-                + " actual="
-                + records.size()
-                + " group="
-                + describeGroup(group));
-      }
-      for (TargetStatsRecord record : records) {
-        allRecords.add(TargetStatsRecords.canonicalize(record));
-      }
-    }
-    return List.copyOf(allRecords);
+        ? persistence.replaceAllStatsForSnapshot(
+            tableId, snapshotTask.snapshotId(), completedRecords)
+        : persistence.persistStats(completedRecords);
   }
 
   private static Set<FloecatConnector.StatsTargetKind> requestedAggregateKinds(

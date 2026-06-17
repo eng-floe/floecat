@@ -32,6 +32,7 @@ import io.delta.kernel.Table;
 import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
+import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.exceptions.TableNotFoundException;
 import io.delta.kernel.statistics.SnapshotStatistics;
 import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
@@ -115,6 +116,37 @@ class DeltaConnectorTest {
             .map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
             .collect(Collectors.toList());
     assertEquals(List.of(0L, 2000L, 3000L, 5000L), timestamps);
+  }
+
+  @Test
+  void enumerateSnapshotsSkipsTruncatedHistoryBeforeEarliestAvailableVersion() {
+    Snapshot latest = snapshot(107805L, 107805000L);
+    Table table =
+        new StubTable(
+            latest,
+            Map.of(
+                107800L, snapshot(107800L, 107800000L),
+                107801L, snapshot(107801L, 107801000L),
+                107802L, snapshot(107802L, 107802000L),
+                107803L, snapshot(107803L, 107803000L),
+                107804L, snapshot(107804L, 107804000L),
+                107805L, latest),
+            Map.of(0L, truncatedHistory(), 1L, truncatedHistory(), 107799L, truncatedHistory()));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+
+    List<FloecatConnector.SnapshotBundle> bundles =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()));
+
+    List<Long> snapshotIds =
+        bundles.stream()
+            .map(FloecatConnector.SnapshotBundle::snapshotId)
+            .collect(Collectors.toList());
+    assertEquals(List.of(107800L, 107801L, 107802L, 107803L, 107804L, 107805L), snapshotIds);
   }
 
   @Test
@@ -474,11 +506,18 @@ class DeltaConnectorTest {
   private static final class StubTable implements Table {
     private final Snapshot latest;
     private final Map<Long, Snapshot> snapshots;
+    private final Map<Long, RuntimeException> failures;
     private int snapshotAsOfVersionCalls;
 
     private StubTable(Snapshot latest, Map<Long, Snapshot> snapshots) {
+      this(latest, snapshots, Map.of());
+    }
+
+    private StubTable(
+        Snapshot latest, Map<Long, Snapshot> snapshots, Map<Long, RuntimeException> failures) {
       this.latest = latest;
       this.snapshots = snapshots;
+      this.failures = failures;
     }
 
     @Override
@@ -495,6 +534,10 @@ class DeltaConnectorTest {
     public Snapshot getSnapshotAsOfVersion(Engine engine, long version)
         throws TableNotFoundException {
       snapshotAsOfVersionCalls++;
+      RuntimeException failure = failures.get(version);
+      if (failure != null) {
+        throw failure;
+      }
       return snapshots.get(version);
     }
 
@@ -520,5 +563,12 @@ class DeltaConnectorTest {
     public void checksum(Engine engine, long version) throws TableNotFoundException, IOException {
       throw new UnsupportedOperationException();
     }
+  }
+
+  private static KernelException truncatedHistory() {
+    return new KernelException(
+        "s3://bucket/table: Cannot load table version 0 as the transaction log has been truncated"
+            + " due to manual deletion or the log/checkpoint retention policy. The earliest"
+            + " available version is 107800.");
   }
 }

@@ -220,7 +220,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void executeCapsPlannedFileGroupsToAtomicSubmissionBudget() {
+  void executePartitionsPlannedFileGroupsByConfiguredMaxFilesPerGroup() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
@@ -260,10 +260,10 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 plannedSnapshot ->
                     plannedSnapshot != null
                         && plannedSnapshot.sourceFileCount() == 40
-                        && plannedSnapshot.fileGroups().size() == 14
+                        && plannedSnapshot.fileGroups().size() == 20
                         && plannedSnapshot.fileGroups().stream()
-                            .allMatch(group -> group.filePaths().size() <= 3)),
-            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 14),
+                            .allMatch(group -> group.filePaths().size() <= 2)),
+            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 20),
             argThat(stats -> stats != null && stats.isEmpty()));
   }
 

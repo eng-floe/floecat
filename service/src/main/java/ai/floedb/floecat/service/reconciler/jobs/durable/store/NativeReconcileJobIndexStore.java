@@ -474,6 +474,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.snapshotTaskSourceFileCount = source.snapshotTaskSourceFileCount;
     copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
     copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
+    copy.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
+        source.snapshotTaskDirectStatsPersistedRecordCountsByChunk == null
+            ? java.util.Map.of()
+            : java.util.Map.copyOf(source.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
     copy.fileGroupPlanId = source.fileGroupPlanId;
     copy.fileGroupGroupId = source.fileGroupGroupId;
     copy.fileGroupTableId = source.fileGroupTableId;

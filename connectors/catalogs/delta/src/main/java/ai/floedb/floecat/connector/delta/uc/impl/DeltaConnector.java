@@ -47,6 +47,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
@@ -60,6 +61,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
 
@@ -67,6 +70,8 @@ abstract class DeltaConnector implements FloecatConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
   private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";
+  private static final Pattern EARLIEST_AVAILABLE_VERSION_PATTERN =
+      Pattern.compile("earliest available version is\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
   private static final Logger LOG = Logger.getLogger(DeltaConnector.class);
 
   private final String connectorId;
@@ -137,11 +142,19 @@ abstract class DeltaConnector implements FloecatConnector {
       return List.of();
     }
     List<SnapshotBundle> bundles = new ArrayList<>(versions.size());
+    long earliestAvailableVersion = 0L;
     for (long version : versions) {
-      Snapshot snapshot =
-          (version == latestVersion)
-              ? latestSnapshot
-              : table.getSnapshotAsOfVersion(engine, version);
+      if (version < earliestAvailableVersion) {
+        continue;
+      }
+      SnapshotLoadResult snapshotResult =
+          version == latestVersion
+              ? SnapshotLoadResult.snapshot(latestSnapshot)
+              : loadSnapshotAsOfVersion(table, version, tableRoot, earliestAvailableVersion);
+      if (snapshotResult.earliestAvailableVersion() > earliestAvailableVersion) {
+        earliestAvailableVersion = snapshotResult.earliestAvailableVersion();
+      }
+      Snapshot snapshot = snapshotResult.snapshot();
       if (snapshot == null) {
         continue;
       }
@@ -621,6 +634,94 @@ abstract class DeltaConnector implements FloecatConnector {
       versions.add(version);
     }
     return List.copyOf(versions);
+  }
+
+  private SnapshotLoadResult loadSnapshotAsOfVersion(
+      Table table, long version, String tableRoot, long currentEarliestAvailableVersion) {
+    try {
+      return SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, version));
+    } catch (KernelException e) {
+      OptionalLongMatch earliest = parseEarliestAvailableVersion(e);
+      if (earliest.present() && version < earliest.value()) {
+        LOG.debugf(
+            "Skipping Delta snapshot version %d for %s because retained history starts at %d",
+            Long.valueOf(version), tableRoot, Long.valueOf(earliest.value()));
+        return SnapshotLoadResult.skipUntil(earliest.value());
+      }
+      if (version < currentEarliestAvailableVersion) {
+        return SnapshotLoadResult.skipUntil(currentEarliestAvailableVersion);
+      }
+      throw e;
+    }
+  }
+
+  static OptionalLongMatch parseEarliestAvailableVersion(Throwable error) {
+    if (error == null || error.getMessage() == null) {
+      return OptionalLongMatch.empty();
+    }
+    Matcher matcher = EARLIEST_AVAILABLE_VERSION_PATTERN.matcher(error.getMessage());
+    if (!matcher.find()) {
+      return OptionalLongMatch.empty();
+    }
+    try {
+      return OptionalLongMatch.of(Long.parseLong(matcher.group(1)));
+    } catch (NumberFormatException ignored) {
+      return OptionalLongMatch.empty();
+    }
+  }
+
+  static final class OptionalLongMatch {
+    private static final OptionalLongMatch EMPTY = new OptionalLongMatch(false, 0L);
+
+    private final boolean present;
+    private final long value;
+
+    private OptionalLongMatch(boolean present, long value) {
+      this.present = present;
+      this.value = value;
+    }
+
+    static OptionalLongMatch empty() {
+      return EMPTY;
+    }
+
+    static OptionalLongMatch of(long value) {
+      return new OptionalLongMatch(true, value);
+    }
+
+    boolean present() {
+      return present;
+    }
+
+    long value() {
+      return value;
+    }
+  }
+
+  static final class SnapshotLoadResult {
+    private final Snapshot snapshot;
+    private final long earliestAvailableVersion;
+
+    private SnapshotLoadResult(Snapshot snapshot, long earliestAvailableVersion) {
+      this.snapshot = snapshot;
+      this.earliestAvailableVersion = earliestAvailableVersion;
+    }
+
+    static SnapshotLoadResult snapshot(Snapshot snapshot) {
+      return new SnapshotLoadResult(snapshot, 0L);
+    }
+
+    static SnapshotLoadResult skipUntil(long earliestAvailableVersion) {
+      return new SnapshotLoadResult(null, earliestAvailableVersion);
+    }
+
+    Snapshot snapshot() {
+      return snapshot;
+    }
+
+    long earliestAvailableVersion() {
+      return earliestAvailableVersion;
+    }
   }
 
   static List<ConstraintDefinition> mapDeltaConstraints(StructType schema, String schemaJson) {

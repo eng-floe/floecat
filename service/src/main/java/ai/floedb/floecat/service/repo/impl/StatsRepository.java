@@ -36,12 +36,16 @@ import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
+  private static final int MAX_POINTER_BATCH_SIZE = 100;
 
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
@@ -63,6 +67,31 @@ public class StatsRepository implements StatsStore {
         pointerKey(canonicalRecord, active.generationId()),
         blobUri(canonicalRecord, active.generationId()),
         canonicalRecord);
+  }
+
+  @Override
+  public void putTargetStatsBatch(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    List<TargetStatsRecord> canonicalRecords =
+        (records == null ? List.<TargetStatsRecord>of() : records)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(this::canonicalRecord)
+                .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
+                .toList();
+    if (canonicalRecords.isEmpty()) {
+      return;
+    }
+    ActiveSnapshotStats active = ensureActiveGeneration(tableId, snapshotId);
+    List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
+    for (TargetStatsRecord record : canonicalRecords) {
+      writes.add(
+          new TargetStatsWrite(
+              pointerKey(record, active.generationId()),
+              blobUri(record, active.generationId()),
+              record));
+    }
+    targetStatsStorage.createBatch(writes);
   }
 
   @Override
@@ -406,6 +435,8 @@ public class StatsRepository implements StatsStore {
       long manifestVersion,
       String manifestBlobUri) {}
 
+  private record TargetStatsWrite(String pointerKey, String blobUri, TargetStatsRecord value) {}
+
   private static final class TargetStatsStorage extends BaseResourceRepository<TargetStatsRecord> {
 
     private TargetStatsStorage(PointerStore pointerStore, BlobStore blobStore) {
@@ -424,6 +455,27 @@ public class StatsRepository implements StatsStore {
     private void create(String pointerKey, String blobUri, TargetStatsRecord value) {
       putBlob(blobUri, value);
       reserveAllOrRollback(pointerKey, blobUri);
+    }
+
+    private void createBatch(List<TargetStatsWrite> writes) {
+      if (writes == null || writes.isEmpty()) {
+        return;
+      }
+      Map<String, TargetStatsWrite> uniqueWrites = new LinkedHashMap<>();
+      for (TargetStatsWrite write : writes) {
+        TargetStatsWrite existing = uniqueWrites.putIfAbsent(write.pointerKey(), write);
+        if (existing != null && !existing.blobUri().equals(write.blobUri())) {
+          throw new NameConflictException("pointer bound to different blob: " + write.pointerKey());
+        }
+      }
+      List<TargetStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
+      for (TargetStatsWrite write : pending) {
+        putBlob(write.blobUri(), write.value());
+      }
+      for (int from = 0; from < pending.size(); from += MAX_POINTER_BATCH_SIZE) {
+        reserveBatchOrClassify(
+            pending.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, pending.size())));
+      }
     }
 
     private boolean createIfAbsent(String pointerKey, String blobUri, TargetStatsRecord value) {
@@ -450,6 +502,40 @@ public class StatsRepository implements StatsStore {
 
     private MutationMeta metaForPointer(String pointerKey, String blobUri, Timestamp nowTs) {
       return safeMetaOrDefault(pointerKey, blobUri, nowTs);
+    }
+
+    private void reserveBatchOrClassify(List<TargetStatsWrite> writes) {
+      List<TargetStatsWrite> remaining = new ArrayList<>(writes);
+      while (!remaining.isEmpty()) {
+        List<PointerStore.CasOp> ops = new ArrayList<>(remaining.size());
+        for (TargetStatsWrite write : remaining) {
+          ops.add(
+              new PointerStore.CasUpsert(
+                  write.pointerKey(),
+                  0L,
+                  PointerReferences.blobPointer(write.pointerKey(), write.blobUri(), 1L)));
+        }
+        if (pointerStore.compareAndSetBatch(ops)) {
+          return;
+        }
+        List<TargetStatsWrite> nextRemaining = new ArrayList<>();
+        for (TargetStatsWrite write : remaining) {
+          Pointer pointer = pointerStore.get(write.pointerKey()).orElse(null);
+          if (pointer == null) {
+            nextRemaining.add(write);
+            continue;
+          }
+          if (!write.blobUri().equals(pointer.getBlobUri())) {
+            throw new NameConflictException(
+                "pointer bound to different blob: " + write.pointerKey());
+          }
+        }
+        if (nextRemaining.size() == remaining.size()) {
+          throw new AbortRetryableException(
+              "create conflict, no pointer present: " + remaining.get(0).pointerKey());
+        }
+        remaining = nextRemaining;
+      }
     }
 
     private void cleanupCreateIfAbsentBlobOnCasMiss(

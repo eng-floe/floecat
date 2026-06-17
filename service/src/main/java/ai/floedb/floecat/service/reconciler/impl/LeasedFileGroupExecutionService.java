@@ -40,8 +40,9 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
-import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -56,20 +57,21 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
+  private static final Logger LOG = Logger.getLogger(LeasedFileGroupExecutionService.class);
   private static final String DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION =
       "delta.table-root.hint.full-name";
   private static final String DELTA_TABLE_ROOT_HINT_LOCATION_OPTION =
@@ -82,6 +84,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject SnapshotFinalizePersistenceService snapshotFinalizePersistence;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -162,16 +165,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return withTableStorageLocationHint(payload, table);
   }
 
-  public boolean persistSuccess(
+  public boolean persistChunk(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
       String resultId,
+      int chunkIndex,
       List<TargetStatsRecord> statsRecords,
-      String fileStatsBlobUri,
-      int fileStatsRecordCount,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
-      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedIndexArtifacts) {
+      List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> indexArtifacts) {
+    long totalStartNanos = System.nanoTime();
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
     ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
@@ -182,30 +184,128 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .setId(plannedTask.tableId())
             .build();
     String requiredResultId = requireResultId(resultId);
-    List<TargetStatsRecord> effectiveStats = nonNullStatsRecords(statsRecords);
-    List<TargetStatsRecord> effectiveFileStats =
-        effectiveStats.stream()
-            .filter(
-                record ->
-                    record != null
-                        && record.hasTarget()
-                        && StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE)
-            .toList();
-    StandaloneFileGroupExecutionResult.FileStatsBlobManifest fileStatsBlobManifest =
-        validatedFileStatsBlobManifest(fileStatsBlobUri, fileStatsRecordCount, effectiveFileStats);
-    List<ReconcilerBackend.StagedIndexArtifact> effectiveArtifacts =
-        stagedIndexArtifacts == null ? List.of() : stagedIndexArtifacts;
-    List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact>
-        effectivePreUploadedArtifacts =
-            preUploadedIndexArtifacts == null ? List.of() : preUploadedIndexArtifacts;
+    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(statsRecords);
+    List<TargetStatsRecord> fileStats = requireFileScopedStatsRecords(nonNullStats);
+    List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> nonNullArtifacts =
+        indexArtifacts == null
+            ? List.of()
+            : indexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
     byte[] requestBytes =
-        successPayload(
-                requiredResultId,
-                fileStatsBlobManifest.isEmpty() ? effectiveFileStats : List.of(),
-                fileStatsBlobManifest,
-                effectiveArtifacts,
-                effectivePreUploadedArtifacts)
-            .toByteArray();
+        chunkPayload(requiredResultId, chunkIndex, nonNullStats, nonNullArtifacts).toByteArray();
+    ChunkPersistMetrics metrics = new ChunkPersistMetrics();
+    metrics.statsRecords = nonNullStats.size();
+    metrics.fileStatsRecords = fileStats.size();
+    metrics.indexArtifacts = nonNullArtifacts.size();
+    boolean accepted;
+    long idempotentStartNanos = System.nanoTime();
+    accepted =
+        runIdempotentCreate(
+                () ->
+                    MutationOps.createProto(
+                        principalContext.getAccountId(),
+                        "SubmitLeasedFileGroupExecutionResult",
+                        chunkIdempotencyKey(jobId, requiredResultId, chunkIndex),
+                        () -> requestBytes,
+                        () -> {
+                          long creatorStartNanos = System.nanoTime();
+                          long snapshotId = plannedTask.snapshotId();
+                          long mergeStartNanos = System.nanoTime();
+                          List<TargetStatsRecord> mergedPartialAggregates =
+                              mergedPartialAggregates(
+                                  lease, tableId, snapshotId, plannedTask, nonNullStats);
+                          metrics.mergeNanos += System.nanoTime() - mergeStartNanos;
+                          persistTargetStats(
+                              principalContext,
+                              tableId,
+                              snapshotId,
+                              requiredResultId,
+                              fileStats,
+                              metrics);
+                          persistIndexArtifacts(
+                              principalContext,
+                              tableId,
+                              snapshotId,
+                              requiredResultId,
+                              parseIndexArtifacts(nonNullArtifacts),
+                              metrics);
+                          long persistResultStartNanos = System.nanoTime();
+                          jobs.persistFileGroupResult(
+                              lease.jobId,
+                              lease.leaseEpoch,
+                              plannedTask.withPartialAggregateRecords(mergedPartialAggregates));
+                          metrics.persistResultNanos += System.nanoTime() - persistResultStartNanos;
+                          metrics.creatorNanos += System.nanoTime() - creatorStartNanos;
+                          return new IdempotencyGuard.CreateResult<>(
+                              SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                                  .setAccepted(true)
+                                  .build(),
+                              tableId);
+                        },
+                        ignored -> MutationMeta.getDefaultInstance(),
+                        idempotencyStore,
+                        nowTs(),
+                        idempotencyTtlSeconds(),
+                        principalContext::getCorrelationId,
+                        SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
+            .body
+            .getAccepted();
+    metrics.idempotentNanos = System.nanoTime() - idempotentStartNanos;
+    metrics.totalNanos = System.nanoTime() - totalStartNanos;
+    LOG.infof(
+        "submit_leased_file_group_chunk_timing jobId=%s resultId=%s chunkIndex=%d accepted=%s "
+            + "statsRecords=%d fileStats=%d indexArtifacts=%d requestBytes=%d totalMs=%.3f "
+            + "idempotentMs=%.3f creatorMs=%.3f mergeMs=%.3f statsMs=%.3f statsItemCount=%d "
+            + "statsItemAvgMs=%.3f statsItemMaxMs=%.3f statsStorePutMs=%.3f "
+            + "statsIdempotencyOverheadMs=%.3f indexMs=%.3f indexItemCount=%d "
+            + "indexItemAvgMs=%.3f indexItemMaxMs=%.3f indexBlobPutMs=%.3f indexBlobHeadMs=%.3f "
+            + "indexRepoPutMs=%.3f persistResultMs=%.3f",
+        jobId,
+        requiredResultId,
+        chunkIndex,
+        accepted,
+        metrics.statsRecords,
+        metrics.fileStatsRecords,
+        metrics.indexArtifacts,
+        requestBytes.length,
+        millis(metrics.totalNanos),
+        millis(metrics.idempotentNanos),
+        millis(metrics.creatorNanos),
+        millis(metrics.mergeNanos),
+        millis(metrics.statsNanos),
+        metrics.statsItemCount,
+        averageMillis(metrics.statsNanos, metrics.statsItemCount),
+        millis(metrics.statsItemMaxNanos),
+        millis(metrics.statsStorePutNanos),
+        millis(Math.max(0L, metrics.statsNanos - metrics.statsStorePutNanos)),
+        millis(metrics.indexNanos),
+        metrics.indexItemCount,
+        averageMillis(metrics.indexNanos, metrics.indexItemCount),
+        millis(metrics.indexItemMaxNanos),
+        millis(metrics.indexBlobPutNanos),
+        millis(metrics.indexBlobHeadNanos),
+        millis(metrics.indexRepoPutNanos),
+        millis(metrics.persistResultNanos));
+    return accepted;
+  }
+
+  public boolean persistSuccess(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      List<ReconcileFileResult> fileResults) {
+    String corr = principalContext.getCorrelationId();
+    ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
+    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(plannedTask.tableId())
+            .build();
+    String requiredResultId = requireResultId(resultId);
+    List<ReconcileFileResult> validatedFileResults = validateFileResults(plannedTask, fileResults);
+    byte[] requestBytes = successPayload(requiredResultId, validatedFileResults).toByteArray();
     return runIdempotentCreate(
             () ->
                 MutationOps.createProto(
@@ -214,40 +314,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     resultIdempotencyKey(jobId, requiredResultId),
                     () -> requestBytes,
                     () -> {
-                      long snapshotId = plannedTask.snapshotId();
-                      if (fileStatsBlobManifest.isEmpty()) {
-                        persistTargetStats(
-                            principalContext,
-                            tableId,
-                            snapshotId,
-                            requiredResultId,
-                            effectiveFileStats);
-                      }
-                      persistIndexArtifacts(
-                          principalContext,
-                          tableId,
-                          snapshotId,
-                          requiredResultId,
-                          effectiveArtifacts);
-                      persistPreUploadedIndexArtifacts(
-                          principalContext,
-                          tableId,
-                          snapshotId,
-                          requiredResultId,
-                          effectivePreUploadedArtifacts);
                       jobs.persistFileGroupResult(
                           lease.jobId,
                           lease.leaseEpoch,
                           plannedTask
-                              .withFileStatsBlob(
-                                  fileStatsBlobManifest.blobUri(),
-                                  fileStatsBlobManifest.recordCount())
-                              .withFileResults(
-                                  FileGroupExecutionSupport.fileResultsForSuccess(
-                                      plannedTask,
-                                      effectiveFileStats,
-                                      effectiveArtifacts,
-                                      effectivePreUploadedArtifacts)));
+                              .withFileResults(validatedFileResults)
+                              .withPartialAggregateRecords(plannedTask.partialAggregateRecords()));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
@@ -293,9 +365,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                       jobs.persistFileGroupResult(
                           lease.jobId,
                           lease.leaseEpoch,
-                          plannedTask.withFileResults(
-                              FileGroupExecutionSupport.fileResultsForFailure(
-                                  plannedTask, effectiveMessage)));
+                          plannedTask
+                              .withFileResults(
+                                  FileGroupExecutionSupport.fileResultsForFailure(
+                                      plannedTask, effectiveMessage))
+                              .withPartialAggregateRecords(plannedTask.partialAggregateRecords()));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
@@ -317,33 +391,21 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ResourceId tableId,
       long snapshotId,
       String resultId,
-      List<TargetStatsRecord> statsRecords) {
-    String accountId = principalContext.getAccountId();
-    var now = nowTs();
-    for (TargetStatsRecord targetRecord : statsRecords) {
-      if (targetRecord == null) {
-        continue;
-      }
-      String targetKey = StatsTargetIdentity.storageId(targetRecord.getTarget());
-      String itemKey = itemIdempotencyKey(resultId, "target", hashString(targetKey));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "SubmitLeasedFileGroupExecutionResult",
-                  itemKey,
-                  targetRecord::toByteArray,
-                  () -> {
-                    statsStore.putTargetStats(targetRecord);
-                    return new IdempotencyGuard.CreateResult<>(targetRecord, tableId);
-                  },
-                  rec -> statsStore.metaForTargetStats(tableId, snapshotId, rec.getTarget(), now),
-                  idempotencyStore,
-                  now,
-                  idempotencyTtlSeconds(),
-                  principalContext::getCorrelationId,
-                  TargetStatsRecord::parseFrom));
+      List<TargetStatsRecord> statsRecords,
+      ChunkPersistMetrics metrics) {
+    List<TargetStatsRecord> nonNullStats =
+        statsRecords == null
+            ? List.of()
+            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
+    if (nonNullStats.isEmpty()) {
+      return;
     }
+    long batchStartNanos = System.nanoTime();
+    statsStore.putTargetStatsBatch(tableId, snapshotId, nonNullStats);
+    long batchNanos = System.nanoTime() - batchStartNanos;
+    metrics.statsNanos += batchNanos;
+    metrics.statsStorePutNanos += batchNanos;
+    metrics.statsItemCount += nonNullStats.size();
   }
 
   private void persistIndexArtifacts(
@@ -351,93 +413,26 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ResourceId tableId,
       long snapshotId,
       String resultId,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    String accountId = principalContext.getAccountId();
-    var now = nowTs();
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+      ChunkPersistMetrics metrics) {
+    List<IndexArtifactRecord> persistedRecords = new java.util.ArrayList<>();
+    long batchStartNanos = System.nanoTime();
     for (ReconcilerBackend.StagedIndexArtifact stagedArtifact : stagedIndexArtifacts) {
       if (stagedArtifact == null || stagedArtifact.record() == null) {
         continue;
       }
       PutIndexArtifactItem item = toPutIndexArtifactItem(stagedArtifact);
-      String itemKey =
-          itemIdempotencyKey(
-              resultId,
-              "index_artifact",
-              hashString(targetStorageId(item.getRecord().getTarget())));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "SubmitLeasedFileGroupExecutionResult",
-                  itemKey,
-                  item::toByteArray,
-                  () -> {
-                    persistIndexArtifact(item);
-                    return new IdempotencyGuard.CreateResult<>(item, tableId);
-                  },
-                  persisted ->
-                      indexArtifactRepo.metaForIndexArtifact(
-                          tableId, snapshotId, persisted.getRecord().getTarget(), now),
-                  idempotencyStore,
-                  now,
-                  idempotencyTtlSeconds(),
-                  principalContext::getCorrelationId,
-                  PutIndexArtifactItem::parseFrom));
+      persistedRecords.add(prepareIndexArtifactRecord(item, metrics));
     }
-  }
-
-  private void persistPreUploadedIndexArtifacts(
-      PrincipalContext principalContext,
-      ResourceId tableId,
-      long snapshotId,
-      String resultId,
-      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedIndexArtifacts) {
-    String accountId = principalContext.getAccountId();
-    var now = nowTs();
-    for (StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact preUploadedArtifact :
-        preUploadedIndexArtifacts) {
-      if (preUploadedArtifact == null || preUploadedArtifact.record() == null) {
-        continue;
-      }
-      IndexArtifactRecord record = validatedPreUploadedRecord(preUploadedArtifact);
-      String itemKey =
-          itemIdempotencyKey(
-              resultId, "index_artifact", hashString(targetStorageId(record.getTarget())));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "SubmitLeasedFileGroupExecutionResult",
-                  itemKey,
-                  record::toByteArray,
-                  () -> {
-                    indexArtifactRepo.putIndexArtifact(record);
-                    return new IdempotencyGuard.CreateResult<>(record, tableId);
-                  },
-                  persisted ->
-                      indexArtifactRepo.metaForIndexArtifact(
-                          tableId, snapshotId, persisted.getTarget(), now),
-                  idempotencyStore,
-                  now,
-                  idempotencyTtlSeconds(),
-                  principalContext::getCorrelationId,
-                  IndexArtifactRecord::parseFrom));
+    if (persistedRecords.isEmpty()) {
+      return;
     }
-  }
-
-  private void persistIndexArtifact(PutIndexArtifactItem item) {
-    IndexArtifactRecord record = item.getRecord();
-    String contentType =
-        item.getContentType() == null || item.getContentType().isBlank()
-            ? "application/x-parquet"
-            : item.getContentType();
-    blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
-    String etag =
-        blobStore
-            .head(record.getArtifactUri())
-            .map(head -> head.getEtag())
-            .orElse(record.getContentEtag());
-    indexArtifactRepo.putIndexArtifact(record.toBuilder().setContentEtag(etag).build());
+    long repoPutStartNanos = System.nanoTime();
+    indexArtifactRepo.putIndexArtifactsBatch(persistedRecords);
+    metrics.indexRepoPutNanos += System.nanoTime() - repoPutStartNanos;
+    long batchNanos = System.nanoTime() - batchStartNanos;
+    metrics.indexNanos += batchNanos;
+    metrics.indexItemCount += persistedRecords.size();
   }
 
   private static AuthConfig toAuthConfig(ConnectorConfig.Auth resolved) {
@@ -468,6 +463,57 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .orElse(base);
   }
 
+  private IndexArtifactRecord prepareIndexArtifactRecord(
+      PutIndexArtifactItem item, ChunkPersistMetrics metrics) {
+    IndexArtifactRecord record = item.getRecord();
+    String contentType =
+        item.getContentType() == null || item.getContentType().isBlank()
+            ? "application/x-parquet"
+            : item.getContentType();
+    if (!item.getContent().isEmpty()) {
+      long blobPutStartNanos = System.nanoTime();
+      blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
+      metrics.indexBlobPutNanos += System.nanoTime() - blobPutStartNanos;
+    }
+    long blobHeadStartNanos = System.nanoTime();
+    String etag =
+        blobStore
+            .head(record.getArtifactUri())
+            .map(head -> head.getEtag())
+            .orElse(record.getContentEtag());
+    metrics.indexBlobHeadNanos += System.nanoTime() - blobHeadStartNanos;
+    return record.toBuilder().setContentEtag(etag).build();
+  }
+
+  private static double millis(long nanos) {
+    return nanos / 1_000_000.0;
+  }
+
+  private static double averageMillis(long totalNanos, long count) {
+    return count == 0 ? 0.0 : millis(totalNanos) / count;
+  }
+
+  private static final class ChunkPersistMetrics {
+    private int statsRecords;
+    private int fileStatsRecords;
+    private int indexArtifacts;
+    private long totalNanos;
+    private long idempotentNanos;
+    private long creatorNanos;
+    private long mergeNanos;
+    private long statsNanos;
+    private long statsItemCount;
+    private long statsItemMaxNanos;
+    private long statsStorePutNanos;
+    private long indexNanos;
+    private long indexItemCount;
+    private long indexItemMaxNanos;
+    private long indexBlobPutNanos;
+    private long indexBlobHeadNanos;
+    private long indexRepoPutNanos;
+    private long persistResultNanos;
+  }
+
   private static PutIndexArtifactItem toPutIndexArtifactItem(
       ReconcilerBackend.StagedIndexArtifact stagedArtifact) {
     return PutIndexArtifactItem.newBuilder()
@@ -477,75 +523,17 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .build();
   }
 
-  private static IndexArtifactRecord validatedPreUploadedRecord(
-      StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact preUploadedArtifact) {
-    String uploadedArtifactUri =
-        preUploadedArtifact.uploadedArtifactUri() == null
-            ? ""
-            : preUploadedArtifact.uploadedArtifactUri().trim();
-    if (uploadedArtifactUri.isBlank()) {
-      throw new IllegalArgumentException("uploaded index artifact uri is required");
-    }
-    IndexArtifactRecord record =
-        preUploadedArtifact.record() == null
-            ? IndexArtifactRecord.getDefaultInstance()
-            : preUploadedArtifact.record();
-    if (record.getArtifactUri().isBlank()) {
-      throw new IllegalArgumentException("index artifact record uri is required");
-    }
-    if (!uploadedArtifactUri.equals(record.getArtifactUri())) {
-      throw new IllegalArgumentException(
-          "uploaded index artifact uri must match record artifact uri");
-    }
-    return record;
-  }
-
-  private static SubmitLeasedFileGroupExecutionResultRequest.Success successPayload(
+  private static SubmitLeasedFileGroupExecutionResultRequest.Chunk chunkPayload(
       String resultId,
+      int chunkIndex,
       List<TargetStatsRecord> statsRecords,
-      StandaloneFileGroupExecutionResult.FileStatsBlobManifest fileStatsBlobManifest,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
-      List<StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact> preUploadedIndexArtifacts) {
-    SubmitLeasedFileGroupExecutionResultRequest.Success.Builder builder =
-        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
-            .setResultId(resultId)
-            .addAllStatsRecords(statsRecords);
-    if (fileStatsBlobManifest != null && !fileStatsBlobManifest.isEmpty()) {
-      builder
-          .setFileStatsBlobUri(fileStatsBlobManifest.blobUri())
-          .setFileStatsRecordCount(fileStatsBlobManifest.recordCount());
-    }
-    for (StandaloneFileGroupExecutionResult.PreUploadedIndexArtifact preUploadedArtifact :
-        preUploadedIndexArtifacts) {
-      if (preUploadedArtifact == null || preUploadedArtifact.record() == null) {
-        continue;
-      }
-      builder.addIndexArtifacts(
-          ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact.newBuilder()
-              .setRecord(preUploadedArtifact.record())
-              .setContentType(
-                  preUploadedArtifact.contentType() == null
-                      ? ""
-                      : preUploadedArtifact.contentType())
-              .setUploadedArtifactUri(
-                  preUploadedArtifact.uploadedArtifactUri() == null
-                      ? ""
-                      : preUploadedArtifact.uploadedArtifactUri())
-              .build());
-    }
-    for (ReconcilerBackend.StagedIndexArtifact stagedArtifact : stagedIndexArtifacts) {
-      if (stagedArtifact == null || stagedArtifact.record() == null) {
-        continue;
-      }
-      builder.addIndexArtifacts(
-          ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact.newBuilder()
-              .setRecord(stagedArtifact.record())
-              .setContent(com.google.protobuf.ByteString.copyFrom(stagedArtifact.content()))
-              .setContentType(
-                  stagedArtifact.contentType() == null ? "" : stagedArtifact.contentType())
-              .build());
-    }
-    return builder.build();
+      List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> indexArtifacts) {
+    return SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
+        .setResultId(resultId)
+        .setChunkIndex(Math.max(0, chunkIndex))
+        .addAllStatsRecords(nonNullStatsRecords(statsRecords))
+        .addAllIndexArtifacts(indexArtifacts == null ? List.of() : indexArtifacts)
+        .build();
   }
 
   private static List<TargetStatsRecord> nonNullStatsRecords(List<TargetStatsRecord> statsRecords) {
@@ -555,30 +543,161 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return statsRecords.stream().filter(java.util.Objects::nonNull).toList();
   }
 
-  private static StandaloneFileGroupExecutionResult.FileStatsBlobManifest
-      validatedFileStatsBlobManifest(
-          String fileStatsBlobUri,
-          int fileStatsRecordCount,
-          List<TargetStatsRecord> inlineStatsRecords) {
-    String effectiveBlobUri = fileStatsBlobUri == null ? "" : fileStatsBlobUri.trim();
-    int effectiveRecordCount = Math.max(0, fileStatsRecordCount);
-    boolean hasInlineStats = inlineStatsRecords != null && !inlineStatsRecords.isEmpty();
-    if (effectiveBlobUri.isBlank()) {
-      if (effectiveRecordCount > 0) {
+  private static List<TargetStatsRecord> requireFileScopedStatsRecords(
+      List<TargetStatsRecord> statsRecords) {
+    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(statsRecords);
+    if (nonNullStats.stream().anyMatch(record -> !record.hasFile())) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stats_records must contain only file-target stats")
+          .asRuntimeException();
+    }
+    return nonNullStats;
+  }
+
+  private List<TargetStatsRecord> mergedPartialAggregates(
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId tableId,
+      long snapshotId,
+      ReconcileFileGroupTask plannedTask,
+      List<TargetStatsRecord> chunkStats) {
+    List<TargetStatsRecord> chunkPartials =
+        chunkPartialAggregates(lease, tableId, snapshotId, chunkStats);
+    if (chunkPartials.isEmpty()) {
+      return plannedTask.partialAggregateRecords();
+    }
+    if (plannedTask.partialAggregateRecords().isEmpty()) {
+      return chunkPartials;
+    }
+    List<TargetStatsRecord> aggregateStateAndChunkPartials =
+        new java.util.ArrayList<>(
+            plannedTask.partialAggregateRecords().size() + chunkPartials.size());
+    aggregateStateAndChunkPartials.addAll(plannedTask.partialAggregateRecords());
+    aggregateStateAndChunkPartials.addAll(chunkPartials);
+    return snapshotFinalizePersistence.mergeAggregatePartials(
+        tableId, snapshotId, requestedAggregateKinds(lease), aggregateStateAndChunkPartials);
+  }
+
+  private List<TargetStatsRecord> chunkPartialAggregates(
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> chunkStats) {
+    java.util.Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind> aggregateKinds =
+        requestedAggregateKinds(lease);
+    if (aggregateKinds.isEmpty()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> fileStats = requireFileScopedStatsRecords(chunkStats);
+    if (!fileStats.isEmpty()) {
+      return snapshotFinalizePersistence.buildAggregateStats(
+          tableId, snapshotId, aggregateKinds, fileStats);
+    }
+    return List.of();
+  }
+
+  private static java.util.Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind>
+      requestedAggregateKinds(ReconcileJobStore.LeasedJob lease) {
+    var policy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
+    java.util.EnumSet<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind> out =
+        java.util.EnumSet.noneOf(
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.class);
+    if (policy
+        .outputs()
+        .contains(ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.Output.TABLE_STATS)) {
+      out.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE);
+    }
+    if (policy
+        .outputs()
+        .contains(ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      out.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.COLUMN);
+    }
+    return java.util.Set.copyOf(out);
+  }
+
+  private List<ReconcilerBackend.StagedIndexArtifact> parseIndexArtifacts(
+      List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> indexArtifacts) {
+    List<ReconcilerBackend.StagedIndexArtifact> inlineArtifacts = new java.util.ArrayList<>();
+    for (var artifact : indexArtifacts) {
+      if (artifact.getContent().isEmpty() && artifact.getRecord().getArtifactUri().isBlank()) {
         throw new IllegalArgumentException(
-            "file stats blob uri is required when record count is set");
+            "inline index artifact content is required when artifact_uri is blank");
       }
-      return StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty();
+      inlineArtifacts.add(
+          new ReconcilerBackend.StagedIndexArtifact(
+              artifact.getRecord(),
+              artifact.getContent().toByteArray(),
+              artifact.getContentType()));
     }
-    if (effectiveRecordCount <= 0) {
-      throw new IllegalArgumentException("file stats blob record count must be positive");
+    return List.copyOf(inlineArtifacts);
+  }
+
+  private static List<ReconcileFileResult> validateFileResults(
+      ReconcileFileGroupTask plannedTask, List<ReconcileFileResult> fileResults) {
+    LinkedHashMap<String, ReconcileFileResult> byFile = new LinkedHashMap<>();
+    for (ReconcileFileResult fileResult :
+        fileResults == null ? List.<ReconcileFileResult>of() : fileResults) {
+      if (fileResult == null || fileResult.filePath().isBlank()) {
+        throw new IllegalArgumentException("file-group success file_path is required");
+      }
+      if (byFile.putIfAbsent(fileResult.filePath(), fileResult) != null) {
+        throw new IllegalArgumentException(
+            "duplicate file-group success file result for " + fileResult.filePath());
+      }
     }
-    if (hasInlineStats) {
+    List<String> plannedFiles = plannedTask.filePaths();
+    if (byFile.size() != plannedFiles.size()) {
       throw new IllegalArgumentException(
-          "file-group success must provide either inline file stats or a file stats blob manifest");
+          "file-group success file result count does not match plan");
     }
-    return new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
-        effectiveBlobUri, effectiveRecordCount);
+    for (String plannedFile : plannedFiles) {
+      if (!byFile.containsKey(plannedFile)) {
+        throw new IllegalArgumentException(
+            "file-group success is missing file result for planned file " + plannedFile);
+      }
+    }
+    return plannedFiles.stream().map(byFile::get).toList();
+  }
+
+  private static SubmitLeasedFileGroupExecutionResultRequest.Success successPayload(
+      String resultId, List<ReconcileFileResult> fileResults) {
+    return SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+        .setResultId(resultId)
+        .addAllFileResults(
+            fileResults.stream().map(LeasedFileGroupExecutionService::toProtoFileResult).toList())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(
+      ReconcileFileResult fileResult) {
+    ReconcileFileResult effective = fileResult == null ? ReconcileFileResult.empty() : fileResult;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
+        .setFilePath(effective.filePath())
+        .setState(
+            switch (effective.state()) {
+              case SUCCEEDED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED;
+              case FAILED -> ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_FAILED;
+              case SKIPPED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SKIPPED;
+              case UNSPECIFIED ->
+                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_UNSPECIFIED;
+            })
+        .setStatsProcessed(effective.statsProcessed())
+        .setMessage(effective.message())
+        .setIndexArtifact(toProtoIndexArtifact(effective.indexArtifact()))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+      toProtoIndexArtifact(ReconcileIndexArtifactResult indexArtifact) {
+    ReconcileIndexArtifactResult effective =
+        indexArtifact == null ? ReconcileIndexArtifactResult.empty() : indexArtifact;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
+        .newBuilder()
+        .setArtifactUri(effective.artifactUri())
+        .setArtifactFormat(effective.artifactFormat())
+        .setArtifactFormatVersion(effective.artifactFormatVersion())
+        .build();
   }
 
   private static SubmitLeasedFileGroupExecutionResultRequest.Failure failurePayload(
@@ -587,6 +706,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .setResultId(resultId)
         .setMessage(message == null ? "" : message)
         .build();
+  }
+
+  private static String chunkIdempotencyKey(String jobId, String resultId, int chunkIndex) {
+    return resultIdempotencyKey(jobId, resultId) + ":chunk:" + Math.max(0, chunkIndex);
   }
 
   private ReconcileJobStore.LeasedJob requireLeasedFileGroupJob(
@@ -676,7 +799,21 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .map(parent -> parent.snapshotTask)
         .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
         .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))
+        .map(parentTask -> mergePersistedChildResult(parentTask, task))
         .orElseThrow(this::unresolvedPlannedTask);
+  }
+
+  static ReconcileFileGroupTask mergePersistedChildResult(
+      ReconcileFileGroupTask plannedTask, ReconcileFileGroupTask persistedTask) {
+    ReconcileFileGroupTask effectivePlanned =
+        plannedTask == null ? ReconcileFileGroupTask.empty() : plannedTask;
+    ReconcileFileGroupTask effectivePersisted =
+        persistedTask == null ? ReconcileFileGroupTask.empty() : persistedTask;
+    return effectivePlanned
+        .withFileStatsBlob(
+            effectivePersisted.fileStatsBlobUri(), effectivePersisted.fileStatsRecordCount())
+        .withFileResults(effectivePersisted.fileResults())
+        .withPartialAggregateRecords(effectivePersisted.partialAggregateRecords());
   }
 
   private static java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(

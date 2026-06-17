@@ -85,11 +85,19 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SeedRunner {
+  private static final String DELTA_STATS_FIXTURE_TABLE = "delta_stats_fixture";
   private static final ReconcileCapturePolicy FIXTURE_CAPTURE_POLICY =
       ReconcileCapturePolicy.of(
           List.of(),
           Set.of(
               ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX,
+              ReconcileCapturePolicy.Output.TABLE_STATS,
+              ReconcileCapturePolicy.Output.FILE_STATS,
+              ReconcileCapturePolicy.Output.COLUMN_STATS));
+  private static final ReconcileCapturePolicy DIRECT_STATS_FIXTURE_CAPTURE_POLICY =
+      ReconcileCapturePolicy.of(
+          List.of(),
+          Set.of(
               ReconcileCapturePolicy.Output.TABLE_STATS,
               ReconcileCapturePolicy.Output.FILE_STATS,
               ReconcileCapturePolicy.Output.COLUMN_STATS));
@@ -647,6 +655,13 @@ public class SeedRunner {
                 TestDeltaFixtures.tableUri("dv_demo_delta"),
                 "examples.delta",
                 "dv_demo_delta",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta_stats_fixture",
+                "Delta delta_stats_fixture fixture table",
+                TestDeltaFixtures.tableUri("delta_stats_fixture"),
+                "examples.delta",
+                "delta_stats_fixture",
                 DELTA_NAMESPACE));
 
     for (DeltaFixtureConfig fixture : fixtures) {
@@ -750,18 +765,18 @@ public class SeedRunner {
                     namespace.getResourceId().getId(),
                     tableName)
                 .orElse(null);
+    ReconcileCapturePolicy capturePolicy = fixtureCapturePolicy(tableName);
     var scope =
         table != null
-            ? ReconcileScope.of(
-                List.of(), table.getResourceId().getId(), List.of(), FIXTURE_CAPTURE_POLICY)
+            ? ReconcileScope.of(List.of(), table.getResourceId().getId(), List.of(), capturePolicy)
             : namespace == null
-                ? ReconcileScope.of(List.of(), null, null, List.of(), FIXTURE_CAPTURE_POLICY)
+                ? ReconcileScope.of(List.of(), null, null, List.of(), capturePolicy)
                 : ReconcileScope.of(
                     List.of(namespace.getResourceId().getId()),
                     null,
                     null,
                     List.of(),
-                    FIXTURE_CAPTURE_POLICY);
+                    capturePolicy);
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
@@ -893,6 +908,7 @@ public class SeedRunner {
 
   private CaptureScope toCaptureScope(ResourceId connectorId, ReconcileScope scope) {
     CaptureScope.Builder builder = CaptureScope.newBuilder().setConnectorId(connectorId);
+    ReconcileCapturePolicy capturePolicy = ReconcileCapturePolicy.empty();
     if (scope != null) {
       builder.addAllDestinationNamespaceIds(scope.destinationNamespaceIds());
       if (scope.destinationTableId() != null && !scope.destinationTableId().isBlank()) {
@@ -904,8 +920,9 @@ public class SeedRunner {
       if (scope.hasSnapshotSelection()) {
         builder.setSnapshotSelection(toProtoSnapshotSelection(scope.snapshotSelection()));
       }
+      capturePolicy = scope.capturePolicy();
     }
-    return builder.setCapturePolicy(fixtureCapturePolicy()).build();
+    return builder.setCapturePolicy(toProtoCapturePolicy(capturePolicy)).build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.SnapshotSelection toProtoSnapshotSelection(
@@ -929,13 +946,25 @@ public class SeedRunner {
     return builder.build();
   }
 
-  private static CapturePolicy fixtureCapturePolicy() {
-    return CapturePolicy.newBuilder()
-        .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
-        .addOutputs(CaptureOutput.CO_TABLE_STATS)
-        .addOutputs(CaptureOutput.CO_FILE_STATS)
-        .addOutputs(CaptureOutput.CO_COLUMN_STATS)
-        .build();
+  private static ReconcileCapturePolicy fixtureCapturePolicy(String tableName) {
+    return DELTA_STATS_FIXTURE_TABLE.equals(tableName)
+        ? DIRECT_STATS_FIXTURE_CAPTURE_POLICY
+        : FIXTURE_CAPTURE_POLICY;
+  }
+
+  private static CapturePolicy toProtoCapturePolicy(ReconcileCapturePolicy capturePolicy) {
+    CapturePolicy.Builder builder = CapturePolicy.newBuilder();
+    ReconcileCapturePolicy effective =
+        capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    for (ReconcileCapturePolicy.Output output : effective.outputs()) {
+      switch (output) {
+        case TABLE_STATS -> builder.addOutputs(CaptureOutput.CO_TABLE_STATS);
+        case FILE_STATS -> builder.addOutputs(CaptureOutput.CO_FILE_STATS);
+        case COLUMN_STATS -> builder.addOutputs(CaptureOutput.CO_COLUMN_STATS);
+        case PARQUET_PAGE_INDEX -> builder.addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX);
+      }
+    }
+    return builder.build();
   }
 
   private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlWithSeedAuth(

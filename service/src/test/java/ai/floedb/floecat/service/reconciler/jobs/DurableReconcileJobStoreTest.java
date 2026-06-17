@@ -262,7 +262,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueueExecFileGroupDedupesAcrossDifferentSnapshotPlanParents() {
+  void enqueueExecFileGroupDoesNotDedupeAcrossDifferentSnapshotPlanParents() {
     ReconcileScope scope = ReconcileScope.of(List.of(), "table-1");
     String firstParentJobId =
         store.enqueue(
@@ -326,11 +326,11 @@ class DurableReconcileJobStoreTest {
             secondParentJobId,
             "");
 
-    assertEquals(first, second);
+    assertNotEquals(first, second);
   }
 
   @Test
-  void enqueueSnapshotFinalizationDedupesAcrossDifferentSnapshotPlanParents() {
+  void enqueueSnapshotFinalizationDoesNotDedupeAcrossDifferentSnapshotPlanParents() {
     ReconcileFileGroupTask firstPlanGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "snapshot-55-group-0", "table-1", 55L, List.of("s3://bucket/data/a.parquet"));
@@ -389,7 +389,7 @@ class DurableReconcileJobStoreTest {
             secondParentJobId,
             "");
 
-    assertEquals(first, second);
+    assertNotEquals(first, second);
   }
 
   @Test
@@ -2188,6 +2188,55 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "blob://planner-direct-stats",
+            0,
+            0,
+            "blob://planner-direct-stats",
+            3);
+
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
+
+    ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(
+        Map.of(0, 1, 1, 1, 2, 1),
+        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+
+    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
+
+    ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
+    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
+    assertEquals(Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+  }
+
+  @Test
   void remoteApplyLeaseOutcomeSucceededRecordsFinalizedSnapshotAfterWaitingPass() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
@@ -2454,6 +2503,82 @@ class DurableReconcileJobStoreTest {
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
             .toList();
     assertEquals(1, finalizers.size());
+  }
+
+  @Test
+  void execFileGroupDoesNotDedupeAcrossDifferentSnapshotParents() {
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String firstParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_one", "parent-table-1", "parent_one"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String secondParentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "parent-table-2"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "parent_two", "parent-table-2", "parent_two"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    String firstExecJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            firstParentJobId,
+            "");
+    String secondExecJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            secondParentJobId,
+            "");
+
+    assertNotEquals(firstExecJobId, secondExecJobId);
+    assertEquals(
+        List.of(firstExecJobId),
+        store.childJobsPage(ACCOUNT_ID, firstParentJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+            .map(job -> job.jobId)
+            .toList());
+    assertEquals(
+        List.of(secondExecJobId),
+        store.childJobsPage(ACCOUNT_ID, secondParentJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+            .map(job -> job.jobId)
+            .toList());
   }
 
   @Test

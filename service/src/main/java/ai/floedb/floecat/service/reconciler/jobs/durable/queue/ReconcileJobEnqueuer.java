@@ -459,6 +459,8 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
+    rec.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
+        effectiveSnapshotTask.directStatsPersistedRecordCountsByChunk();
     rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
     rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
     rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());
@@ -739,10 +741,7 @@ public class ReconcileJobEnqueuer {
             : (viewTask == null ? "" : viewTask.destinationViewDisplayName());
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
-    boolean stableSnapshotWorkDedupe =
-        jobKind == ReconcileJobKind.PLAN_SNAPSHOT
-            || jobKind == ReconcileJobKind.EXEC_FILE_GROUP
-            || jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
+    boolean stableSnapshotWorkDedupe = jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
     Canonicalizer canonicalizer = new Canonicalizer();
     canonicalizer
         .scalar("account_id", accountId)

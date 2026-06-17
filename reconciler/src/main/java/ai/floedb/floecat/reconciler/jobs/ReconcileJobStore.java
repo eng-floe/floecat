@@ -691,6 +691,13 @@ public interface ReconcileJobStore {
   void persistFileGroupResult(
       String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask);
 
+  void persistSnapshotFinalizeDirectStatsProgress(
+      String jobId,
+      String leaseEpoch,
+      boolean fullRescan,
+      int chunkIndex,
+      int directStatsPersistedRecordCount);
+
   void markCancelled(
       String jobId,
       String leaseEpoch,

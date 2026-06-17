@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -128,34 +129,6 @@ public class SnapshotPlanBlobStore {
         effective.sourceFileCount(),
         blobUri,
         sanitizedStats.size());
-  }
-
-  public StandaloneFileGroupExecutionResult.FileStatsBlobManifest persistFileGroupStats(
-      String accountId, String jobId, String resultId, List<TargetStatsRecord> statsRecords) {
-    List<TargetStatsRecord> sanitizedStats =
-        statsRecords == null
-            ? List.of()
-            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
-    if (sanitizedStats.isEmpty()) {
-      return StandaloneFileGroupExecutionResult.FileStatsBlobManifest.empty();
-    }
-    String effectiveResultId = resultId == null ? "" : resultId.trim();
-    if (effectiveResultId.isBlank()) {
-      throw new IllegalArgumentException("resultId is required for file-group stats blobs");
-    }
-    String blobUri = buildBlobUri(accountId, jobId, "file-group-stats/" + effectiveResultId);
-    try {
-      blobStore.put(
-          blobUri,
-          mapper.writeValueAsBytes(
-              new DirectStatsBlob(
-                  sanitizedStats.stream().map(TargetStatsRecord::toByteArray).toList())),
-          "application/json; charset=" + StandardCharsets.UTF_8.name());
-    } catch (Exception e) {
-      throw new IllegalStateException("Failed to persist file-group stats blob", e);
-    }
-    return new StandaloneFileGroupExecutionResult.FileStatsBlobManifest(
-        blobUri, sanitizedStats.size());
   }
 
   public List<PlannedFileGroupJob> loadPlanJobs(ReconcileSnapshotTask snapshotTask) {
@@ -279,13 +252,13 @@ public class SnapshotPlanBlobStore {
   }
 
   public static final class SnapshotPlanBlob {
-    public List<PlannedFileGroupJob> fileGroupJobs = List.of();
+    public List<StoredPlannedFileGroupJob> fileGroupJobs = List.of();
 
     public static SnapshotPlanBlob of(List<PlannedFileGroupJob> plannedFileGroupJobs) {
       SnapshotPlanBlob blob = new SnapshotPlanBlob();
       List<PlannedFileGroupJob> sanitizedJobs =
           plannedFileGroupJobs == null ? List.of() : List.copyOf(plannedFileGroupJobs);
-      blob.fileGroupJobs = sanitizedJobs;
+      blob.fileGroupJobs = sanitizedJobs.stream().map(StoredPlannedFileGroupJob::from).toList();
       return blob;
     }
 
@@ -293,7 +266,7 @@ public class SnapshotPlanBlobStore {
       if (fileGroupJobs == null || fileGroupJobs.isEmpty()) {
         return List.of();
       }
-      return fileGroupJobs.stream().map(PlannedFileGroupJob::fileGroupTask).toList();
+      return fileGroupJobs.stream().map(StoredPlannedFileGroupJob::toFileGroupTask).toList();
     }
 
     public List<PlannedFileGroupJob> toPlannedFileGroupJobs() {
@@ -301,10 +274,72 @@ public class SnapshotPlanBlobStore {
         return List.of();
       }
       return fileGroupJobs.stream()
-          .filter(
-              job -> job != null && job.fileGroupTask() != null && !job.fileGroupTask().isEmpty())
-          .map(job -> new PlannedFileGroupJob(job.scope(), job.fileGroupTask()))
+          .filter(job -> job != null && !job.toFileGroupTask().isEmpty())
+          .map(job -> new PlannedFileGroupJob(job.scope, job.toFileGroupTask()))
           .toList();
+    }
+  }
+
+  static final class StoredPlannedFileGroupJob {
+    public ReconcileScope scope = ReconcileScope.empty();
+    public StoredFileGroupTask fileGroupTask = StoredFileGroupTask.empty();
+
+    static StoredPlannedFileGroupJob from(PlannedFileGroupJob job) {
+      StoredPlannedFileGroupJob stored = new StoredPlannedFileGroupJob();
+      PlannedFileGroupJob effective =
+          job == null
+              ? new PlannedFileGroupJob(ReconcileScope.empty(), ReconcileFileGroupTask.empty())
+              : job;
+      stored.scope = effective.scope() == null ? ReconcileScope.empty() : effective.scope();
+      stored.fileGroupTask = StoredFileGroupTask.from(effective.fileGroupTask());
+      return stored;
+    }
+
+    ReconcileFileGroupTask toFileGroupTask() {
+      return fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask.toTask();
+    }
+  }
+
+  static final class StoredFileGroupTask {
+    public String planId = "";
+    public String groupId = "";
+    public String tableId = "";
+    public long snapshotId = -1L;
+    public int fileCount = 0;
+    public String fileStatsBlobUri = "";
+    public int fileStatsRecordCount = 0;
+    public List<String> filePaths = List.of();
+
+    static StoredFileGroupTask from(ReconcileFileGroupTask task) {
+      StoredFileGroupTask stored = new StoredFileGroupTask();
+      ReconcileFileGroupTask effective = task == null ? ReconcileFileGroupTask.empty() : task;
+      stored.planId = effective.planId();
+      stored.groupId = effective.groupId();
+      stored.tableId = effective.tableId();
+      stored.snapshotId = effective.snapshotId();
+      stored.fileCount = effective.fileCount();
+      stored.fileStatsBlobUri = effective.fileStatsBlobUri();
+      stored.fileStatsRecordCount = effective.fileStatsRecordCount();
+      stored.filePaths = effective.filePaths();
+      return stored;
+    }
+
+    static StoredFileGroupTask empty() {
+      return from(ReconcileFileGroupTask.empty());
+    }
+
+    ReconcileFileGroupTask toTask() {
+      return ReconcileFileGroupTask.of(
+          planId,
+          groupId,
+          tableId,
+          snapshotId,
+          fileCount,
+          fileStatsBlobUri,
+          fileStatsRecordCount,
+          filePaths,
+          List.of(),
+          List.of());
     }
   }
 

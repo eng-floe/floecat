@@ -251,7 +251,8 @@ public class ReconcilePayloadStore {
         fileGroupCount,
         state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
-        state.snapshotTaskDirectStatsRecordCount);
+        state.snapshotTaskDirectStatsRecordCount,
+        state.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
   }
 
   private ReconcileFileGroupTask buildFileGroupTask(
@@ -265,7 +266,8 @@ public class ReconcilePayloadStore {
         resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
         resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
         resultPayload == null ? List.of() : resultPayload.filePaths(),
-        resultPayload == null ? List.of() : resultPayload.fileResults());
+        resultPayload == null ? List.of() : resultPayload.fileResults(),
+        resultPayload == null ? List.of() : resultPayload.partialAggregateRecords());
   }
 
   private <T> String encodeInlineJson(String prefix, T payload) {

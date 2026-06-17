@@ -53,7 +53,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.statsColumns(),
                 payload.indexColumns(),
                 FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
-                FileGroupExecutionSupport.requestedStatsTargetKinds(payload.capturePolicy()),
+                FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(
+                    payload.capturePolicy()),
                 payload.capturePageIndex(),
                 reconcileWorkerAuthProvider.authorizationHeader(
                     payload.tableId() == null ? "" : payload.tableId().getAccountId())));

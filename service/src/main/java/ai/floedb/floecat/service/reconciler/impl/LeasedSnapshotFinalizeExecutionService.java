@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -43,25 +42,65 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject ReconcileJobStore jobs;
   @Inject ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
   @Inject SnapshotFinalizePersistenceService persistence;
-  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
   @Inject SnapshotFinalizeCoverageService coverageService;
+  @Inject SnapshotFinalizeChildStateService childStateService;
 
-  public boolean persistSuccess(
+  public boolean persistChunk(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
       String resultId,
-      String statsBlobUri,
-      int statsRecordCount) {
+      int chunkIndex,
+      List<TargetStatsRecord> statsRecords) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
     ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
     ResourceId tableId = tableId(lease, snapshotTask);
     String requiredResultId = requireResultId(resultId);
-    String effectiveBlobUri = statsBlobUri == null ? "" : statsBlobUri.trim();
-    int effectiveRecordCount = requireStatsRecordCount(statsRecordCount);
-    byte[] requestBytes =
-        successPayload(requiredResultId, effectiveBlobUri, effectiveRecordCount).toByteArray();
+    List<TargetStatsRecord> nonNullRecords =
+        statsRecords == null
+            ? List.of()
+            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
+    byte[] requestBytes = chunkPayload(requiredResultId, chunkIndex, nonNullRecords).toByteArray();
+    return runIdempotentCreate(
+            () ->
+                MutationOps.createProto(
+                    principalContext.getAccountId(),
+                    "SubmitLeasedSnapshotFinalizeResult",
+                    chunkIdempotencyKey(jobId, requiredResultId, chunkIndex),
+                    () -> requestBytes,
+                    () -> {
+                      persistStatsChunk(
+                          lease,
+                          snapshotTask,
+                          tableId,
+                          snapshotTask.snapshotId(),
+                          Math.max(0, chunkIndex),
+                          nonNullRecords);
+                      return new IdempotencyGuard.CreateResult<>(
+                          SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
+                              .setAccepted(true)
+                              .build(),
+                          tableId);
+                    },
+                    ignored -> MutationMeta.getDefaultInstance(),
+                    idempotencyStore,
+                    nowTs(),
+                    idempotencyTtlSeconds(),
+                    principalContext::getCorrelationId,
+                    SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
+        .body
+        .getAccepted();
+  }
+
+  public boolean persistSuccess(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, String resultId) {
+    ReconcileJobStore.LeasedJob lease =
+        requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
+    ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
+    ResourceId tableId = tableId(lease, snapshotTask);
+    String requiredResultId = requireResultId(resultId);
+    byte[] requestBytes = successPayload(requiredResultId).toByteArray();
     return runIdempotentCreate(
             () ->
                 MutationOps.createProto(
@@ -70,13 +109,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                     resultIdempotencyKey(jobId, requiredResultId),
                     () -> requestBytes,
                     () -> {
-                      persistSuccessOutputBlob(
-                          lease,
-                          snapshotTask,
-                          tableId,
-                          snapshotTask.snapshotId(),
-                          effectiveBlobUri,
-                          effectiveRecordCount);
+                      finalizeChunkedSuccess(
+                          lease, snapshotTask, tableId, snapshotTask.snapshotId());
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                               .setAccepted(true)
@@ -129,13 +163,57 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         .getAccepted();
   }
 
-  void persistSuccessOutputBlob(
+  void persistStatsChunk(
       ReconcileJobStore.LeasedJob lease,
       ReconcileSnapshotTask snapshotTask,
       ResourceId tableId,
       long snapshotId,
-      String statsBlobUri,
-      int statsRecordCount) {
+      int chunkIndex,
+      List<TargetStatsRecord> statsRecords) {
+    SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
+        coverageService.expectedCoverage(snapshotTask);
+    requireKnownCoverage(coverage);
+    boolean requestsStatsOutputs = requestsStatsOutputs(lease);
+    switch (coverage.state()) {
+      case NON_EMPTY -> {
+        requireNoStatsRecords(statsRecords);
+      }
+      case DIRECT_STATS -> {
+        if (!requestsStatsOutputs) {
+          requireNoStatsRecords(statsRecords);
+          return;
+        }
+        List<TargetStatsRecord> directStats =
+            persistence.validateReplacementStats(statsRecords, tableId, snapshotId);
+        if (directStats.isEmpty()) {
+          if (lease.fullRescan && chunkIndex == 0) {
+            persistence.deleteAllStatsForSnapshot(tableId, snapshotId);
+            jobs.persistSnapshotFinalizeDirectStatsProgress(
+                lease.jobId, lease.leaseEpoch, true, 0, 0);
+          }
+          return;
+        }
+        if (lease.fullRescan && chunkIndex == 0) {
+          persistence.replaceAllStatsForSnapshot(tableId, snapshotId, directStats);
+        } else {
+          persistence.persistStats(directStats);
+        }
+        jobs.persistSnapshotFinalizeDirectStatsProgress(
+            lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, directStats.size());
+      }
+      case EXPLICIT_EMPTY -> {
+        requireNoStatsRecords(statsRecords);
+      }
+      default ->
+          throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
+    }
+  }
+
+  void finalizeChunkedSuccess(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      ResourceId tableId,
+      long snapshotId) {
     SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
         coverageService.expectedCoverage(snapshotTask);
     requireKnownCoverage(coverage);
@@ -143,56 +221,33 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     switch (coverage.state()) {
       case NON_EMPTY -> {
         if (!requestsStatsOutputs) {
-          requireNoStatsPayload(statsBlobUri, statsRecordCount);
           return;
         }
-        String requiredBlobUri = requireStatsBlobUri(statsBlobUri);
-        List<TargetStatsRecord> records = loadStatsBlob(requiredBlobUri, statsRecordCount);
-        if (lease.fullRescan) {
-          List<TargetStatsRecord> replacement =
-              persistence.validateReplacementStats(records, tableId, snapshotId);
-          requireValidCoverage(
-              coverageService.validateCoverage(coverage.expectedFiles(), replacement));
-          persistence.replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
-          Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
-          if (!aggregateKinds.isEmpty()) {
-            List<TargetStatsRecord> aggregateStats =
-                persistence.buildAggregateStats(tableId, snapshotId, aggregateKinds, replacement);
-            persistence.persistStats(aggregateStats);
-          }
-        } else {
-          List<TargetStatsRecord> deltaFileStats =
-              persistence.validateIncrementalDeltaFileStats(records, tableId, snapshotId);
-          persistence.persistStats(deltaFileStats);
-          List<TargetStatsRecord> fileStats = persistence.listFileStats(tableId, snapshotId);
-          requireValidCoverage(
-              coverageService.validateCoverage(coverage.expectedFiles(), fileStats));
-          Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
-          if (!aggregateKinds.isEmpty()) {
-            List<TargetStatsRecord> aggregateStats =
-                persistence.buildAggregateStats(tableId, snapshotId, aggregateKinds, fileStats);
-            persistence.persistStats(aggregateStats);
-          }
+        SnapshotFinalizeChildStateService.ChildState childState =
+            requireReadyChildState(lease, coverage);
+        Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
+        List<TargetStatsRecord> mergedAggregates =
+            aggregateKinds.isEmpty()
+                ? List.of()
+                : persistence.mergeAggregatePartials(
+                    tableId,
+                    snapshotId,
+                    aggregateKinds,
+                    childState.completedGroupTasks().stream()
+                        .flatMap(group -> group.partialAggregateRecords().stream())
+                        .toList());
+        if (!mergedAggregates.isEmpty()) {
+          persistence.persistStats(mergedAggregates);
         }
       }
       case DIRECT_STATS -> {
         if (!requestsStatsOutputs) {
-          requireNoStatsPayload(statsBlobUri, statsRecordCount);
           return;
         }
-        String requiredBlobUri = requireStatsBlobUri(statsBlobUri);
-        List<TargetStatsRecord> records = loadStatsBlob(requiredBlobUri, statsRecordCount);
-        List<TargetStatsRecord> directStats =
-            persistence.validateReplacementStats(records, tableId, snapshotId);
-        requirePlannerDirectStatsRecordCount(snapshotTask, directStats.size());
-        if (lease.fullRescan) {
-          persistence.replaceAllStatsForSnapshot(tableId, snapshotId, directStats);
-        } else {
-          persistence.persistStats(directStats);
-        }
+        requirePlannerDirectStatsRecordCount(
+            snapshotTask, snapshotTask.directStatsPersistedRecordCount());
       }
       case EXPLICIT_EMPTY -> {
-        requireNoStatsPayload(statsBlobUri, statsRecordCount);
         if (requestsStatsOutputs) {
           persistence.persistEmptySnapshotCompletionMarker(tableId, snapshotId, lease.fullRescan);
         }
@@ -275,12 +330,18 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         .build();
   }
 
-  private static SubmitLeasedSnapshotFinalizeResultRequest.Success successPayload(
-      String resultId, String statsBlobUri, int statsRecordCount) {
+  private static SubmitLeasedSnapshotFinalizeResultRequest.Chunk chunkPayload(
+      String resultId, int chunkIndex, List<TargetStatsRecord> statsRecords) {
+    return SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
+        .setResultId(resultId)
+        .setChunkIndex(Math.max(0, chunkIndex))
+        .addAllStatsRecords(statsRecords == null ? List.of() : statsRecords)
+        .build();
+  }
+
+  private static SubmitLeasedSnapshotFinalizeResultRequest.Success successPayload(String resultId) {
     return SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
         .setResultId(resultId)
-        .setStatsBlobUri(statsBlobUri == null ? "" : statsBlobUri)
-        .setStatsRecordCount(Math.max(0, statsRecordCount))
         .build();
   }
 
@@ -296,6 +357,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return (jobId == null ? "" : jobId.trim()) + ":" + resultId;
   }
 
+  private static String chunkIdempotencyKey(String jobId, String resultId, int chunkIndex) {
+    return resultIdempotencyKey(jobId, resultId) + ":chunk:" + Math.max(0, chunkIndex);
+  }
+
   private static String requireResultId(String resultId) {
     if (resultId == null || resultId.isBlank()) {
       throw Status.INVALID_ARGUMENT
@@ -303,24 +368,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           .asRuntimeException();
     }
     return resultId.trim();
-  }
-
-  private static String requireStatsBlobUri(String statsBlobUri) {
-    if (statsBlobUri == null || statsBlobUri.isBlank()) {
-      throw Status.INVALID_ARGUMENT
-          .withDescription("stats_blob_uri is required for snapshot finalize result submission")
-          .asRuntimeException();
-    }
-    return statsBlobUri.trim();
-  }
-
-  private static int requireStatsRecordCount(int statsRecordCount) {
-    if (statsRecordCount < 0) {
-      throw Status.INVALID_ARGUMENT
-          .withDescription("stats_record_count must be non-negative")
-          .asRuntimeException();
-    }
-    return statsRecordCount;
   }
 
   private static Set<FloecatConnector.StatsTargetKind> requestedAggregateKinds(
@@ -361,20 +408,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return "JS_RUNNING".equals(state) || "JS_CANCELLING".equals(state);
   }
 
-  private List<TargetStatsRecord> loadStatsBlob(String statsBlobUri, int statsRecordCount) {
-    List<TargetStatsRecord> records = snapshotPlanBlobStore.loadTargetStatsBlob(statsBlobUri);
-    if (statsRecordCount > 0 && records.size() != statsRecordCount) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalize stats blob record count mismatch expected="
-                  + statsRecordCount
-                  + " actual="
-                  + records.size())
-          .asRuntimeException();
-    }
-    return records;
-  }
-
   private static void requireKnownCoverage(
       SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.UNKNOWN) {
@@ -391,11 +424,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
   }
 
-  private static void requireNoStatsPayload(String statsBlobUri, int statsRecordCount) {
-    if ((statsBlobUri != null && !statsBlobUri.isBlank()) || statsRecordCount > 0) {
+  private static void requireNoStatsRecords(List<TargetStatsRecord> statsRecords) {
+    if (statsRecords != null && !statsRecords.isEmpty()) {
       throw Status.INVALID_ARGUMENT
           .withDescription(
-              "snapshot finalize success payload must not include stats blob metadata for this submission")
+              "snapshot finalize chunk must not include stats records for this submission")
           .asRuntimeException();
     }
   }
@@ -414,5 +447,52 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                   + actualRecordCount)
           .asRuntimeException();
     }
+  }
+
+  private SnapshotFinalizeChildStateService.ChildState requireReadyChildState(
+      ReconcileJobStore.LeasedJob lease,
+      SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
+    SnapshotFinalizeChildStateService.ChildState childState =
+        childStateService.childState(
+            lease.accountId, lease.parentJobId, lease.jobId, coverage.expectedGroups());
+    if (!childState.duplicateGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization found duplicate EXEC_FILE_GROUP children for planned groups "
+                  + childState.duplicateGroups())
+          .asRuntimeException();
+    }
+    if (!childState.invalidSucceededGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization found succeeded file-group jobs without persisted success"
+                  + " results "
+                  + childState.invalidSucceededGroups())
+          .asRuntimeException();
+    }
+    if (!childState.failedGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization blocked by failed file-group jobs "
+                  + childState.failedGroups())
+          .asRuntimeException();
+    }
+    if (!childState.cancelledGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization blocked by cancelled file-group jobs "
+                  + childState.cancelledGroups())
+          .asRuntimeException();
+    }
+    if (!childState.pendingGroups().isEmpty() || !childState.missingGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot finalization waiting for snapshot file groups "
+                  + (childState.pendingGroups().isEmpty()
+                      ? childState.missingGroups()
+                      : childState.pendingGroups()))
+          .asRuntimeException();
+    }
+    return childState;
   }
 }

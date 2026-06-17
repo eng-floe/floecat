@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.model;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import java.util.List;
@@ -25,6 +26,7 @@ public class StoredFileGroupResultPayload {
   public int fileStatsRecordCount;
   public List<String> filePaths = List.of();
   public List<ReconcileFileResult> fileResults = List.of();
+  public List<byte[]> partialAggregateRecordPayloads = List.of();
 
   public static StoredFileGroupResultPayload of(ReconcileFileGroupTask task) {
     ReconcileFileGroupTask effective = task == null ? ReconcileFileGroupTask.empty() : task;
@@ -34,6 +36,12 @@ public class StoredFileGroupResultPayload {
     payload.fileStatsRecordCount = effective.fileStatsRecordCount();
     payload.filePaths = effective.filePaths() == null ? List.of() : effective.filePaths();
     payload.fileResults = effective.fileResults() == null ? List.of() : effective.fileResults();
+    payload.partialAggregateRecordPayloads =
+        effective.partialAggregateRecords() == null
+            ? List.of()
+            : effective.partialAggregateRecords().stream()
+                .map(TargetStatsRecord::toByteArray)
+                .toList();
     return payload;
   }
 
@@ -51,5 +59,21 @@ public class StoredFileGroupResultPayload {
 
   public List<ReconcileFileResult> fileResults() {
     return fileResults == null ? List.of() : fileResults;
+  }
+
+  public List<TargetStatsRecord> partialAggregateRecords() {
+    return partialAggregateRecordPayloads == null
+        ? List.of()
+        : partialAggregateRecordPayloads.stream()
+            .map(StoredFileGroupResultPayload::parseTargetStatsRecord)
+            .toList();
+  }
+
+  private static TargetStatsRecord parseTargetStatsRecord(byte[] payload) {
+    try {
+      return TargetStatsRecord.parseFrom(payload);
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to decode partial aggregate record payload", e);
+    }
   }
 }

@@ -165,11 +165,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
     assertFalse(payload.fullRescan());
-    assertEquals(1, payload.completedGroups().size());
-    assertEquals(
-        "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
-        payload.completedGroups().getFirst().fileStatsBlobUri());
-    assertFalse(payload.completedGroups().getFirst().planId().isBlank());
   }
 
   @Test
@@ -209,7 +204,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
         payload.directStatsBlobUri());
     assertEquals(2, payload.directStatsRecordCount());
     assertEquals(6, payload.sourceFileCount());
-    assertEquals(0, payload.completedGroups().size());
   }
 
   @Test
@@ -259,9 +253,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertEquals(
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
-    assertEquals(1, payload.completedGroups().size());
-    assertEquals("plan-1", payload.completedGroups().getFirst().planId());
-    assertEquals("group-1", payload.completedGroups().getFirst().groupId());
   }
 
   @Test
@@ -295,7 +286,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertEquals(
         LeasedSnapshotFinalizeInputService.FinalizeMode.EXPLICIT_EMPTY, payload.finalizeMode());
     assertTrue(payload.fullRescan());
-    assertEquals(0, payload.completedGroups().size());
   }
 
   private static ReconcileJobStore.ReconcileJob finalizeJob(

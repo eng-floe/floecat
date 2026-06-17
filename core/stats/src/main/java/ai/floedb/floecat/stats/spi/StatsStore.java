@@ -36,6 +36,20 @@ public interface StatsStore {
   void putTargetStats(TargetStatsRecord value);
 
   /**
+   * Persists a batch of target stats records for one table snapshot.
+   *
+   * <p>The default implementation preserves legacy semantics by delegating to {@link
+   * #putTargetStats(TargetStatsRecord)} record-by-record. Implementations may override this to
+   * reuse snapshot-scoped state and reduce storage round-trips.
+   */
+  default void putTargetStatsBatch(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    for (TargetStatsRecord record : records == null ? List.<TargetStatsRecord>of() : records) {
+      putTargetStats(record);
+    }
+  }
+
+  /**
    * Creates a target stats record only when the exact table/snapshot/target key is absent.
    *
    * <p>Returns {@code true} only when this call created the record. Returns {@code false} when an

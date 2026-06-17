@@ -65,12 +65,35 @@ public final class IdempotencyGuard {
 
     final String key = Keys.idempotencyKey(accountId, opName, idempotencyKey);
     final String requestHash = sha256B64(requestBytes);
+    final boolean logTiming = shouldLogTiming(opName);
+    final long totalStartNanos = logTiming ? System.nanoTime() : 0L;
+    long getNanos = 0L;
+    long createPendingNanos = 0L;
+    long creatorNanos = 0L;
+    long finalizeSuccessNanos = 0L;
+    long getAfterCreatePendingNanos = 0L;
+    String outcome = "unknown";
 
+    long getStartNanos = logTiming ? System.nanoTime() : 0L;
     var existingOpt = store.get(key);
+    if (logTiming) {
+      getNanos = System.nanoTime() - getStartNanos;
+    }
     if (existingOpt.isPresent()) {
       var rec = existingOpt.get();
 
       if (!requestHash.equals(rec.getRequestHash())) {
+        logTiming(
+            logTiming,
+            opName,
+            key,
+            "mismatch_existing",
+            totalStartNanos,
+            getNanos,
+            createPendingNanos,
+            getAfterCreatePendingNanos,
+            creatorNanos,
+            finalizeSuccessNanos);
         throw GrpcErrors.conflict(
             corrId.get(), IDEMPOTENCY_MISMATCH, Map.of("op", opName, "key", idempotencyKey));
       }
@@ -82,12 +105,47 @@ public final class IdempotencyGuard {
                 "idempotency meta missing for succeeded record: key=" + key, null);
           }
           var resource = parser.apply(rec.getPayload().toByteArray());
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "hit_succeeded",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
           return new Result<>(resource, rec.getMeta());
         }
-        case PENDING ->
-            throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
-        default ->
-            throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
+        case PENDING -> {
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "hit_pending",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
+          throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+        }
+        default -> {
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "hit_transient",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
+          throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
+        }
       }
     }
 
@@ -100,16 +158,46 @@ public final class IdempotencyGuard {
                 .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
                 .build());
 
+    long createPendingStartNanos = logTiming ? System.nanoTime() : 0L;
     final boolean createdPending =
         store.createPending(accountId, key, opName, requestHash, now, expiresAt);
+    if (logTiming) {
+      createPendingNanos = System.nanoTime() - createPendingStartNanos;
+    }
     if (!createdPending) {
+      long getAfterPendingStartNanos = logTiming ? System.nanoTime() : 0L;
       var againOpt = store.get(key);
+      if (logTiming) {
+        getAfterCreatePendingNanos = System.nanoTime() - getAfterPendingStartNanos;
+      }
       if (againOpt.isEmpty()) {
+        logTiming(
+            logTiming,
+            opName,
+            key,
+            "not_visible_after_pending",
+            totalStartNanos,
+            getNanos,
+            createPendingNanos,
+            getAfterCreatePendingNanos,
+            creatorNanos,
+            finalizeSuccessNanos);
         throw new StorageAbortRetryableException("idempotency record not yet visible: key=" + key);
       }
       var again = againOpt.get();
 
       if (!requestHash.equals(again.getRequestHash())) {
+        logTiming(
+            logTiming,
+            opName,
+            key,
+            "mismatch_after_pending",
+            totalStartNanos,
+            getNanos,
+            createPendingNanos,
+            getAfterCreatePendingNanos,
+            creatorNanos,
+            finalizeSuccessNanos);
         throw GrpcErrors.conflict(
             corrId.get(), IDEMPOTENCY_MISMATCH, Map.of("op", opName, "key", idempotencyKey));
       }
@@ -121,25 +209,91 @@ public final class IdempotencyGuard {
                 "idempotency meta missing for succeeded record: key=" + key, null);
           }
           var resource = parser.apply(again.getPayload().toByteArray());
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "lost_race_succeeded",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
           return new Result<>(resource, again.getMeta());
         }
-        case PENDING ->
-            throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
-        default ->
-            throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
+        case PENDING -> {
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "lost_race_pending",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
+          throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+        }
+        default -> {
+          logTiming(
+              logTiming,
+              opName,
+              key,
+              "lost_race_transient",
+              totalStartNanos,
+              getNanos,
+              createPendingNanos,
+              getAfterCreatePendingNanos,
+              creatorNanos,
+              finalizeSuccessNanos);
+          throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
+        }
       }
     }
 
     try {
+      long creatorStartNanos = logTiming ? System.nanoTime() : 0L;
       var created = creator.get();
+      if (logTiming) {
+        creatorNanos = System.nanoTime() - creatorStartNanos;
+      }
       var meta = metaExtractor.apply(created.resource());
       var payload = serializer.apply(created.resource());
 
+      long finalizeStartNanos = logTiming ? System.nanoTime() : 0L;
       store.finalizeSuccess(
           accountId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+      if (logTiming) {
+        finalizeSuccessNanos = System.nanoTime() - finalizeStartNanos;
+      }
+      outcome = "created";
+      logTiming(
+          logTiming,
+          opName,
+          key,
+          outcome,
+          totalStartNanos,
+          getNanos,
+          createPendingNanos,
+          getAfterCreatePendingNanos,
+          creatorNanos,
+          finalizeSuccessNanos);
 
       return new Result<>(created.resource(), meta);
     } catch (Throwable t) {
+      logTiming(
+          logTiming,
+          opName,
+          key,
+          "failed_" + t.getClass().getSimpleName(),
+          totalStartNanos,
+          getNanos,
+          createPendingNanos,
+          getAfterCreatePendingNanos,
+          creatorNanos,
+          finalizeSuccessNanos);
       boolean retryable =
           (t instanceof BaseResourceRepository.AbortRetryableException)
               || (t instanceof StorageAbortRetryableException);
@@ -162,5 +316,47 @@ public final class IdempotencyGuard {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  private static boolean shouldLogTiming(String opName) {
+    return "SubmitLeasedFileGroupExecutionResult".equals(opName);
+  }
+
+  private static void logTiming(
+      boolean enabled,
+      String opName,
+      String key,
+      String outcome,
+      long totalStartNanos,
+      long getNanos,
+      long createPendingNanos,
+      long getAfterCreatePendingNanos,
+      long creatorNanos,
+      long finalizeSuccessNanos) {
+    if (!enabled) {
+      return;
+    }
+    long totalNanos = System.nanoTime() - totalStartNanos;
+    long accountedNanos =
+        getNanos
+            + createPendingNanos
+            + getAfterCreatePendingNanos
+            + creatorNanos
+            + finalizeSuccessNanos;
+    long otherNanos = Math.max(0L, totalNanos - accountedNanos);
+    LOG.infof(
+        "idempotency_guard_timing op=%s outcome=%s key=%s totalMs=%.3f getMs=%.3f "
+            + "createPendingMs=%.3f getAfterPendingMs=%.3f creatorMs=%.3f finalizeSuccessMs=%.3f "
+            + "otherMs=%.3f",
+        opName,
+        outcome,
+        key,
+        totalNanos / 1_000_000.0,
+        getNanos / 1_000_000.0,
+        createPendingNanos / 1_000_000.0,
+        getAfterCreatePendingNanos / 1_000_000.0,
+        creatorNanos / 1_000_000.0,
+        finalizeSuccessNanos / 1_000_000.0,
+        otherNanos / 1_000_000.0);
   }
 }
