@@ -24,9 +24,8 @@ import java.util.List;
 /**
  * Captured outputs for one file-group execution.
  *
- * <p>Results are expected to be semantically complete for the requested file group. Engines may
- * obtain those outputs however they want, but callers should not need any follow-up aggregation to
- * make the result persistable.
+ * <p>Results are persistable file-group execution outputs. Engines may obtain those outputs however
+ * they want, while callers remain responsible for any snapshot-level aggregate derivation.
  */
 public record CaptureEngineResult(
     List<TargetStatsRecord> statsRecords,

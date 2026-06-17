@@ -231,7 +231,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureDerivesTableAndColumnStatsFromFileGroupStats() {
+  void captureReturnsOnlyFileStatsForFileGroupExecution() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -306,27 +306,7 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords())
-        .extracting(TargetStatsRecord::getValueCase)
-        .containsExactlyInAnyOrder(
-            TargetStatsRecord.ValueCase.TABLE,
-            TargetStatsRecord.ValueCase.SCALAR,
-            TargetStatsRecord.ValueCase.FILE);
-    assertThat(result.get().statsRecords())
-        .filteredOn(TargetStatsRecord::hasFile)
-        .singleElement()
-        .extracting(record -> record.getFile().getFilePath())
-        .isEqualTo(plannedFile);
-    assertThat(result.get().statsRecords())
-        .filteredOn(TargetStatsRecord::hasTable)
-        .singleElement()
-        .extracting(record -> record.getTable().getDataFileCount())
-        .isEqualTo(1L);
-    assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
-        .singleElement()
-        .extracting(record -> record.getScalar().getRowCount())
-        .isEqualTo(100L);
+    assertThat(result.get().statsRecords()).containsExactly(fileRecord);
 
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
@@ -401,7 +381,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureAggregatesThetaSketchNdvAcrossFileGroupStats() {
+  void capturePreservesThetaSketchNdvInFileStats() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -447,18 +427,15 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
+    assertThat(result.get().statsRecords()).hasSize(2);
     assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
-        .singleElement()
-        .satisfies(
-            record -> {
-              assertThat(record.getScalar().hasNdv()).isTrue();
-              assertThat(record.getScalar().getNdv().hasApprox()).isTrue();
-              assertThat(record.getScalar().getNdv().getSketchesCount()).isEqualTo(1);
-              assertThat(record.getScalar().getNdv().getApprox().getMethod())
-                  .isEqualTo("apache-datasketches-theta");
-              assertThat(record.getScalar().getNdv().getApprox().getEstimate())
-                  .isBetween(2.5d, 3.5d);
+        .extracting(record -> record.getFile().getColumns(0).getScalar().getNdv())
+        .allSatisfy(
+            ndv -> {
+              assertThat(ndv.hasApprox()).isTrue();
+              assertThat(ndv.getSketchesCount()).isEqualTo(1);
+              assertThat(ndv.getApprox().getMethod()).isEqualTo("apache-datasketches-theta");
+              assertThat(ndv.getApprox().getEstimate()).isGreaterThan(0d);
             });
   }
 
@@ -627,7 +604,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureIgnoresUnparseableEncodedBoundsWhenRollingUpColumns() {
+  void captureReturnsAllFileStatsWithoutRollingUpColumns() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -735,10 +712,6 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.hasScalar() && record.getTarget().hasColumn())
-        .singleElement()
-        .extracting(record -> record.getScalar().getRowCount())
-        .isEqualTo(30L);
+    assertThat(result.get().statsRecords()).containsExactly(fileRecordOne, fileRecordTwo);
   }
 }

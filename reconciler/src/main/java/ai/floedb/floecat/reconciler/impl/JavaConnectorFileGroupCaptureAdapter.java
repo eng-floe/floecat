@@ -26,14 +26,12 @@ import java.util.Set;
 /**
  * Adapts the current Java connector SPI to the unified file-group capture contract.
  *
- * <p>This class is intentionally Java-specific glue. It turns the connector's existing snapshot-
- * and file-group-scoped primitives into a semantically complete {@link CaptureEngineResult}. A
- * future Rust engine should replace this adapter by returning the same contract directly from its
- * own runtime.
+ * <p>This class is intentionally Java-specific glue. It normalizes Java connector file-group
+ * capture to the same contract used by the Rust executor: file-scoped stats plus optional
+ * page-index outputs. A future Rust engine should replace this adapter by returning the same
+ * contract directly from its own runtime.
  */
 final class JavaConnectorFileGroupCaptureAdapter {
-  private final FileGroupTargetStatsRollup statsRollup = new FileGroupTargetStatsRollup();
-
   CaptureEngineResult capture(FloecatConnector source, CaptureEngineRequest request) {
     FloecatConnector.FileGroupCaptureResult captured =
         source.capturePlannedFileGroup(
@@ -57,11 +55,9 @@ final class JavaConnectorFileGroupCaptureAdapter {
     if (!request.requestsStats() || request.plannedFilePaths().isEmpty()) {
       return List.of();
     }
-    return statsRollup.complete(
-        request.tableId(),
-        request.snapshotId(),
-        request.requestedStatsTargetKinds(),
-        capturedStats);
+    return capturedStats == null
+        ? List.of()
+        : capturedStats.stream().filter(record -> record != null && record.hasFile()).toList();
   }
 
   private static List<FloecatConnector.ParquetPageIndexEntry> filterPageIndexEntries(

@@ -185,8 +185,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .build();
     String requiredResultId = requireResultId(resultId);
     List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(statsRecords);
-    List<TargetStatsRecord> fileStats =
-        nonNullStats.stream().filter(TargetStatsRecord::hasFile).toList();
+    List<TargetStatsRecord> fileStats = requireFileScopedStatsRecords(nonNullStats);
     List<ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact> nonNullArtifacts =
         indexArtifacts == null
             ? List.of()
@@ -544,6 +543,17 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return statsRecords.stream().filter(java.util.Objects::nonNull).toList();
   }
 
+  private static List<TargetStatsRecord> requireFileScopedStatsRecords(
+      List<TargetStatsRecord> statsRecords) {
+    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(statsRecords);
+    if (nonNullStats.stream().anyMatch(record -> !record.hasFile())) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("file-group result stats_records must contain only file-target stats")
+          .asRuntimeException();
+    }
+    return nonNullStats;
+  }
+
   private List<TargetStatsRecord> mergedPartialAggregates(
       ReconcileJobStore.LeasedJob lease,
       ResourceId tableId,
@@ -577,19 +587,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     if (aggregateKinds.isEmpty()) {
       return List.of();
     }
-    List<TargetStatsRecord> fileStats =
-        chunkStats.stream().filter(TargetStatsRecord::hasFile).toList();
+    List<TargetStatsRecord> fileStats = requireFileScopedStatsRecords(chunkStats);
     if (!fileStats.isEmpty()) {
       return snapshotFinalizePersistence.buildAggregateStats(
           tableId, snapshotId, aggregateKinds, fileStats);
     }
-    List<TargetStatsRecord> aggregateStats =
-        chunkStats.stream().filter(record -> record != null && !record.hasFile()).toList();
-    if (aggregateStats.isEmpty()) {
-      return List.of();
-    }
-    return snapshotFinalizePersistence.mergeAggregatePartials(
-        tableId, snapshotId, aggregateKinds, aggregateStats);
+    return List.of();
   }
 
   private static java.util.Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind>

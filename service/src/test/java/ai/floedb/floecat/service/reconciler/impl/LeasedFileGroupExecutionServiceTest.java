@@ -275,6 +275,69 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  void mergedPartialAggregatesRejectsNonFileStatsInFileGroupChunks() throws Exception {
+    ReconcileFileGroupTask plannedTask =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+    ReconcileJobStore.LeasedJob lease =
+        new ReconcileJobStore.LeasedJob(
+            CHILD_JOB_ID,
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            LEASE_EPOCH,
+            "",
+            "",
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            null,
+            null,
+            ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(plannedTask),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                1),
+            plannedTask,
+            PARENT_JOB_ID);
+    TargetStatsRecord aggregateRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
+                    .build())
+            .setTable(TableValueStats.newBuilder().setRowCount(5L).build())
+            .build();
+
+    Throwable error =
+        assertThrows(
+            Throwable.class,
+            () ->
+                invokeMergedPartialAggregates(
+                    lease, tableId(), SNAPSHOT_ID, plannedTask, List.of(aggregateRecord)));
+
+    assertTrue(error.getCause() instanceof StatusRuntimeException);
+    assertEquals(
+        "INVALID_ARGUMENT: file-group result stats_records must contain only file-target stats",
+        error.getCause().getMessage());
+  }
+
+  @Test
   void resolveFailsWhenParentSnapshotTaskDoesNotContainPlannedGroup() {
     ReconcileFileGroupTask childRef =
         ReconcileFileGroupTask.of(
