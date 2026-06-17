@@ -61,6 +61,24 @@ public final class FileGroupExecutionSupport {
     return kinds;
   }
 
+  public static Set<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind>
+      requestedFileGroupStatsTargetKinds(ReconcileCapturePolicy capturePolicy) {
+    EnumSet<ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind> kinds =
+        EnumSet.noneOf(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.class);
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.TABLE_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE);
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+    }
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+    }
+    if (capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.COLUMN);
+      kinds.add(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+    }
+    return kinds;
+  }
+
   public static ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy
       columnSelectorPolicy(ReconcileCapturePolicy capturePolicy) {
     ReconcileCapturePolicy effective =
