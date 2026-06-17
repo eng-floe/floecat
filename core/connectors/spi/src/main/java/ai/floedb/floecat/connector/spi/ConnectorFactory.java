@@ -16,11 +16,20 @@
 
 package ai.floedb.floecat.connector.spi;
 
+import java.util.Locale;
+import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.stream.Collectors;
 
 public final class ConnectorFactory {
-  private static final ServiceLoader<ConnectorProvider> LOADER =
-      ServiceLoader.load(ConnectorProvider.class);
+  // ServiceLoader is not thread-safe. Resolve every provider once in the class initializer
+  // (single-threaded, lock-protected by the JVM) and look them up by kind afterwards. Pin to the
+  // SPI classloader rather than the thread-context one so resolution does not depend on the calling
+  // thread.
+  private static final Map<String, ConnectorProvider> PROVIDERS =
+      ServiceLoader.load(ConnectorProvider.class, ConnectorFactory.class.getClassLoader()).stream()
+          .map(ServiceLoader.Provider::get)
+          .collect(Collectors.toUnmodifiableMap(p -> p.kind().toLowerCase(Locale.ROOT), p -> p));
 
   private ConnectorFactory() {}
 
@@ -32,13 +41,10 @@ public final class ConnectorFactory {
           case GLUE -> "glue";
           case UNITY -> "unity";
         };
-    ConnectorProvider p =
-        LOADER.stream()
-            .map(ServiceLoader.Provider::get)
-            .filter(cp -> cp.kind().equalsIgnoreCase(kindId))
-            .findFirst()
-            .orElseThrow(
-                () -> new IllegalStateException("No ConnectorProvider for kind=" + kindId));
+    ConnectorProvider p = PROVIDERS.get(kindId);
+    if (p == null) {
+      throw new IllegalStateException("No ConnectorProvider for kind=" + kindId);
+    }
     return p.create(config);
   }
 }
