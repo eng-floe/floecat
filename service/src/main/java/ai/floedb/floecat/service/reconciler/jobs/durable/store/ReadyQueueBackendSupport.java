@@ -126,9 +126,7 @@ final class ReadyQueueBackendSupport {
   private static String sortKeyForEntry(ReconcileReadyQueueStore.ReadyQueueEntry entry) {
     return String.format(
         "%019d/%s/%s",
-        entry.dueAtMs(),
-        Keys.encodeSegment(entry.accountId()),
-        Keys.encodeSegment(entry.jobId()));
+        entry.dueAtMs(), Keys.encodeSegment(entry.accountId()), Keys.encodeSegment(entry.jobId()));
   }
 
   private record ReadyPointerKeyParts(String accountId, String jobId, long dueAtMs) {}

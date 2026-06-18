@@ -190,7 +190,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       }
       for (String readyDeleteKey : jobIndexBatch.readyMutation().deletes()) {
         // Resolve the delete key from the ready pointer alone (the canonical it referenced is being
-        // rewritten in this same lease transaction). A blank canonical made the row resolve to null,
+        // rewritten in this same lease transaction). A blank canonical made the row resolve to
+        // null,
         // dropping the delete item so the old ready row leaked.
         ReadyQueueBackendSupport.ReadyQueueRow row =
             ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey);
