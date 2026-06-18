@@ -68,7 +68,7 @@ final class SnapshotCliSupport {
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
-      out.println("usage: snapshots <tableFQ>");
+      out.println("usage: snapshots <id|catalog.ns[.ns...].table>");
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
