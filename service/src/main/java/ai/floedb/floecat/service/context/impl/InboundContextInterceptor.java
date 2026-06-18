@@ -120,6 +120,10 @@ public class InboundContextInterceptor {
     Context context = contextWithResolvedCallContext(Context.current(), resolved);
 
     populateMdc(resolved);
+    // Mirror the principal onto the Vert.x duplicated context (same channel as MDC) so it survives
+    // Quarkus's gRPC dispatch worker thread-hop into the service body, where the io.grpc.Context
+    // key alone is unreliable. See PrincipalProvider for the full rationale.
+    PrincipalProvider.storeOnDuplicatedContext(resolved.principalContext());
 
     var forwarding =
         new SimpleForwardingServerCall<ReqT, RespT>(call) {
