@@ -271,8 +271,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       }
     }
     for (String readyPointerKey : batch.readyMutation().deletes()) {
+      // Resolve the delete key from the ready pointer alone: a delete fires when a canonical
+      // mutation (requeue/fail/terminal) supersedes the old ready pointer, and the canonical it
+      // referenced is being rewritten in this same transaction. Passing a blank canonical here made
+      // the row resolve to null, so no delete item was added and the old ready row leaked — the
+      // backlog source the prune path is meant to drain.
       ReadyQueueBackendSupport.ReadyQueueRow row =
-          ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey, "");
+          ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
       if (row != null) {
         tx.add(buildReadyDelete(row));
       }
