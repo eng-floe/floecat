@@ -40,4 +40,26 @@ class ReadyQueueBackendSupportTest {
     assertEquals("acct-1", row.entry().accountId());
     assertEquals("job-1", row.entry().jobId());
   }
+
+  @Test
+  void toReadyQueueRowResolvesDeleteKeyWithoutCanonicalPointer() {
+    String readyPointerKey = Keys.reconcileReadyPointerByDue(1234L, "acct-1", "lane-1", "job-1");
+
+    // The write path knows the canonical pointer; deletes pruning a leaked pointer do not. The
+    // key-only resolver must still land on the exact primary key the entry was written under,
+    // otherwise the delete silently targets nothing (the original starvation bug).
+    ReadyQueueBackendSupport.ReadyQueueRow withCanonical =
+        ReadyQueueBackendSupport.toReadyQueueRow(
+            readyPointerKey, "/accounts/acct-1/reconcile/jobs/by-id/job-1");
+    ReadyQueueBackendSupport.ReadyQueueRow keyOnly =
+        ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
+
+    assertNotNull(keyOnly);
+    assertEquals(withCanonical.partitionKey(), keyOnly.partitionKey());
+    assertEquals(withCanonical.sortKey(), keyOnly.sortKey());
+    assertEquals("reconcile-ready#global", keyOnly.partitionKey());
+    assertEquals(ReadyIndexType.GLOBAL, keyOnly.entry().indexType());
+    assertEquals("acct-1", keyOnly.entry().accountId());
+    assertEquals("job-1", keyOnly.entry().jobId());
+  }
 }

@@ -65,6 +65,76 @@ final class ReadyQueueBackendSupport {
     if (blankToEmpty(readyPointerKey).isBlank() || blankToEmpty(canonicalPointerKey).isBlank()) {
       return null;
     }
+    ReadyPointerKeyParts parts = parseReadyPointerKeyParts(readyPointerKey, slice);
+    if (parts == null) {
+      return null;
+    }
+    return new ReconcileReadyQueueStore.ReadyQueueEntry(
+        readyPointerKey,
+        canonicalPointerKey,
+        parts.accountId(),
+        parts.jobId(),
+        parts.dueAtMs(),
+        slice.indexType(),
+        blankToEmpty(slice.filterValue()));
+  }
+
+  static ReadyQueueRow toReadyQueueRow(String readyPointerKey, String canonicalPointerKey) {
+    ReconcileReadyQueueBackend.ReadyQueueSlice slice = sliceForReadyPointerKey(readyPointerKey);
+    if (slice == null) {
+      return null;
+    }
+    ReconcileReadyQueueStore.ReadyQueueEntry entry =
+        decodeReadyQueueEntry(readyPointerKey, canonicalPointerKey, slice);
+    if (entry == null) {
+      return null;
+    }
+    return new ReadyQueueRow(partitionKey(slice), sortKeyForEntry(entry), entry);
+  }
+
+  /**
+   * Resolve the storage row (partition + sort key) for a ready pointer from the pointer key alone.
+   *
+   * <p>The canonical pointer key is a stored attribute, never part of the ready entry's primary
+   * key, so locating an entry for deletion must not depend on it. Prune/GC callers cleaning up a
+   * leaked pointer often no longer have the canonical pointer it referenced, and {@link
+   * #decodeReadyQueueEntry} deliberately rejects a blank canonical, so deletes resolve their key
+   * through this path instead. Returns {@code null} only when the pointer key itself is
+   * unrecognized or unparseable. The returned entry carries a blank canonical pointer key.
+   */
+  static ReadyQueueRow toReadyQueueRow(String readyPointerKey) {
+    ReconcileReadyQueueBackend.ReadyQueueSlice slice = sliceForReadyPointerKey(readyPointerKey);
+    if (slice == null) {
+      return null;
+    }
+    ReadyPointerKeyParts parts = parseReadyPointerKeyParts(readyPointerKey, slice);
+    if (parts == null) {
+      return null;
+    }
+    ReconcileReadyQueueStore.ReadyQueueEntry entry =
+        new ReconcileReadyQueueStore.ReadyQueueEntry(
+            readyPointerKey,
+            "",
+            parts.accountId(),
+            parts.jobId(),
+            parts.dueAtMs(),
+            slice.indexType(),
+            blankToEmpty(slice.filterValue()));
+    return new ReadyQueueRow(partitionKey(slice), sortKeyForEntry(entry), entry);
+  }
+
+  private static String sortKeyForEntry(ReconcileReadyQueueStore.ReadyQueueEntry entry) {
+    return String.format(
+        "%019d/%s/%s",
+        entry.dueAtMs(),
+        Keys.encodeSegment(entry.accountId()),
+        Keys.encodeSegment(entry.jobId()));
+  }
+
+  private record ReadyPointerKeyParts(String accountId, String jobId, long dueAtMs) {}
+
+  private static ReadyPointerKeyParts parseReadyPointerKeyParts(
+      String readyPointerKey, ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
     long dueAt = parseTimestampFromOrderedPointer(readyPointerKey, readyIndexPrefix(slice));
     if (dueAt == INVALID_ORDERED_POINTER_MS) {
       return null;
@@ -91,36 +161,10 @@ final class ReadyQueueBackendSupport {
         accountId = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
         jobId = URLDecoder.decode(parts[2], StandardCharsets.UTF_8);
       }
-      return new ReconcileReadyQueueStore.ReadyQueueEntry(
-          readyPointerKey,
-          canonicalPointerKey,
-          accountId,
-          jobId,
-          dueAt,
-          slice.indexType(),
-          blankToEmpty(slice.filterValue()));
+      return new ReadyPointerKeyParts(accountId, jobId, dueAt);
     } catch (Exception e) {
       return null;
     }
-  }
-
-  static ReadyQueueRow toReadyQueueRow(String readyPointerKey, String canonicalPointerKey) {
-    ReconcileReadyQueueBackend.ReadyQueueSlice slice = sliceForReadyPointerKey(readyPointerKey);
-    if (slice == null) {
-      return null;
-    }
-    ReconcileReadyQueueStore.ReadyQueueEntry entry =
-        decodeReadyQueueEntry(readyPointerKey, canonicalPointerKey, slice);
-    if (entry == null) {
-      return null;
-    }
-    String sortKey =
-        String.format(
-            "%019d/%s/%s",
-            entry.dueAtMs(),
-            Keys.encodeSegment(entry.accountId()),
-            Keys.encodeSegment(entry.jobId()));
-    return new ReadyQueueRow(partitionKey(slice), sortKey, entry);
   }
 
   static ReadyQueueRow rowFromNativeReadyItem(
