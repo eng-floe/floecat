@@ -167,14 +167,22 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
   connector update glue-iceberg --policy-latest-n 5
   connector update glue-iceberg --policy-all
+  connector update glue-iceberg --policy-capture stats,index
+  connector update glue-iceberg --policy-capture index --policy-default-cols explicit-only
   ```
 
 - **Triggering a connector to read an upstream table**
 
   ```
   connector trigger glue-iceberg --incremental --current --mode metadata-only
+  connector trigger glue-iceberg --incremental --current --mode metadata-and-capture
   connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
+  connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture index
   ```
+
+  For capture modes, trigger-time `--capture` flags are optional. If omitted, the run inherits the
+  connector's persisted auto-capture policy when present, otherwise it falls back to the default
+  stats capture policy. Trigger-time capture flags override the connector default for that run.
 
 - **Creating a storage authority for Iceberg REST credential vending**
 

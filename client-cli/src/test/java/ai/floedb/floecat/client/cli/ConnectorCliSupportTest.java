@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
@@ -237,6 +238,44 @@ class ConnectorCliSupportTest {
     }
   }
 
+  @Test
+  void connectorCreatePersistsAutoCapturePolicy() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder().setDisplayName("new-conn").build();
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of(
+              "create",
+              "new-conn",
+              "ICEBERG",
+              "s3://bucket",
+              "src.ns",
+              "dest-cat",
+              "--policy-enabled",
+              "--policy-capture",
+              "index"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertEquals(1, h.connectorsService.createConnectorCalls.get());
+      assertTrue(
+          h.connectorsService.lastCreateRequest.getSpec().getPolicy().hasAutoCapturePolicy());
+      assertEquals(
+          List.of(CaptureOutput.CO_PARQUET_PAGE_INDEX),
+          h.connectorsService
+              .lastCreateRequest
+              .getSpec()
+              .getPolicy()
+              .getAutoCapturePolicy()
+              .getOutputsList());
+    }
+  }
+
   // --- connector delete ---
 
   @Test
@@ -324,7 +363,28 @@ class ConnectorCliSupportTest {
   // --- connector trigger ---
 
   @Test
-  void connectorTriggerCaptureModeRequiresExplicitOutputs() throws Exception {
+  void connectorTriggerCaptureModeAllowsInheritedPolicy() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder().setResourceId(connectorId()).build();
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("trigger", CONNECTOR_UUID, "--mode", "capture-only", "--current"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertEquals(1, h.reconcileControlService.startCaptureCalls.get());
+      StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
+      assertEquals(0, request.getScope().getCapturePolicy().getOutputsCount());
+    }
+  }
+
+  @Test
+  void connectorTriggerColumnsStillRequireExplicitCaptureOverride() throws Exception {
     try (Harness h = new Harness()) {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder().setResourceId(connectorId()).build();
@@ -335,7 +395,8 @@ class ConnectorCliSupportTest {
               () ->
                   ConnectorCliSupport.handle(
                       "connector",
-                      List.of("trigger", CONNECTOR_UUID, "--mode", "capture-only"),
+                      List.of(
+                          "trigger", CONNECTOR_UUID, "--mode", "capture-only", "--columns", "c1"),
                       new PrintStream(new ByteArrayOutputStream()),
                       h.connectorsStub,
                       h.reconcileControlStub,

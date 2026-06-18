@@ -32,9 +32,12 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -45,8 +48,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
@@ -404,6 +405,51 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureUsesConnectorAutoCapturePolicyWhenRequestOmitsPolicy() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .setPolicy(
+                        ai.floedb.floecat.connector.rpc.ReconcilePolicy.newBuilder()
+                            .setAutoCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                                    .build())
+                            .build())
+                    .build()));
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+
+    service
+        .startCapture(
+            ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
+    assertEquals(
+        java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+        scopeCaptor.getValue().capturePolicy().outputs());
+  }
+
+  @Test
   void startCaptureDefaultsOmittedSnapshotSelectionToCurrent() {
     when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
@@ -596,22 +642,37 @@ class ReconcileControlImplTest {
 
   @Test
   void captureNowRejectsCaptureModeWithoutCapturePolicy() {
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(
-                        CaptureNowRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                            .build())
-                    .await()
-                    .indefinitely());
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
 
-    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
-    verify(service.jobs, never())
-        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+    service
+        .captureNow(
+            CaptureNowRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
+    assertEquals(
+        java.util.Set.of(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.FILE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS),
+        scopeCaptor.getValue().capturePolicy().outputs());
   }
 
   @Test

@@ -501,23 +501,24 @@ public class Shell implements Runnable {
          table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table get <id|catalog.ns[.ns...].table>
-         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
-             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
+         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>]
+             [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
+             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--etag <etag>]
          table delete <id|fq> [--etag <etag>]
          views <catalog.ns[.ns...]>
          view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props k=v ...]
          view get <id|catalog.ns[.ns...].name>
          view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>] [--sql <text>] [--desc <text>] [--props k=v ...]
          view delete <id|fq>
-         resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
+         resolve table|view|catalog|namespace <fq-or-name>
          describe table <fq>
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
-         stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
-         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
-         stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
-         stats index <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
+         stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json] (defaults to --current)
+         stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N] [--json]
+         stats files <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N]
+         stats index <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N] [--json]
          constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json] (defaults to current snapshot)
          constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
          constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]      (replace bundle)
@@ -552,26 +553,37 @@ public class Shell implements Runnable {
              [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+             [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+             [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+             [--policy-max-default-cols <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
              [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+             [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+             [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+             [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+             [--policy-max-default-cols <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
              [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-catalog <display>] [--dest-ns <a.b[.c]>] [--dest-table <name>]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+             [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+             [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+             [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+             [--policy-max-default-cols <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> (--full|--incremental)
-             [--mode metadata-only|metadata-and-capture|capture-only]
+             --mode metadata-only|metadata-and-capture|capture-only
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # --mode is required. --capture is required for capture modes.
+             # --mode is required. --capture overrides connector/default capture policy.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
              [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
              [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
@@ -591,9 +603,9 @@ public class Shell implements Runnable {
              [--assume-role-arn <arn>] [--assume-role-external-id <id>]
              [--assume-role-session-name <name>] [--duration-seconds <n>]
              [--cred-type aws|aws-assume-role|aws-web-identity] [--cred k=v ...] [--cred-head k=v ...]
-         storage-authority update <display_name|id>
-             [--display <name>] [--location-prefix <uri-prefix>] [--desc <text>]
-             [--enabled true|false] [--type <type>] [--region <region>] [--endpoint <uri>]
+         storage-authority update <display_name|id> [--display <name>]
+             [--location-prefix <uri-prefix>] [--desc <text>] [--enabled true|false]
+             [--type <type>] [--region <region>] [--endpoint <uri>]
              [--path-style-access true|false] [--assume-role-arn <arn>]
              [--assume-role-external-id <id>] [--assume-role-session-name <name>]
              [--duration-seconds <n>] [--cred-type aws|aws-assume-role|aws-web-identity]
