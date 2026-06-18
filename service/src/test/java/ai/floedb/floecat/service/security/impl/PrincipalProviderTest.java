@@ -110,17 +110,27 @@ class PrincipalProviderTest {
     }
   }
 
-  /** With no principal on either channel, the empty default is returned (contract preserved). */
+  /**
+   * With no principal on either channel, the empty default is returned (contract preserved). Runs
+   * under a clean root gRPC context: the shared surefire JVM can leave an unrelated principal
+   * attached on this thread's {@code io.grpc.Context}, which must not mask the default.
+   */
   @Test
-  void returnsDefaultWhenNoPrincipalAnywhere() {
-    assertEquals(PrincipalContext.getDefaultInstance(), new PrincipalProvider().get());
+  void returnsDefaultWhenNoPrincipalAnywhere() throws Exception {
+    PrincipalContext got = Context.ROOT.call(() -> new PrincipalProvider().get());
+    assertEquals(PrincipalContext.getDefaultInstance(), got);
   }
 
   /** Storing off a duplicated context is a safe no-op, not an exception. */
   @Test
-  void storeIsNoOpOffDuplicatedContext() {
-    PrincipalProvider.storeOnDuplicatedContext(PRINCIPAL);
-    assertEquals(PrincipalContext.getDefaultInstance(), new PrincipalProvider().get());
+  void storeIsNoOpOffDuplicatedContext() throws Exception {
+    PrincipalContext got =
+        Context.ROOT.call(
+            () -> {
+              PrincipalProvider.storeOnDuplicatedContext(PRINCIPAL);
+              return new PrincipalProvider().get();
+            });
+    assertEquals(PrincipalContext.getDefaultInstance(), got);
   }
 
   // ---------- helpers ----------
