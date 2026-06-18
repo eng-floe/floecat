@@ -43,12 +43,12 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
+import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -148,7 +148,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to"
+          "usage: stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json] (defaults to"
               + " --current)");
       return;
     }
@@ -182,7 +182,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N] [--json]");
       return;
     }
@@ -287,7 +287,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats files <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats files <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N]");
       return;
     }
@@ -360,7 +360,7 @@ final class StatsCliSupport {
     }
     if (args.isEmpty()) {
       out.println(
-          "usage: stats index <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats index <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N] [--json]");
       return;
     }

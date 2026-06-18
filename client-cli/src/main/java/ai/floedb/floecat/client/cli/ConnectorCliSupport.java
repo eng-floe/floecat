@@ -35,11 +35,14 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
+import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
@@ -53,10 +56,7 @@ import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
@@ -212,7 +212,11 @@ final class ConnectorCliSupport {
                   + " [--cred-head k=v ...] [--policy-enabled] (if provided,"
                   + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-mode"
                   + " incremental|full] [--policy-current|--policy-all|--policy-latest-n <n>]"
-                  + " [--policy-max-par <n>]"
+                  + " [--policy-max-par <n>] [--policy-capture"
+                  + " stats|table-stats|file-stats|column-stats|index,...]"
+                  + " [--policy-columns c1,#id2,...]"
+                  + " [--policy-default-cols first-n|all|explicit-only]"
+                  + " [--policy-max-default-cols <n>]"
                   + " [--policy-not-before-epoch <sec>] [--props k=v ...]  (e.g."
                   + " stats.ndv.enabled=false,stats.ndv.sample_fraction=0.1)");
           return;
@@ -248,6 +252,7 @@ final class ConnectorCliSupport {
         ReconcileMode policyMode =
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         PolicyScopeOptions policyScope = parsePolicyScopeOptions(args);
+        PolicyCaptureOptions policyCapture = parsePolicyCaptureOptions(args);
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
@@ -261,6 +266,7 @@ final class ConnectorCliSupport {
                 policyMode,
                 policyScope.scope(),
                 policyScope.latestN(),
+                policyCapture.capturePolicy(),
                 maxPar,
                 notBeforeSec);
 
@@ -302,7 +308,12 @@ final class ConnectorCliSupport {
                   + " [--cred-head k=v ...] [--policy-enabled true|false]"
                   + " [--policy-interval-sec <n>] [--policy-mode incremental|full]"
                   + " [--policy-current|--policy-all|--policy-latest-n <n>]"
-                  + " [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--props k=v ...]"
+                  + " [--policy-max-par <n>] [--policy-capture"
+                  + " stats|table-stats|file-stats|column-stats|index,...]"
+                  + " [--policy-columns c1,#id2,...]"
+                  + " [--policy-default-cols first-n|all|explicit-only]"
+                  + " [--policy-max-default-cols <n>]"
+                  + " [--policy-not-before-epoch <sec>] [--props k=v ...]"
                   + " [--etag <etag>]");
           return;
         }
@@ -340,6 +351,7 @@ final class ConnectorCliSupport {
         ReconcileMode policyMode =
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         PolicyScopeOptions policyScope = parsePolicyScopeOptions(args);
+        PolicyCaptureOptions policyCapture = parsePolicyCaptureOptions(args);
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
@@ -388,6 +400,7 @@ final class ConnectorCliSupport {
                 || intervalSec != 0L
                 || policyMode != ReconcileMode.RM_UNSPECIFIED
                 || policyScope.scope() != ReconcileSnapshotScope.RSS_UNSPECIFIED
+                || policyCapture.isSet()
                 || maxPar != 0
                 || notBeforeSec != 0L;
         if (policySet) {
@@ -398,6 +411,7 @@ final class ConnectorCliSupport {
                   policyMode,
                   policyScope.scope(),
                   policyScope.latestN(),
+                  policyCapture.capturePolicy(),
                   maxPar,
                   notBeforeSec);
           spec.setPolicy(pb);
@@ -410,6 +424,7 @@ final class ConnectorCliSupport {
           if (policyScope.scope() == ReconcileSnapshotScope.RSS_LATEST_N) {
             mask.add("policy.latest_n");
           }
+          if (policyCapture.isSet()) mask.add("policy.auto_capture_policy");
           if (maxPar != 0) mask.add("policy.max_parallel");
           if (notBeforeSec != 0L) mask.add("policy.not_before");
         }
@@ -475,7 +490,11 @@ final class ConnectorCliSupport {
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
                   + " [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode"
                   + " incremental|full] [--policy-current|--policy-all|--policy-latest-n <n>]"
-                  + " [--policy-max-par <n>]"
+                  + " [--policy-max-par <n>] [--policy-capture"
+                  + " stats|table-stats|file-stats|column-stats|index,...]"
+                  + " [--policy-columns c1,#id2,...]"
+                  + " [--policy-default-cols first-n|all|explicit-only]"
+                  + " [--policy-max-default-cols <n>]"
                   + " [--policy-not-before-epoch <sec>]"
                   + " [--props k=v ...]");
           return;
@@ -504,6 +523,7 @@ final class ConnectorCliSupport {
         ReconcileMode policyMode =
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         PolicyScopeOptions policyScope = parsePolicyScopeOptions(args);
+        PolicyCaptureOptions policyCapture = parsePolicyCaptureOptions(args);
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
@@ -523,6 +543,7 @@ final class ConnectorCliSupport {
                 || intervalSec > 0L
                 || policyMode != ReconcileMode.RM_UNSPECIFIED
                 || policyScope.scope() != ReconcileSnapshotScope.RSS_UNSPECIFIED
+                || policyCapture.isSet()
                 || maxPar > 0
                 || notBeforeSec > 0L;
         if (policySet) {
@@ -533,6 +554,7 @@ final class ConnectorCliSupport {
                   policyMode,
                   policyScope.scope(),
                   policyScope.latestN(),
+                  policyCapture.capturePolicy(),
                   maxPar,
                   notBeforeSec));
         }
@@ -566,7 +588,7 @@ final class ConnectorCliSupport {
                   + " [--columns c1,#id2,...]"
                   + " [--default-cols first-n|all|explicit-only]"
                   + " [--max-default-cols <n>]"
-                  + "  (--mode required; --capture required for capture modes)");
+                  + "  (--mode required; --capture overrides connector/default capture policy)");
           return;
         }
         boolean full = CliArgs.hasFlag(args, "--full");
@@ -1042,6 +1064,7 @@ final class ConnectorCliSupport {
       ReconcileMode mode,
       ReconcileSnapshotScope scope,
       int latestN,
+      CapturePolicy autoCapturePolicy,
       int maxPar,
       long notBeforeSec) {
     validatePolicyScope(scope, latestN);
@@ -1051,6 +1074,7 @@ final class ConnectorCliSupport {
     if (mode != null && mode != ReconcileMode.RM_UNSPECIFIED) b.setMode(mode);
     if (scope != null && scope != ReconcileSnapshotScope.RSS_UNSPECIFIED) b.setScope(scope);
     if (latestN > 0) b.setLatestN(latestN);
+    if (autoCapturePolicy != null) b.setAutoCapturePolicy(autoCapturePolicy);
     if (notBeforeSec > 0) b.setNotBefore(Timestamp.newBuilder().setSeconds(notBeforeSec).build());
     return b.build();
   }
@@ -1062,6 +1086,8 @@ final class ConnectorCliSupport {
   }
 
   private record PolicyScopeOptions(ReconcileSnapshotScope scope, int latestN) {}
+
+  private record PolicyCaptureOptions(CapturePolicy capturePolicy, boolean isSet) {}
 
   private static PolicyScopeOptions parsePolicyScopeOptions(List<String> args) {
     boolean policyCurrent = CliArgs.hasFlag(args, "--policy-current");
@@ -1085,6 +1111,47 @@ final class ConnectorCliSupport {
       throw new IllegalArgumentException("--policy-latest-n requires a value greater than 0");
     }
     return new PolicyScopeOptions(ReconcileSnapshotScope.RSS_UNSPECIFIED, 0);
+  }
+
+  private static PolicyCaptureOptions parsePolicyCaptureOptions(List<String> args) {
+    String captureToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-capture", ""));
+    List<String> columns =
+        CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-columns", "")));
+    String defaultColsToken =
+        Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-default-cols", ""));
+    int maxDefaultColumns = CliArgs.parseIntFlag(args, "--policy-max-default-cols", 32);
+    boolean captureSet =
+        !captureToken.isBlank()
+            || !columns.isEmpty()
+            || args.contains("--policy-default-cols")
+            || args.contains("--policy-max-default-cols");
+    if (!captureSet) {
+      return new PolicyCaptureOptions(null, false);
+    }
+    if (args.contains("--policy-max-default-cols") && maxDefaultColumns <= 0) {
+      throw new IllegalArgumentException("--policy-max-default-cols must be greater than 0");
+    }
+    DefaultColumnScope defaultColumnScope = CliUtils.parseDefaultColumnScope(defaultColsToken);
+    java.util.LinkedHashSet<CaptureOutput> outputs =
+        new java.util.LinkedHashSet<>(CliUtils.parseCaptureOutputs(captureToken));
+    CapturePolicy.Builder policy =
+        CapturePolicy.newBuilder()
+            .addAllOutputs(outputs)
+            .setDefaultColumnScope(
+                defaultColumnScope == null ? DefaultColumnScope.DCS_FIRST_N : defaultColumnScope)
+            .setMaxDefaultColumns(maxDefaultColumns <= 0 ? 32 : maxDefaultColumns);
+    for (String column : columns) {
+      if (column == null || column.isBlank()) {
+        continue;
+      }
+      policy.addColumns(
+          ai.floedb.floecat.connector.rpc.CaptureColumnPolicy.newBuilder()
+              .setSelector(column)
+              .setCaptureStats(outputs.contains(CaptureOutput.CO_COLUMN_STATS))
+              .setCaptureIndex(outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX))
+              .build());
+    }
+    return new PolicyCaptureOptions(policy.build(), true);
   }
 
   private static SnapshotSelection buildSnapshotSelection(
@@ -1118,6 +1185,35 @@ final class ConnectorCliSupport {
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("--snapshot values must be numeric ids", e);
     }
+  }
+
+  private static String formatPolicyScope(ReconcilePolicy policy) {
+    if (policy == null) {
+      return "";
+    }
+    return switch (policy.getScope()) {
+      case RSS_CURRENT -> "current";
+      case RSS_ALL -> "all";
+      case RSS_LATEST_N -> "latest-n:" + policy.getLatestN();
+      case RSS_UNSPECIFIED, UNRECOGNIZED -> "";
+    };
+  }
+
+  private static String formatCaptureOutputs(CapturePolicy policy) {
+    if (policy == null || policy.getOutputsCount() == 0) {
+      return "none";
+    }
+    return policy.getOutputsList().stream()
+        .map(
+            output ->
+                switch (output) {
+                  case CO_TABLE_STATS -> "table-stats";
+                  case CO_FILE_STATS -> "file-stats";
+                  case CO_COLUMN_STATS -> "column-stats";
+                  case CO_PARQUET_PAGE_INDEX -> "index";
+                  case CO_UNSPECIFIED, UNRECOGNIZED -> "unspecified";
+                })
+        .collect(Collectors.joining(","));
   }
 
   private static SourceSelector buildSource(String ns, String table, List<String> cols) {
@@ -1295,7 +1391,14 @@ final class ConnectorCliSupport {
       if (c.hasPolicy()) {
         var p = c.getPolicy();
         boolean anyP =
-            p.getEnabled() || p.getMaxParallel() > 0 || p.hasInterval() || p.hasNotBefore();
+            p.getEnabled()
+                || p.getMaxParallel() > 0
+                || p.hasInterval()
+                || p.hasNotBefore()
+                || p.getMode() != ReconcileMode.RM_UNSPECIFIED
+                || p.getScope() != ReconcileSnapshotScope.RSS_UNSPECIFIED
+                || p.getLatestN() > 0
+                || p.hasAutoCapturePolicy();
         if (anyP) {
           String interval = p.hasInterval() ? (p.getInterval().getSeconds() + "s") : "";
           String notBefore = p.hasNotBefore() ? CliUtils.ts(p.getNotBefore()) : "";
@@ -1304,7 +1407,17 @@ final class ConnectorCliSupport {
                   + " enabled="
                   + p.getEnabled()
                   + (interval.isEmpty() ? "" : " interval=" + interval)
+                  + (p.getMode() == ReconcileMode.RM_UNSPECIFIED
+                      ? ""
+                      : " mode="
+                          + p.getMode().name().replaceFirst("^RM_", "").toLowerCase(Locale.ROOT))
+                  + (p.getScope() == ReconcileSnapshotScope.RSS_UNSPECIFIED
+                      ? ""
+                      : " scope=" + formatPolicyScope(p))
                   + (p.getMaxParallel() > 0 ? " max_par=" + p.getMaxParallel() : "")
+                  + (p.hasAutoCapturePolicy()
+                      ? " capture=" + formatCaptureOutputs(p.getAutoCapturePolicy())
+                      : "")
                   + (notBefore.isEmpty() ? "" : " not_before=" + notBefore));
         }
       }

@@ -43,10 +43,10 @@ snapshots <catalog.ns[.ns...].table> [--limit N]
 snapshot get <table> <snapshot_id>
 snapshot delete <table> <snapshot_id> [--etag <etag>]
 
-stats table <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json]
-stats columns <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--limit N] [--json]
-stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
-stats index <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
+stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json]
+stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--limit N] [--json]
+stats files <id|catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+stats index <id|catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
 analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
     [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
     [--capture stats|table-stats|file-stats|column-stats|index,...]
@@ -91,6 +91,9 @@ connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <
     [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
     [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+    [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+    [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+    [--policy-max-default-cols <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
     [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]
@@ -99,6 +102,9 @@ connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <ur
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
     [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+    [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+    [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+    [--policy-max-default-cols <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
@@ -108,12 +114,16 @@ connector validate <kind> <uri>
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full]
     [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
+    [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+    [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
+    [--policy-max-default-cols <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> (--full|--incremental)
     --mode metadata-only|metadata-and-capture|capture-only
     [--capture stats|table-stats|file-stats|column-stats|index,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
     [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
+    [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
 connector job <jobId> [--json]
 connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--limit N] [--json]
 connector jobs --child <parentJobId> [--json]
@@ -172,10 +182,15 @@ Connector policy examples:
 - `connector create demo-iceberg ICEBERG ... --policy-enabled --policy-mode incremental --policy-current`
 - `connector update demo-iceberg --policy-latest-n 5`
 - `connector update demo-iceberg --policy-all`
+- `connector update demo-iceberg --policy-capture stats,index`
+- `connector update demo-iceberg --policy-capture index --policy-default-cols explicit-only`
 
 Trigger notes:
 - `--mode` is required on `connector trigger`.
-- `--capture` is required for capture modes (`metadata-and-capture`, `capture-only`).
+- Trigger-time `--capture` flags override the connector's persisted auto-capture policy for that run.
+- If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
+  when set, otherwise it falls back to the default stats capture policy.
+- `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
 - Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
   unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,
   `--snapshot`, or `--all`).

@@ -19,8 +19,11 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
@@ -94,7 +97,6 @@ import org.jboss.logging.Logger;
 
 @GrpcService
 public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileControl {
-
   @Inject ConnectorRepository connectorRepo;
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
@@ -131,8 +133,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var connectorId = connector.getResourceId();
                     requireSpecifiedCaptureMode(request.getMode(), corr);
                     var mode = mapCaptureMode(request.getMode());
-                    requireExplicitCapturePolicy(mode, request.getScope(), corr);
-                    var scope = scopeFromCaptureScope(request.getScope());
+                    var scope = effectiveScope(request.getScope(), connector, mode);
+                    requireResolvedCapturePolicy(mode, scope, corr);
                     validateCaptureRequestScope(mode, scope, corr);
                     var jobId =
                         enqueueCapture(
@@ -203,8 +205,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             connectorIdFromScope(request.getScope()),
                             correlationId);
                     var mode = mapCaptureMode(request.getMode());
-                    requireExplicitCapturePolicy(mode, request.getScope(), correlationId);
-                    var scope = scopeFromRequest(request);
+                    var scope = effectiveScope(request.getScope(), connector, mode);
+                    requireResolvedCapturePolicy(mode, scope, correlationId);
                     validateCaptureRequestScope(mode, scope, correlationId);
 
                     var jobId =
@@ -663,10 +665,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .invoke(L::ok);
   }
 
-  private static ReconcileScope scopeFromRequest(StartCaptureRequest request) {
-    return request == null ? ReconcileScope.empty() : scopeFromCaptureScope(request.getScope());
-  }
-
   private static ReconcileExecutionPolicy mapExecutionPolicy(
       ai.floedb.floecat.reconciler.rpc.ExecutionPolicy policy) {
     if (policy == null) {
@@ -755,7 +753,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static ReconcileCapturePolicy.Output mapCaptureOutput(
-      ai.floedb.floecat.reconciler.rpc.CaptureOutput output) {
+      ai.floedb.floecat.connector.rpc.CaptureOutput output) {
     return switch (output) {
       case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
       case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
@@ -767,7 +765,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
-      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+      ai.floedb.floecat.connector.rpc.DefaultColumnScope scope) {
     return switch (scope) {
       case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
       case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
@@ -801,8 +799,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     }
   }
 
-  private static void requireExplicitCapturePolicy(
-      CaptureMode mode, CaptureScope scope, String correlationId) {
+  private static void requireResolvedCapturePolicy(
+      CaptureMode mode, ReconcileScope scope, String correlationId) {
     if (mode == CaptureMode.METADATA_ONLY) {
       return;
     }
@@ -810,10 +808,47 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       throw GrpcErrors.invalidArgument(
           correlationId, null, Map.of("field", "scope.capture_policy"));
     }
-    if (scope.getCapturePolicy().getOutputsCount() == 0) {
+    if (scope.capturePolicy().outputs().isEmpty()) {
       throw GrpcErrors.invalidArgument(
           correlationId, null, Map.of("field", "scope.capture_policy.outputs"));
     }
+  }
+
+  private static ReconcileScope effectiveScope(
+      CaptureScope requestScope, Connector connector, CaptureMode mode) {
+    CaptureScope.Builder effectiveScope =
+        requestScope == null ? CaptureScope.newBuilder() : requestScope.toBuilder();
+    if (mode != CaptureMode.METADATA_ONLY && !effectiveScope.hasCapturePolicy()) {
+      CapturePolicy inheritedPolicy = inheritedCapturePolicy(connector, mode);
+      if (inheritedPolicy != null) {
+        effectiveScope.setCapturePolicy(inheritedPolicy);
+      }
+    }
+    return scopeFromCaptureScope(effectiveScope.build());
+  }
+
+  private static CapturePolicy inheritedCapturePolicy(Connector connector, CaptureMode mode) {
+    if (mode == CaptureMode.METADATA_ONLY) {
+      return null;
+    }
+    if (connector != null
+        && connector.hasPolicy()
+        && connector.getPolicy().hasAutoCapturePolicy()) {
+      return connector.getPolicy().getAutoCapturePolicy();
+    }
+    return defaultCapturePolicyProto();
+  }
+
+  private static CapturePolicy defaultCapturePolicyProto() {
+    return CapturePolicy.newBuilder()
+        .addAllOutputs(
+            List.of(
+                CaptureOutput.CO_TABLE_STATS,
+                CaptureOutput.CO_FILE_STATS,
+                CaptureOutput.CO_COLUMN_STATS))
+        .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+        .setMaxDefaultColumns(32)
+        .build();
   }
 
   private static void validateCaptureRequestScope(
