@@ -78,6 +78,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultReques
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -87,7 +88,9 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 
 @GrpcService
 public class ReconcileExecutorControlImpl extends BaseServiceImpl
@@ -134,7 +137,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       lanesFrom(request),
                       executorIds,
                       jobKindsFrom(request));
-              var lease = jobs.leaseNext(leaseRequest);
+              var lease = leaseNextOrThrowRateLimited(corr, leaseRequest);
               if (lease.isEmpty()) {
                 return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
               }
@@ -144,6 +147,17 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                   .build();
             }),
         correlationId());
+  }
+
+  private Optional<ReconcileJobStore.LeasedJob> leaseNextOrThrowRateLimited(
+      String corr, ReconcileJobStore.LeaseRequest leaseRequest) {
+    try {
+      return jobs.leaseNext(leaseRequest);
+    } catch (CancellationException cancelled) {
+      throw GrpcErrors.cancelled(corr, null, null, cancelled);
+    } catch (LeaseScanCapacityExceededException overloaded) {
+      throw GrpcErrors.rateLimited(corr, null, null, overloaded);
+    }
   }
 
   @Override

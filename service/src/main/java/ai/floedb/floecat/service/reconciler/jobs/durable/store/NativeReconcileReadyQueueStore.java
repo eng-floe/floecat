@@ -71,7 +71,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
 
   public ReadyQueueScanPage scanReadySlice(
       ReconcileReadyQueueBackend.ReadyQueueSlice slice, int pageSize, String pageToken) {
-    return readyQueueBackend.scanReadySlice(slice, pageSize, pageToken);
+    return readyQueueBackend.scanReadySlice(slice, pageSize, pageToken, null);
   }
 
   public Optional<LeasedJob> leaseReadyDue(
@@ -184,35 +184,43 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     String token = "";
     int pages = 0;
     while (true) {
-      if (scanBudgetExceeded(scanStats)) {
+      if (shouldStop(scanStats)) {
         return Optional.empty();
       }
       if (scanStats != null) {
         scanStats.scanCount++;
       }
       ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
+          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token, scanStats);
       if (page.entries().isEmpty()) {
         return Optional.empty();
       }
 
       for (ReadyQueueEntry candidate : page.entries()) {
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
+        }
         if (scanStats != null) {
           scanStats.candidateCount++;
         }
         if (candidate.dueAtMs() > nowMs) {
           return Optional.empty();
         }
-        if (scanBudgetExceeded(scanStats)) {
+        CanonicalPointerSnapshot canonicalSnapshot =
+            readyQueueBackend
+                .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
+                .orElse(null);
+        if (shouldStop(scanStats)) {
           return Optional.empty();
         }
-        CanonicalPointerSnapshot canonicalSnapshot =
-            readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
         if (canonicalSnapshot == null) {
           pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
+        }
         if (recordOpt.isEmpty()) {
           pruneStaleReadyEntry(candidate, scanStats);
           continue;
@@ -229,6 +237,9 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         // Not stale, just not eligible for this requester: leave the pointer for another lane.
         if (!matchesLeaseRequest(record, request)) {
           continue;
+        }
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
         }
         var leased =
             leaseStore.leaseCanonical(
@@ -391,15 +402,8 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     }
   }
 
-  private static boolean scanBudgetExceeded(LeaseScanStats scanStats) {
-    if (scanStats == null || scanStats.deadlineAtMs <= 0L) {
-      return false;
-    }
-    if (System.currentTimeMillis() < scanStats.deadlineAtMs) {
-      return false;
-    }
-    scanStats.abortedByBudget = true;
-    return true;
+  private static boolean shouldStop(LeaseScanStats scanStats) {
+    return scanStats != null && scanStats.shouldStop();
   }
 
   private static String blankToEmpty(String value) {

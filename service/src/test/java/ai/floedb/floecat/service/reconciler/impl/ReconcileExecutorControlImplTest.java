@@ -53,6 +53,7 @@ import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
+import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -60,6 +61,7 @@ import io.grpc.StatusRuntimeException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -167,6 +169,40 @@ class ReconcileExecutorControlImplTest {
                     .indefinitely());
 
     assertEquals("INTERNAL", error.getStatus().getCode().name());
+  }
+
+  @Test
+  void leaseReconcileJobMapsLeaseScanCapacityToResourceExhausted() {
+    when(service.jobs.leaseNext(any()))
+        .thenThrow(new LeaseScanCapacityExceededException("capacity exhausted"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    assertEquals("RESOURCE_EXHAUSTED", error.getStatus().getCode().name());
+  }
+
+  @Test
+  void leaseReconcileJobMapsAdmissionCancellationToCancelled() {
+    when(service.jobs.leaseNext(any()))
+        .thenThrow(new CancellationException("reconcile lease scan admission interrupted"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    assertEquals("CANCELLED", error.getStatus().getCode().name());
   }
 
   @Test

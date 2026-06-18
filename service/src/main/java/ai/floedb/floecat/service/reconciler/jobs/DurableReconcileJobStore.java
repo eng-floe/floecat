@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.LeaseScanAbortedException;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
@@ -68,6 +69,8 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.grpc.Context;
+import io.grpc.Deadline;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -81,6 +84,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -116,10 +120,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   // Caps how many ready-queue lease scans may run concurrently across all callers (the in-process
   // poller plus every external executor that funnels through leaseNext). Without this, client-side
   // lease timeouts + retries amplify into a runaway fan-out of overlapping DynamoDB scans that
-  // saturate the client and collapse throughput. Excess callers shed to an empty ("no work") result
-  // and poll again.
+  // saturate the client and collapse throughput.
   private static final int DEFAULT_LEASE_MAX_CONCURRENCY = 8;
-  // How long a caller waits for a scan permit before shedding to an empty result.
+  // How long a caller waits for a scan permit before rejecting the attempt.
   private static final long DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS = 250L;
   // Wall-clock budget for a single ready scan. Kept under the worker-control client deadline so a
   // scan a caller has already abandoned yields its permit instead of running to completion. 0 =
@@ -164,7 +167,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long leaseRenewGraceMs = DEFAULT_LEASE_RENEW_GRACE_MS;
   private int readyScanLimit = DEFAULT_READY_SCAN_LIMIT;
   private int leaseMaxConcurrency = DEFAULT_LEASE_MAX_CONCURRENCY;
-  // Package-private so tests can drive the shed path deterministically.
   long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
   private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
@@ -879,32 +881,37 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       acquired = permits.tryAcquire(leaseAcquireTimeoutMs, TimeUnit.MILLISECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      return Optional.empty();
+      throw new CancellationException("reconcile lease scan admission interrupted");
     }
     if (!acquired) {
-      // Shed load: too many lease scans already in flight. Returning empty is a valid
-      // "no work right now" response; the caller polls again. This caps the ready-scan
-      // fan-out so client-side timeouts + retries cannot amplify into congestion collapse.
-      LOG.debugf(
-          "leaseNext shed: lease scan concurrency cap reached (cap=%d)", leaseMaxConcurrency);
-      return Optional.empty();
+      throw new LeaseScanCapacityExceededException(
+          "reconcile lease scan capacity exhausted cap=" + leaseMaxConcurrency);
     }
     long startedAtMs = System.currentTimeMillis();
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     LeaseScanStats scanStats = new LeaseScanStats();
-    if (leaseScanBudgetMs > 0L) {
-      scanStats.deadlineAtMs = startedAtMs + leaseScanBudgetMs;
-    }
+    configureLeaseScanStats(scanStats, startedAtMs);
     try {
-      var leased = leaseReadyDue(startedAtMs, effective, scanStats);
+      Optional<LeasedJob> leased;
+      try {
+        leased = leaseReadyDue(startedAtMs, effective, scanStats);
+      } catch (LeaseScanAbortedException aborted) {
+        if (aborted.callerCancelled()) {
+          scanStats.abortedByCaller = true;
+        } else {
+          scanStats.abortedByDeadline = true;
+        }
+        leased = Optional.empty();
+      }
       long totalMs = System.currentTimeMillis() - startedAtMs;
-      if (scanStats.abortedByBudget) {
-        // Surfaced, not swallowed: a scan that cannot reach leasable work within its budget
-        // signals a ready-queue backlog that needs draining (stuck/failing jobs requeueing).
-        // pruned>0 means it is actively self-draining; pruned stuck at 0 with a backlog points
-        // elsewhere.
+      if (scanStats.abortedByCaller) {
         LOG.warnf(
-            "leaseNext aborted by scan budget total_ms=%d scan_count=%d candidate_count=%d"
+            "leaseNext cancelled by caller total_ms=%d scan_count=%d candidate_count=%d"
+                + " pruned=%d",
+            totalMs, scanStats.scanCount, scanStats.candidateCount, scanStats.prunedCount);
+      } else if (scanStats.abortedByDeadline) {
+        LOG.warnf(
+            "leaseNext aborted by scan deadline total_ms=%d scan_count=%d candidate_count=%d"
                 + " pruned=%d budget_ms=%d",
             totalMs,
             scanStats.scanCount,
@@ -924,6 +931,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     } finally {
       permits.release();
     }
+  }
+
+  private void configureLeaseScanStats(LeaseScanStats scanStats, long startedAtMs) {
+    Context grpcContext = Context.current();
+    scanStats.cancelled = grpcContext::isCancelled;
+    long deadlineAtMs = leaseScanBudgetMs <= 0L ? 0L : startedAtMs + leaseScanBudgetMs;
+    Deadline grpcDeadline = grpcContext.getDeadline();
+    if (grpcDeadline != null) {
+      long remainingMs = grpcDeadline.timeRemaining(TimeUnit.MILLISECONDS);
+      long grpcDeadlineAtMs = startedAtMs + Math.max(0L, remainingMs);
+      deadlineAtMs =
+          deadlineAtMs <= 0L ? grpcDeadlineAtMs : Math.min(deadlineAtMs, grpcDeadlineAtMs);
+    }
+    scanStats.deadlineAtMs = deadlineAtMs;
   }
 
   void runMaintenanceOnce(long maxMillis) {

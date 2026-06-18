@@ -65,7 +65,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
   @Override
   public ReadyQueueScanPage scanReadySlice(
       ReconcileReadyQueueBackend.ReadyQueueSlice slice, int pageSize, String pageToken) {
-    return readyQueueBackend.scanReadySlice(slice, pageSize, pageToken);
+    return readyQueueBackend.scanReadySlice(slice, pageSize, pageToken, null);
   }
 
   @Override
@@ -185,16 +185,22 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     String token = "";
     int pages = 0;
     while (true) {
+      if (shouldStop(scanStats)) {
+        return Optional.empty();
+      }
       if (scanStats != null) {
         scanStats.scanCount++;
       }
       ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token);
+          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token, scanStats);
       if (page.entries().isEmpty()) {
         return Optional.empty();
       }
 
       for (ReadyQueueEntry candidate : page.entries()) {
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
+        }
         if (scanStats != null) {
           scanStats.candidateCount++;
         }
@@ -202,11 +208,19 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
           return Optional.empty();
         }
         CanonicalPointerSnapshot canonicalSnapshot =
-            readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
+            readyQueueBackend
+                .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
+                .orElse(null);
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
+        }
         if (canonicalSnapshot == null) {
           continue;
         }
         var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
+        if (shouldStop(scanStats)) {
+          return Optional.empty();
+        }
         if (recordOpt.isEmpty()) {
           continue;
         }
@@ -357,6 +371,10 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };
+  }
+
+  private static boolean shouldStop(LeaseScanStats scanStats) {
+    return scanStats != null && scanStats.shouldStop();
   }
 
   private static String blankToEmpty(String value) {

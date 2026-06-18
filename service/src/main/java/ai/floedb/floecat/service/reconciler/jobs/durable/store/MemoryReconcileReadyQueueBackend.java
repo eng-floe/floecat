@@ -45,7 +45,10 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
 
   @Override
   public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-      ReadyQueueSlice slice, int pageSize, String pageToken) {
+      ReadyQueueSlice slice,
+      int pageSize,
+      String pageToken,
+      ReconcileReadyQueueStore.LeaseScanStats scanStats) {
     String prefix = ReadyQueueBackendSupport.readyIndexPrefix(slice);
     if (prefix.isBlank()) {
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
@@ -104,7 +107,8 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   @Override
-  public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
+  public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
+      String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
     return pointerStore
         .get(canonicalPointerKey)
         .map(
