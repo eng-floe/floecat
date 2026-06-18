@@ -868,6 +868,7 @@ public class Shell implements Runnable {
     queryScan = queryScan.withInterceptors(authInterceptor);
     querySchema = querySchema.withInterceptors(authInterceptor);
     accounts = accounts.withInterceptors(authInterceptor);
+    storageAuthorities = storageAuthorities.withInterceptors(authInterceptor);
   }
 
   void dispatch(String inputLine) {
