@@ -189,8 +189,12 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                     readyUpsert.readyPointerKey(), readyUpsert.canonicalPointerKey())));
       }
       for (String readyDeleteKey : jobIndexBatch.readyMutation().deletes()) {
+        // Resolve the delete key from the ready pointer alone (the canonical it referenced is being
+        // rewritten in this same lease transaction). A blank canonical made the row resolve to
+        // null,
+        // dropping the delete item so the old ready row leaked.
         ReadyQueueBackendSupport.ReadyQueueRow row =
-            ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey, "");
+            ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey);
         if (row != null) {
           tx.add(buildReadyDelete(row));
         }

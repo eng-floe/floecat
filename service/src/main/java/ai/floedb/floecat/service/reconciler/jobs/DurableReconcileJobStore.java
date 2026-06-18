@@ -81,6 +81,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -111,6 +113,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
+  // Caps how many ready-queue lease scans may run concurrently across all callers (the in-process
+  // poller plus every external executor that funnels through leaseNext). Without this, client-side
+  // lease timeouts + retries amplify into a runaway fan-out of overlapping DynamoDB scans that
+  // saturate the client and collapse throughput. Excess callers shed to an empty ("no work") result
+  // and poll again.
+  private static final int DEFAULT_LEASE_MAX_CONCURRENCY = 8;
+  // How long a caller waits for a scan permit before shedding to an empty result.
+  private static final long DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS = 250L;
+  // Wall-clock budget for a single ready scan. Kept under the worker-control client deadline so a
+  // scan a caller has already abandoned yields its permit instead of running to completion. 0 =
+  // off.
+  private static final long DEFAULT_LEASE_SCAN_BUDGET_MS = 8_000L;
   private static final int CAS_MAX = 16;
   private static final String INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX =
       "inline:reconcile-finalized-snapshot:";
@@ -149,6 +163,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private long leaseRenewGraceMs = DEFAULT_LEASE_RENEW_GRACE_MS;
   private int readyScanLimit = DEFAULT_READY_SCAN_LIMIT;
+  private int leaseMaxConcurrency = DEFAULT_LEASE_MAX_CONCURRENCY;
+  // Package-private so tests can drive the shed path deterministically.
+  long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
+  private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
+  volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
 
   private ReconcilePayloadStore payloads() {
     if (payloadStore == null) {
@@ -464,6 +483,27 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.ready-scan-limit", Integer.class)
                 .orElse(DEFAULT_READY_SCAN_LIMIT));
+    leaseMaxConcurrency =
+        Math.max(
+            1,
+            config
+                .getOptionalValue(
+                    "floecat.reconciler.job-store.lease-max-concurrency", Integer.class)
+                .orElse(DEFAULT_LEASE_MAX_CONCURRENCY));
+    leaseAcquireTimeoutMs =
+        Math.max(
+            0L,
+            config
+                .getOptionalValue(
+                    "floecat.reconciler.job-store.lease-acquire-timeout-ms", Long.class)
+                .orElse(DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS));
+    leaseScanBudgetMs =
+        Math.max(
+            0L,
+            config
+                .getOptionalValue("floecat.reconciler.job-store.lease-scan-budget-ms", Long.class)
+                .orElse(DEFAULT_LEASE_SCAN_BUDGET_MS));
+    leaseScanPermits = new Semaphore(leaseMaxConcurrency, true);
   }
 
   @Override
@@ -833,17 +873,57 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    Semaphore permits = leaseScanPermits;
+    boolean acquired;
+    try {
+      acquired = permits.tryAcquire(leaseAcquireTimeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Optional.empty();
+    }
+    if (!acquired) {
+      // Shed load: too many lease scans already in flight. Returning empty is a valid
+      // "no work right now" response; the caller polls again. This caps the ready-scan
+      // fan-out so client-side timeouts + retries cannot amplify into congestion collapse.
+      LOG.debugf(
+          "leaseNext shed: lease scan concurrency cap reached (cap=%d)", leaseMaxConcurrency);
+      return Optional.empty();
+    }
     long startedAtMs = System.currentTimeMillis();
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     LeaseScanStats scanStats = new LeaseScanStats();
-    var leased = leaseReadyDue(startedAtMs, effective, scanStats);
-    LOG.debugf(
-        "leaseNext total_ms=%d scan_count=%d candidate_count=%d leased=%s",
-        System.currentTimeMillis() - startedAtMs,
-        scanStats.scanCount,
-        scanStats.candidateCount,
-        leased.isPresent());
-    return leased;
+    if (leaseScanBudgetMs > 0L) {
+      scanStats.deadlineAtMs = startedAtMs + leaseScanBudgetMs;
+    }
+    try {
+      var leased = leaseReadyDue(startedAtMs, effective, scanStats);
+      long totalMs = System.currentTimeMillis() - startedAtMs;
+      if (scanStats.abortedByBudget) {
+        // Surfaced, not swallowed: a scan that cannot reach leasable work within its budget
+        // signals a ready-queue backlog that needs draining (stuck/failing jobs requeueing).
+        // pruned>0 means it is actively self-draining; pruned stuck at 0 with a backlog points
+        // elsewhere.
+        LOG.warnf(
+            "leaseNext aborted by scan budget total_ms=%d scan_count=%d candidate_count=%d"
+                + " pruned=%d budget_ms=%d",
+            totalMs,
+            scanStats.scanCount,
+            scanStats.candidateCount,
+            scanStats.prunedCount,
+            leaseScanBudgetMs);
+      } else {
+        LOG.debugf(
+            "leaseNext total_ms=%d scan_count=%d candidate_count=%d pruned=%d leased=%s",
+            totalMs,
+            scanStats.scanCount,
+            scanStats.candidateCount,
+            scanStats.prunedCount,
+            leased.isPresent());
+      }
+      return leased;
+    } finally {
+      permits.release();
+    }
   }
 
   void runMaintenanceOnce(long maxMillis) {

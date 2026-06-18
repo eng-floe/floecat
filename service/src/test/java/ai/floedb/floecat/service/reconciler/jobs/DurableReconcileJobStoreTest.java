@@ -905,6 +905,62 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextShedsWhenScanConcurrencyCapReached() {
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    ReconcileJobStore.LeaseRequest req =
+        ReconcileJobStore.LeaseRequest.of(
+            java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+            Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+            Set.of("floescan_ingest"),
+            java.util.EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP));
+
+    // No permit available and no wait: the scan must shed to an empty ("no work") result instead of
+    // touching the ready queue, even though a job is ready. This is the guard that caps the scan
+    // fan-out so lease-RPC timeouts + retries cannot amplify into a self-sustaining scan storm.
+    store.leaseAcquireTimeoutMs = 0L;
+    store.leaseScanPermits = new java.util.concurrent.Semaphore(0);
+    assertTrue(
+        store.leaseNext(req).isEmpty(),
+        "expected leaseNext to shed (return no work) when no scan permit is available");
+
+    // Restore capacity: the same ready job now leases normally, proving the shed above was the
+    // concurrency cap and not job unavailability.
+    store.leaseScanPermits = new java.util.concurrent.Semaphore(8, true);
+    long deadlineMs = System.currentTimeMillis() + 2_000L;
+    java.util.Optional<ReconcileJobStore.LeasedJob> leased = java.util.Optional.empty();
+    while (System.currentTimeMillis() < deadlineMs && leased.isEmpty()) {
+      leased = store.leaseNext(req);
+      if (leased.isEmpty()) {
+        try {
+          Thread.sleep(10L);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+    assertTrue(
+        leased.isPresent(), "expected leaseNext to lease the ready job once a permit exists");
+    assertEquals(execJobId, leased.orElseThrow().jobId);
+  }
+
+  @Test
   void enqueueUpsertsStoredRootSummaryImmediately() {
     String connectorJobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, null);

@@ -164,8 +164,12 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
 
   @Override
   public boolean deleteReadyEntry(String readyPointerKey) {
+    // Resolve the primary key from the ready pointer alone. The canonical pointer key is a stored
+    // attribute, not part of the key, and a stale/leaked entry's canonical pointer is often already
+    // gone; passing a blank canonical here used to make decode reject the key, so this delete was a
+    // silent no-op for every caller (inline prune and ReconcileJobGc alike).
     ReadyQueueBackendSupport.ReadyQueueRow row =
-        ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey, "");
+        ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
     if (row == null) {
       return false;
     }
