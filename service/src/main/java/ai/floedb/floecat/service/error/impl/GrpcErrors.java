@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.MissingResourceException;
+import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class GrpcErrors {
@@ -325,7 +326,7 @@ public final class GrpcErrors {
       eb.setMessageKey(messageKey);
     }
 
-    String resolvedMessage = resolveStatusMessage(eb, canonical, t, correlationId);
+    String resolvedMessage = clampDetail(resolveStatusMessage(eb, canonical, t, correlationId));
     eb.setMessage(resolvedMessage);
 
     Status.Builder statusBuilder =
@@ -350,6 +351,11 @@ public final class GrpcErrors {
   private static final MessageCatalog DEFAULT_MESSAGE_CATALOG = new MessageCatalog(DEFAULT_LOCALE);
   private static final String ERROR_DOMAIN = "ai.floedb.floecat";
 
+  private static final int DEFAULT_MAX_DETAIL_CHARS = 512;
+  private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+  private static final String ELISION_PREFIX = " ...[";
+  private static final String ELISION_SUFFIX = " chars elided]... ";
+
   private static boolean fetchDebugDetailsFlag() {
     try {
       return ConfigProvider.getConfig()
@@ -364,6 +370,60 @@ public final class GrpcErrors {
     return fetchDebugDetailsFlag();
   }
 
+  private static int maxDetailChars() {
+    try {
+      return ConfigProvider.getConfig()
+          .getOptionalValue("floecat.errors.max-detail-chars", Integer.class)
+          .filter(n -> n > 0)
+          .orElse(DEFAULT_MAX_DETAIL_CHARS);
+    } catch (Throwable e) {
+      return DEFAULT_MAX_DETAIL_CHARS;
+    }
+  }
+
+  /**
+   * Bounds free-text exception detail before it is packed into a gRPC status.
+   *
+   * <p>Downstream exception messages — notably AWS SDK validation errors, which echo the entire
+   * offending request (e.g. DynamoDB {@code TransactWriteItems} dumps tens of KB) — are otherwise
+   * copied verbatim into the {@code Error} detail params, the {@code grpc-message} description, and
+   * (via the {@code MC_INTERNAL} catalog template's {@code {root_message}} placeholder, re-rendered
+   * in {@code LocalizeErrorsInterceptor}) the {@code grpc-status-details-bin} trailer. Left
+   * unbounded the trailer exceeds the HTTP/2 max-header-list-size and the peer (Netty/Envoy
+   * waypoint) resets the stream with {@code RST_STREAM PROTOCOL_ERROR}, masking the real cause.
+   *
+   * <p>Whitespace is collapsed and, when the text exceeds the cap, the middle is elided while head
+   * and tail are preserved — AWS messages place the actionable constraint <em>after</em> the
+   * embedded dump, so a head-only truncation would discard it. The elision marker is counted
+   * against the cap, so the returned string never exceeds {@code max}.
+   */
+  static String clampDetail(String raw) {
+    if (raw == null) {
+      return "";
+    }
+    String collapsed = WHITESPACE.matcher(raw).replaceAll(" ").trim();
+    int max = maxDetailChars();
+    if (collapsed.length() <= max) {
+      return collapsed;
+    }
+    // Reserve room for the marker inside the cap so head + tail + marker <= max. The dropped count
+    // is strictly less than collapsed.length(), so its decimal width is bounded by that length's.
+    int markerWidth =
+        ELISION_PREFIX.length()
+            + Integer.toString(collapsed.length()).length()
+            + ELISION_SUFFIX.length();
+    if (max <= markerWidth) {
+      // Cap too small to fit head/tail around a marker; hard-truncate the head.
+      return collapsed.substring(0, max);
+    }
+    int budget = max - markerWidth;
+    int head = (budget + 1) / 2;
+    int tail = budget - head;
+    int dropped = collapsed.length() - budget;
+    String elision = ELISION_PREFIX + dropped + ELISION_SUFFIX;
+    return collapsed.substring(0, head) + elision + collapsed.substring(collapsed.length() - tail);
+  }
+
   private static void annotateCause(Map<String, String> params, Throwable t) {
     if (t != null) {
       Throwable root = rootCause(t);
@@ -372,7 +432,7 @@ public final class GrpcErrors {
       params.put("cause", root.getClass().getSimpleName());
       String m = root.getMessage();
       if (m != null && !m.isBlank()) {
-        params.putIfAbsent("root_message", m);
+        params.putIfAbsent("root_message", clampDetail(m));
       }
       return;
     }
@@ -511,7 +571,8 @@ public final class GrpcErrors {
   private static DebugInfo buildDebugInfo(Throwable t) {
     Throwable root = rootCause(t);
     DebugInfo.Builder builder =
-        DebugInfo.newBuilder().setDetail(root.getClass().getName() + ": " + safeRootMessage(root));
+        DebugInfo.newBuilder()
+            .setDetail(clampDetail(root.getClass().getName() + ": " + safeRootMessage(root)));
     StackTraceElement[] stackTrace = root.getStackTrace();
     int limit = Math.min(stackTrace.length, 5);
     for (int i = 0; i < limit; i++) {
