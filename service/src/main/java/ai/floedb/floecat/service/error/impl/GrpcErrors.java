@@ -353,6 +353,8 @@ public final class GrpcErrors {
 
   private static final int DEFAULT_MAX_DETAIL_CHARS = 512;
   private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+  private static final String ELISION_PREFIX = " ...[";
+  private static final String ELISION_SUFFIX = " chars elided]... ";
 
   private static boolean fetchDebugDetailsFlag() {
     try {
@@ -392,7 +394,8 @@ public final class GrpcErrors {
    *
    * <p>Whitespace is collapsed and, when the text exceeds the cap, the middle is elided while head
    * and tail are preserved — AWS messages place the actionable constraint <em>after</em> the
-   * embedded dump, so a head-only truncation would discard it.
+   * embedded dump, so a head-only truncation would discard it. The elision marker is counted
+   * against the cap, so the returned string never exceeds {@code max}.
    */
   static String clampDetail(String raw) {
     if (raw == null) {
@@ -403,10 +406,21 @@ public final class GrpcErrors {
     if (collapsed.length() <= max) {
       return collapsed;
     }
-    int dropped = collapsed.length() - max;
-    int head = (max + 1) / 2;
-    int tail = max - head;
-    String elision = " ...[" + dropped + " chars elided]... ";
+    // Reserve room for the marker inside the cap so head + tail + marker <= max. The dropped count
+    // is strictly less than collapsed.length(), so its decimal width is bounded by that length's.
+    int markerWidth =
+        ELISION_PREFIX.length()
+            + Integer.toString(collapsed.length()).length()
+            + ELISION_SUFFIX.length();
+    if (max <= markerWidth) {
+      // Cap too small to fit head/tail around a marker; hard-truncate the head.
+      return collapsed.substring(0, max);
+    }
+    int budget = max - markerWidth;
+    int head = (budget + 1) / 2;
+    int tail = budget - head;
+    int dropped = collapsed.length() - budget;
+    String elision = ELISION_PREFIX + dropped + ELISION_SUFFIX;
     return collapsed.substring(0, head) + elision + collapsed.substring(collapsed.length() - tail);
   }
 

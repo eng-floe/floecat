@@ -137,7 +137,10 @@ class GrpcErrorsTest {
 
     String clamped = GrpcErrors.clampDetail(oversized);
 
-    assertTrue(clamped.length() < 700, "clamped detail should be bounded, was " + clamped.length());
+    // The elision marker is counted against the cap, so the whole string stays within the
+    // default 512-char budget (not budget + marker).
+    assertTrue(
+        clamped.length() <= 512, "clamped detail must respect the cap, was " + clamped.length());
     assertTrue(clamped.startsWith("1 validation error detected"), clamped);
     assertTrue(
         clamped.endsWith("Member must have length less than or equal to 100"),
