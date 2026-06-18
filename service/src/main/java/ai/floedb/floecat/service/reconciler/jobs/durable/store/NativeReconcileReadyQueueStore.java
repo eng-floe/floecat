@@ -171,6 +171,9 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     String token = "";
     int pages = 0;
     while (true) {
+      if (scanBudgetExceeded(scanStats)) {
+        return Optional.empty();
+      }
       if (scanStats != null) {
         scanStats.scanCount++;
       }
@@ -185,6 +188,9 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           scanStats.candidateCount++;
         }
         if (candidate.dueAtMs() > nowMs) {
+          return Optional.empty();
+        }
+        if (scanBudgetExceeded(scanStats)) {
           return Optional.empty();
         }
         CanonicalPointerSnapshot canonicalSnapshot =
@@ -347,6 +353,17 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };
+  }
+
+  private static boolean scanBudgetExceeded(LeaseScanStats scanStats) {
+    if (scanStats == null || scanStats.deadlineAtMs <= 0L) {
+      return false;
+    }
+    if (System.currentTimeMillis() < scanStats.deadlineAtMs) {
+      return false;
+    }
+    scanStats.abortedByBudget = true;
+    return true;
   }
 
   private static String blankToEmpty(String value) {

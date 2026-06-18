@@ -35,6 +35,12 @@ public interface ReconcileReadyQueueStore {
   final class LeaseScanStats {
     public int scanCount;
     public int candidateCount;
+    // Absolute wall-clock time (ms) past which the ready scan should stop and yield. 0 = no budget.
+    public long deadlineAtMs;
+    // Set when the scan stopped early because it exceeded deadlineAtMs (rather than exhausting the
+    // queue or leasing a job). Lets the caller surface a backlog signal instead of failing
+    // silently.
+    public boolean abortedByBudget;
   }
 
   record ReadyQueueEntry(
